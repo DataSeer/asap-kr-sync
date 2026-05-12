@@ -183,20 +183,10 @@ AWS_SECRET_ACCESS_KEY=your_secret_key
 S3_BUCKET_NAME=asap-kr-sync
 S3_BUCKET_PREFIX=prod/
 
-# PDF Analysis LM API
-LM_PDF_ANALYSIS_DISABLED=false
-LM_PDF_ANALYSIS_API_BASE_URL=https://api.modal.com
-LM_PDF_ANALYSIS_API_KEY=your_api_key
-LM_PDF_ANALYSIS_API_TIMEOUT=300000
-
-# Google Sheets API (Reports)
-GOOGLE_SERVICE_ACCOUNT_KEY_FILE=./credentials/google-service-account.json
-GOOGLE_DRIVE_FOLDER_ID=your_folder_id
-
-# Email
-EMAIL_SERVICE=sendgrid
-EMAIL_API_KEY=your_api_key
-EMAIL_FROM=noreply@asap.science
+# PDF Analysis is the in-app consolidator since v1.0 — no external API
+# call. The PDF_ANALYSIS_API_* vars below are vestigial; the .env.example
+# keeps them only so existing .env files don't error.
+PDF_ANALYSIS_ENABLED=true
 
 # Logging
 LOG_LEVEL=info

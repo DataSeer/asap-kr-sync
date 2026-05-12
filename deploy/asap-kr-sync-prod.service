@@ -14,7 +14,7 @@ ExecStartPre=-/usr/bin/docker rm asap-kr-sync-prod
 ExecStart=/usr/bin/docker run --rm --name asap-kr-sync-prod \
   --add-host=host.docker.internal:host-gateway \
   --env-file /opt/asap-kr-sync-prod/.env \
-  -e AWS_REGION=ca-central-1 \
+  -e AWS_REGION=us-east-1 \
   -e AUTH0_SECRET_ID=asap-kr-sync/prod/auth0 \
   -v /opt/asap-kr-sync-prod/credentials:/app/credentials:ro \
   -v /opt/asap-kr-sync-prod/backend/data:/app/src/backend/data:ro \

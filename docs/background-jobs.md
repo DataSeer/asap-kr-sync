@@ -19,15 +19,15 @@ pg-boss runs in a dedicated `pgboss` schema, separate from application tables.
 | Queue Name | Job Type Constant | Purpose |
 |------------|-------------------|---------|
 | `das-extraction` | `DAS_EXTRACTION` | Extract Data Availability Statement from PDF |
-| `pdf-analysis` | `PDF_ANALYSIS` | Analyze PDF for resources using LM API |
 | `software-detection` | `SOFTWARE_DETECTION` | Detect software mentions via Softcite |
 | `orcid-extraction` | `ORCID_EXTRACTION` | Extract author ORCIDs via GROBID + OpenAlex |
-| `markdown-convert` | `MARKDOWN_CONVERT` | Convert PDF to Markdown (MarkItDown or Modal/Docling) |
-| `datasets-detection` | `DATASETS_DETECTION` | Detect dataset mentions (langextract + Gemini two-pass) |
+| `markdown-convert` | `MARKDOWN_CONVERT` | Convert PDF to Markdown (MarkItDown subprocess or Modal/Docling) |
+| `datasets-detection` | `DATASETS_DETECTION` | Detect dataset mentions (langextract signals + Gemini consolidation) |
 | `materials-detection` | `MATERIALS_DETECTION` | Detect lab material mentions via Google Gemini |
 | `protocols-detection` | `PROTOCOLS_DETECTION` | Detect protocol mentions via Google Gemini |
-| `report-generation` | `REPORT_GENERATION` | Generate Excel or Google Sheets reports |
-| `email-notification` | — | Email sending (defined but no worker yet) |
+| `identifier-detection` | `IDENTIFIER_DETECTION` | Scan markdown against curated enrichment lists for DOIs/RRIDs/accessions/catalogs (no external API) |
+| `pdf-analysis` | `PDF_ANALYSIS` | In-app consolidator — merge every detection's items into the Generated KRT |
+| `report-generation` | `REPORT_GENERATION` | Generate Excel reports (ad-hoc, not part of the PDF pipeline) |
 
 ### Timeout and Retry Configuration
 
@@ -36,13 +36,14 @@ Each queue derives its timeout from the corresponding API timeout environment va
 | Queue | Env Var for Timeout | Default Timeout | Retry Limit | Retry Delay |
 |-------|---------------------|-----------------|-------------|-------------|
 | DAS Extraction | `PDF_DAS_EXTRACTOR_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
-| PDF Analysis | `PDF_ANALYSIS_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Software Detection | `SOFTCITE_API_TIMEOUT` | 600s (10 min) | 2 | 60s |
 | ORCID Extraction | `GROBID_API_TIMEOUT` | 30s | 2 | 30s |
 | Markdown Convert | `PDF_MARKDOWN_TIMEOUT` | 120s (2 min) | 2 | 30s |
 | Datasets Detection | `DATASETS_DETECTION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Materials Detection | `MATERIALS_DETECTION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Protocols Detection | `PROTOCOLS_DETECTION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
+| Identifier Detection | — (fixed) | 60s | 1 | 30s |
+| PDF Analysis | — (fixed) | 120s (in-app, no external call) | 2 | 60s |
 | Report Generation | — (fixed) | 300s (5 min) | 2 | 60s |
 
 **Job expiry formula:**
@@ -67,6 +68,7 @@ maxTotalSeconds = expireInSeconds × (retryLimit + 1) + retryDelay × retryLimit
 | Datasets Detection | 1 |
 | Materials Detection | 1 |
 | Protocols Detection | 1 |
+| Identifier Detection | 1 |
 | Report Generation | 2 |
 
 ## Pipeline
@@ -78,14 +80,21 @@ graph TD
     PDF[PDF Upload] --> DAS[DAS Extraction]
     PDF --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
-    PDF --> MD[Markdown Convert]
     PDF --> MAT[Materials Detection]
-    PDF --> PROT[Protocols Detection]
+    PDF --> MD[Markdown Convert]
 
     MD --> DS[Datasets Detection]
+    MD --> PROT[Protocols Detection]
+    MD --> ID[Identifier Detection]
 
-    DAS -->|extracted = true| PA[PDF Analysis]
-    DAS -.->|extracted = false| PI{{pending_input}}
+    DAS --> PA[PDF Analysis]
+    SW --> PA
+    DS --> PA
+    MAT --> PA
+    PROT --> PA
+    ID --> PA
+
+    DAS -.->|status.detected = false| PI{{pending_input}}
     PI -.->|User advances| PA
 
     style PDF fill:#3b82f6,color:#fff
@@ -96,9 +105,12 @@ graph TD
     style DS fill:#ec4899,color:#fff
     style MAT fill:#14b8a6,color:#fff
     style PROT fill:#f97316,color:#fff
+    style ID fill:#a855f7,color:#fff
     style PA fill:#ef4444,color:#fff
     style PI fill:#6b7280,color:#fff
 ```
+
+ORCID Extraction is intentionally **not** an input to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT.
 
 ### Pipeline Definition
 
@@ -107,11 +119,12 @@ graph TD
 | DAS Extraction | (none) | Always |
 | Software Detection | (none) | Always |
 | ORCID Extraction | (none) | Always |
+| Materials Detection | (none) | Always |
 | Markdown Convert | (none) | Always |
 | Datasets Detection | Markdown Convert | Always (falls back gracefully if markdown unavailable) |
-| Materials Detection | (none) | Always |
-| Protocols Detection | (none) | Always |
-| PDF Analysis | DAS Extraction | Only if DAS extraction `result.extracted === true` |
+| Protocols Detection | Markdown Convert | Always |
+| Identifier Detection | Markdown Convert | Always |
+| PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection | Only if DAS extraction `result.status.detected === true` |
 
 ### Pipeline Rules
 
@@ -168,24 +181,26 @@ Data passed to workers when a job starts:
 | Datasets Detection | `submissionId`, `submissionJobId` |
 | Materials Detection | `submissionId`, `submissionJobId` |
 | Protocols Detection | `submissionId`, `submissionJobId` |
-| PDF Analysis | `submissionId`, `submissionJobId`, `analysisId`, `userId` |
+| Identifier Detection | `submissionId`, `submissionJobId` |
+| PDF Analysis | `submissionId`, `submissionJobId`, `userId` |
 | Report Generation | `submissionId`, `submissionJobId`, `type`, `userId` |
 
 ## Result Summaries
 
-Each job stores a lightweight result summary on completion:
+Each job stores a structured result blob on completion. Every entry has the same outer envelope (`status`, `service`, `counts`, `timing`, `data`, `files`) — the table below lists the **distinguishing** keys per job type. The `service` block is `{ config: {state, enabled, demoEnabled}, outcome: {state, source, failReason?, externalError?} }` for every job. The `files` map carries S3 keys for raw API responses captured by the job logger.
 
-| Job Type | Result Shape |
-|----------|-------------|
-| DAS Extraction | `{ extracted, das }` |
-| PDF Analysis | `{ analysisId, findingsCount }` |
-| Software Detection | `{ detected, uniqueCount, enrichedCount, suggestionsCount }` |
-| ORCID Extraction | `{ authorCount, orcidCount, doi }` |
-| Markdown Convert | `{ converted, markdownLength, provider, fileId }` |
-| Datasets Detection | `{ detected, totalCount, uniqueCount, highRelevanceCount, suggestionsCount }` |
-| Materials Detection | `{ detected, totalCount, uniqueCount, highRelevanceCount, suggestionsCount }` |
-| Protocols Detection | `{ detected, totalCount, uniqueCount, highRelevanceCount, suggestionsCount }` |
-| Report Generation | `{ reportId }` |
+| Job Type | Distinguishing keys |
+|----------|---------------------|
+| DAS Extraction | `status.detected` (boolean — drives the PDF Analysis auto-advance gate); `data.das` (the extracted text); `files['das-extractor-response' \| 'demo-das']` |
+| Software Detection | `counts: {total, unique, enriched}`; `data: {items, meta}`; `files['softcite-response' \| 'demo-software']` |
+| ORCID Extraction | `counts: {authors, orcids}`; `data: {doi}`; `files['grobid-header', 'openalex-response']`. Items themselves go to `submission.authors`, not `data.items` |
+| Markdown Convert | `data: {fileId, provider, markdownLength}`; `timing.totalMs`. The markdown text itself is uploaded to S3 as a File row of type `markdown` |
+| Datasets Detection | `counts: {total, unique, highRelevance}`; `timing: {totalMs, apiMs, signalMs, enrichMs}`; `data: {items, meta}`; `files['langextract-signals', 'gemini-consolidation']` |
+| Materials Detection | `counts: {total, unique, highRelevance}`; `data: {items, meta}`; `files['gemini-response']` |
+| Protocols Detection | `counts: {total, unique, highRelevance}`; `data: {items, meta}`; `files` includes the raw Gemini response and the extracted JSON |
+| Identifier Detection | `counts`; `timing: {totalMs, indexMs, scanMs}`; `data: {items, meta: {byRelevance: {HIGH, MEDIUM, LOW}, byCategory: {software, materials, datasets, protocols}}}`; `files['detection-results', 'identifier-scan']` |
+| PDF Analysis | `counts: {resources, contributors, multiSource}`; `data: {items}` (the Generated KRT); `files['generated-krt']` |
+| Report Generation | `data: {reportId, fileUrl}` |
 
 ## API Endpoints
 
@@ -216,9 +231,9 @@ Array of log entries persisted in PostgreSQL:
 ]
 ```
 
-### Raw API Responses (`SubmissionJob.rawResponses` JSONB → S3)
+### Raw API Responses (`SubmissionJob.result.files` → S3)
 
-Large API responses are uploaded to S3 and referenced by S3 key:
+Large API responses are uploaded to S3 and referenced by S3 key on the job's `result.files` map (there is no separate `raw_responses` column):
 
 ```json
 {

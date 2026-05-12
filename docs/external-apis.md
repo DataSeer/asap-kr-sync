@@ -2,24 +2,20 @@
 
 The application integrates with several external services for PDF analysis, software detection, author extraction, and report generation. Each integration follows a consistent pattern: a config module for environment-based settings, a client service with retry logic, and a main service that orchestrates the business logic.
 
-## PDF Analysis LM API
+## PDF Analysis (in-app KRT consolidator)
 
-Analyzes manuscript PDFs to identify resources (datasets, software, protocols) and generate suggestions for the KRT.
+PDF Analysis is the **in-app consolidator** that merges every detection's items into the Generated KRT. It has no external API call — `pdf-analysis-client.service.js` and the `PDF_ANALYSIS_API_*` env vars are vestigial and unused.
 
 | Property | Value |
 |----------|-------|
-| **Config** | `src/backend/config/pdf-analysis-api.js` |
-| **Client** | `src/backend/services/pdf/pdf-analysis-client.service.js` |
-| **Auth** | Bearer token (`PDF_ANALYSIS_API_KEY`) |
-| **Timeout** | 5 minutes (`PDF_ANALYSIS_API_TIMEOUT`) |
-| **Retry** | 3 retries, 1s initial delay, 2× multiplier |
-| **Disable** | `PDF_ANALYSIS_ENABLED=false` |
+| **Service** | `src/backend/services/pdf-analysis/pdf-analysis.service.js` |
+| **Inputs** | The `result.data.items` arrays of the latest Software, Datasets, Materials, Protocols, and Identifier Detection jobs for the submission's current round |
+| **Helpers** | `merge-detections.service.js` (the core matcher), `identifier-normalize.service.js` (DOI/RRID/PID token extraction), `dedupe-krt-items.service.js` (per-detection dedup), `diff-suggestions.service.js` (consumed by the `/suggestions` API at read time) |
+| **Disable** | `PDF_ANALYSIS_ENABLED=false` (keeps the job from being scheduled, but doesn't gate anything externally — it's an in-process step) |
 
-**Request:** POST with JSON body containing base64-encoded PDF, current KRT rows, and analysis options (`extractResources`, `validateIdentifiers`, `suggestMissing`).
+**Algorithm:** flatten every contributor's items into a uniform shape, then greedy-merge primaries using identifier-token intersection / opaque-id match / normalized-name match. `SOURCE_PRECEDENCE` gives software/datasets/protocols/materials precedence over identifier_detection when fields collide. Each merged resource records every contributing source under `detectedBy[]`. The final Generated KRT is persisted under `submission_jobs.result.data.items` for the `pdf_analysis` job and uploaded to S3 as `generated-krt.json`.
 
-**Response:** Array of findings, each with type (`add_row` or `edit`), confidence, PDF location (page, bounding box), and suggested data.
-
-**Fallback:** When disabled, uses demo data matched by manuscript ID.
+ORCID extraction is **not** a contributor — its output writes to `submission.authors`.
 
 ---
 
@@ -164,30 +160,29 @@ Results stored on `submission.authors` as JSONB.
 
 Converts manuscript PDFs to Markdown text for downstream text analysis. Supports two providers.
 
-### MarkItDown (Local Docker, default)
+### MarkItDown (local Python subprocess)
 
 | Property | Value |
 |----------|-------|
 | **Config** | `src/backend/config/pdf-markdown-api.js` |
 | **Client** | `src/backend/services/pdf/pdf-markdown-client.service.js` |
-| **Default URL** | `http://markitdown:3001` |
-| **Endpoint** | `POST /convert` |
-| **Request** | Multipart/form-data with `file` field (PDF) |
-| **Response** | `{ markdown: "..." }` |
+| **Mechanism** | Spawns `python3 -m markitdown <tmpfile>` as a subprocess (no HTTP call). The `PYTHON_BIN` env var picks the Python binary; the `markitdown` Python package must be installed in that interpreter. |
+| **Response** | Markdown text on stdout |
 | **Timeout** | 2 minutes (`PDF_MARKDOWN_TIMEOUT`) |
 | **Disable** | `PDF_MARKDOWN_ENABLED=false` |
 
-### Modal / Docling (Remote API)
+### Modal / Docling (Remote API, default)
 
 | Property | Value |
 |----------|-------|
 | **Config** | `src/backend/config/pdf-markdown-api.js` |
 | **Client** | `src/backend/services/pdf/pdf-markdown-client.service.js` |
+| **URL** | `PDF_MARKDOWN_MODAL_API_URL` |
 | **Request** | Multipart/form-data: `article` (PDF) + `data` (`{"converter":"docling"}`) |
 | **Response** | `{ success: true, converter: "docling", markdown: "...", length: N }` |
 | **Auth** | Bearer token (`PDF_MARKDOWN_MODAL_API_KEY`, optional) |
 
-Select provider via `PDF_MARKDOWN_PROVIDER` (`markitdown` or `modal`).
+Select provider via `PDF_MARKDOWN_PROVIDER` (default `modal`; alternate `markitdown`).
 
 The converted Markdown is stored as a `File` record (type: `markdown`) on S3 and used by the Datasets Detection pipeline.
 
@@ -267,7 +262,7 @@ Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Fo
 
 **Prompt file:** `src/backend/data/prompts/materials-detection.txt`
 
-**Enrichment:** Detected materials are cross-referenced against the `materials_list_entries` curated list via `materials-list.service.js`.
+**Enrichment:** Detected materials are cross-referenced against the curated list (rows in `enrichment_list_entries` with `category='materials'`) via the unified `enrichment-list.service.js`.
 
 ---
 
@@ -292,7 +287,7 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 
 **Prompt file:** `src/backend/data/prompts/protocols-detection.txt`
 
-**Enrichment:** Detected protocols are cross-referenced against the `protocols_list_entries` curated list via `protocols-list.service.js`.
+**Enrichment:** Detected protocols are cross-referenced against the curated list (rows in `enrichment_list_entries` with `category='protocols'`) via the unified `enrichment-list.service.js`.
 
 ---
 
@@ -345,16 +340,6 @@ File storage for PDFs, KRT files, supplemental files, and reports.
 **Operations:** Upload (`PutObjectCommand`), Download (`GetObjectCommand`), Delete (`DeleteObjectCommand`), Presigned URLs (`getSignedUrl`).
 
 ---
-
-## SendGrid (Email)
-
-Email sending via SendGrid (defined but not actively used in current workflows).
-
-| Variable | Description |
-|----------|-------------|
-| `EMAIL_SERVICE` | Provider (`sendgrid`) |
-| `EMAIL_API_KEY` | SendGrid API key |
-| `EMAIL_FROM` | Sender email address |
 
 ## Retry Pattern
 

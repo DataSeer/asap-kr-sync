@@ -6,18 +6,19 @@ The frontend is a Vue 3 Single-Page Application using the Composition API, Pinia
 
 | Library | Version | Purpose |
 |---------|---------|---------|
-| Vue | 3.x | UI framework (Composition API, `<script setup>`) |
-| Vite | 5.x | Build tool and dev server |
-| Pinia | 2.x | State management |
-| Vue Router | 4.x | Client-side routing |
-| Axios | 1.6 | HTTP client |
-| Tailwind CSS | 3.4 | Utility-first CSS framework |
-| AG Grid | 31.x | Data grid component |
-| Headless UI | 1.7 | Accessible unstyled UI components |
-| Heroicons | 2.1 | SVG icons |
-| VeeValidate | 4.12 | Form validation |
-| Yup | 1.3 | Schema validation |
-| VueUse | 10.7 | Composition API utilities |
+| Vue | ^3.4 | UI framework (Composition API, `<script setup>`) |
+| Vite | ^8.0 | Build tool and dev server |
+| Pinia | ^2.1 | State management |
+| Vue Router | ^4.2 | Client-side routing |
+| Axios | ^1.15 | HTTP client (`withCredentials: true` for cookie auth) |
+| Tailwind CSS | ^3.4 | Utility-first CSS framework |
+| Headless UI | ^1.7 | Accessible unstyled UI components |
+| Heroicons | ^2.1 | SVG icons |
+| VueUse | ^10.7 | Composition API utilities |
+| Papa Parse | ^5.5 | CSV parsing in the enrichment-list import flow |
+| Vitest | ^4.1 | Test runner |
+
+The KRT table editor (`KRTEditor.vue`) is a custom component — not AG Grid. Form validation is done with plain refs and bespoke helpers; there is no schema-validation library wired up.
 
 ## Project Structure
 
@@ -78,10 +79,9 @@ All wrapped in `AppLayout` (header + sidebar).
 | `/admin/teams` | TeamsView | admin, ds_annotator |
 | `/admin/krt-editor/resource-types` | ResourceTypesView | admin, ds_annotator |
 | `/admin/krt-editor/validation-rules` | AppConfigView | admin |
-| `/admin/enrichments/software-list` | SoftwareListView | admin, ds_annotator |
-| `/admin/enrichments/materials-list` | MaterialsListView | admin, ds_annotator |
-| `/admin/enrichments/datasets-list` | DatasetsListView | admin, ds_annotator |
-| `/admin/enrichments/protocols-list` | ProtocolsListView | admin, ds_annotator |
+| `/admin/enrichments` | EnrichmentListView | admin, ds_annotator |
+
+The four curated lists (software, materials, datasets, protocols) are all managed by the single `EnrichmentListView`, with category tabs in the UI and a `?category=…` filter applied to the underlying `/api/enrichment-list` endpoint.
 
 ### Route Guards
 
@@ -99,13 +99,13 @@ The `afterEach` guard updates the page title dynamically.
 
 ### Auth Store (`auth.store.js`)
 
-Manages authentication state, tokens, and role-based permissions.
+Manages authentication state and role-based permissions. Tokens are **not** in the store — they live in HttpOnly cookies set by the backend (Phase 6). The store only ever sees the `user` object returned by `GET /api/auth/me`.
 
-**Key state:** `user`, `token`, `refreshToken`, `viewAsRole` (admin simulation)
+**Key state:** `user`, `loading`, `error`, `viewAsRole` (admin role simulator).
 
-**Key computed:** `isAuthenticated`, `effectiveRole` (respects viewAsRole), `canManageUsers`, `canManageTeams`
+**Key computed:** `isAuthenticated`, `userRole`, `userTeams`, `isRealAdmin`, `effectiveRole` (respects `viewAsRole`), `isAuth0User`, `isAdmin`, `isStaff`, plus a family of capability flags that mirror the backend rules: `canCreateSubmission`, `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`, `canAccessSubmission(submission)`, `canManageUsers`, `canViewUsers`, `canManageTeams`, `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`, `canManageResourceTypes`, `canManageEnrichments`, `canManageValidationRules`, `canViewJobInternals`, `canManageJobs`.
 
-**Key actions:** `login()`, `logout()`, `fetchCurrentUser()`, `refreshAccessToken()`, `handleAuth0Callback()`, `setViewAsRole()`
+**Key actions:** `login(email, password)`, `auth0PasswordLogin(email, password)`, `register(...)`, `logout()` (redirects to `auth0LogoutUrl` when present), `fetchCurrentUser()`, `refreshAccessToken()`, `setAuth(user) / clearAuth()`, `setViewAsRole(role) / clearViewAsRole()`, `initialize()`.
 
 ### Submission Store (`submission.store.js`)
 
@@ -176,33 +176,39 @@ All API calls go through service modules in `src/frontend/src/services/`. Each s
 ### API Client (`api.js`)
 
 - Base URL: `/api`
-- Timeout: 30 seconds
-- Request interceptor: adds `Authorization: Bearer` header
-- Response interceptor: handles 401 with automatic token refresh and retry
+- Timeout: 30 seconds (some upload services override to 2 min)
+- `withCredentials: true` so the session cookie travels on every request
+- Request interceptor: reads the `asap_kr_csrf` cookie and echoes it in the `X-CSRF-Token` header on every state-changing request (POST/PATCH/PUT/DELETE)
+- Response interceptor: on 401 (for any non-auth endpoint), de-dupes a single `POST /auth/refresh` call across concurrent failures, then retries the original request. If the refresh itself 401s, clears the store and redirects to `/login`.
 
 ### Services
 
 | Service | Key Methods |
 |---------|------------|
-| `auth.service.js` | `login`, `register`, `logout`, `refreshToken`, `getCurrentUser` |
-| `submission.service.js` | `list`, `getById`, `create`, `update`, `delete`, `getChanges`, `hide`, `unhide`, `getFilterOptions`, `uploadSupplemental`, `processNewVersion` |
-| `krt.service.js` | `getData`, `upload` (2min timeout), `updateRow`, `addRow`, `deleteRow`, `validate`, `download` |
-| `pdf.service.js` | `upload` (2min timeout), `getAnalysisStatus`, `getFindings`, `triggerAnalysis`, `extractDAS` |
-| `job.service.js` | `getJobs`, `runAllProcesses`, `advanceJob` |
+| `auth.service.js` | `login`, `register`, `logout`, `refreshToken`, `getCurrentUser`, `auth0PasswordLogin` |
+| `submission.service.js` | `list`, `getById`, `create`, `update`, `delete`, `getChanges`, `hide`, `unhide`, `listHidden`, `getFilterOptions`, `uploadSupplemental`, `processNewVersion` |
+| `krt.service.js` | `getData`, `upload` (2 min timeout), `updateRow`, `addRow`, `deleteRow`, `validate`, `download` |
+| `pdf.service.js` | `upload` (2 min timeout), `getAnalysisStatus`, `getFindings`, `triggerAnalysis`, `extractDAS` |
+| `markdown.service.js` | `triggerConvert` |
+| `job.service.js` | `getJobs`, `runAllProcesses`, `advanceJob`, `getJobResponseUrl` |
 | `suggestion.service.js` | `getSuggestions`, `approveSuggestion`, `rejectSuggestion` |
 | `orcid.service.js` | `getAuthors`, `triggerExtraction` |
 | `datasets.service.js` | `getMentions`, `triggerDetection` |
 | `software.service.js` | `getMentions`, `triggerDetection` |
+| `materials.service.js` | `getMentions`, `triggerDetection` |
+| `protocols.service.js` | `getMentions`, `triggerDetection` |
+| `identifier-detection.service.js` | `getMentions`, `triggerDetection` |
 | `report.service.js` | `generate`, `list`, `getById`, `download` |
 | `file.service.js` | `download` |
-| `software-list.service.js` | `list`, `getById`, `create`, `update`, `remove`, `importEntries`, `exportCsv` |
-| `materials-list.service.js` | `list`, `getCounts`, `getById`, `create`, `update`, `remove`, `importEntries`, `exportCsv` |
-| `datasets-list.service.js` | `list`, `getById`, `create`, `update`, `remove`, `importEntries`, `exportCsv` |
-| `protocols-list.service.js` | `list`, `getById`, `create`, `update`, `remove`, `importEntries`, `exportCsv` |
+| `enrichment-list.service.js` | Single service backing every category — list (cross- or per-category), `getCounts`, `getById`, `create`, `update`, `remove`, `importEntries`, `exportCsv` |
 | `teams.service.js` | `list`, `getCodes`, `create`, `update`, `delete` |
-| `resourceTypes.service.js` | `list`, `getNames`, `create`, `update`, `delete` |
+| `resourceTypes.service.js` | `list`, `getNames`, `create`, `update`, `delete`, `exportCsv`, `importEntries` |
 | `appConfig.service.js` | `list`, `get`, `save`, `delete` |
+| `config.service.js` | `getServiceStatus`, `getEnvironment` |
+| `demos.service.js` | `list` |
 | `profile.service.js` | `get`, `update` |
+
+A handful of admin views (notably `UsersView.vue`) call the `api` instance directly without a dedicated service file.
 
 ## Key Components
 

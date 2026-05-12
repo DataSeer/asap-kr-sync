@@ -18,7 +18,7 @@
 
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 
-const REGION = process.env.AWS_REGION || 'ca-central-1';
+const REGION = process.env.AWS_REGION || 'us-east-1';
 
 /**
  * Fetch the Auth0 secret from AWS Secrets Manager and merge it into

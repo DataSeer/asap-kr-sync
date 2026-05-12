@@ -4,15 +4,16 @@ A full-stack web application for managing Key Resources Tables (KRT) in academic
 
 ## Key Features
 
-- **KRT Management** — Upload, validate, and edit Key Resources Tables (CSV, XLSX, XLS, ODS)
-- **AI-Powered PDF Analysis** — Automatically extract resources, software mentions, and Data Availability Statements from manuscripts
+- **KRT Management** — Upload, validate, and edit Key Resources Tables (CSV, XLSX)
+- **AI-Powered PDF Analysis** — Consolidate every detection's findings into a Generated KRT, then surface diff-based suggestions for the user to accept or reject
 - **Software Detection** — Detect software mentions via the Softcite API with reference list enrichment
-- **Datasets Detection** — Identify dataset mentions in manuscripts using Google Gemini with structured relevance scoring
+- **Datasets Detection** — Identify dataset mentions in manuscripts using Google Gemini with structured relevance scoring (two-pass: langextract signal extraction + Gemini consolidation)
 - **Materials Detection** — Identify lab materials/reagents in manuscripts using Google Gemini with KRT suggestion generation
 - **Protocols Detection** — Identify protocol mentions in manuscripts using Google Gemini with KRT suggestion generation
+- **Identifier Detection** — Scan the converted manuscript markdown against the curated enrichment lists to recover identifier-based matches (DOIs, RRIDs, accessions, catalog numbers) across every KRT resource category in a single pass
 - **ORCID Extraction** — Identify authors and ORCIDs from PDFs using GROBID, OpenAlex, and the ORCID API
 - **Enrichment Lists** — Curated reference lists for all KRT resource types (software, datasets, materials, protocols) with standardized KRT columns, CSV import/export, and admin management pages
-- **Report Generation** — Export results as Excel spreadsheets or Google Sheets
+- **Report Generation** — Export results as Excel spreadsheets (Google Sheets export is reserved but not yet implemented)
 - **Multi-Round Workflow** — Support for manuscript revisions with full change tracking
 - **Role-Based Access** — Four user roles (author, asap_pm, ds_annotator, admin) with team-based submission scoping
 - **Dual Authentication** — Local JWT and Auth0 (OAuth2/OIDC)
@@ -84,17 +85,26 @@ When a PDF is uploaded, background jobs run in parallel:
 
 ```
 PDF Upload
-  ├── DAS Extraction        (immediate)
-  ├── Software Detection    (immediate)
-  ├── ORCID Extraction      (immediate)
-  ├── Markdown Convert      (immediate)
-  │   └── Datasets Detection  (after markdown convert)
-  ├── Materials Detection   (immediate)
-  └── Protocols Detection   (immediate)
-                                ↓
-                        PDF Analysis
-                        (after DAS extraction)
+  ├── DAS Extraction         (immediate)
+  ├── Software Detection     (immediate)
+  ├── ORCID Extraction       (immediate)
+  ├── Materials Detection    (immediate)
+  └── Markdown Convert       (immediate)
+        ├── Datasets Detection    (after markdown convert)
+        ├── Protocols Detection   (after markdown convert)
+        └── Identifier Detection  (after markdown convert)
+                                       ↓
+                              PDF Analysis (consolidator)
+                              (after DAS + Software + Datasets +
+                               Materials + Protocols + Identifier;
+                               auto-advances if DAS was detected,
+                               otherwise waits for user input)
 ```
+
+PDF Analysis is an in-app step (no external API) that merges the
+items produced by every detection into the Generated KRT — feeding
+the suggestions the user sees in step 2. ORCID results live on
+`submission.authors` and don't feed the consolidator.
 
 ## Project Structure
 
@@ -112,7 +122,7 @@ asap-kr-sync/
 │   │   ├── middleware/     Auth, validation, rate limiting
 │   │   ├── models/         Sequelize models
 │   │   ├── routes/         Express route definitions
-│   │   └── services/       Business logic (auth, krt, pdf, queue, orcid, software, datasets, materials, protocols, reports)
+│   │   └── services/       Business logic (auth, krt, pdf, pdf-analysis, queue, orcid, software, datasets, materials, protocols, identifier-detection, enrichment-list, reports, storage, suggestion)
 │   └── frontend/
 │       └── src/
 │           ├── components/  Vue components (layout, krt, submission, common)

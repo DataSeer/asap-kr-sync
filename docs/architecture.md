@@ -27,30 +27,34 @@ asap-kr-sync/
 ├── deploy/                        # Deployment files (systemd, entrypoint)
 ├── docs/                          # Documentation (this folder)
 ├── migrations/                    # Sequelize database migrations
+├── scripts/                       # Utility scripts (init-db, generate-demo-data, benchmark, etc.)
 ├── seeders/                       # Database seed data
 ├── src/
 │   ├── backend/
 │   │   ├── config/                # Environment-based configuration modules
 │   │   ├── controllers/           # Route handlers (request → response)
-│   │   ├── data/                  # Static data files (software-list.json)
-│   │   ├── middleware/            # Express middleware (auth, validation, etc.)
+│   │   ├── data/                  # Local data (prompts/, demo-findings/) — gitignored except .example files
+│   │   ├── middleware/            # Express middleware (auth, validation, CSRF, rate-limit, etc.)
 │   │   ├── models/                # Sequelize model definitions
 │   │   ├── routes/                # Express route definitions
-│   │   ├── scripts/               # Utility scripts (seeding, etc.)
 │   │   ├── services/              # Business logic layer
-│   │   │   ├── auth/              # Authentication (JWT, Auth0)
+│   │   │   ├── auth/              # Authentication (JWT, Auth0, refresh-token rotation)
+│   │   │   ├── datasets/          # Datasets detection (langextract + Google Gemini)
+│   │   │   ├── identifier-detection/  # Curated-list identifier scanner (DOIs, RRIDs, accessions, catalogs)
 │   │   │   ├── krt/               # KRT parsing, validation, identifiers
+│   │   │   ├── materials/         # Materials detection (Google Gemini)
 │   │   │   ├── orcid/             # ORCID extraction (GROBID, OpenAlex, ORCID API)
-│   │   │   ├── datasets/           # Datasets detection + enrichment list (Google Gemini)
-│   │   │   ├── materials/         # Materials detection + enrichment list (Google Gemini)
-│   │   │   ├── protocols/         # Protocols detection + enrichment list (Google Gemini)
-│   │   │   ├── pdf/               # PDF processing, DAS extraction, analysis
+│   │   │   ├── pdf/               # PDF processing, DAS extraction, markdown convert
+│   │   │   ├── pdf-analysis/      # In-app KRT consolidator (merges every detection into the Generated KRT)
+│   │   │   ├── protocols/         # Protocols detection (Google Gemini)
 │   │   │   ├── queue/             # Job queue (pg-boss), orchestrator, workers
-│   │   │   ├── reports/           # Report generation (Excel, Google Sheets)
-│   │   │   ├── software/          # Software detection + enrichment list (Softcite)
+│   │   │   ├── reports/           # Excel report generation
+│   │   │   ├── software/          # Software detection (Softcite)
 │   │   │   ├── storage/           # S3 file operations
-│   │   │   └── suggestion/        # AI suggestion management
-│   │   └── utils/                 # Shared utilities (logger, errors, helpers)
+│   │   │   ├── suggestion/        # Diff-based suggestion API (Generated KRT vs current KRT)
+│   │   │   ├── enrichment-list.service.js  # Single shared service backing the four curated lists
+│   │   │   └── config.service.js  # Dynamic config (teams, resource types, validation rules) from DB
+│   │   └── utils/                 # Shared utilities (logger, errors, helpers, validators)
 │   └── frontend/
 │       └── src/
 │           ├── assets/            # Static assets, demo data, styles
@@ -150,18 +154,24 @@ Each step has a corresponding status, view, and set of operations. Users can nav
 
 ## Background Job Pipeline
 
-PDF upload triggers parallel background jobs via pg-boss:
+PDF upload triggers parallel background jobs via pg-boss. PDF Analysis is the in-app consolidator that waits on every detection job (gated by whether DAS was detected):
 
 ```mermaid
 graph TD
     PDF[PDF Upload] --> DAS[DAS Extraction]
     PDF --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
-    PDF --> MD[Markdown Convert]
     PDF --> MAT[Materials Detection]
-    PDF --> PROT[Protocols Detection]
+    PDF --> MD[Markdown Convert]
     MD --> DS[Datasets Detection]
-    DAS -->|conditional| PA[PDF Analysis]
+    MD --> PROT[Protocols Detection]
+    MD --> ID[Identifier Detection]
+    DAS --> PA[PDF Analysis]
+    SW --> PA
+    DS --> PA
+    MAT --> PA
+    PROT --> PA
+    ID --> PA
 
     style PDF fill:#3b82f6,color:#fff
     style DAS fill:#f59e0b,color:#fff
@@ -171,8 +181,11 @@ graph TD
     style DS fill:#ec4899,color:#fff
     style MAT fill:#14b8a6,color:#fff
     style PROT fill:#f97316,color:#fff
+    style ID fill:#a855f7,color:#fff
     style PA fill:#ef4444,color:#fff
 ```
+
+ORCID Extraction is intentionally **not** a contributor to PDF Analysis — its output lives on `submission.authors`, not in the Generated KRT. PDF Analysis auto-advances when DAS was detected; if DAS extraction fails, the job parks at `pending_input` until the user supplies a DAS manually and clicks Advance.
 
 See [Background Jobs](./background-jobs.md) for details.
 

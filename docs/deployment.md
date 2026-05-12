@@ -98,11 +98,14 @@ sudo journalctl -u asap-kr-sync-dev -f
 ```
 /opt/asap-kr-sync-{dev|prod}/
 ├── .env                    # Environment variables
-├── credentials/            # Service account keys (mounted read-only)
-│   └── google-sa-key.json  # Google Sheets service account
+├── credentials/            # Service account keys (mounted read-only, optional)
+├── backend/data/           # Local data (prompt files, demo findings)
+├── src/frontend/public/demo-files/   # Demo manuscripts dropped in manually
 └── logs/                   # Application logs
     └── app.log
 ```
+
+The `credentials/` directory is mounted read-only into the container, but there are no committed credentials in the repo today — Auth0 secrets come from AWS Secrets Manager (`AUTH0_SECRET_ID`), AWS S3 uses the EC2 instance role, and there is no Google Sheets integration. The directory is reserved for future provider keys if needed.
 
 ## Application Startup Sequence
 
