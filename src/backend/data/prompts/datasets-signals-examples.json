@@ -1,0 +1,306 @@
+[
+  {
+    "text": "Immunofluorescent images were collected using a Nikon A1R Confocal\nLaser Scanning Microscope (RRID:SCR_020317). The pS129-ir αSyn\npathology in the cortical area was imaged under a 20x objective lens and\nquantified in ImageJ (NIH, https://imagej.net/, RRID: SCR_003070).\nBiocytin-filled cortical neurons were imaged under a 20x lens.\nSpines of biocytin-filled cortical neurons were imaged under a 100x objective lens.\nSpine density was assessed from dendrites.",
+    "extractions": [
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Immunofluorescent images were collected using a Nikon A1R Confocal\nLaser Scanning Microscope (RRID:SCR_020317).",
+        "attributes": {
+          "dataset_name": "Immunofluorescent images",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "",
+          "repository": "",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "The pS129-ir αSyn\npathology in the cortical area was imaged under a 20x objective lens and\nquantified in ImageJ (NIH, https://imagej.net/, RRID: SCR_003070).",
+        "attributes": {
+          "dataset_name": "pS129 αSyn pathology quantification",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "",
+          "repository": "",
+          "accession": "",
+          "doi": "",
+          "url": "https://imagej.net/"
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Spine density was assessed from dendrites.",
+        "attributes": {
+          "dataset_name": "spine density quantification",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "",
+          "repository": "",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "URL",
+        "extracted_text": "https://imagej.net/",
+        "attributes": {}
+      }
+    ]
+  },
+  {
+    "text": "Dataset | bulkRNA seq data (raw) | GEO | GSE283600 | reuse |\nDataset | CUTnRUN data (raw) | GEO | GSE283600 | reuse |",
+    "extractions": [
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Dataset | bulkRNA seq data (raw) | GEO | GSE283600 | reuse |",
+        "attributes": {
+          "dataset_name": "bulkRNA seq data (raw)",
+          "resource_type": "DATASET",
+          "reuse_status": "REUSED",
+          "source_type": "REPOSITORY",
+          "repository": "GEO",
+          "accession": "GSE283600",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Dataset | CUTnRUN data (raw) | GEO | GSE283600 | reuse |",
+        "attributes": {
+          "dataset_name": "CUTnRUN data (raw)",
+          "resource_type": "DATASET",
+          "reuse_status": "REUSED",
+          "source_type": "REPOSITORY",
+          "repository": "GEO",
+          "accession": "GSE283600",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "REPOSITORY",
+        "extracted_text": "GEO",
+        "attributes": {}
+      },
+      {
+        "extraction_class": "ACCESSION",
+        "extracted_text": "GSE283600",
+        "attributes": {}
+      }
+    ]
+  },
+  {
+    "text": "Immunofluorescent images were collected.\nSpine density was assessed.\nElectrophysiology data were analyzed.\nAll datasets are available at https://doi.org/10.5281/zenodo.14057740.",
+    "extractions": [
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Immunofluorescent images were collected.",
+        "attributes": {
+          "dataset_name": "Immunofluorescent images",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "REPOSITORY",
+          "repository": "Zenodo",
+          "accession": "",
+          "doi": "10.5281/zenodo.14057740",
+          "url": "https://doi.org/10.5281/zenodo.14057740"
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Spine density was assessed.",
+        "attributes": {
+          "dataset_name": "spine density quantification",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "REPOSITORY",
+          "repository": "Zenodo",
+          "accession": "",
+          "doi": "10.5281/zenodo.14057740",
+          "url": "https://doi.org/10.5281/zenodo.14057740"
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Electrophysiology data were analyzed.",
+        "attributes": {
+          "dataset_name": "electrophysiology quantification",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "REPOSITORY",
+          "repository": "Zenodo",
+          "accession": "",
+          "doi": "10.5281/zenodo.14057740",
+          "url": "https://doi.org/10.5281/zenodo.14057740"
+        }
+      },
+      {
+        "extraction_class": "DOI",
+        "extracted_text": "10.5281/zenodo.14057740",
+        "attributes": {}
+      },
+      {
+        "extraction_class": "URL",
+        "extracted_text": "https://doi.org/10.5281/zenodo.14057740",
+        "attributes": {}
+      }
+    ]
+  },
+  {
+    "text": "We reused publicly available RNA-seq data from the GEO database under accession GSE123456.\nAdditionally, previously published ChIP-seq datasets were obtained from ENCODE.",
+    "extractions": [
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "We reused publicly available RNA-seq data from the GEO database under accession GSE123456.",
+        "attributes": {
+          "dataset_name": "RNA-seq dataset (GSE123456)",
+          "resource_type": "DATASET",
+          "reuse_status": "REUSED",
+          "source_type": "REPOSITORY",
+          "repository": "GEO",
+          "accession": "GSE123456",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "previously published ChIP-seq datasets were obtained from ENCODE.",
+        "attributes": {
+          "dataset_name": "ChIP-seq datasets (ENCODE)",
+          "resource_type": "DATASET",
+          "reuse_status": "REUSED",
+          "source_type": "REPOSITORY",
+          "repository": "ENCODE",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "REPOSITORY",
+        "extracted_text": "GEO",
+        "attributes": {}
+      },
+      {
+        "extraction_class": "ACCESSION",
+        "extracted_text": "GSE123456",
+        "attributes": {}
+      },
+      {
+        "extraction_class": "REPOSITORY",
+        "extracted_text": "ENCODE",
+        "attributes": {}
+      }
+    ]
+  },
+  {
+    "text": "The brain sections were manually aligned to the mouse brain atlas of Franklin and Paxinos (5th Edition, 2019).",
+    "extractions": [
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "The brain sections were manually aligned to the mouse brain atlas of Franklin and Paxinos (5th Edition, 2019).",
+        "attributes": {
+          "dataset_name": "mouse brain atlas of Franklin and Paxinos (5th Edition, 2019)",
+          "resource_type": "DATASET",
+          "reuse_status": "REUSED",
+          "source_type": "OTHER_RESEARCHERS",
+          "repository": "",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      }
+    ]
+  },
+  {
+    "text": "Protein concentration was measured using absorbance.\nBody temperature was monitored.\nWhole-cell patch-clamp recordings were performed.",
+    "extractions": [
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Protein concentration was measured using absorbance.",
+        "attributes": {
+          "dataset_name": "protein concentration measurements",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "",
+          "repository": "",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Body temperature was monitored.",
+        "attributes": {
+          "dataset_name": "body temperature measurements",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "",
+          "repository": "",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Whole-cell patch-clamp recordings were performed.",
+        "attributes": {
+          "dataset_name": "electrophysiology recordings (raw)",
+          "resource_type": "DATASET",
+          "reuse_status": "GENERATED",
+          "source_type": "",
+          "repository": "",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      }
+    ]
+  },
+  {
+    "text": "We used patient data from the UK Biobank cohort to analyze genetic associations.\nClinical records and phenotype data were obtained from previously published hospital datasets.",
+    "extractions": [
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "We used patient data from the UK Biobank cohort to analyze genetic associations.",
+        "attributes": {
+          "dataset_name": "UK Biobank patient dataset",
+          "resource_type": "CLINICAL_DATASET",
+          "reuse_status": "REUSED",
+          "source_type": "DATABASE",
+          "repository": "UK Biobank",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "DATASET_ROW",
+        "extracted_text": "Clinical records and phenotype data were obtained from previously published hospital datasets.",
+        "attributes": {
+          "dataset_name": "clinical phenotype and hospital records dataset",
+          "resource_type": "CLINICAL_DATASET",
+          "reuse_status": "REUSED",
+          "source_type": "OTHER_RESEARCHERS",
+          "repository": "",
+          "accession": "",
+          "doi": "",
+          "url": ""
+        }
+      },
+      {
+        "extraction_class": "REPOSITORY",
+        "extracted_text": "UK Biobank",
+        "attributes": {}
+      }
+    ]
+  }
+]

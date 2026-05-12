@@ -1,0 +1,18 @@
+node_modules/
+.env
+.env.*
+credentials/
+.git/
+docs/
+logs/
+tmp/
+coverage/
+.nyc_output/
+.vscode/
+.idea/
+*.log
+
+# Demo files — not baked into the image; mounted as a volume on the deploy host
+src/frontend/public/demo-files/*
+!src/frontend/public/demo-files/.gitkeep
+!src/frontend/public/demo-files/README.md

@@ -1,0 +1,366 @@
+# External API Integrations
+
+The application integrates with several external services for PDF analysis, software detection, author extraction, and report generation. Each integration follows a consistent pattern: a config module for environment-based settings, a client service with retry logic, and a main service that orchestrates the business logic.
+
+## PDF Analysis LM API
+
+Analyzes manuscript PDFs to identify resources (datasets, software, protocols) and generate suggestions for the KRT.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/pdf-analysis-api.js` |
+| **Client** | `src/backend/services/pdf/pdf-analysis-client.service.js` |
+| **Auth** | Bearer token (`PDF_ANALYSIS_API_KEY`) |
+| **Timeout** | 5 minutes (`PDF_ANALYSIS_API_TIMEOUT`) |
+| **Retry** | 3 retries, 1s initial delay, 2× multiplier |
+| **Disable** | `PDF_ANALYSIS_ENABLED=false` |
+
+**Request:** POST with JSON body containing base64-encoded PDF, current KRT rows, and analysis options (`extractResources`, `validateIdentifiers`, `suggestMissing`).
+
+**Response:** Array of findings, each with type (`add_row` or `edit`), confidence, PDF location (page, bounding box), and suggested data.
+
+**Fallback:** When disabled, uses demo data matched by manuscript ID.
+
+---
+
+## DAS Extractor LM API
+
+Extracts the Data Availability Statement from manuscript PDFs.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/pdf-das-extractor-api.js` |
+| **Client** | `src/backend/services/pdf/pdf-das-extractor-client.service.js` |
+| **Auth** | `X-API-Key` header (`PDF_DAS_EXTRACTOR_API_KEY`) |
+| **Timeout** | 5 minutes (`PDF_DAS_EXTRACTOR_API_TIMEOUT`) |
+| **Retry** | 2 retries, 2s initial delay, 2× multiplier |
+| **Disable** | `PDF_DAS_EXTRACTOR_ENABLED=false` |
+
+**Request:** POST multipart/form-data with field `article` containing the PDF.
+
+**Response:** `{ prompt, extracted_das }` — the extracted DAS text.
+
+**Processing:** Stores the extracted DAS as `extractedDataAvailabilityStatement` (read-only) and copies it to `dataAvailabilityStatement` (user-editable).
+
+---
+
+## Softcite API (Software Detection)
+
+Detects software mentions in manuscript PDFs using the Softcite/software-mentions service.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/softcite-api.js` |
+| **Client** | `src/backend/services/software/softcite-client.service.js` |
+| **Endpoint** | `POST /service/annotateSoftwarePDF` |
+| **Auth** | None |
+| **Timeout** | 10 minutes (`SOFTCITE_API_TIMEOUT`) |
+| **Retry** | 2 retries, 5s initial delay, 2× multiplier |
+| **Default URL** | `http://localhost:8050` |
+| **Disable** | `SOFTCITE_API_ENABLED=false` |
+
+**Request:** Multipart/form-data with field `input` containing the PDF.
+
+**Response:** JSON with `mentions` array containing software name, normalized name, version, URL, creator, type, confidence, and context.
+
+---
+
+## GROBID API (Author/ORCID Extraction)
+
+Extracts article metadata (DOI, authors, affiliations, ORCIDs) from PDF headers using GROBID's TEI-XML output.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/grobid-api.js` |
+| **Client** | `src/backend/services/orcid/grobid-client.service.js` |
+| **Endpoint** | `POST /api/processHeaderDocument` |
+| **Auth** | None |
+| **Timeout** | 30 seconds (`GROBID_API_TIMEOUT`) |
+| **Retry** | 2 retries, 2s initial delay, 2× multiplier |
+| **Default URL** | `http://localhost:8070` |
+| **Disable** | `GROBID_API_ENABLED=false` |
+
+**Request:** Multipart/form-data with parameters `consolidateHeader=1` and `includeRawAffiliations=1`, followed by the `input` PDF field. Accept header: `application/xml`.
+
+**Response:** TEI-XML parsed with `fast-xml-parser`. Extracts:
+- **DOI** from `<idno type="DOI">`
+- **Authors** from `<author>` elements with first/last names, ORCIDs (`<idno type="ORCID">`), and affiliations
+
+**Important:** Form field order matters — parameters must be appended before the PDF file.
+
+---
+
+## OpenAlex API (ORCID Enrichment)
+
+Free API that enriches author data with verified ORCIDs by looking up articles by DOI.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/openalex-api.js` |
+| **Client** | `src/backend/services/orcid/openalex-client.service.js` |
+| **Endpoint** | `GET /works/doi:{doi}` |
+| **Base URL** | `https://api.openalex.org` |
+| **Auth** | None (free API) |
+| **Timeout** | 10 seconds (`OPENALEX_API_TIMEOUT`) |
+| **Disable** | `OPENALEX_API_ENABLED=false` |
+
+**Polite pool:** Set `OPENALEX_MAILTO` to an email address to get higher rate limits.
+
+**Response:** Extracts `authorships` array with display names and ORCIDs (strips `https://orcid.org/` prefix).
+
+**404 handling:** Returns empty authors list if DOI is not found (graceful degradation).
+
+---
+
+## ORCID Public API (Name Lookup Fallback)
+
+Optional fallback for authors not found via GROBID or OpenAlex. Searches by name and affiliation.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/orcid-api.js` |
+| **Client** | `src/backend/services/orcid/orcid-api-client.service.js` |
+| **Endpoint** | `GET /search/?q=...` |
+| **Base URL** | `https://pub.orcid.org/v3.0` |
+| **Auth** | None (public API) |
+| **Timeout** | 5 seconds (`ORCID_API_TIMEOUT`) |
+| **Disable** | `ORCID_API_ENABLED=false` |
+
+**Query format (Lucene):**
+```
+given-names:{firstName} AND family-name:{lastName} [AND affiliation-org-name:{affiliation}]
+```
+
+**Matching logic:**
+- Returns ORCID only if exactly 1 result (confident match)
+- Skips if >5 results (too ambiguous)
+- Non-fatal: API failures log a warning and return null
+
+---
+
+## ORCID Extraction Pipeline
+
+The `orcid.service.js` orchestrates the three ORCID-related APIs:
+
+1. **GROBID** (always) → extracts DOI + author names + some ORCIDs from PDF header
+2. **OpenAlex** (if DOI found) → enriches with verified ORCIDs, matched to GROBID authors by name similarity
+3. **ORCID API** (optional, for remaining unmatched) → searches up to 10 authors by name + affiliation
+
+**Name matching:** Normalized lowercase, first-letter of first name + exact last name match.
+
+**Confidence levels:**
+| Source | Confidence |
+|--------|-----------|
+| `grobid+openalex` (both agree) | `high` |
+| `openalex` (only) | `high` |
+| `grobid` (only) | `medium` |
+| `orcid_api` (name search) | `medium` |
+
+Results stored on `submission.authors` as JSONB.
+
+---
+
+## PDF-to-Markdown Conversion
+
+Converts manuscript PDFs to Markdown text for downstream text analysis. Supports two providers.
+
+### MarkItDown (Local Docker, default)
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/pdf-markdown-api.js` |
+| **Client** | `src/backend/services/pdf/pdf-markdown-client.service.js` |
+| **Default URL** | `http://markitdown:3001` |
+| **Endpoint** | `POST /convert` |
+| **Request** | Multipart/form-data with `file` field (PDF) |
+| **Response** | `{ markdown: "..." }` |
+| **Timeout** | 2 minutes (`PDF_MARKDOWN_TIMEOUT`) |
+| **Disable** | `PDF_MARKDOWN_ENABLED=false` |
+
+### Modal / Docling (Remote API)
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/pdf-markdown-api.js` |
+| **Client** | `src/backend/services/pdf/pdf-markdown-client.service.js` |
+| **Request** | Multipart/form-data: `article` (PDF) + `data` (`{"converter":"docling"}`) |
+| **Response** | `{ success: true, converter: "docling", markdown: "...", length: N }` |
+| **Auth** | Bearer token (`PDF_MARKDOWN_MODAL_API_KEY`, optional) |
+
+Select provider via `PDF_MARKDOWN_PROVIDER` (`markitdown` or `modal`).
+
+The converted Markdown is stored as a `File` record (type: `markdown`) on S3 and used by the Datasets Detection pipeline.
+
+---
+
+## Datasets Detection (Two-Pass Pipeline)
+
+Detects dataset mentions using a two-pass architecture: signal extraction via Python langextract, then consolidation via Google Gemini.
+
+### Pass 1: Signal Extraction (langextract)
+
+| Property | Value |
+|----------|-------|
+| **Client** | `src/backend/services/datasets/langextract-client.service.js` (Node) → `python3 -m langextract` subprocess |
+| **Library** | `langextract` (Google, Python) |
+| **Input** | Markdown text (from S3, produced by Markdown Convert job) |
+| **Output** | JSON array of `DATASET_ROW` extractions with `extracted_text` and `attributes` |
+| **Model** | `gemini-2.5-flash` (configurable via `DATASETS_DETECTION_GEMINI_MODEL`) |
+| **Auth** | API key (`DATASETS_DETECTION_GEMINI_API_KEY`) |
+| **Timeout** | 10 minutes (`DATASETS_LANGEXTRACT_TIMEOUT`) |
+
+**Key parameters:** `max_workers` (60), `max_char_buffer` (3000), `extraction_passes` (1) — all configurable via env vars.
+
+**Prompt file:** `src/backend/data/prompts/datasets-signals-extraction.txt`
+**Examples file:** `src/backend/data/prompts/datasets-signals-examples.json`
+
+### Pass 2: Consolidation (Google Gemini)
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/datasets-detection-api.js` |
+| **Service** | `src/backend/services/datasets/datasets.service.js` |
+| **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
+| **Model** | `gemini-2.5-flash` (configurable via `DATASETS_DETECTION_GEMINI_MODEL`) |
+| **Auth** | API key (`DATASETS_DETECTION_GEMINI_API_KEY`) |
+| **Timeout** | 5 minutes (`DATASETS_DETECTION_API_TIMEOUT`) |
+| **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
+| **Disable** | `DATASETS_DETECTION_ENABLED=false` |
+
+**Input:** Dataset names + extracted DATASET_ROW chunks + full article markdown.
+
+**Consolidation rules:** Merges duplicate mentions, applies strict exclusion rules (no annotation tracks, statistical outputs, preprints, literature-only references), classifies KRT relevance.
+
+**Response:** JSON object with a `resources` array. Each resource contains:
+- `canonical_name`, `dataset_role` (`GENERATED`/`REUSED`/`BOTH`/`UNCLEAR`)
+- `resource_type` (`DATASET`, `SEQUENCE_DATASET`, `DATABASE`, `CLINICAL_DATASET`, `OTHER`)
+- `source_type` (`REPOSITORY`, `DATABASE`, `WEBSITE`, `SUPPLEMENTARY_FILES`, `UNKNOWN`)
+- `repository`, `repository_is_real`, `accessions`, `dois`, `urls`, `aliases`
+- `krt_relevance` (`HIGH`, `MEDIUM`, `LOW`)
+
+**Prompt file:** `src/backend/data/prompts/datasets-consolidation.txt`
+
+**Fallback:** When disabled or not configured, tries demo data matched by manuscript ID. If no demo data, stores `{ items: [], meta: { disabled: true } }`.
+
+**Prompt management:** Prompts are stored as `.txt` / `.json` files in `src/backend/data/prompts/`. They are loaded once at first use and cached in memory. Restart the server to pick up prompt changes.
+
+---
+
+## Google Gemini API (Materials Detection)
+
+Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Follows the same pattern as datasets detection.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/materials-detection-api.js` |
+| **Service** | `src/backend/services/materials/materials.service.js` |
+| **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
+| **Model** | `gemini-2.5-flash` (configurable via `MATERIALS_DETECTION_GEMINI_MODEL`) |
+| **Auth** | API key (`MATERIALS_DETECTION_GEMINI_API_KEY`) |
+| **Timeout** | 5 minutes (`MATERIALS_DETECTION_API_TIMEOUT`) |
+| **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
+| **Disable** | `MATERIALS_DETECTION_ENABLED=false` |
+
+**Response:** JSON object with a `resources` array. Each resource contains:
+- `canonical_name`, `material_type` (ANTIBODY, CELL_LINE, etc.), `material_role` (NEW/REUSE)
+- `source`, `catalog_number`, `rrid`, `urls`, `krt_relevance`
+
+**Prompt file:** `src/backend/data/prompts/materials-detection.txt`
+
+**Enrichment:** Detected materials are cross-referenced against the `materials_list_entries` curated list via `materials-list.service.js`.
+
+---
+
+## Google Gemini API (Protocols Detection)
+
+Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the same pattern as datasets detection.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/protocols-detection-api.js` |
+| **Service** | `src/backend/services/protocols/protocols.service.js` |
+| **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
+| **Model** | `gemini-2.5-flash` (configurable via `PROTOCOLS_DETECTION_GEMINI_MODEL`) |
+| **Auth** | API key (`PROTOCOLS_DETECTION_GEMINI_API_KEY`) |
+| **Timeout** | 5 minutes (`PROTOCOLS_DETECTION_API_TIMEOUT`) |
+| **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
+| **Disable** | `PROTOCOLS_DETECTION_ENABLED=false` |
+
+**Response:** JSON object with a `resources` array. Each resource contains:
+- `canonical_name`, `protocol_type` (EXPERIMENTAL, COMPUTATIONAL, etc.), `protocol_role` (NEW/REUSE)
+- `source`, `doi`, `url`, `krt_relevance`
+
+**Prompt file:** `src/backend/data/prompts/protocols-detection.txt`
+
+**Enrichment:** Detected protocols are cross-referenced against the `protocols_list_entries` curated list via `protocols-list.service.js`.
+
+---
+
+## Google Sheets API (Report Generation) — not implemented
+
+Reserved section: a Google Sheets exporter has been discussed as a possible
+future export format, but **no implementation currently exists in the
+codebase** (no `config/google-sheets.js`, no `GoogleSheetsExporter.js`,
+no consumed `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` or `GOOGLE_DRIVE_FOLDER_ID`
+env vars). Excel is the only active export format — see the next section.
+
+---
+
+## Excel Report Generation
+
+Active report format using the `xlsx` (SheetJS) library.
+
+| Property | Value |
+|----------|-------|
+| **Exporter** | `src/backend/services/reports/ExcelExporter.js` |
+| **Library** | `xlsx` (SheetJS) |
+
+**Sheets generated:**
+1. **Summary** — manuscript metadata, resource/change counts
+2. **KRT Data** — resource table sorted by type group, then name
+3. **Change History** — chronological audit trail
+4. **LM Analysis** — AI findings with confidence and status
+
+Output uploaded to S3; presigned URL generated on download.
+
+---
+
+## AWS S3 / S3-Compatible Storage
+
+File storage for PDFs, KRT files, supplemental files, and reports.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/aws.js` |
+| **Service** | `src/backend/services/storage/s3.service.js` |
+| **SDK** | AWS SDK v3 (`@aws-sdk/client-s3`) |
+| **Region** | `AWS_REGION` (default: `us-east-1`) |
+| **Bucket** | `S3_BUCKET_NAME` (default: `asap-kr-sync`) |
+| **Prefix** | `S3_BUCKET_PREFIX` (`dev/` or `prod/`) |
+
+**S3-compatible mode (MinIO):** Set `S3_ENDPOINT` (e.g., `http://localhost:9000`) to use MinIO with `forcePathStyle: true`.
+
+**Key structure:** `{bucketPrefix}{submissionId}/{fileType}/{fileName}/{version}`
+
+**Operations:** Upload (`PutObjectCommand`), Download (`GetObjectCommand`), Delete (`DeleteObjectCommand`), Presigned URLs (`getSignedUrl`).
+
+---
+
+## SendGrid (Email)
+
+Email sending via SendGrid (defined but not actively used in current workflows).
+
+| Variable | Description |
+|----------|-------------|
+| `EMAIL_SERVICE` | Provider (`sendgrid`) |
+| `EMAIL_API_KEY` | SendGrid API key |
+| `EMAIL_FROM` | Sender email address |
+
+## Retry Pattern
+
+All external API clients follow the same retry pattern:
+
+1. Make request with configured timeout
+2. On failure, wait `retryDelay` seconds
+3. Retry up to `maxRetries` times with `retryDelayMultiplier` backoff
+4. Throw `ExternalServiceError` if all retries fail

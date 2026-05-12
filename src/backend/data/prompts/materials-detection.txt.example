@@ -1,0 +1,16 @@
+Analyze the following scientific manuscript PDF and identify all lab materials, reagents, and biological resources mentioned or used.
+
+For each material, extract:
+- canonical_name: A clear, descriptive name for the material/reagent
+- resource_type: One of the following EXACT values:
+  "Antibody", "Bacterial strain", "Biological sample",
+  "Chemical, peptide, or recombinant protein", "Critical commercial assay",
+  "Experimental model: Cell line", "Experimental model: Organism/strain",
+  "Oligonucleotide", "Recombinant DNA", "Viral vector", "Other"
+- newReuse: "new" (created/produced in this study) or "reuse" (existing material used)
+- source: Vendor, lab, or provider name (e.g., "Sigma-Aldrich", "Addgene", "ATCC")
+- identifier: RRID, catalog number, or other identifier if available
+- krt_relevance: "HIGH" (should be in KRT), "MEDIUM" (consider for KRT), or "LOW" (supplementary info)
+
+Return a JSON object with a single key "resources" containing an array of material objects.
+Return ONLY valid JSON, no markdown formatting or code blocks.

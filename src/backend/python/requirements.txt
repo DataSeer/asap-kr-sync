@@ -1,0 +1,2 @@
+langextract>=1.2.0
+markitdown[pdf,docx,xlsx]>=0.1.0

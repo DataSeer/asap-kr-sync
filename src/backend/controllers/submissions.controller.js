@@ -1,0 +1,657 @@
+/**
+ * Submissions Controller
+ */
+
+const { Op } = require('sequelize');
+const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, sequelize } = require('../models');
+const { NotFoundError, ValidationError } = require('../utils/errors');
+const { extractTeamFromManuscriptId, parsePagination, buildPaginationMeta, statusToStep, buildS3Folder } = require('../utils/helpers');
+const s3Service = require('../services/storage/s3.service');
+const logger = require('../utils/logger');
+
+/**
+ * List submissions (filtered by role)
+ * GET /api/submissions
+ *
+ * Query params:
+ * - status: comma-separated list of statuses (e.g., "draft,step1,step2")
+ * - team: comma-separated list of teams (e.g., "WH,ML")
+ * - userId: comma-separated list of user IDs (e.g., "1,2,3")
+ * - page, limit: pagination
+ * - sort, order: sorting
+ */
+async function list(req, res, next) {
+  try {
+    const { page, limit, offset } = parsePagination(req.query);
+    const filter = req.submissionFilter || {};
+    const visibility = req.query.visibility || 'visible'; // 'visible' | 'hidden' | 'all'
+
+    // Add optional status filter (supports comma-separated values)
+    if (req.query.status) {
+      const statuses = req.query.status.split(',').map(s => s.trim()).filter(Boolean);
+      if (statuses.length === 1) {
+        filter.status = statuses[0];
+      } else if (statuses.length > 1) {
+        filter.status = { [Op.in]: statuses };
+      }
+    }
+
+    // Add optional team filter (supports comma-separated values)
+    if (req.query.team && !filter.team) {
+      const teams = req.query.team.split(',').map(t => t.trim()).filter(Boolean);
+      if (teams.length === 1) {
+        filter.team = teams[0];
+      } else if (teams.length > 1) {
+        filter.team = { [Op.in]: teams };
+      }
+    }
+
+    // Add optional userId filter (supports comma-separated values)
+    if (req.query.userId) {
+      const userIds = req.query.userId.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (userIds.length === 1) {
+        filter.userId = userIds[0];
+      } else if (userIds.length > 1) {
+        filter.userId = { [Op.in]: userIds };
+      }
+    }
+
+    // Apply visibility filter based on user's hidden submissions
+    if (visibility !== 'all') {
+      const hiddenSubmissions = await UserHiddenSubmission.findAll({
+        where: { userId: req.userId },
+        attributes: ['submissionId']
+      });
+      const hiddenIds = hiddenSubmissions.map(h => h.submissionId);
+
+      if (hiddenIds.length > 0) {
+        if (visibility === 'hidden') {
+          filter.id = { ...(filter.id || {}), [Op.in]: hiddenIds };
+        } else {
+          filter.id = { ...(filter.id || {}), [Op.notIn]: hiddenIds };
+        }
+      } else if (visibility === 'hidden') {
+        // No hidden submissions exist — return empty result
+        return res.json({
+          submissions: [],
+          pagination: buildPaginationMeta(0, page, limit)
+        });
+      }
+    }
+
+    const { count, rows } = await Submission.findAndCountAll({
+      where: filter,
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'name', 'email']
+      }],
+      order: [[req.query.sort || 'createdAt', req.query.order || 'DESC']],
+      limit,
+      offset
+    });
+
+    res.json({
+      submissions: rows,
+      pagination: buildPaginationMeta(count, page, limit)
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Create submission
+ * POST /api/submissions
+ */
+async function create(req, res, next) {
+  try {
+    const { title, dataAvailabilityStatement, manuscriptId, notes } = req.validatedBody;
+
+    // Extract team from manuscript ID (if provided)
+    const team = manuscriptId ? await extractTeamFromManuscriptId(manuscriptId) : null;
+
+    const submission = await Submission.create({
+      userId: req.userId,
+      title,
+      dataAvailabilityStatement,
+      manuscriptId: manuscriptId || null,
+      team,
+      notes,
+      status: 'draft'
+    });
+
+    // Log the creation
+    await ChangeLog.create({
+      submissionId: submission.id,
+      userId: req.userId,
+      action: 'upload',
+      step: 1,
+      round: 1,
+      description: 'Submission created'
+    });
+
+    logger.info('Submission created', { submissionId: submission.id, userId: req.userId });
+
+    res.status(201).json({ submission });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get submission by ID
+ * GET /api/submissions/:id
+ */
+async function getById(req, res, next) {
+  try {
+    // Always fetch fresh with includes
+    const submission = await Submission.findByPk(req.params.id, {
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email']
+        },
+        {
+          model: File,
+          as: 'files',
+          attributes: ['id', 'type', 'fileName', 's3Key', 'mimeType', 'size', 'version', 'round', 'createdAt'],
+          order: [['version', 'DESC']]
+        }
+      ]
+    });
+
+    if (!submission) {
+      throw new NotFoundError('Submission');
+    }
+
+    // Get latest file for each type (filtered by current round) and generate pre-signed URLs
+    const latestFiles = {};
+    const currentRound = submission.currentRound || 1;
+    if (submission.files) {
+      for (const file of submission.files) {
+        // Treat null/undefined round as round 1 for backward compatibility
+        const fileRound = file.round || 1;
+        if (fileRound !== currentRound) continue;
+        if (!latestFiles[file.type] || file.version > latestFiles[file.type].version) {
+          // Generate pre-signed URL for download (valid for 1 hour)
+          let presignedUrl = null;
+          try {
+            if (file.s3Key) {
+              presignedUrl = await s3Service.getPresignedDownloadUrl(file.s3Key, 3600);
+            }
+          } catch (err) {
+            logger.warn('Failed to generate presigned URL', { fileId: file.id, error: err.message });
+          }
+
+          latestFiles[file.type] = {
+            id: file.id,
+            type: file.type,
+            fileName: file.fileName,
+            s3Url: presignedUrl || null,
+            mimeType: file.mimeType,
+            size: file.size,
+            version: file.version,
+            createdAt: file.createdAt
+          };
+        }
+      }
+    }
+
+    res.json({
+      submission,
+      latestFiles
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Update submission
+ * PATCH /api/submissions/:id
+ */
+async function update(req, res, next) {
+  try {
+    const submission = req.submission;
+    const { title, dataAvailabilityStatement, manuscriptId, notes, status } = req.validatedBody;
+
+    if (title) submission.title = title;
+    if (dataAvailabilityStatement !== undefined) submission.dataAvailabilityStatement = dataAvailabilityStatement;
+    if (manuscriptId !== undefined) {
+      submission.manuscriptId = manuscriptId || null;
+      // Update team if manuscript ID changed
+      submission.team = manuscriptId ? await extractTeamFromManuscriptId(manuscriptId) : submission.team;
+    }
+    if (notes !== undefined) submission.notes = notes;
+
+    if (status) {
+      // Allow staying in the same status (no-op)
+      if (status !== submission.status) {
+        if (!submission.canTransitionTo(status)) {
+          logger.warn('Invalid status transition', {
+            currentStatus: submission.status,
+            newStatus: status
+          });
+          return res.status(400).json({
+            error: `Cannot transition from ${submission.status} to ${status}`
+          });
+        }
+        submission.status = status;
+      }
+    }
+
+    await submission.save();
+
+    logger.info('Submission updated', { submissionId: submission.id, userId: req.userId });
+
+    res.json({ submission });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Delete submission
+ * DELETE /api/submissions/:id
+ */
+async function deleteSubmission(req, res, next) {
+  try {
+    const submission = await Submission.findByPk(req.params.id);
+    if (!submission) {
+      throw new NotFoundError('Submission');
+    }
+
+    // Delete the entire S3 folder for this submission first (best-effort).
+    // Every file the submission ever produced — uploaded KRT/PDF, generated
+    // reports, job raw responses, logs — lives under a single
+    // {manuscriptId}_{submissionId}/ prefix, so a single prefix delete cleans
+    // up everything. We log but don't fail the DB delete if S3 has issues —
+    // a stranded folder is recoverable, a half-deleted DB row is not.
+    const s3Folder = buildS3Folder(submission.manuscriptId, submission.id);
+    let s3DeletedCount = 0;
+    try {
+      s3DeletedCount = await s3Service.deletePrefix(`${s3Folder}/`);
+    } catch (s3Error) {
+      logger.error('S3 cleanup failed during submission delete', {
+        submissionId: submission.id,
+        s3Folder,
+        error: s3Error.message
+      });
+    }
+
+    await submission.destroy();
+
+    logger.info('Submission deleted', {
+      submissionId: req.params.id,
+      userId: req.userId,
+      s3ObjectsDeleted: s3DeletedCount
+    });
+
+    res.json({ message: 'Submission deleted successfully' });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get change history
+ * GET /api/submissions/:id/changes
+ */
+async function getChanges(req, res, next) {
+  try {
+    const { page, limit, offset } = parsePagination(req.query);
+
+    const { count, rows } = await ChangeLog.getHistory(req.params.id, { limit, offset });
+
+    res.json({
+      changes: rows,
+      pagination: buildPaginationMeta(count, page, limit)
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Hide submission for current user
+ * POST /api/submissions/:id/hide
+ */
+async function hideSubmission(req, res, next) {
+  try {
+    const submissionId = req.params.id;
+
+    // Check if submission exists
+    const submission = await Submission.findByPk(submissionId);
+    if (!submission) {
+      throw new NotFoundError('Submission');
+    }
+
+    // Check if already hidden
+    const existing = await UserHiddenSubmission.findOne({
+      where: { userId: req.userId, submissionId }
+    });
+
+    if (!existing) {
+      await UserHiddenSubmission.create({
+        userId: req.userId,
+        submissionId
+      });
+    }
+
+    logger.info('Submission hidden', { submissionId, userId: req.userId });
+
+    res.json({ message: 'Submission hidden successfully' });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Unhide submission for current user
+ * POST /api/submissions/:id/unhide
+ */
+async function unhideSubmission(req, res, next) {
+  try {
+    const submissionId = req.params.id;
+
+    await UserHiddenSubmission.destroy({
+      where: { userId: req.userId, submissionId }
+    });
+
+    logger.info('Submission unhidden', { submissionId, userId: req.userId });
+
+    res.json({ message: 'Submission unhidden successfully' });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get hidden submissions for current user
+ * GET /api/submissions/hidden
+ */
+async function listHidden(req, res, next) {
+  try {
+    const { page, limit, offset } = parsePagination(req.query);
+
+    // Get hidden submission IDs for this user
+    const hiddenSubmissions = await UserHiddenSubmission.findAll({
+      where: { userId: req.userId },
+      attributes: ['submissionId']
+    });
+    const hiddenIds = hiddenSubmissions.map(h => h.submissionId);
+
+    if (hiddenIds.length === 0) {
+      return res.json({
+        submissions: [],
+        pagination: buildPaginationMeta(0, page, limit)
+      });
+    }
+
+    // Apply user's submission filter (role-based access)
+    const filter = req.submissionFilter || {};
+    filter.id = { [Op.in]: hiddenIds };
+
+    const { count, rows } = await Submission.findAndCountAll({
+      where: filter,
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'name', 'email']
+      }],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    res.json({
+      submissions: rows,
+      pagination: buildPaginationMeta(count, page, limit)
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get filter options (distinct teams and users with submissions)
+ * GET /api/submissions/filter-options
+ */
+async function getFilterOptions(req, res, next) {
+  try {
+    const filter = req.submissionFilter || {};
+
+    // Get distinct teams from submissions the user can access
+    const teamsResult = await Submission.findAll({
+      where: { ...filter, team: { [Op.not]: null } },
+      attributes: [[Submission.sequelize.fn('DISTINCT', Submission.sequelize.col('team')), 'team']],
+      raw: true
+    });
+    const teams = teamsResult.map(r => r.team).filter(Boolean).sort();
+
+    // Get users who have submissions the user can access
+    const usersResult = await User.findAll({
+      attributes: ['id', 'name', 'email'],
+      include: [{
+        model: Submission,
+        as: 'submissions',
+        where: filter,
+        attributes: [],
+        required: true
+      }],
+      group: ['User.id'],
+      order: [['name', 'ASC']]
+    });
+
+    res.json({
+      teams,
+      users: usersResult.map(u => ({ id: u.id, name: u.name, email: u.email }))
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Download file (generates presigned URL)
+ * GET /api/submissions/:id/files/:fileId/download
+ */
+async function downloadFile(req, res, next) {
+  try {
+    const { id: submissionId, fileId } = req.params;
+
+    // Find the file
+    const file = await File.findOne({
+      where: {
+        id: fileId,
+        submissionId
+      }
+    });
+
+    if (!file) {
+      throw new NotFoundError('File');
+    }
+
+    // Generate presigned URL (1 hour expiry)
+    const presignedUrl = await s3Service.getPresignedDownloadUrl(file.s3Key, 3600);
+
+    logger.info('File download URL generated', {
+      fileId: file.id,
+      submissionId
+    });
+
+    res.json({ url: presignedUrl });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Process new version (start a new round)
+ * POST /api/submissions/:id/new-round
+ */
+async function processNewVersion(req, res, next) {
+  try {
+    const { hasNewKRT } = req.validatedBody;
+    const submission = req.submission;
+
+    // Verify submission is at step_report or completed
+    if (!['step_report', 'completed'].includes(submission.status)) {
+      throw new ValidationError('Must be at report step or completed to start a new round');
+    }
+
+    const result = await sequelize.transaction(async (t) => {
+      const previousRound = submission.currentRound;
+      const newRound = previousRound + 1;
+
+      // Update submission — clear DAS fields so they get re-extracted from the new PDF
+      submission.currentRound = newRound;
+      submission.dataAvailabilityStatement = null;
+      submission.extractedDataAvailabilityStatement = null;
+      submission.status = hasNewKRT ? 'step_krt' : 'step_pdf';
+      await submission.save({ transaction: t });
+
+      // If no new KRT, copy all KRT rows and file from previous round
+      if (!hasNewKRT) {
+        // Copy KRT data rows
+        const previousRows = await KRTData.findAll({
+          where: { submissionId: submission.id, round: previousRound },
+          order: [['createdAt', 'ASC']],
+          transaction: t
+        });
+
+        for (const row of previousRows) {
+          await KRTData.create({
+            submissionId: submission.id,
+            resourceType: row.resourceType,
+            resourceName: row.resourceName,
+            source: row.source,
+            identifier: row.identifier,
+            newReuse: row.newReuse,
+            additionalInformation: row.additionalInformation,
+            parsedIdentifiers: row.parsedIdentifiers,
+            round: newRound,
+            originRowId: row.id
+          }, { transaction: t });
+        }
+
+        // Copy the latest KRT file record to the new round
+        const latestKrtFile = await File.findOne({
+          where: { submissionId: submission.id, type: 'krt', round: previousRound },
+          order: [['version', 'DESC']],
+          transaction: t
+        });
+
+        if (latestKrtFile) {
+          // `version` is per-(submission, type, round). The carry-forward is
+          // the first KRT row in newRound, so this lookup is just defensive —
+          // it'll normally be null and nextVersion lands at 1.
+          const maxVersionResult = await File.max('version', {
+            where: { submissionId: submission.id, type: 'krt', round: newRound },
+            transaction: t
+          });
+          const nextVersion = (maxVersionResult || 0) + 1;
+
+          await File.create({
+            submissionId: submission.id,
+            type: 'krt',
+            fileName: latestKrtFile.fileName,
+            s3Key: latestKrtFile.s3Key,
+            mimeType: latestKrtFile.mimeType,
+            size: latestKrtFile.size,
+            version: nextVersion,
+            round: newRound
+          }, { transaction: t });
+        }
+      }
+
+      // Carry supplemental PDF forward to the new round (if one exists)
+      const latestSupplemental = await File.findOne({
+        where: { submissionId: submission.id, type: 'supplemental_pdf', round: previousRound },
+        order: [['version', 'DESC']],
+        transaction: t
+      });
+
+      if (latestSupplemental) {
+        // Also carry forward the original supplemental file
+        const latestSuppOriginal = await File.findOne({
+          where: { submissionId: submission.id, type: 'supplemental', round: previousRound },
+          order: [['version', 'DESC']],
+          transaction: t
+        });
+
+        if (latestSuppOriginal) {
+          const suppOrigMaxVersion = await File.max('version', {
+            where: { submissionId: submission.id, type: 'supplemental', round: newRound },
+            transaction: t
+          });
+          await File.create({
+            submissionId: submission.id,
+            type: 'supplemental',
+            fileName: latestSuppOriginal.fileName,
+            s3Key: latestSuppOriginal.s3Key,
+            mimeType: latestSuppOriginal.mimeType,
+            size: latestSuppOriginal.size,
+            version: (suppOrigMaxVersion || 0) + 1,
+            round: newRound
+          }, { transaction: t });
+        }
+
+        const suppPdfMaxVersion = await File.max('version', {
+          where: { submissionId: submission.id, type: 'supplemental_pdf', round: newRound },
+          transaction: t
+        });
+        await File.create({
+          submissionId: submission.id,
+          type: 'supplemental_pdf',
+          fileName: latestSupplemental.fileName,
+          s3Key: latestSupplemental.s3Key,
+          mimeType: latestSupplemental.mimeType,
+          size: latestSupplemental.size,
+          version: (suppPdfMaxVersion || 0) + 1,
+          round: newRound
+        }, { transaction: t });
+      }
+
+      // Log the new round
+      await ChangeLog.create({
+        submissionId: submission.id,
+        userId: req.userId,
+        action: 'new_round',
+        step: statusToStep(submission.status),
+        round: newRound,
+        description: `Started round ${newRound}${hasNewKRT ? ' with new KRT' : ' (KRT carried forward)'}`
+      }, { transaction: t });
+
+      return { submission, newRound };
+    });
+
+    logger.info('New round started', {
+      submissionId: submission.id,
+      round: result.newRound,
+      hasNewKRT,
+      userId: req.userId
+    });
+
+    res.json({ submission: result.submission });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = {
+  list,
+  create,
+  getById,
+  update,
+  delete: deleteSubmission,
+  getChanges,
+  hideSubmission,
+  unhideSubmission,
+  listHidden,
+  getFilterOptions,
+  downloadFile,
+  processNewVersion
+};

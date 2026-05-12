@@ -1,0 +1,78 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.development.local
+.env.production.local
+
+# Build outputs
+dist/
+build/
+*.tgz
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Misc
+*.pid
+*.seed
+*.pid.lock
+
+# Frontend specific
+src/frontend/.vite/
+src/frontend/dist/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Credentials (keep .gitkeep for directory structure)
+credentials/*.json
+credentials/*.pem
+credentials/*.key
+!credentials/.gitkeep
+
+# Prompts (real prompts are deployment-specific, examples are committed)
+src/backend/data/prompts/*.txt
+!src/backend/data/prompts/*.txt.example
+
+# Data files (seeded into DB, kept locally for re-seeding)
+src/backend/data/software-list.json
+
+# Demo files (real manuscripts, dropped in manually on the deployment host —
+# see src/frontend/public/demo-files/README.md)
+src/frontend/public/demo-files/*
+!src/frontend/public/demo-files/.gitkeep
+!src/frontend/public/demo-files/README.md
+
+# Demo findings (real manuscript analyses, dropped in manually on deploy)
+src/backend/data/demo-findings/*
+!src/backend/data/demo-findings/.gitkeep
+!src/backend/data/demo-findings/README.md

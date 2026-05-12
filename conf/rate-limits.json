@@ -1,0 +1,27 @@
+{
+  "api": {
+    "windowMs": 60000,
+    "max": 200,
+    "message": "Too many requests, please try again later"
+  },
+  "auth": {
+    "windowMs": 900000,
+    "max": 10,
+    "message": "Too many authentication attempts, please try again later"
+  },
+  "refresh": {
+    "windowMs": 60000,
+    "max": 30,
+    "message": "Too many token refresh attempts, please try again later"
+  },
+  "upload": {
+    "windowMs": 60000,
+    "max": 20,
+    "message": "Too many file uploads, please try again later"
+  },
+  "lmApi": {
+    "windowMs": 60000,
+    "max": 10,
+    "message": "Too many analysis requests, please try again later"
+  }
+}

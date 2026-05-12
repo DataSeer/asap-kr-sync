@@ -1,0 +1,304 @@
+/**
+ * Custom Validators
+ */
+
+const Joi = require('joi');
+const { ROLES, SUBMISSION_STATUSES, REPORT_TYPES } = require('../config/constants');
+
+// Cache for dynamic schemas
+let dynamicSchemaCache = {
+  teams: null,
+  resourceTypes: null,
+  lastUpdate: null
+};
+
+// Common Joi schemas (static ones)
+const schemas = {
+  // UUID validation
+  uuid: Joi.string().uuid({ version: 'uuidv4' }),
+
+  // Email validation
+  email: Joi.string().email().lowercase().trim().max(255),
+
+  // Password validation (min 8 chars, at least 1 letter and 1 number)
+  password: Joi.string()
+    .min(8)
+    .max(128)
+    .pattern(/^(?=.*[A-Za-z])(?=.*\d)/)
+    .messages({
+      'string.pattern.base': 'Password must contain at least one letter and one number'
+    }),
+
+  // Role validation
+  role: Joi.string().valid(...Object.values(ROLES)),
+
+  // Team validation - dynamic, use getDynamicSchemas().team
+  team: Joi.string().uppercase(),
+
+  // Manuscript ID validation - strict format: XX#-######-###-org-X-#
+  // Example: XX1-000000-001-org-X-1
+  // Format: [2-letter team code][digit]-[6 digits]-[3 digits]-org-[letter]-[digit]
+  // Case-insensitive: lowercase input is auto-uppercased by .uppercase()
+  manuscriptId: Joi.string()
+    .trim()
+    .uppercase()
+    .pattern(/^[A-Z]{2}\d-\d{6}-\d{3}-org-[A-Z]-\d$/i)
+    .max(100)
+    .messages({
+      'string.pattern.base': 'Manuscript ID must follow format: XX#-######-###-org-X-# (e.g., XX1-000000-001-org-X-1)'
+    }),
+
+  // Submission status validation
+  submissionStatus: Joi.string().valid(...SUBMISSION_STATUSES),
+
+  // Resource type validation - dynamic, use getDynamicSchemas().resourceType
+  resourceType: Joi.string(),
+
+  // NEW/REUSE validation
+  newReuse: Joi.string().valid('new', 'reuse').lowercase()
+};
+
+/**
+ * Get dynamic Joi schemas that depend on database values
+ * @returns {Promise<object>} { team, resourceType }
+ */
+async function getDynamicSchemas() {
+  const { getTeams, getResourceTypes } = require('../config/constants');
+
+  const [teams, resourceTypes] = await Promise.all([
+    getTeams(),
+    getResourceTypes()
+  ]);
+
+  return {
+    team: Joi.string().valid(...teams).uppercase(),
+    resourceType: Joi.string().valid(...resourceTypes)
+  };
+}
+
+/**
+ * Invalidate schema cache
+ */
+function invalidateSchemaCache() {
+  dynamicSchemaCache = {
+    teams: null,
+    resourceTypes: null,
+    lastUpdate: null
+  };
+}
+
+// Request validation schemas
+const requestSchemas = {
+  // Auth
+  register: Joi.object({
+    email: schemas.email.required(),
+    password: schemas.password.required(),
+    name: Joi.string().trim().min(2).max(100).required(),
+    role: schemas.role.default(ROLES.AUTHOR),
+    team: schemas.team.when('role', {
+      is: ROLES.ASAP_PM,
+      then: Joi.required(),
+      otherwise: Joi.optional()
+    })
+  }),
+
+  login: Joi.object({
+    email: schemas.email.required(),
+    password: Joi.string().required()
+  }),
+
+  // Submissions
+  createSubmission: Joi.object({
+    title: Joi.string().trim().min(1).max(500).required(),
+    dataAvailabilityStatement: Joi.string().trim().max(5000).allow('', null),
+    manuscriptId: schemas.manuscriptId.allow('', null),
+    notes: Joi.string().trim().max(2000).allow('')
+  }),
+
+  updateSubmission: Joi.object({
+    title: Joi.string().trim().min(1).max(500),
+    dataAvailabilityStatement: Joi.string().trim().max(5000).allow('', null),
+    manuscriptId: schemas.manuscriptId.allow('', null),
+    notes: Joi.string().trim().max(2000).allow('', null),
+    status: schemas.submissionStatus
+  }),
+
+  // KRT row
+  // KRT row - all fields optional to allow adding incomplete rows
+  // Validation errors will be shown in UI via KRT validation system
+  krtRow: Joi.object({
+    resourceType: schemas.resourceType.allow('', null),
+    resourceName: Joi.string().trim().max(500).allow('', null),
+    source: Joi.string().trim().max(5000).allow('', null),
+    identifier: Joi.string().trim().max(500).allow('', null),
+    newReuse: schemas.newReuse.allow('', null),
+    additionalInformation: Joi.string().trim().max(2000).allow('', null)
+  }),
+
+  updateKrtCell: Joi.object({
+    column: Joi.string().valid(
+      'resource_type', 'resource_name', 'source',
+      'identifier', 'new_reuse', 'additional_information'
+    ).required(),
+    value: Joi.string().allow('').required()
+  }),
+
+  // Process new version (new round)
+  processNewVersion: Joi.object({
+    hasNewKRT: Joi.boolean().required()
+  }),
+
+  // Pagination query
+  pagination: Joi.object({
+    page: Joi.number().integer().min(1).default(1),
+    limit: Joi.number().integer().min(1).max(100).default(20),
+    sort: Joi.string().valid('createdAt', 'updatedAt', 'title', 'status').default('createdAt'),
+    order: Joi.string().valid('ASC', 'DESC').default('DESC'),
+    status: schemas.submissionStatus,
+    team: schemas.team
+  }),
+
+  // ── Admin: user management ────────────────────────────────────────
+  createUser: Joi.object({
+    email: schemas.email.required(),
+    password: schemas.password.required(),
+    name: Joi.string().trim().min(2).max(100).required(),
+    role: schemas.role.required(),
+    teams: Joi.array().items(schemas.team).max(50).default([])
+  }),
+
+  updateUser: Joi.object({
+    name: Joi.string().trim().min(2).max(100),
+    role: schemas.role,
+    password: schemas.password,
+    teams: Joi.array().items(schemas.team).max(50)
+  }).min(1),
+
+  // ── Admin: team management ────────────────────────────────────────
+  // Team code: alphanumeric + underscore/dash, 1-32 chars, normalised to uppercase.
+  createTeam: Joi.object({
+    code: Joi.string().trim().uppercase().pattern(/^[A-Z0-9_-]{1,32}$/).required()
+      .messages({ 'string.pattern.base': 'Team code must be 1-32 chars, alphanumeric or _ -' }),
+    name: Joi.string().trim().max(255).allow('', null)
+  }),
+
+  updateTeam: Joi.object({
+    code: Joi.string().trim().uppercase().pattern(/^[A-Z0-9_-]{1,32}$/)
+      .messages({ 'string.pattern.base': 'Team code must be 1-32 chars, alphanumeric or _ -' }),
+    name: Joi.string().trim().max(255).allow('', null),
+    active: Joi.boolean()
+  }).min(1),
+
+  // ── Profile (self-service) ────────────────────────────────────────
+  // newPassword requires currentPassword (verified server-side).
+  updateProfile: Joi.object({
+    name: Joi.string().trim().min(2).max(100),
+    currentPassword: Joi.string().min(1).max(128),
+    newPassword: schemas.password
+  }).min(1).with('newPassword', 'currentPassword'),
+
+  // ── Admin: app config ─────────────────────────────────────────────
+  // value can be any JSON-serialisable shape (string/number/boolean/object/array).
+  // Bounded sizes prevent multi-MB blob storage via this endpoint.
+  appConfigUpsert: Joi.object({
+    key: Joi.string().trim().min(1).max(255).required(),
+    value: Joi.alternatives()
+      .try(
+        Joi.string().max(50000),
+        Joi.number(),
+        Joi.boolean(),
+        Joi.object().unknown(true),
+        Joi.array().max(1000)
+      )
+      .required(),
+    description: Joi.string().trim().max(2000).allow('', null),
+    category: Joi.string().trim().max(100).allow('', null)
+  }),
+
+  // ── Admin: enrichment list ────────────────────────────────────────
+  enrichmentListEntry: Joi.object({
+    resourceType: Joi.string().trim().max(255).required(),
+    resourceName: Joi.string().trim().min(1).max(500).required(),
+    source: Joi.string().trim().max(5000).allow('', null),
+    identifier: Joi.string().trim().max(500).allow('', null),
+    newReuse: Joi.string().valid('new', 'reuse').lowercase().allow('', null),
+    additionalInformation: Joi.string().trim().max(5000).allow('', null),
+    suggestedEntity: Joi.string().trim().max(500).allow('', null),
+    tokens: Joi.array().items(Joi.string().max(500)).max(200).default([])
+  }),
+
+  // PATCH semantics: every field optional, but at least one must be present.
+  updateEnrichmentListEntry: Joi.object({
+    resourceType: Joi.string().trim().max(255),
+    resourceName: Joi.string().trim().min(1).max(500),
+    source: Joi.string().trim().max(5000).allow('', null),
+    identifier: Joi.string().trim().max(500).allow('', null),
+    newReuse: Joi.string().valid('new', 'reuse').lowercase().allow('', null),
+    additionalInformation: Joi.string().trim().max(5000).allow('', null),
+    suggestedEntity: Joi.string().trim().max(500).allow('', null),
+    tokens: Joi.array().items(Joi.string().max(500)).max(200)
+  }).min(1),
+
+  // Bulk import shape matches the existing controller: { entries, mode, resourceType? }.
+  // resourceType is the optional "scoped replace" target — controller uses it to
+  // override individual entries' resourceType and to scope the delete in replace mode.
+  enrichmentListImport: Joi.object({
+    entries: Joi.array().items(Joi.object().unknown(true)).min(1).max(50000).required(),
+    mode: Joi.string().valid('append', 'replace').default('append'),
+    resourceType: Joi.string().trim().max(255).allow('', null)
+  }),
+
+  // ── Submission flow: suggestion approve / reject ──────────────────
+  approveSuggestion: Joi.object({
+    suggestionId: Joi.string().trim().min(1).max(500).required(),
+    modifiedValue: Joi.string().max(5000).allow('', null)
+  }),
+
+  rejectSuggestion: Joi.object({
+    suggestionId: Joi.string().trim().min(1).max(500).required(),
+    reason: Joi.string().trim().max(2000).allow('', null)
+  }),
+
+  // ── Submission flow: generate report ──────────────────────────────
+  generateReport: Joi.object({
+    type: Joi.string().valid(...Object.values(REPORT_TYPES)).default('excel')
+  })
+};
+
+/**
+ * Validate request data against schema
+ * @param {string} schemaName - Name of the schema to use
+ * @param {object} data - Data to validate
+ * @returns {object} Validated data
+ * @throws {ValidationError} If validation fails
+ */
+function validate(schemaName, data) {
+  const schema = requestSchemas[schemaName];
+  if (!schema) {
+    throw new Error(`Unknown validation schema: ${schemaName}`);
+  }
+
+  const { error, value } = schema.validate(data, {
+    abortEarly: false,
+    stripUnknown: true
+  });
+
+  if (error) {
+    const errors = error.details.map(detail => ({
+      field: detail.path.join('.'),
+      message: detail.message
+    }));
+    const { ValidationError } = require('./errors');
+    throw new ValidationError('Validation failed', errors);
+  }
+
+  return value;
+}
+
+module.exports = {
+  schemas,
+  requestSchemas,
+  validate,
+  getDynamicSchemas,
+  invalidateSchemaCache
+};
