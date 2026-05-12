@@ -35,6 +35,6 @@ const s3Client = new S3Client(s3Config);
 module.exports = {
   s3Client,
   bucketName: process.env.S3_BUCKET_NAME || 'asap-kr-sync',
-  bucketPrefix: process.env.S3_BUCKET_PREFIX || 'uploads/',
+  bucketPrefix: process.env.S3_BUCKET_PREFIX || 'dev/',
   s3Endpoint
 };
