@@ -2,21 +2,15 @@
  * PDF-to-Markdown API Configuration
  *
  * Supports two providers:
- * - "markitdown" (default): Local MarkItDown Docker container
- * - "modal": Remote Modal API endpoint using Docling
+ * - "markitdown": Local MarkItDown Python subprocess (no HTTP, no URL needed)
+ * - "modal" (default): Remote Modal API endpoint using Docling
  */
 
 const logger = require('../utils/logger');
 
 module.exports = {
-  // Provider: "markitdown" (local Docker) or "modal" (remote API)
+  // Provider: "markitdown" (local subprocess) or "modal" (remote API)
   provider: process.env.PDF_MARKDOWN_PROVIDER || 'modal',
-
-  // MarkItDown configuration (local Docker container)
-  markitdown: {
-    url: process.env.PDF_MARKDOWN_MARKITDOWN_URL || 'http://markitdown:3001',
-    endpoint: process.env.PDF_MARKDOWN_MARKITDOWN_ENDPOINT || '/convert'
-  },
 
   // Modal/Docling configuration (remote API)
   modal: {
@@ -55,7 +49,7 @@ module.exports = {
         logger.info('PDF-to-Markdown: Modal/Docling configured', { url: this.modal.url });
       }
     } else {
-      logger.info('PDF-to-Markdown: MarkItDown configured', { url: this.markitdown.url });
+      logger.info('PDF-to-Markdown: MarkItDown (local subprocess) configured');
     }
   }
 };
