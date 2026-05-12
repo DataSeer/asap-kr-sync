@@ -501,7 +501,7 @@ Three new methods added alongside the existing five:
 |---|---|---|
 | `auth0SocialLogin` | `GET /auth/auth0/login` | Validates `connection` query param, builds Auth0 authorize URL, redirects |
 | `auth0PasswordLogin` | `POST /auth/auth0/login-password` | Validates email/password, proxies to Auth0, finds/creates user, returns local tokens |
-| `auth0Callback` | `GET /auth/auth0/callback` | Exchanges code, finds/creates user, redirects to frontend with tokens in URL hash |
+| `auth0Callback` | `GET /auth/callback` (canonical) — `GET /auth/auth0/callback` is a legacy alias | Exchanges the authorization code with PKCE, validates state + nonce, finds/creates the local user, sets the three auth cookies, and redirects 302 to `${FRONTEND_URL}/dashboard`. Since Phase 6 tokens never appear in the URL hash. |
 
 **`findOrCreateAuth0User(auth0Profile)` helper:**
 
@@ -724,12 +724,11 @@ Authenticate via Auth0 using email and password (Resource Owner Password Grant).
     "isAuth0User": true,
     "createdAt": "...",
     "updatedAt": "..."
-  },
-  "accessToken": "eyJhbGciOi...",
-  "refreshToken": "eyJhbGciOi...",
-  "expiresIn": "7d"
+  }
 }
 ```
+
+Tokens are **not** in the response body — they travel as `Set-Cookie` headers (`asap_kr_session`, `asap_kr_refresh`, `asap_kr_csrf`). The SPA never sees them.
 
 **Errors:**
 
@@ -769,8 +768,8 @@ OAuth callback handler. Not called directly by the frontend — Auth0 redirects 
 
 ### Token Security
 
-- **Auth0 tokens are never exposed to the frontend.** The callback exchanges the authorization code server-side and returns local JWT tokens instead.
-- **URL hash for token transport.** Hash fragments are not sent in HTTP requests, preventing token leakage in server logs or referrer headers. The frontend clears the hash immediately after extraction.
+- **Auth0 tokens are never exposed to the frontend.** The callback exchanges the authorization code server-side and discards the Auth0 access/ID tokens after extracting the profile; only the locally-issued JWT pair reaches the user agent.
+- **HttpOnly cookie transport.** Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=Strict` cookies. Tokens never appear in the URL, in browser history, or in JavaScript-readable storage.
 - **Auth0 client secret is server-side only.** It is never included in frontend bundles or exposed via API responses.
 
 ### Auth0 Token Verification
@@ -847,7 +846,7 @@ node -e "
 - [ ] After Google auth, callback redirects to dashboard
 - [ ] New user is auto-created with `author` role
 - [ ] Returning user is recognized by `auth0Sub`
-- [ ] URL hash is cleared after token extraction
+- [ ] Auth cookies (`asap_kr_session`, `asap_kr_refresh`, `asap_kr_csrf`) are set on the callback redirect; no token appears in the URL or response body
 
 ### Auth0 Password Login
 

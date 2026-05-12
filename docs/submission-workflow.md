@@ -82,7 +82,7 @@ flowchart TD
 ### User Actions
 
 **Upload a KRT file:**
-- Drag-and-drop or click to upload a CSV, XLSX, XLS, or ODS file (max 10MB)
+- Drag-and-drop or click to upload a CSV or XLSX file (max 10MB)
 - The file is parsed, validated, and displayed in the KRT editor
 - A "Replace KRT" button appears once a KRT exists
 
@@ -137,8 +137,8 @@ flowchart TD
 **Status:** `step_pdf`
 
 **Instructions shown to the user:**
-1. Upload your manuscript PDF (accepted: .pdf files, max 50MB)
-2. View background job progress — PDF Analysis, DAS Extraction, Software Detection, ORCID Extraction, Datasets Detection, Materials Detection, Protocols Detection
+1. Upload your manuscript PDF (accepted: .pdf or .docx files, max 50MB)
+2. View background job progress — DAS Extraction, Software Detection, ORCID Extraction, Markdown Convert, Datasets Detection, Materials Detection, Protocols Detection, Identifier Detection, and PDF Analysis (consolidator)
 3. Wait for analysis to complete (may take a few minutes)
 4. Click "Continue" to proceed to Step 3
 
@@ -154,19 +154,25 @@ flowchart TD
 
 ### Background Job Pipeline
 
-When a PDF is uploaded, eight background jobs start:
+When a PDF is uploaded, nine background jobs start (eight detections plus the PDF Analysis consolidator):
 
 ```mermaid
 graph LR
     PDF[PDF Upload] --> DAS[DAS Extraction]
     PDF --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
-    PDF --> MD[Markdown Convert]
     PDF --> MAT[Materials Detection]
-    PDF --> PROT[Protocols Detection]
+    PDF --> MD[Markdown Convert]
     MD --> DS[Datasets Detection]
-    DAS -->|DAS found| PA[PDF Analysis]
-    DAS -.->|DAS not found| PI{{pending_input}}
+    MD --> PROT[Protocols Detection]
+    MD --> ID[Identifier Detection]
+    DAS --> PA[PDF Analysis]
+    SW --> PA
+    DS --> PA
+    MAT --> PA
+    PROT --> PA
+    ID --> PA
+    DAS -.->|DAS not detected| PI{{pending_input}}
     PI -->|User clicks Advance| PA
 
     style PDF fill:#3b82f6,color:#fff
@@ -177,9 +183,12 @@ graph LR
     style DS fill:#ec4899,color:#fff
     style MAT fill:#14b8a6,color:#fff
     style PROT fill:#f97316,color:#fff
+    style ID fill:#a855f7,color:#fff
     style PA fill:#ef4444,color:#fff
     style PI fill:#6b7280,color:#fff
 ```
+
+ORCID Extraction is **not** a contributor to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT.
 
 Each job is displayed in the **JobStatusPanel** with live status updates:
 
@@ -189,12 +198,12 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 - **If not found:** Job moves to `pending_input` status — user must manually enter a DAS or click "Advance" to skip
 - **User actions:** "Edit" button to view/modify the extracted DAS; "Advance" to skip if not found
 
-#### PDF Analysis
-- Analyzes the manuscript to identify resources and generate KRT suggestions
-- **Depends on:** DAS Extraction
-- **Auto-advances only if:** DAS extraction returned `extracted === true`
-- **If DAS not extracted:** Job moves to `pending_input` — user must click "Advance" to start analysis without DAS context
-- **On complete:** Shows "X suggestions found"
+#### PDF Analysis (in-app consolidator)
+- Merges items from every detection job into the Generated KRT — no external API call
+- **Depends on:** DAS Extraction + Software + Datasets + Materials + Protocols + Identifier Detection (all six must reach a terminal state)
+- **Auto-advances only if:** DAS extraction returned `result.status.detected === true`
+- **If DAS not detected:** Job moves to `pending_input` — user must click "Advance" to consolidate without DAS context
+- **On complete:** Shows the consolidated resource count (and multi-source overlap count) and refreshes the KRT suggestions
 
 #### Software Detection
 - Detects software mentions in the manuscript via Softcite API
@@ -228,9 +237,15 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 
 #### Protocols Detection
 - Detects protocol mentions in the manuscript via Google Gemini
-- Runs independently (no dependencies)
+- **Depends on:** Markdown Convert (uses the markdown text as input, not the PDF)
 - Generates KRT add_row suggestions for detected protocols
 - **On complete:** Shows "X protocol(s) detected (Y high relevance)"
+
+#### Identifier Detection
+- Scans the converted manuscript markdown against the curated enrichment list (software, datasets, materials, protocols — all four categories in one pass) for DOIs, RRIDs, accession patterns (GSE, PRJNA, SRR, PXD…), and vendor catalog numbers
+- **Depends on:** Markdown Convert
+- No external API call — runs locally against an in-memory index built from `enrichment_list_entries`
+- **On complete:** Shows "X identifier(s) matched (Y high relevance)" with a breakdown by category and relevance (HIGH / MEDIUM / LOW)
 
 **Job controls:**
 - Failed jobs show an error message and a "Restart" button

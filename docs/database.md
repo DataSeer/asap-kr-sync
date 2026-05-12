@@ -23,15 +23,16 @@ SSL can be enabled in production via `DATABASE_SSL`.
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | UUID (PK) | Auto-generated |
-| `email` | STRING | Unique |
-| `password_hash` | STRING | bcrypt, nullable (Auth0 users) |
-| `auth0_sub` | STRING | Auth0 subject ID, nullable |
-| `name` | STRING | Display name |
-| `role` | ENUM | `author`, `asap_pm`, `ds_annotator`, `admin` |
-| `team` | STRING(2) | Legacy team field |
-| `created_at` / `updated_at` | TIMESTAMP | Auto-managed |
+| `email` | VARCHAR(255) | Unique; lowercased/trimmed via model setter |
+| `password_hash` | VARCHAR(255) | bcrypt; nullable (Auth0-only users) |
+| `auth0_sub` | VARCHAR(255) | Auth0 subject ID, unique, nullable |
+| `name` | VARCHAR(100) | Display name, 2-100 chars |
+| `role` | ENUM | `author`, `asap_pm`, `ds_annotator`, `admin` (default `author`) |
+| `created_at` / `updated_at` | TIMESTAMPTZ | Auto-managed |
 
-**Associations**: has many `UserTeam`, `Submission`, `ChangeLog`, `UserHiddenSubmission`
+Team membership lives in the `user_teams` junction table — there is no per-user `team` column.
+
+**Associations**: has many `UserTeam`, `Submission`, `ChangeLog`, `UserHiddenSubmission`, `RefreshToken`
 
 #### `teams`
 
@@ -55,22 +56,19 @@ SSL can be enabled in production via `DATABASE_SSL`.
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | UUID (PK) | Auto-generated |
-| `user_id` | UUID (FK) | Owner |
-| `team` | STRING(2) | Auto-extracted from manuscript ID |
-| `title` | STRING(500) | Required |
-| `manuscript_id` | STRING(100) | Optional |
+| `user_id` | UUID (FK) | Owner — cascades on delete |
+| `team` | VARCHAR(2) | Auto-extracted from `manuscript_id`; not FK-validated |
+| `title` | VARCHAR(500) | Required |
+| `manuscript_id` | VARCHAR(100) | Optional, validated against the ASAP pattern |
 | `data_availability_statement` | TEXT | User-edited DAS |
 | `extracted_data_availability_statement` | TEXT | AI-extracted DAS |
 | `status` | ENUM | See status values below |
-| `current_step` | INTEGER | 1–5, auto-computed from status |
 | `notes` | TEXT | Optional notes |
-| `current_round` | INTEGER | Default 1 |
-| `software_mentions` | JSONB | Softcite detection results |
-| `dataset_mentions` | JSONB | Gemini datasets detection results |
-| `materials_mentions` | JSONB | Gemini materials detection results |
-| `protocols_mentions` | JSONB | Gemini protocols detection results |
-| `authors` | JSONB | ORCID extraction results |
-| `created_at` / `updated_at` | TIMESTAMP | Auto-managed |
+| `current_round` | INTEGER | Default 1; incremented by `POST /:id/new-round` |
+| `authors` | JSONB | ORCID extraction results (`{ items, meta }`) |
+| `created_at` / `updated_at` | TIMESTAMPTZ | Auto-managed |
+
+The current workflow step is derived from `status` (no `current_step` column). Per-detection mentions (software, datasets, materials, protocols) live on `submission_jobs.result.data.items` for the current round — they are **not** denormalized onto the submission row.
 
 **Status values**: `draft`, `step_krt`, `step_pdf`, `step_review`, `step_as`, `step_report`, `completed`
 
@@ -81,7 +79,7 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
                   ← (can go back to any previous step) ←←←←←←←←←←←←←←←←←
 ```
 
-**Associations**: has many `File`, `KRTData`, `ValidationResult`, `LMAnalysis`, `ChangeLog`, `Report`, `SubmissionJob`
+**Associations**: has many `File`, `KRTData`, `ValidationResult`, `ChangeLog`, `Report`, `SubmissionJob`, `UserHiddenSubmission`
 
 #### `files`
 
@@ -130,70 +128,55 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 | `suggestion` | STRING | Suggested fix |
 | `round` | INTEGER | |
 
-#### `lm_analyses`
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID (PK) | |
-| `submission_id` | UUID (FK) | |
-| `status` | ENUM | `queued`, `processing`, `complete`, `failed` |
-| `response_data` | JSONB | Raw API response |
-| `findings` | JSONB | Structured findings (suggestions) |
-| `error_message` | TEXT | |
-| `started_at` / `completed_at` | TIMESTAMP | |
-| `round` | INTEGER | |
-| `source` | STRING | `pdf_analysis`, `software_detection`, etc. |
-
 #### `submission_jobs`
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | UUID (PK) | |
-| `submission_id` | UUID (FK) | |
-| `job_type` | STRING(50) | `das_extraction`, `pdf_analysis`, `markdown_convert`, `software_detection`, `orcid_extraction`, `datasets_detection`, `materials_detection`, `protocols_detection`, `report_generation` |
-| `status` | ENUM | `waiting`, `pending_input`, `queued`, `processing`, `complete`, `failed` |
-| `pg_boss_job_id` | STRING | pg-boss job reference |
-| `reference_id` | UUID | Optional link to related record (e.g., LMAnalysis) |
-| `result` | JSONB | Job-specific completion data |
+| `submission_id` | UUID (FK) | Cascades on delete |
+| `job_type` | VARCHAR(50) | `das_extraction`, `pdf_analysis`, `markdown_convert`, `software_detection`, `orcid_extraction`, `datasets_detection`, `materials_detection`, `protocols_detection`, `identifier_detection`, `report_generation`. No DB-level CHECK — values come from the application's `JOB_TYPES` constant. |
+| `status` | ENUM | `waiting`, `pending_input`, `queued`, `processing`, `complete`, `failed` (default `queued`) |
+| `pg_boss_job_id` | VARCHAR(100) | pg-boss job reference |
+| `reference_id` | UUID | Optional link to a related record |
+| `result` | JSONB | Job-specific completion data — `{ status, service, counts, timing, data, files }`. Raw API responses are stored on S3 with their keys listed in `result.files`. |
 | `error_message` | TEXT | |
-| `retry_count` | INTEGER | |
-| `round` | INTEGER | |
-| `logs` | JSONB | Structured log entries from job execution |
-| `raw_responses` | JSONB | Map of `{ name: s3Key }` for raw API response files |
-| `started_at` / `completed_at` | TIMESTAMP | |
+| `retry_count` | INTEGER | Default 0 |
+| `round` | INTEGER | Default 1 |
+| `logs` | JSONB | Structured log entries from job execution (`[]` default) |
+| `started_at` / `completed_at` | TIMESTAMPTZ | |
 
 ### Supporting Tables
 
 | Table | Purpose |
 |-------|---------|
 | `change_logs` | Audit trail for all KRT changes (action, source, metadata) |
-| `reports` | Generated reports (type, file URL, Google file ID) |
+| `reports` | Generated reports (`type` ENUM `excel`/`pdf`, `file_url`, `metadata` JSONB, `round`) |
 | `user_hidden_submissions` | Per-user submission visibility preferences |
-| `resource_types` | Configurable resource type catalog (name, description, active, sort order) |
-| `app_config` | Runtime key-value configuration store (JSONB values) |
-| `software_list_entries` | Code/Software enrichment reference list (standardized KRT columns) |
-| `materials_list_entries` | Lab materials enrichment reference list (standardized KRT columns) |
-| `datasets_list_entries` | Datasets enrichment reference list (standardized KRT columns) |
-| `protocols_list_entries` | Protocols enrichment reference list (standardized KRT columns) |
+| `resource_types` | Configurable resource type catalog (name, description, active, sort_order, `type` ∈ `dataset/software/protocol/lab_material`) |
+| `app_config` | Runtime key-value configuration store (JSONB values; e.g. `validation_rules`) |
+| `enrichment_list_entries` | Single unified curated reference list for **all four** categories (software, materials, datasets, protocols) — see schema below |
+| `refresh_tokens` | Persisted refresh-token rotation chain for the cookie-based session flow (`token_hash`, `expires_at`, `revoked_at`, `revoked_reason`, `replaced_by`, `user_agent`, `ip`) |
+| `rejected_resources` | Audit trail of AI suggestions the user rejected. Keyed `(submission_id, round, suggestion_id)`; also indexed by `dedup_key` so future re-runs of the consolidator know which resources were already declined |
 
-### Enrichment List Tables
+### Enrichment List Table
 
-All four enrichment list tables (`software_list_entries`, `materials_list_entries`, `datasets_list_entries`, `protocols_list_entries`) share a **standardized schema** matching the KRT columns:
+There is **one** `enrichment_list_entries` table backing all four curated lists. The `category` column discriminates between them.
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | UUID (PK) | Auto-generated |
-| `resource_type` | STRING(100) | KRT resource type (e.g., "Code/Software", "Dataset", "Antibody") |
-| `resource_name` | STRING(500) | Resource name (required) |
-| `source` | STRING(500) | URL, vendor, repository |
-| `identifier` | STRING(500) | RRID, DOI, catalog number, etc. |
-| `new_reuse` | STRING(10) | "new" or "reuse" |
+| `category` | VARCHAR(20) | `software`, `materials`, `datasets`, or `protocols` (enforced at the model layer via `isIn`) |
+| `resource_type` | VARCHAR(100) | KRT resource type (e.g., "Code/Software", "Dataset", "Antibody") |
+| `resource_name` | VARCHAR(1000) | Resource name (required) — widened from 500 by migration 20260511160000 |
+| `source` | TEXT | URL, vendor, repository — widened from VARCHAR(500) by migration 20260512120000 |
+| `identifier` | TEXT | RRID, DOI, catalog number, etc. — widened from VARCHAR(500) by migration 20260511160000 |
+| `new_reuse` | VARCHAR(10) | "new" or "reuse" |
 | `additional_information` | TEXT | Free-text extra info |
-| `suggested_entity` | STRING(500) | Canonical name for fuzzy matching |
+| `suggested_entity` | VARCHAR(500) | Canonical name for fuzzy matching |
 | `tokens` | JSONB | Keyword array for matching (default `[]`) |
-| `created_at` / `updated_at` | TIMESTAMP | Auto-managed |
+| `created_at` / `updated_at` | TIMESTAMPTZ | Auto-managed |
 
-**Indexes**: `resource_type`, `resource_name`
+**Indexes**: `category`, `resource_type`, `resource_name`.
 
 ## Migrations
 

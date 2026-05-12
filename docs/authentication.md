@@ -4,12 +4,17 @@ The application supports two authentication methods: **local JWT** (email/passwo
 
 ## JWT Token Flow
 
-### Token Types
+Since Phase 6 the local JWT pair is delivered via **HttpOnly cookies**, never via the response body or URL hash. The frontend SPA never sees the raw tokens.
 
-| Token | Lifetime | Storage | Purpose |
-|-------|----------|---------|---------|
-| Access token | 7 days (`JWT_EXPIRES_IN`) | `localStorage.token` | API authorization via `Authorization: Bearer` header |
-| Refresh token | 30 days (`JWT_REFRESH_EXPIRES_IN`) | `localStorage.refreshToken` | Obtain new access token when expired |
+### Cookies set by the backend
+
+| Cookie | Lifetime | Flags | Purpose |
+|-------|----------|-------|---------|
+| `asap_kr_session` | `JWT_EXPIRES_IN` (default `15m`) | `HttpOnly; Secure*; SameSite=Strict; Path=/api` | Access JWT. Read server-side on every authenticated request. |
+| `asap_kr_refresh` | `JWT_REFRESH_EXPIRES_IN` (default `7d`) | `HttpOnly; Secure*; SameSite=Strict; Path=/api/auth/refresh` | Refresh JWT. Only travels to the refresh endpoint. |
+| `asap_kr_csrf` | matches the session cookie | `Secure*; SameSite=Strict; Path=/` (not HttpOnly — JS reads it) | CSRF double-submit token. SPA echoes it back in `X-CSRF-Token` on every state-changing request. |
+
+\* `Secure` is set when `NODE_ENV=production` or `FRONTEND_URL` is HTTPS.
 
 ### Access Token Payload
 
@@ -18,7 +23,6 @@ The application supports two authentication methods: **local JWT** (email/passwo
   "userId": "UUID",
   "email": "user@example.com",
   "role": "author | asap_pm | ds_annotator | admin",
-  "team": "XX",
   "iat": 1234567890,
   "exp": 1234567890
 }
@@ -35,15 +39,16 @@ The application supports two authentication methods: **local JWT** (email/passwo
 }
 ```
 
+Refresh tokens are also persisted in the `refresh_tokens` table (sha256 hash, expiry, user agent, IP, optional `revoked_at`/`revoked_reason`/`replaced_by`). Each refresh rotates the pair atomically and revokes the predecessor with `revoked_reason='rotation'`; reuse of an already-rotated token is treated as a compromise signal and revokes the entire chain.
+
 ### Automatic Token Refresh
 
-The frontend Axios interceptor handles 401 responses by:
+The frontend Axios interceptor (`src/frontend/src/services/api.js`) handles 401 responses by:
 
-1. Checking if the request was already retried
-2. Sending the refresh token to `POST /api/auth/refresh`
-3. Updating both tokens in localStorage
-4. Retrying the original request with the new access token
-5. Redirecting to login if refresh fails
+1. Checking if the request was already retried (`_retry` flag)
+2. De-duping concurrent failures behind a single in-flight `POST /api/auth/refresh` call — no body, the refresh cookie travels automatically
+3. Retrying the original request (cookies travel automatically; no header rewriting)
+4. On refresh failure: calling `authStore.clearAuth()` and redirecting to `/login`
 
 ## Auth0 Integration
 
@@ -64,15 +69,19 @@ Auth0 acts as an external identity provider. The backend handles all Auth0 commu
 ```
 1. User clicks social login button
 2. Frontend redirects to GET /api/auth/auth0/login?connection=google-oauth2
-3. Backend redirects to Auth0 authorize URL
-4. User authenticates with social provider
-5. Auth0 redirects to GET /api/auth/auth0/callback?code=AUTHORIZATION_CODE
-6. Backend exchanges code for Auth0 tokens (POST to Auth0 /oauth/token)
-7. Backend extracts user profile from Auth0 ID token (sub, email, name)
+3. Backend generates state, nonce, codeVerifier+codeChallenge (PKCE);
+   stores all three in short-lived HttpOnly flow cookies
+4. Backend redirects to Auth0 /authorize URL (with code_challenge_method=S256)
+5. User authenticates with social provider
+6. Auth0 redirects to GET /api/auth/callback?code=AUTHORIZATION_CODE&state=...
+7. Backend validates state against the flow cookie, exchanges code with PKCE,
+   verifies ID token signature (JWKS / RS256), validates the nonce claim
 8. Backend finds or creates local user (see Account Linking below)
-9. Backend generates LOCAL JWT tokens
-10. Backend redirects to {FRONTEND_URL}/dashboard#access_token=...&refresh_token=...
-11. Frontend router guard extracts tokens from URL hash
+9. Backend generates LOCAL JWT pair
+10. Backend sets asap_kr_session, asap_kr_refresh, asap_kr_csrf cookies
+    and redirects 302 to {FRONTEND_URL}/dashboard (clean URL — no hash)
+11. Frontend router guard calls GET /api/auth/me; cookies travel
+    automatically and the user object lands in the Pinia store
 ```
 
 ### Auth0 Password Login
@@ -82,7 +91,8 @@ Auth0 acts as an external identity provider. The backend handles all Auth0 commu
 2. Frontend calls POST /api/auth/auth0/login-password
 3. Backend proxies to Auth0 Resource Owner Password Grant
 4. Same as steps 7-9 above: find/create user, generate local JWTs
-5. Returns tokens in response body
+5. Backend sets the three auth cookies; response body is { message, user }
+   — tokens never appear in the body
 ```
 
 ### Account Linking
@@ -119,9 +129,9 @@ Auth0 access tokens are verified using RS256 asymmetric signing:
 |-------|---------------|
 | `/admin/users` | admin, ds_annotator, asap_pm |
 | `/admin/teams` | admin, ds_annotator |
-| `/admin/resource-types` | admin, ds_annotator |
-| `/admin/software-list` | admin, ds_annotator |
-| `/admin/config` | admin |
+| `/admin/krt-editor/resource-types` | admin, ds_annotator |
+| `/admin/enrichments` | admin, ds_annotator |
+| `/admin/krt-editor/validation-rules` | admin |
 
 ## Middleware Chain
 
@@ -130,12 +140,14 @@ Requests pass through middleware in this order:
 ```
 Request
   → helmet()                    Security headers
-  → cors()                      Cross-origin (FRONTEND_URL)
-  → express.json()              Body parsing
+  → cors()                      Cross-origin (FRONTEND_URL, credentials)
+  → express.json()              Body parsing (10MB limit)
+  → cookie-parser()             Parses asap_kr_session / asap_kr_refresh / asap_kr_csrf
   → morgan()                    Request logging
   → Route matching
+  → csrfProtect                 Double-submit CSRF check (state-changing /api/* calls)
   → Rate limiting (per-route)   See rate limits below
-  → authenticate                Token verification, sets req.user
+  → authenticate                Cookie verification, sets req.user
   → requireRole(...)            Role-based access check
   → canAccessSubmission         Submission-level access check
   → Controller
@@ -144,10 +156,10 @@ Request
 
 ### Authentication Middleware
 
-- Extracts token from `Authorization: Bearer` header
-- Verifies JWT signature and expiry
-- Attaches `req.user` (user object) and `req.userId`
-- Throws `AuthenticationError` (401) if token is invalid or missing
+- Reads the JWT from the `asap_kr_session` cookie only — no `Authorization` header support since Phase 6.2
+- Tries local-JWT verification first; falls back to Auth0 JWKS (RS256) verification when the local secret rejects the token
+- Attaches `req.user` (`{ id, email, name, role, auth0Sub, teams[], isAuth0User }`) and `req.userId`
+- Throws `AuthenticationError` (401) if the cookie is missing or invalid
 
 ### Role Middleware
 
@@ -181,11 +193,10 @@ Authenticated users bypass `apiLimiter`. Auth endpoints are always rate-limited.
 
 The Vue Router `beforeEach` guard enforces:
 
-1. **Auth0 callback** — extracts tokens from URL hash after OAuth redirect
-2. **Token restoration** — fetches current user on first navigation if token exists
-3. **Authentication** — redirects to `/login` if route requires auth and user is not authenticated
-4. **Role check** — redirects to `/dashboard` if user's `effectiveRole` doesn't match route's `meta.roles`
-5. **Guest check** — redirects authenticated users away from login/register pages
+1. **Session restoration** — on first navigation, calls `GET /api/auth/me`. Cookies travel automatically; a successful response populates the store, a 401 leaves the user unauthenticated. (Phase 6 removed the previous URL-hash extraction step — there is no hash to parse.)
+2. **Authentication** — redirects to `/login` if the route requires auth and the user is not authenticated
+3. **Role check** — redirects to `/dashboard` if the user's `effectiveRole` doesn't match the route's `meta.roles`
+4. **Guest check** — redirects authenticated users away from `/login` and `/register`
 
 ### Admin "View As" Feature
 
