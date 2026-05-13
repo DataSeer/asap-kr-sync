@@ -80,6 +80,7 @@ function save() {
 
 const showRejectReason = ref(false)
 const rejectReasonText = ref('')
+const rejectReasonRef = ref(null)
 
 // Auto-focus + select-all when the modal opens so the user can immediately
 // type to overwrite the existing value. The browser's autofocus attribute
@@ -101,9 +102,11 @@ function acceptSuggestion() {
   emit('accept-suggestion', props.suggestion)
 }
 
-function startReject() {
+async function startReject() {
   showRejectReason.value = true
   rejectReasonText.value = ''
+  await nextTick()
+  rejectReasonRef.value?.focus()
 }
 
 function cancelReject() {
@@ -160,24 +163,26 @@ function confirmReject() {
                 <span class="comparison-value suggested">{{ suggestion.data?.newValue || '(empty)' }}</span>
               </div>
             </div>
-            <div class="suggestion-actions">
+            <div v-if="!showRejectReason" class="suggestion-actions">
               <button class="btn-accept" @click="acceptSuggestion">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                 </svg>
                 Accept
               </button>
-              <button v-if="!showRejectReason" class="btn-reject" @click="startReject">
+              <button class="btn-reject" @click="startReject">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
                 Reject
               </button>
             </div>
-            <!-- Rejection reason input -->
-            <div v-if="showRejectReason" class="reject-reason">
+            <!-- Rejection reason input: replaces the Accept/Reject row while the
+                 user is composing a reason. Cancel restores the original row. -->
+            <div v-else class="reject-reason">
               <p class="reject-reason-label">Why are you rejecting this? (optional)</p>
               <textarea
+                ref="rejectReasonRef"
                 v-model="rejectReasonText"
                 class="reject-reason-textarea"
                 rows="2"
