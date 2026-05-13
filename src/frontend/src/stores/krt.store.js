@@ -70,26 +70,39 @@ export const useKRTStore = defineStore('krt', () => {
     'additionalInformation': 'ADDITIONAL INFORMATION'
   }
 
-  // Find matching row for a suggestion by checking oldValue against actual data
+  // Find matching row for a suggestion.
+  //
+  // Order matters here. Edit suggestions from the backend already carry the
+  // exact KRT row id they target (`data.rowId`), so we trust that first.
+  // Falling back to oldValue-equality is necessary for legacy/audit shapes
+  // that don't have rowId — but it MUST come after the rowId lookup, because
+  // oldValue equality is ambiguous for empty cells: every row with an empty
+  // ADDITIONAL INFORMATION matches every suggestion whose oldValue is '',
+  // collapsing distinct suggestions onto the first such row.
   function findMatchingRow(suggestion) {
     if (!suggestion.data) return null
 
-    // Get the column key in the format used by KRT rows
+    // Authoritative match: backend-emitted rowId.
+    if (suggestion.data.rowId) {
+      const found = rows.value.find(row => row.id === suggestion.data.rowId)
+      if (found) return found
+    }
+
     const col = suggestion.data.column
     const krtColumnKey = reverseColumnMap[col] || col
 
-    // Try to find the row where the oldValue matches
-    if (suggestion.data.oldValue !== undefined) {
+    // Fallback: oldValue equality. Only meaningful when oldValue is non-empty —
+    // empty oldValue would match every blank cell of the same column.
+    if (suggestion.data.oldValue !== undefined && String(suggestion.data.oldValue).trim() !== '') {
       const found = rows.value.find(row => {
         const cellValue = row[krtColumnKey] || ''
         const oldValue = suggestion.data.oldValue || ''
-        // Compare trimmed values to handle whitespace differences
         return cellValue.trim() === oldValue.trim()
       })
       if (found) return found
     }
 
-    // If resourceName is provided in suggestion data, match by that
+    // Last resort: resourceName substring match.
     if (suggestion.data.resourceName) {
       const found = rows.value.find(row => {
         const rowName = row['RESOURCE NAME'] || ''
