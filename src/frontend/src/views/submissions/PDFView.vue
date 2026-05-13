@@ -146,13 +146,15 @@ const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))
 const pdfAnalysisPendingInput = computed(() => pdfAnalysisJob.value?.status === 'pending_input')
 const advancingAnalysis = ref(false)
 
-// True while PDF analysis is queued or actively processing. Used to render a
+// True while PDF analysis hasn't finished. Includes 'waiting' because
+// pdf_analysis often sits in that state while it queues on upstream
+// detectors (datasets/materials/protocols/identifier). Used to render a
 // loader inside the AI Suggestions section so the user can see suggestions
 // aren't ready yet — without it, the section is hidden until the first
 // process finishes and there's no signal that work is in flight.
-const pdfAnalysisRunning = computed(() => {
+const pdfAnalysisInFlight = computed(() => {
   const status = pdfAnalysisJob.value?.status
-  return status === 'queued' || status === 'processing'
+  return status === 'queued' || status === 'processing' || status === 'waiting'
 })
 
 watch(pdfAnalysisJob, (job) => {
@@ -1147,7 +1149,7 @@ function scrollToFindingRow(finding) {
       <JobStatusPanel @edit-das="handleEditDas" />
 
       <!-- AI Suggestions Section - Carousel Navigation -->
-      <div v-if="findings.length > 0 || anyProcessFinished || pdfAnalysisRunning" id="ai-suggestions-section" class="card">
+      <div v-if="findings.length > 0 || anyProcessFinished || pdfAnalysisInFlight" id="ai-suggestions-section" class="card">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-medium text-gray-700">AI Suggestions</h3>
           <div class="flex items-center space-x-2">
@@ -1195,7 +1197,7 @@ function scrollToFindingRow(finding) {
              user knows the section will populate. Distinct from the "nothing
              found" copy below, which only kicks in once a process actually
              completes. -->
-        <div v-if="findings.length === 0 && pdfAnalysisRunning" class="text-center py-6 px-4">
+        <div v-if="findings.length === 0 && pdfAnalysisInFlight" class="text-center py-6 px-4">
           <svg class="mx-auto w-8 h-8 text-primary-500 mb-2 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -1206,16 +1208,20 @@ function scrollToFindingRow(finding) {
 
         <!-- No suggestions yet (at least one process completed; KRT may already cover everything) -->
         <div v-else-if="findings.length === 0" class="text-center py-6 px-4">
-          <svg class="mx-auto w-8 h-8 text-green-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
           <template v-if="allProcessesFinished">
+            <svg class="mx-auto w-8 h-8 text-green-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
             <p class="text-sm font-medium text-gray-800">Your KRT seems to already contain everything we found.</p>
             <p class="text-xs text-gray-500 mt-1">No suggestions to review. You can open the background processes panel above to check what was detected.</p>
           </template>
           <template v-else>
-            <p class="text-sm font-medium text-gray-800">No suggestions yet — your KRT looks complete so far.</p>
-            <p class="text-xs text-gray-500 mt-1">Some background processes are still running. New suggestions may appear as they finish.</p>
+            <svg class="mx-auto w-8 h-8 text-primary-500 mb-2 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="text-sm font-medium text-gray-800">Analyzing the manuscript…</p>
+            <p class="text-xs text-gray-500 mt-1">Background processes are still running. New suggestions will appear here as they finish.</p>
           </template>
         </div>
 

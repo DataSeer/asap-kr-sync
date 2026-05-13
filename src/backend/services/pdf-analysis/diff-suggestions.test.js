@@ -217,8 +217,11 @@ test('alias matcher refuses cross-type matches', () => {
   assert.ok(sugs.some(s => s.type === 'add_row'));
 });
 
-test('alias matcher refuses different newReuse', () => {
-  // Same identifier + name but newReuse mismatch → not a match.
+test('alias matcher matches across newReuse difference', () => {
+  // Same identifier + name but newReuse mismatch → still a match. The user
+  // may have classified a resource as NEW (they generated it) while the
+  // detector cites the same identifier as reuse from references; both refer
+  // to the same row. newReuse is not editable so no edit is emitted either.
   const gen = mergeDetections([
     { source: 'a', items: [itemAddRow({ resourceName: 'Tool', identifier: 'id-1', newReuse: 'new' })] }
   ]);
@@ -227,5 +230,5 @@ test('alias matcher refuses different newReuse', () => {
     identifier: 'id-1', newReuse: 'reuse', source: '', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
-  assert.ok(sugs.some(s => s.type === 'add_row'));
+  assert.ok(!sugs.some(s => s.type === 'add_row'));
 });

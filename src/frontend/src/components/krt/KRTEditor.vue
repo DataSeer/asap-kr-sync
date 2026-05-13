@@ -156,7 +156,8 @@ const SOURCE_LABEL = {
   pdf_analysis:       'PDF',
   datasets_detection: 'DS',
   materials_detection: 'MAT',
-  protocols_detection: 'PROT'
+  protocols_detection: 'PROT',
+  identifier_detection: 'ID'
 }
 
 /**
@@ -2437,6 +2438,11 @@ tr:hover {
 .source-protocols_detection {
   background: #d1fae5;
   color: #047857;
+}
+
+.source-identifier_detection {
+  background: #ccfbf1;
+  color: #0f766e;
 }
 
 .source-in-krt {

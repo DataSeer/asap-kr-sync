@@ -59,8 +59,10 @@ const COLUMN_MAP = {
  * identifier-token, opaque normalized identifier, and normalized name it
  * exposes. Lookup tests intersection on any of those axes.
  *
- * Type + newReuse must still match (case-insensitive, blank-tolerant) — same
- * gate the merger uses, so cross-type collisions can't happen.
+ * Type must still match (case-insensitive, blank-tolerant) so cross-type
+ * collisions can't happen. newReuse is NOT a match gate: the user may have
+ * marked a resource as NEW (they generated it) while the detector cites the
+ * same identifier as a reuse from references — both refer to the same row.
  */
 function indexKrtForLookup(krtRows) {
   const indexed = krtRows.map(row => {
@@ -69,7 +71,6 @@ function indexKrtForLookup(krtRows) {
     return {
       row,
       type: String(row.resourceType ?? row['RESOURCE TYPE'] ?? '').toLowerCase().trim(),
-      newReuse: String(row.newReuse ?? row['NEW/REUSE'] ?? '').toLowerCase().trim(),
       idTokens: extractIdentifierTokens(id),
       idValue: normalizeRawValue(id),
       nameNorm: normalizeName(name)
@@ -78,14 +79,12 @@ function indexKrtForLookup(krtRows) {
 
   function findMatch(generated) {
     const gType = String(generated.resourceType || '').toLowerCase().trim();
-    const gNewReuse = String(generated.newReuse || '').toLowerCase().trim();
     const gTokens = extractIdentifierTokens(generated.identifier);
     const gIdValue = normalizeRawValue(generated.identifier);
     const gName = normalizeName(generated.resourceName);
 
     for (const entry of indexed) {
       if (entry.type !== gType) continue;
-      if (entry.newReuse !== gNewReuse) continue;
 
       // Identifier-token intersection
       for (const tok of gTokens) {
