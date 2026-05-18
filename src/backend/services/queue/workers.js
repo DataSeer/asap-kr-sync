@@ -181,9 +181,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.PDF_ANALYSIS, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.PDF_ANALYSIS, pgBossJob);
         jobLogger?.log('start', 'Starting PDF analysis (KRT consolidator)', { isFinalAttempt });
 
         const result = await processAnalysis(submissionId, jobLogger, { isFinalAttempt });
@@ -217,7 +217,13 @@ async function initializeWorkers() {
         jobLogger?.log('error', `PDF analysis failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'pdf_analysis', round, userId);
+        // Only propagate to the pipeline once pg-boss has truly given up. On
+        // non-final attempts the retry will overwrite this failure, so
+        // signalling dependents now would unblock them prematurely (see
+        // PDF_DAS_EXTRACTOR / pdf_analysis pending_input bug).
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'pdf_analysis', round, userId);
+        }
         throw error;
       }
     },
@@ -233,9 +239,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.DAS_EXTRACTION, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.DAS_EXTRACTION, pgBossJob);
         jobLogger?.log('start', 'Starting DAS extraction', { isFinalAttempt });
 
         const result = await extractAndSaveDAS(submissionId, jobLogger, { isFinalAttempt });
@@ -256,7 +262,14 @@ async function initializeWorkers() {
         jobLogger?.log('error', `DAS extraction failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'das_extraction', round);
+        // Only propagate once pg-boss has truly given up. Advancing here on a
+        // transient failure marked DAS as terminal-failed, and pdf_analysis's
+        // canAutoAdvance then parked itself in pending_input — a state
+        // checkAndAdvance never revisits, so the subsequent successful retry
+        // could not unstick it.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'das_extraction', round);
+        }
         throw error;
       }
     },
@@ -300,9 +313,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.SOFTWARE_DETECTION, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.SOFTWARE_DETECTION, pgBossJob);
         jobLogger?.log('start', 'Starting software detection', { isFinalAttempt });
 
         const result = await processSoftwareDetection(submissionId, jobLogger, { isFinalAttempt });
@@ -331,7 +344,11 @@ async function initializeWorkers() {
         jobLogger?.log('error', `Software detection failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'software_detection', round);
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'software_detection', round);
+        }
         throw error;
       }
     },
@@ -347,9 +364,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.ORCID_EXTRACTION, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.ORCID_EXTRACTION, pgBossJob);
         jobLogger?.log('start', 'Starting ORCID extraction', { isFinalAttempt });
 
         const result = await processOrcidExtraction(submissionId, jobLogger, { isFinalAttempt });
@@ -372,7 +389,11 @@ async function initializeWorkers() {
         jobLogger?.log('error', `ORCID extraction failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'orcid_extraction', round);
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'orcid_extraction', round);
+        }
         throw error;
       }
     },
@@ -388,9 +409,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.MARKDOWN_CONVERT, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.MARKDOWN_CONVERT, pgBossJob);
         jobLogger?.log('start', 'Starting markdown conversion', { isFinalAttempt });
 
         const result = await processMarkdownConvert(submissionId, jobLogger, { isFinalAttempt });
@@ -413,7 +434,11 @@ async function initializeWorkers() {
         jobLogger?.log('error', `Markdown conversion failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'markdown_convert', round);
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'markdown_convert', round);
+        }
         throw error;
       }
     },
@@ -429,9 +454,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.DATASETS_DETECTION, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.DATASETS_DETECTION, pgBossJob);
         jobLogger?.log('start', 'Starting datasets detection', { isFinalAttempt });
 
         const result = await processDatasetDetection(submissionId, jobLogger, { isFinalAttempt });
@@ -462,7 +487,11 @@ async function initializeWorkers() {
         jobLogger?.log('error', `Datasets detection failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'datasets_detection', round);
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'datasets_detection', round);
+        }
         throw error;
       }
     },
@@ -478,9 +507,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.MATERIALS_DETECTION, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.MATERIALS_DETECTION, pgBossJob);
         jobLogger?.log('start', 'Starting materials detection', { isFinalAttempt });
 
         const result = await processMaterialsDetection(submissionId, jobLogger, { isFinalAttempt });
@@ -509,7 +538,11 @@ async function initializeWorkers() {
         jobLogger?.log('error', `Materials detection failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'materials_detection', round);
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'materials_detection', round);
+        }
         throw error;
       }
     },
@@ -525,9 +558,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.PROTOCOLS_DETECTION, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.PROTOCOLS_DETECTION, pgBossJob);
         jobLogger?.log('start', 'Starting protocols detection', { isFinalAttempt });
 
         const result = await processProtocolsDetection(submissionId, jobLogger, { isFinalAttempt });
@@ -556,7 +589,11 @@ async function initializeWorkers() {
         jobLogger?.log('error', `Protocols detection failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'protocols_detection', round);
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'protocols_detection', round);
+        }
         throw error;
       }
     },
@@ -572,9 +609,9 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.IDENTIFIER_DETECTION, pgBossJob);
 
       try {
-        const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.IDENTIFIER_DETECTION, pgBossJob);
         jobLogger?.log('start', 'Starting identifier detection', { isFinalAttempt });
 
         const result = await processIdentifierDetection(submissionId, jobLogger, { isFinalAttempt });
@@ -610,7 +647,11 @@ async function initializeWorkers() {
         jobLogger?.log('error', `Identifier detection failed: ${error.message}`);
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'identifier_detection', round);
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'identifier_detection', round);
+        }
         throw error;
       }
     },
