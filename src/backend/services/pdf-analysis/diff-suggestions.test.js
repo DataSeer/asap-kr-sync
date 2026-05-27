@@ -7,12 +7,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { mergeDetections } = require('./merge-detections.service');
-const { computeSuggestions, parseSuggestionId } = require('./diff-suggestions.service');
+const { computeSuggestions, parseSuggestionId, isLossyRename } = require('./diff-suggestions.service');
 
 const itemAddRow = (overrides = {}) => ({
   type: 'add_row',
   data: {
-    resourceType: 'Code/Software',
+    resourceType: 'Software/code',
     resourceName: 'Python',
     source: 'https://python.org',
     identifier: '',
@@ -36,7 +36,7 @@ test('Generated identical to KRT → no suggestions', () => {
     { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x' })] }
   ]);
   const krt = [{
-    resourceType: 'Code/Software', resourceName: 'Python', source: 'https://python.org',
+    resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
     identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: ''
   }];
   assert.deepEqual(computeSuggestions(gen, krt), []);
@@ -47,7 +47,7 @@ test('Same dedup_key + different additional info → edit suggestion', () => {
     { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x', additionalInformation: 'v3.10' })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'Python', source: 'https://python.org',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
     identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
@@ -70,7 +70,7 @@ test('Rejected column → that column suppressed, others kept', () => {
     { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x', additionalInformation: 'v3.10', source: 'https://other.org' })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'Python', source: 'https://python.org',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
     identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: ''
   }];
   const dk = gen[0].dedupKey;
@@ -85,7 +85,7 @@ test('Generator value is empty → no edit suggested (does not blank user data)'
     { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x', additionalInformation: '' })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'Python', source: 'https://python.org',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
     identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: 'lots of notes'
   }];
   assert.deepEqual(computeSuggestions(gen, krt), []);
@@ -141,7 +141,7 @@ test('alias match: user has name-only, detector has identifier → edit not add'
     })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'ImageJ',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'ImageJ',
     identifier: '', newReuse: 'reuse', source: '', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
@@ -206,7 +206,7 @@ test('alias matcher refuses cross-type matches', () => {
   // Same name + identifier but different resourceType → no match, surface as add.
   const gen = mergeDetections([
     { source: 'a', items: [itemAddRow({
-      resourceType: 'Code/Software', resourceName: 'Python', identifier: 'id-x'
+      resourceType: 'Software/code', resourceName: 'Python', identifier: 'id-x'
     })] }
   ]);
   const krt = [{
@@ -226,9 +226,91 @@ test('alias matcher matches across newReuse difference', () => {
     { source: 'a', items: [itemAddRow({ resourceName: 'Tool', identifier: 'id-1', newReuse: 'new' })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'Tool',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Tool',
     identifier: 'id-1', newReuse: 'reuse', source: '', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
   assert.ok(!sugs.some(s => s.type === 'add_row'));
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Lossy-rename guard (suppresses misleading resourceName EDIT suggestions
+// from the curated DB's canonical-name picks)
+// ───────────────────────────────────────────────────────────────────────────
+
+test('isLossyRename: cosmetic-only diff is lossy', () => {
+  assert.equal(isLossyRename('Fiji', 'fiji'), true);
+  assert.equal(isLossyRename('Image J', 'ImageJ'), true);
+  assert.equal(isLossyRename('  Python ', 'Python'), true);
+});
+
+test('isLossyRename: substring rename is lossy', () => {
+  assert.equal(isLossyRename('Sprague-Dawley rats', 'Sprague-Dawley'), true);
+  assert.equal(isLossyRename('Allen Brain Atlas', 'Allen Brain'), true);
+});
+
+test('isLossyRename: dropping qualifier is lossy', () => {
+  assert.equal(isLossyRename('Rabbit anti-TH', 'Anti-TH'), true);
+  assert.equal(isLossyRename('Monoclonal Mouse Anti-tubulin', 'Anti-tubulin'), true);
+});
+
+test('isLossyRename: zero-overlap rename is suspicious (different entity)', () => {
+  // Curated DB grouped the antibody and the target under one entry.
+  assert.equal(isLossyRename('Sheep anti-TH', 'tyrosine hydroxylase'), true);
+});
+
+test('isLossyRename: partial paraphrase that drops more than it adds is lossy', () => {
+  // Old uniquely has {monoclonal, mouse, anti}; new uniquely has {beta} —
+  // 3 dropped vs 1 added → net info loss.
+  assert.equal(isLossyRename('Monoclonal Mouse Anti-tubulin-βIII', 'a-Tubulin beta III'), true);
+});
+
+test('isLossyRename: empty new name is lossy', () => {
+  assert.equal(isLossyRename('Fiji', ''), true);
+  assert.equal(isLossyRename('Fiji', '   '), true);
+});
+
+test('isLossyRename: empty old name allows any rename', () => {
+  assert.equal(isLossyRename('', 'Fiji'), false);
+  assert.equal(isLossyRename(null, 'Fiji'), false);
+});
+
+test('isLossyRename: meaningful enrichment is NOT lossy', () => {
+  // New name adds info (more tokens, none lost).
+  assert.equal(isLossyRename('Anti-TH', 'Rabbit anti-TH (clone TH2)'), false);
+  // Different but overlapping naming convention — still informative.
+  assert.equal(isLossyRename('ImageJ', 'ImageJ / Fiji'), false);
+});
+
+test('computeSuggestions: suppresses lossy resourceName edit', () => {
+  // identifier-scan emits curated canonical "Anti-TH"; user has more specific "Rabbit anti-TH".
+  const gen = mergeDetections([
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Antibody', resourceName: 'Anti-TH', identifier: 'RRID:AB_2201407'
+    })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Antibody', resourceName: 'Rabbit anti-TH',
+    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: ''
+  }];
+  const sugs = computeSuggestions(gen, krt);
+  assert.equal(sugs.filter(s => s.data?.column === 'resourceName').length, 0,
+    'lossy resourceName edit must be suppressed');
+});
+
+test('computeSuggestions: still surfaces enriching resourceName edit', () => {
+  // user has bare 'Anti-TH'; the more specific curated name 'Rabbit anti-TH (clone TH2)' adds info.
+  const gen = mergeDetections([
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Antibody', resourceName: 'Rabbit anti-TH (clone TH2)',
+      identifier: 'RRID:AB_2201407'
+    })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Antibody', resourceName: 'Anti-TH',
+    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: ''
+  }];
+  const sugs = computeSuggestions(gen, krt);
+  assert.ok(sugs.some(s => s.data?.column === 'resourceName' && s.data?.newValue === 'Rabbit anti-TH (clone TH2)'));
+});
+

@@ -124,6 +124,7 @@ module.exports = {
 
   // Dynamic resource type group ordering (loaded from DB via config.service)
   getResourceTypeGroupOrder: () => getConfigService().getResourceTypeGroupOrder(),
+  getResourceTypeSortOrder: () => getConfigService().getResourceTypeSortOrder(),
 
   // Supported file formats
   SUPPORTED_KRT_FORMATS: ['.csv', '.xlsx'],

@@ -25,6 +25,31 @@ const {
 } = require('./identifier-normalize.service');
 
 /**
+ * Canonicalize resourceType strings so synonyms compare equal in shouldMerge
+ * and indexKrtForLookup.
+ *
+ * The "Code/Software" → "Software/code" rename only updated KRT submission
+ * rows; the EnrichmentListEntry table still uses the historic "Code/Software"
+ * label. That meant the same software resource emitted by the software
+ * detector ("Software/code") and the identifier scanner ("Code/Software")
+ * failed shouldMerge's case-insensitive string match and both survived
+ * into the Generated KRT — so Fiji showed up twice.
+ *
+ * Treat the four observed variants ("Code/Software", "Software/code",
+ * bare "Software", bare "Code") as one canonical key. Other resourceTypes
+ * pass through unchanged (the materials subtypes "Antibody", "Plasmid",
+ * etc. have always been uniform).
+ */
+function normalizeResourceTypeKey(value) {
+  const lc = String(value ?? '').toLowerCase().trim();
+  if (!lc) return '';
+  if (lc === 'code/software' || lc === 'software/code' || lc === 'code' || lc === 'software') {
+    return 'software/code';
+  }
+  return lc;
+}
+
+/**
  * Cross-source field-ownership precedence.
  *
  * When two contributors collide on the same logical resource (i.e. shouldMerge
@@ -117,7 +142,7 @@ function toResource(item, source) {
  *   C (name='Other', id='id-2') ──┘  match by id-2 in primary._idTokens
  */
 function shouldMerge(primary, candidate) {
-  if (primary.resourceType.toLowerCase() !== candidate.resourceType.toLowerCase()) return false;
+  if (normalizeResourceTypeKey(primary.resourceType) !== normalizeResourceTypeKey(candidate.resourceType)) return false;
   if (primary.newReuse !== candidate.newReuse) return false;
   // Identifier-token intersection
   const candTokens = extractIdentifierTokens(candidate.identifier);
@@ -298,6 +323,7 @@ module.exports = {
   toResource,
   shouldMerge,
   mergeAdditionalInfo,
+  normalizeResourceTypeKey,
   outranks,
   SOURCE_PRECEDENCE
 };

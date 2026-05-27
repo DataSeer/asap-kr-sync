@@ -36,7 +36,7 @@ test('buildKrtItemsSoftware: Softcite-shape → canonical KrtEntry', () => {
   const items = buildKrtItemsSoftware(raw);
   assert.equal(items.length, 1);
   const item = items[0];
-  assert.equal(item.resourceType, 'Code/Software');
+  assert.equal(item.resourceType, 'Software/code');
   // Normalized name wins for the canonical resourceName
   assert.equal(item.resourceName, 'MATLAB');
   assert.equal(item.source, 'https://mathworks.com');
@@ -64,7 +64,7 @@ test('enrichSoftware: customListMatch fills blanks and moves to detectorMeta', a
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-enrich-'));
   fs.writeFileSync(path.join(dir, 'curated-software.csv'),
     'resourceName,resourceType,source,identifier,newReuse\n' +
-    'MATLAB,Code/Software,https://mathworks.com/matlab,RRID:SCR_001622,reuse\n'
+    'MATLAB,Software/code,https://mathworks.com/matlab,RRID:SCR_001622,reuse\n'
   );
   const provider = createCsvProvider(dir);
 
@@ -92,7 +92,7 @@ test('full pipeline: two Softcite mentions of MATLAB → 1 item with occurrences
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-full-'));
   fs.writeFileSync(path.join(dir, 'curated-software.csv'),
     'resourceName,resourceType,source,identifier,newReuse\n' +
-    'MATLAB,Code/Software,https://mathworks.com/matlab,RRID:SCR_001622,reuse\n'
+    'MATLAB,Software/code,https://mathworks.com/matlab,RRID:SCR_001622,reuse\n'
   );
   const provider = createCsvProvider(dir);
 

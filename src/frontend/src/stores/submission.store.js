@@ -72,12 +72,12 @@ export const useSubmissionStore = defineStore('submission', () => {
     }
   }
 
-  async function createSubmission(data) {
+  async function createSubmission(data, krtFile) {
     loading.value = true
     error.value = null
 
     try {
-      const response = await submissionService.create(data)
+      const response = await submissionService.create(data, krtFile)
       submissions.value.unshift(response.submission)
       currentSubmission.value = response.submission
       return response.submission

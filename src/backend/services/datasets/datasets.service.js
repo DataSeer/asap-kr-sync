@@ -307,14 +307,18 @@ function transformConsolidatedItem(item) {
     newReuse,
     origin: 'datasets-gemini',
     confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-    additionalInformation,
+    // Leave ADDITIONAL INFORMATION empty for user-facing suggestions. The
+    // dataset subtype + any detector-supplied notes are persisted on
+    // detectorMeta for internal inspection only.
+    additionalInformation: '',
     detectorMeta: {
       relevance,
       subtype: subType || '',
       accessions: Array.isArray(item.accessions) ? item.accessions : [],
       dois:       Array.isArray(item.dois)       ? item.dois       : [],
       urls:       Array.isArray(item.urls)       ? item.urls       : [],
-      datasetRole: item.dataset_role || ''
+      datasetRole: item.dataset_role || '',
+      context: additionalInformation
     }
   };
 }

@@ -39,10 +39,10 @@ const RELEVANCE_TO_CONFIDENCE = {
 };
 
 // Fallback resourceType when the curated entry's resourceType is empty.
-// Strings match the labels used elsewhere in the consolidator (`Code/Software`
+// Strings match the labels used elsewhere in the consolidator (`Software/code`
 // is what software.service.js stamps on Softcite output).
 const CATEGORY_FALLBACK_TYPE = {
-  software:  'Code/Software',
+  software:  'Software/code',
   datasets:  'Dataset',
   materials: 'Lab Material',
   protocols: 'Protocol'
@@ -153,13 +153,17 @@ function buildKrtItemsIdentifier(matches, markdownText) {
       newReuse: entry.newReuse || '',
       origin: 'identifier-scan',
       confidence: RELEVANCE_TO_CONFIDENCE[m.relevance] ?? 0.4,
-      additionalInformation: snippetAt(markdownText, m.position, 80),
+      // Per ASAP request: don't put the manuscript snippet in user-facing
+      // ADDITIONAL INFORMATION. It's stored on detectorMeta.context for
+      // internal review only.
+      additionalInformation: '',
       detectorMeta: {
         relevance: m.relevance,
         matchedTypes: m.types,
         position: m.position,
         catalogContext: m.catalogContext,
-        category: entry.category
+        category: entry.category,
+        context: snippetAt(markdownText, m.position, 80)
       }
     };
   });

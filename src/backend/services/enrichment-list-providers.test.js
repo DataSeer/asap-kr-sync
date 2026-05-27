@@ -35,8 +35,8 @@ test('csv provider: happy path for one category', async () => {
   const dir = tmpDirWithCsvs({
     'curated-software.csv':
       'resourceName,resourceType,source,identifier,newReuse\n' +
-      'Python,Code/Software,python.org,py-id,reuse\n' +
-      'R,Code/Software,r-project.org,r-id,reuse\n'
+      'Python,Software/code,python.org,py-id,reuse\n' +
+      'R,Software/code,r-project.org,r-id,reuse\n'
   });
   const provider = createCsvProvider(dir);
   const entries = await provider.loadEntries('software');
@@ -60,8 +60,8 @@ test('csv provider: rows without identifier are skipped', async () => {
   const dir = tmpDirWithCsvs({
     'curated-software.csv':
       'resourceName,resourceType,source,identifier,newReuse\n' +
-      'Python,Code/Software,python.org,py-id,reuse\n' +
-      'NoId,Code/Software,nowhere,,reuse\n'  // identifier empty
+      'Python,Software/code,python.org,py-id,reuse\n' +
+      'NoId,Software/code,nowhere,,reuse\n'  // identifier empty
   });
   const provider = createCsvProvider(dir);
   const entries = await provider.loadEntries('software');
@@ -74,7 +74,7 @@ test('csv provider: category omitted → loads all categories', async () => {
   const dir = tmpDirWithCsvs({
     'curated-software.csv':
       'resourceName,resourceType,source,identifier,newReuse\n' +
-      'Python,Code/Software,python.org,py-id,reuse\n',
+      'Python,Software/code,python.org,py-id,reuse\n',
     'curated-datasets.csv':
       'resourceName,resourceType,source,identifier,newReuse\n' +
       'GEO,Dataset,ncbi.nlm.nih.gov/geo,GSE12345,reuse\n',
@@ -98,7 +98,7 @@ test('csv provider: quoted fields with embedded commas survive', async () => {
   const dir = tmpDirWithCsvs({
     'curated-software.csv':
       'resourceName,resourceType,source,identifier,newReuse\n' +
-      '"Pandas, Inc",Code/Software,pandas.io,pd-id,reuse\n'
+      '"Pandas, Inc",Software/code,pandas.io,pd-id,reuse\n'
   });
   const provider = createCsvProvider(dir);
   const entries = await provider.loadEntries('software');

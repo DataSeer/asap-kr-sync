@@ -6,13 +6,16 @@
 
 const { v4: uuidv4 } = require('uuid');
 
-// Resource types (singular/canonical form matching validation rules)
+// Resource types (singular/canonical form matching validation rules).
+// Order here drives sort_order, which is what the KRT Editor uses to sort
+// rows within a tab (resource_type sort_order, then resource_name).
 const resourceTypes = [
   'Dataset',
-  'Code/Software',
+  'Software/code',
   'Protocol',
   'Antibody',
   'Bacterial strain',
+  'Viral vector',
   'Biological sample',
   'Chemical, peptide, or recombinant protein',
   'Critical commercial assay',
@@ -20,7 +23,6 @@ const resourceTypes = [
   'Experimental model: Organism/strain',
   'Oligonucleotide',
   'Recombinant DNA',
-  'Viral vector',
   'Other'
 ];
 
@@ -31,7 +33,7 @@ const validationRules = {
     type: 'enum',
     values: [
       'Dataset',
-      'Code/Software',
+      'Software/code',
       'Protocol',
       'Antibody',
       'Bacterial strain',

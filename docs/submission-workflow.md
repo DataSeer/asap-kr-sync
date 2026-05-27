@@ -19,8 +19,7 @@ stateDiagram-v2
     step_as --> step_review : Go Back
     step_report --> step_as : Go Back
 
-    completed --> step_krt : New Round (with new KRT)
-    completed --> step_pdf : New Round (keep KRT)
+    completed --> step_krt : New Round
 ```
 
 | Status | Step | View |
@@ -33,7 +32,7 @@ stateDiagram-v2
 | `step_report` | 5 | ReportView |
 | `completed` | 5 | ReportView |
 
-Users can navigate back to any previous step from the step indicator. Starting a new round resets the status to `step_krt` or `step_pdf` and increments `currentRound`.
+Users can navigate back to any previous step from the step indicator. Starting a new round always resets the status to `step_krt` (the new PDF is collected up front in the **Process New Version** modal, so the user lands on Step 2 with the analysis pipeline already running) and increments `currentRound`.
 
 ---
 
@@ -204,6 +203,18 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 - **Auto-advances only if:** DAS extraction returned `result.status.detected === true`
 - **If DAS not detected:** Job moves to `pending_input` — user must click "Advance" to consolidate without DAS context
 - **On complete:** Shows the consolidated resource count (and multi-source overlap count) and refreshes the KRT suggestions
+- **Merge rule** (`merge-detections.service.js`): two detection items merge iff they share **resource type** (case-insensitive, with `Code/Software` and `Software/code` normalized to the same key) **and** New/Reuse **and** their identifier tokens overlap or their normalized names match. The merged row's display fields come from the highest-precedence contributor (Software / Datasets / Protocols / Materials beat Identifier-scan)
+
+#### Diff → suggestions
+The Generated KRT is diffed against the user's KRT (`diff-suggestions.service.js`). Each generated row matches a user row by identifier token, opaque-id, or normalized-name overlap. Per-column edits are emitted **unless** one of these guards trips:
+
+- **No-blank guard** — never overwrites a user value with `""`.
+- **Source-field protection** — `source` is only edited when the user's cell is empty.
+- **Identifier normalisation** — `AB_141607`, `RRID: AB_141607`, and `RRID:AB_141607` compare equal; cosmetic-only diffs are dropped.
+- **Resource-type normalisation** — `Code/Software` ↔ `Software/code` don't surface as edits.
+- **Lossy-rename guard** (`isLossyRename`) — refuses any `resourceName` edit that is a substring of the user's name, that drops more informative tokens than it adds, that shares zero meaningful tokens (different entity), or that differs only in case/whitespace/punctuation. Catches "Rabbit anti-TH" → "Anti-TH", "Sprague-Dawley rats" → "Sprague-Dawley", "Sheep anti-TH" → "tyrosine hydroxylase", etc.
+
+Curated-DB hygiene applied upstream of suggestions (in `tmp/identifiers/build-curated-csvs.js`): per-entry URL hard cap (3), hostname-dedup, resolver-URL drop (a bare DOI suppresses the matching `https://doi.org/<DOI>` URL), and a generic-name guard that prevents "Cell culture", "Code", "Confocal images", etc. from merging across unrelated submissions.
 
 #### Software Detection
 - Detects software mentions in the manuscript via Softcite API
@@ -406,20 +417,20 @@ A carousel or expanded list of smart rules that check the DAS against the KRT co
 
 ```mermaid
 flowchart TD
-    A[Click Process New Version] --> B{New KRT file?}
-    B -->|No, keep current KRT| C[Reset to step_pdf]
-    B -->|Yes, upload new KRT| D[Reset to step_krt]
-    C --> E[Round incremented]
-    D --> E
-    E --> F[New PDF upload required]
+    A[Click Process New Version] --> B[Modal: pick new PDF + KRT choice]
+    B --> C[POST /new-round: round++ , status = step_krt]
+    C --> D[POST /pdf/upload: PDF stored on new round]
+    D --> E[Background pipeline cascades automatically]
+    E --> F[Land on Step 2 with KRT ready to review]
 ```
 
 - Click **Process New Version**
-- A modal asks: "Do you have a new KRT file?"
-  - **No, keep current KRT** → resets to `step_pdf` (skip KRT upload, go straight to PDF)
-  - **Yes, upload new KRT** → resets to `step_krt` (start from Step 1)
-- Increments `currentRound` (Version 2, 3, etc.)
-- A new PDF upload is always required
+- The modal collects two things up front:
+  - **New PDF** (required) — file picker, accepts PDF or DOCX. The file is uploaded immediately after the round bump, so the analysis pipeline is already running by the time the user lands on Step 2.
+  - **Do you have a new KRT file?** — radio choice. *No* keeps the current KRT (it is copied forward to the new round). *Yes* leaves the KRT empty so the user uploads a replacement on Step 2.
+- The submission always lands on `step_krt` (Step 2 in the UI). The dedicated `step_pdf` redirect is gone.
+- Increments `currentRound` (Version 2, 3, etc.).
+- A "Replace PDF" button on Step 2 provides the same upload affordance as a fallback for users who want to swap the manuscript later in the round (it cascades the analysis pipeline the same way).
 
 ### Excel Report Contents
 
@@ -520,28 +531,16 @@ flowchart TD
 
 ### Path with New Round (Revision)
 
+Both new-round paths (keep KRT / new KRT) now land on Step 2 (`step_krt`) because the modal collects the new PDF up front and the frontend uploads it immediately after bumping `currentRound`.
+
 ```mermaid
 flowchart TD
-    A[Step 5: Report generated] --> B[Process New Version]
-    B -->|Keep current KRT| C[Reset to step_pdf]
-    C --> D[Round incremented to V2]
-    D --> E[Step 2: Upload new PDF]
-    E --> F[Jobs run again]
+    A[Step 5: Report generated] --> B[Process New Version modal]
+    B --> C[Pick new PDF + 'Keep KRT' or 'Upload new KRT']
+    C --> D[Round incremented to V2 — status: step_krt]
+    D --> E[PDF auto-uploaded → analysis pipeline restarts]
+    E --> F[Step 2: KRT review<br/>carried-forward or blank, depending on choice]
     F --> G[Steps 3–5: Review → Availability → Report V2]
-
-    style A fill:#10b981,color:#fff
-    style D fill:#3b82f6,color:#fff
-```
-
-### Path with New Round + New KRT
-
-```mermaid
-flowchart TD
-    A[Step 5: Report generated] --> B[Process New Version]
-    B -->|Upload new KRT| C[Reset to step_krt]
-    C --> D[Round incremented to V2]
-    D --> E[Step 1: Upload new KRT → validate]
-    E --> F[Steps 2–5: Full workflow again V2]
 
     style A fill:#10b981,color:#fff
     style D fill:#3b82f6,color:#fff

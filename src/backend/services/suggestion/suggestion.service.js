@@ -152,7 +152,7 @@ async function getAllSuggestions(submissionId, round) {
  * change_log entry written by those helpers (`source='ai_suggestion'`)
  * provides the audit trail — no extra status flip needed.
  */
-async function approveSuggestion(submissionId, suggestionId, userId, modifiedValue) {
+async function approveSuggestion(submissionId, suggestionId, userId, modifiedValue, overrides = null) {
   const parsed = parseSuggestionId(suggestionId);
   if (!parsed) throw new NotFoundError('Suggestion');
 
@@ -164,13 +164,18 @@ async function approveSuggestion(submissionId, suggestionId, userId, modifiedVal
   }
 
   if (parsed.kind === 'add') {
+    // Per-field overrides let the user change one or more cells of the
+    // proposed add_row before approving (most commonly the Resource Type).
+    // Falsy/empty values are ignored so an empty form field doesn't blank
+    // out the detector's value.
+    const ov = overrides || {};
     await applyAddRow(submissionId, {
-      resourceType:          resource.resourceType,
-      resourceName:          resource.resourceName,
-      source:                resource.sourceUrl,
-      identifier:            resource.identifier,
-      newReuse:              resource.newReuse,
-      additionalInformation: resource.additionalInformation
+      resourceType:          ov.resourceType          || resource.resourceType,
+      resourceName:          ov.resourceName          || resource.resourceName,
+      source:                ov.source                || resource.sourceUrl,
+      identifier:            ov.identifier            || resource.identifier,
+      newReuse:              ov.newReuse              || resource.newReuse,
+      additionalInformation: ov.additionalInformation || resource.additionalInformation
     }, userId, r);
     return { description: resource.resourceName || resource.identifier, type: 'add_row' };
   }

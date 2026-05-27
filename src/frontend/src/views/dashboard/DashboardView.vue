@@ -608,7 +608,7 @@ const activeFilterCount = computed(() => {
       </p>
       <div class="mt-6">
         <button class="btn-primary" @click="handleCreateNew">
-          Create Submission
+          New Submission
         </button>
       </div>
     </div>

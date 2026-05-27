@@ -388,10 +388,12 @@ Generating your first report transitions the submission to **Completed** — the
 
 Need to make changes after completing?
 1. Open the completed submission from the Dashboard
-2. Click **Process New Version** on step 5 — a modal asks whether you have a new KRT file:
-   - **No, keep current KRT** → lands you at step 2 (PDF upload) for round N+1, carrying the existing KRT forward
-   - **Yes, upload new KRT** → lands you at step 1 (KRT upload) for round N+1
-3. Re-run the workflow and generate a new report (the "Previous Versions" accordion preserves earlier rounds)
+2. Click **Process New Version** on step 5. The modal asks for two things:
+   - **New PDF** (required) — pick the updated manuscript PDF (or DOCX). Uploaded immediately so the background analysis is already running by the time you land on the next step
+   - **Do you have a new KRT file?** — *No* keeps your current KRT (carried forward to the new round); *Yes* starts you with a blank KRT to upload
+3. You land on **step 2 (KRT)** for round N+1. The page shows your KRT (existing or blank) with the background processes already running on the new PDF.
+4. If you need to swap the PDF again later in the same round, use the **Replace PDF** button on step 2 — it kicks off the analysis pipeline the same way.
+5. Re-run the workflow and generate a new report (the "Previous Versions" accordion preserves earlier rounds)
 
 ---
 

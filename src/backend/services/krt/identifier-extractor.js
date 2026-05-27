@@ -42,7 +42,17 @@ const patterns = {
   genbank: /\b([A-Z]{1,2}\d{5,6}(\.\d+)?)\b/gi,
 
   // UniProt IDs
-  uniprot: /\b([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})\b/gi
+  uniprot: /\b([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})\b/gi,
+
+  // Oligonucleotide sequence: A/C/G/T/U/N (IUPAC ambiguity codes optional, but
+  // we accept just the canonical bases + N for unspecified). Whole-string
+  // match: only treat the cell as an oligo sequence if the ENTIRE trimmed
+  // value is bases, otherwise we'd treat e.g. "ACGT primer" as a sequence.
+  oligoSequence: /^[ACGTUN]{6,}$/i,
+
+  // BioStudies accession (S-BSSTxxxxx or S-BIADxxxxx). Whole-string match
+  // because the validator turns this into a DOI-suggestion ("Use 10.6019/X").
+  biostudiesAccession: /^S-(?:BSST|BIAD)\d+$/i
 };
 
 /**
@@ -65,7 +75,9 @@ function extractAll(text) {
       catalogNumber: null,
       pmid: null,
       genbank: null,
-      uniprot: null
+      uniprot: null,
+      oligoSequence: null,
+      biostudiesAccession: null
     };
   }
 
@@ -82,8 +94,35 @@ function extractAll(text) {
     catalogNumber: extractCatalogNumber(text),
     pmid: extractPMID(text),
     genbank: extractGenBank(text),
-    uniprot: extractUniProt(text)
+    uniprot: extractUniProt(text),
+    oligoSequence: extractOligoSequence(text),
+    biostudiesAccession: extractBiostudiesAccession(text)
   };
+}
+
+/**
+ * Whole-string oligonucleotide sequence (e.g. "ACGTACGTAA"). Returns the
+ * uppercased sequence string if the trimmed input matches the IUPAC base
+ * alphabet [ACGTUN] and is at least 6 bases long; null otherwise.
+ *
+ * The whole-string match matters — we don't want partial-match false positives
+ * like "ACGT was used as primer" being treated as an identifier.
+ */
+function extractOligoSequence(text) {
+  if (!text) return null;
+  const trimmed = text.trim();
+  return patterns.oligoSequence.test(trimmed) ? trimmed.toUpperCase() : null;
+}
+
+/**
+ * BioStudies accession (S-BSSTxxxxx / S-BIADxxxxx). Whole-string match
+ * because the validator uses the result to suggest the DOI form
+ * 10.6019/<accession>.
+ */
+function extractBiostudiesAccession(text) {
+  if (!text) return null;
+  const trimmed = text.trim();
+  return patterns.biostudiesAccession.test(trimmed) ? trimmed.toUpperCase() : null;
 }
 
 /**

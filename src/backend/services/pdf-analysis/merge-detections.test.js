@@ -5,12 +5,16 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { mergeDetections, mergeAdditionalInfo } = require('./merge-detections.service');
+const {
+  mergeDetections,
+  mergeAdditionalInfo,
+  normalizeResourceTypeKey
+} = require('./merge-detections.service');
 
 const itemAddRow = (overrides = {}) => ({
   type: 'add_row',
   data: {
-    resourceType: 'Code/Software',
+    resourceType: 'Software/code',
     resourceName: 'Python',
     source: 'https://python.org',
     identifier: '',
@@ -64,7 +68,7 @@ test('different new/reuse → NOT merged', () => {
 
 test('different resourceType → NOT merged', () => {
   const r = mergeDetections([
-    { source: 'software_detection', items: [itemAddRow({ resourceType: 'Code/Software', resourceName: 'X' })] },
+    { source: 'software_detection', items: [itemAddRow({ resourceType: 'Software/code', resourceName: 'X' })] },
     { source: 'datasets_detection', items: [itemAddRow({ resourceType: 'Dataset',       resourceName: 'X' })] }
   ]);
   assert.equal(r.length, 2);
@@ -172,7 +176,7 @@ const { outranks, SOURCE_PRECEDENCE } = require('./merge-detections.service');
 const c = (resourceName, identifier, sourceUrl, overrides = {}) => ({
   type: 'add_row',
   data: {
-    resourceType: 'Code/Software',
+    resourceType: 'Software/code',
     resourceName,
     source: sourceUrl,
     identifier,
@@ -326,4 +330,38 @@ test('precedence: additionalInformation is concatenated even when ID loses field
   ]);
   assert.match(r[0].additionalInformation, /id-context/);
   assert.match(r[0].additionalInformation, /sw-context/);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// resourceType normalization — "Code/Software" ↔ "Software/code" synonym
+// ───────────────────────────────────────────────────────────────────────────
+
+test('normalizeResourceTypeKey: software variants collapse to one key', () => {
+  assert.equal(normalizeResourceTypeKey('Code/Software'), 'software/code');
+  assert.equal(normalizeResourceTypeKey('Software/code'), 'software/code');
+  assert.equal(normalizeResourceTypeKey('software'),      'software/code');
+  assert.equal(normalizeResourceTypeKey('Code'),          'software/code');
+});
+
+test('normalizeResourceTypeKey: other types pass through (lowercased, trimmed)', () => {
+  assert.equal(normalizeResourceTypeKey('Antibody'), 'antibody');
+  assert.equal(normalizeResourceTypeKey('Dataset'),  'dataset');
+  assert.equal(normalizeResourceTypeKey('  Experimental model: Cell line '), 'experimental model: cell line');
+});
+
+test('mergeDetections: Code/Software and Software/code merge as one', () => {
+  // Reproduces the Fiji duplicate from production: software_detection emits
+  // "Software/code", identifier scanner emits "Code/Software" from the
+  // curated DB. They must merge on shared identifier despite the label
+  // mismatch.
+  const r = mergeDetections([
+    { source: 'software_detection', items: [
+      itemAddRow({ resourceType: 'Software/code', resourceName: 'Fiji', identifier: 'RRID:SCR_002285' })
+    ]},
+    { source: 'identifier_detection', items: [
+      itemAddRow({ resourceType: 'Code/Software', resourceName: 'Fiji', identifier: 'RRID:SCR_002285' })
+    ]}
+  ]);
+  assert.equal(r.length, 1, 'Fiji must merge into a single entry across type variants');
+  assert.equal(r[0].detectedBy.length, 2);
 });

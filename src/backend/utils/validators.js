@@ -249,14 +249,50 @@ const requestSchemas = {
   }),
 
   // ── Submission flow: suggestion approve / reject ──────────────────
+  // `overrides` lets the user change one or more fields BEFORE approving an
+  // add_row suggestion — for example, picking a different Resource Type than
+  // the one the detector suggested. Per-field max lengths match the KRT
+  // column caps in seeders/20250101000002-seed-config.js.
   approveSuggestion: Joi.object({
     suggestionId: Joi.string().trim().min(1).max(500).required(),
-    modifiedValue: Joi.string().max(5000).allow('', null)
+    modifiedValue: Joi.string().max(5000).allow('', null),
+    overrides: Joi.object({
+      resourceType: Joi.string().trim().max(255).allow('', null),
+      resourceName: Joi.string().trim().max(500).allow('', null),
+      source: Joi.string().trim().max(500).allow('', null),
+      identifier: Joi.string().trim().max(500).allow('', null),
+      newReuse: Joi.string().trim().max(20).allow('', null),
+      additionalInformation: Joi.string().max(2000).allow('', null)
+    }).optional()
   }),
 
   rejectSuggestion: Joi.object({
     suggestionId: Joi.string().trim().min(1).max(500).required(),
     reason: Joi.string().trim().max(2000).allow('', null)
+  }),
+
+  // Bulk variants — same per-item shapes as the single endpoints, capped to
+  // keep request bodies reasonable (UI rarely selects more than a screen full).
+  bulkApproveSuggestions: Joi.object({
+    items: Joi.array().items(Joi.object({
+      suggestionId: Joi.string().trim().min(1).max(500).required(),
+      modifiedValue: Joi.string().max(5000).allow('', null),
+      overrides: Joi.object({
+        resourceType: Joi.string().trim().max(255).allow('', null),
+        resourceName: Joi.string().trim().max(500).allow('', null),
+        source: Joi.string().trim().max(500).allow('', null),
+        identifier: Joi.string().trim().max(500).allow('', null),
+        newReuse: Joi.string().trim().max(20).allow('', null),
+        additionalInformation: Joi.string().max(2000).allow('', null)
+      }).optional()
+    })).min(1).max(500).required()
+  }),
+
+  bulkRejectSuggestions: Joi.object({
+    items: Joi.array().items(Joi.object({
+      suggestionId: Joi.string().trim().min(1).max(500).required(),
+      reason: Joi.string().trim().max(2000).allow('', null)
+    })).min(1).max(500).required()
   }),
 
   // ── Submission flow: generate report ──────────────────────────────

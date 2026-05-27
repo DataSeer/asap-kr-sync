@@ -133,7 +133,7 @@ test('namesMatch: empty → no match', () => {
 
 test('computeDedupKey: stable across input shapes', () => {
   const k1 = computeDedupKey({
-    resourceType: 'Code/Software',
+    resourceType: 'Software/code',
     resourceName: 'Python',
     newReuse: 'reuse',
     identifier: 'https://doi.org/10.1234/abc'
@@ -148,7 +148,7 @@ test('computeDedupKey: stable across input shapes', () => {
 });
 
 test('computeDedupKey: different new/reuse → different keys', () => {
-  const base = { resourceType: 'Code/Software', resourceName: 'Python', identifier: '' };
+  const base = { resourceType: 'Software/code', resourceName: 'Python', identifier: '' };
   assert.notEqual(
     computeDedupKey({ ...base, newReuse: 'new' }),
     computeDedupKey({ ...base, newReuse: 'reuse' })

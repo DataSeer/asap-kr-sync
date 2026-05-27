@@ -19,7 +19,7 @@ const assert = require('node:assert/strict');
 const { dedupeKrtItems } = require('./dedupe-krt-items.service');
 
 const krtItem = (overrides = {}) => ({
-  resourceType: 'Code/Software',
+  resourceType: 'Software/code',
   resourceName: 'Python',
   identifier: '',
   source: '',
@@ -66,7 +66,7 @@ test('two items same normalized name → merged', () => {
 
 test('different resourceType → NOT merged', () => {
   const r = dedupeKrtItems([
-    krtItem({ resourceType: 'Code/Software', resourceName: 'X', identifier: 'shared-id' }),
+    krtItem({ resourceType: 'Software/code', resourceName: 'X', identifier: 'shared-id' }),
     krtItem({ resourceType: 'Dataset',       resourceName: 'X', identifier: 'shared-id' })
   ]);
   assert.equal(r.length, 2);

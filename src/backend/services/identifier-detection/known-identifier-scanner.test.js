@@ -20,7 +20,7 @@ const { scan, findReferencesCutoff } = require('./known-identifier-scanner.servi
 const FIJI = {
   id: 'e-fiji',
   category: 'software',
-  resourceType: 'Code/Software',
+  resourceType: 'Software/code',
   resourceName: 'Fiji',
   source: 'https://fiji.sc',
   identifier: 'RRID:SCR_002285',
@@ -209,7 +209,7 @@ test('scan: multi-identifier resource emits ONE match with highest relevance', (
   const fijiUrl = {
     id: 'e-fiji-url',
     category: 'software',
-    resourceType: 'Code/Software',
+    resourceType: 'Software/code',
     resourceName: 'Fiji',
     source: 'https://fiji.sc',
     identifier: 'https://fiji.sc',

@@ -133,12 +133,12 @@ function getStepStatus(step) {
           <div>
             <h3 class="font-medium text-gray-900">
               Step {{ step }}:
-              {{ ['Upload KRT', 'Upload PDF & Analyze', 'Review Changes', 'Availability Statement', 'Generate Report'][step - 1] }}
+              {{ ['Upload Key Resources Table', 'Upload PDF & Analyze', 'Review Changes', 'Availability Statement', 'Generate Report'][step - 1] }}
             </h3>
             <p class="text-sm text-gray-500 mt-1">
               {{
                 [
-                  'Upload and validate your Key Resource Table',
+                  'Upload and validate your Key Resources Table',
                   'Upload manuscript PDF for AI analysis',
                   'Review and approve suggested changes',
                   'Review your Data/Code Availability Statement',

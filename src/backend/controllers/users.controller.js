@@ -69,7 +69,10 @@ async function list(req, res, next) {
 
     const { count, rows } = await User.findAndCountAll({
       where: whereClause,
-      attributes: ['id', 'email', 'name', 'role', 'createdAt'],
+      // `auth0Sub` is needed so toJSON() can compute the `isAuth0User` flag.
+      // The toJSON method strips the raw value before serialization — only
+      // the boolean leaves the server.
+      attributes: ['id', 'email', 'name', 'role', 'createdAt', 'auth0Sub'],
       include: [{
         model: UserTeam,
         as: 'userTeams',
@@ -104,7 +107,7 @@ async function list(req, res, next) {
 async function getById(req, res, next) {
   try {
     const user = await User.findByPk(req.params.id, {
-      attributes: ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt', 'auth0Sub'],
       include: [{
         model: UserTeam,
         as: 'userTeams',

@@ -88,7 +88,14 @@ const rejectReasonRef = ref(null)
 const textareaRef = ref(null)
 const selectRef = ref(null)
 watch(() => props.show, async (visible) => {
-  if (!visible) return
+  if (!visible) {
+    // Reset the inline-reject sub-form whenever the outer modal closes,
+    // otherwise the previous reason text and the open reject sub-form
+    // bleed into the next cell the user opens.
+    showRejectReason.value = false
+    rejectReasonText.value = ''
+    return
+  }
   await nextTick()
   if (textareaRef.value) {
     textareaRef.value.focus()

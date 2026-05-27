@@ -207,7 +207,19 @@ async function handleCreateUser() {
         <tbody class="bg-white divide-y divide-gray-200">
           <tr v-for="user in users" :key="user.id">
             <td class="px-6 py-4 whitespace-nowrap">
-              <div class="font-medium text-gray-900">{{ user.name }}</div>
+              <div class="flex items-center gap-2">
+                <span class="font-medium text-gray-900">{{ user.name }}</span>
+                <!-- ASAP Hub badge — user authenticated via Auth0; their
+                     password is managed by the identity provider, not us.
+                     This is the visible audit signal asked for by the team. -->
+                <span
+                  v-if="user.isAuth0User"
+                  class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700"
+                  title="Authenticated via ASAP Hub (Auth0) — password is managed by the identity provider"
+                >
+                  ASAP Hub
+                </span>
+              </div>
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-gray-500">
               {{ user.email }}

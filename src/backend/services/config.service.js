@@ -56,7 +56,7 @@ async function getResourceTypes() {
 /**
  * Get resource type group order mapping from database (cached).
  * Maps resource type name → sort group number (0=dataset, 1=software, 2=protocol, 3=lab_material).
- * @returns {Promise<object>} e.g., { "Dataset": 0, "Code/Software": 1, "Antibody": 3, ... }
+ * @returns {Promise<object>} e.g., { "Dataset": 0, "Software/code": 1, "Antibody": 3, ... }
  */
 async function getResourceTypeGroupOrder() {
   if (isEntryValid(cache.resourceTypeGroupOrder) && cache.resourceTypeGroupOrder.data !== null) {
@@ -70,6 +70,19 @@ async function getResourceTypeGroupOrder() {
     mapping[item.name] = typeOrder[item.type] ?? 3;
   }
   cache.resourceTypeGroupOrder = { data: mapping, refreshedAt: Date.now() };
+  return mapping;
+}
+
+/**
+ * Per-resource-type sort order (the position within the active list ordered
+ * by sort_order ASC). Used as the secondary sort key in downloads / the KRT
+ * editor so e.g. Antibody comes before Bacterial strain within Lab Materials.
+ * @returns {Promise<object>} name → integer position
+ */
+async function getResourceTypeSortOrder() {
+  const items = await ResourceType.getActiveWithType();
+  const mapping = {};
+  items.forEach((item, idx) => { mapping[item.name] = idx; });
   return mapping;
 }
 
@@ -125,6 +138,7 @@ module.exports = {
   getTeams,
   getResourceTypes,
   getResourceTypeGroupOrder,
+  getResourceTypeSortOrder,
   getValidationRules,
   invalidateCache,
   initialize
