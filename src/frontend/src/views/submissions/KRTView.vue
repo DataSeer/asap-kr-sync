@@ -789,6 +789,5 @@ function scrollToFirstWarning() {
         @revalidate="handleValidate"
       />
     </div>
-
   </div>
 </template>

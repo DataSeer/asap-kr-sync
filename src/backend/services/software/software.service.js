@@ -194,9 +194,10 @@ function buildKrtItemsSoftware(rawItems) {
         normalizedName: m.normalizedName || '',
         version: m.version || '',
         creator: m.creator || '',
-        context: m.additionalInformation || m.context || '',
-        // The Softcite Detection panel reads `context` directly; keep it
-        // alongside additionalInformation so existing consumers don't break.
+        // The Softcite Detection panel reads `context` directly; preserve
+        // the raw Softcite context blurb alongside additionalInformation so
+        // both consumers (panel + downstream enrichment) have what they need.
+        additionalInformation: m.additionalInformation || m.context || '',
         context: m.context || ''
       }
     };

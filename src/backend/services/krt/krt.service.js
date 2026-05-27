@@ -42,7 +42,7 @@ async function uploadAndProcess(submissionId, file, userId, round = 1) {
     });
     const expectedColumns = KRT_COLUMNS.join(', ');
     throw new ValidationError(
-      `This file doesn't look like a Key Resources Table. ` +
+      "This file doesn't look like a Key Resources Table. " +
       `Make sure the first row contains the column headers: ${expectedColumns}. ` +
       `(Missing or unrecognized: ${columnValidation.missingColumns.join(', ')}.)`
     );

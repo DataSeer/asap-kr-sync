@@ -42,7 +42,11 @@ test('buildKrtItemsSoftware: Softcite-shape → canonical KrtEntry', () => {
   assert.equal(item.source, 'https://mathworks.com');
   assert.equal(item.confidence, 0.9);
   assert.equal(item.origin, 'softcite');
-  assert.equal(item.additionalInformation, 'Statistics computed in MATLAB R2019b.');
+  // Per ASAP request: do NOT push the detector context blurb into the
+  // user-facing ADDITIONAL INFORMATION cell. It lives on detectorMeta
+  // (both `context` for the panel and `additionalInformation` for
+  // downstream enrichment) instead.
+  assert.equal(item.additionalInformation, '');
   // Softcite-specific fields go to detectorMeta
   assert.equal(item.detectorMeta.softciteName, 'MATLAB R2019b');
   assert.equal(item.detectorMeta.normalizedName, 'MATLAB');

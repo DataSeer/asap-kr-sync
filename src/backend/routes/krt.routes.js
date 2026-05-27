@@ -64,7 +64,7 @@ router.post(
         return res.status(400).json({
           valid: false,
           error:
-            `This file doesn't look like a Key Resources Table. ` +
+            "This file doesn't look like a Key Resources Table. " +
             `Make sure the first row contains the column headers: ${KRT_COLUMNS.join(', ')}.`,
           missingColumns: columnValidation.missingColumns
         });

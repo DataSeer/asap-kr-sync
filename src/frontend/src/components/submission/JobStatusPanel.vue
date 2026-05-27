@@ -1461,10 +1461,11 @@ async function downloadMarkdownFile(fileId) {
                           'pdf-analysis-row',
                           row.groupIndex % 2 === 0 ? 'pdf-analysis-group-even' : 'pdf-analysis-group-odd',
                           { 'pdf-analysis-row-duplicate': row.isDuplicate,
-                            'pdf-analysis-group-start':   row.isGroupStart,
-                            'pdf-analysis-group-end':     row.isGroupEnd,
-                            'pdf-analysis-group-merged':  row.groupSize > 1 }
-                        ]">
+                            'pdf-analysis-group-start': row.isGroupStart,
+                            'pdf-analysis-group-end': row.isGroupEnd,
+                            'pdf-analysis-group-merged': row.groupSize > 1 }
+                        ]"
+                      >
                         <td>
                           <span v-if="row.source" class="job-modal-source-badge source-enriched">
                             {{ pdfAnalysisSourceLabel(row.source) }}

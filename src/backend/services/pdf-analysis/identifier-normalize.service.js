@@ -174,8 +174,25 @@ function namesMatch(a, b) {
  * If multiple identifier tokens exist, pick the lexicographically smallest
  * for stability across re-runs.
  */
+/**
+ * Canonicalize resourceType strings so synonyms collapse onto one key in
+ * dedup / merge / lookup paths. Today this only matters for the
+ * "Code/Software" ↔ "Software/code" pair — the EnrichmentListEntry table
+ * still uses the historic label while submissions use the renamed form,
+ * and we want both to land on a single bar. Other types pass through
+ * lowercased+trimmed.
+ */
+function normalizeResourceTypeKey(value) {
+  const lc = String(value ?? '').toLowerCase().trim();
+  if (!lc) return '';
+  if (lc === 'code/software' || lc === 'software/code' || lc === 'code' || lc === 'software') {
+    return 'software/code';
+  }
+  return lc;
+}
+
 function computeDedupKey(resource) {
-  const type = String(resource.resourceType || resource.resource_type || '').toLowerCase().trim();
+  const type = normalizeResourceTypeKey(resource.resourceType || resource.resource_type || '');
   const newReuse = String(resource.newReuse || resource.new_reuse || '').toLowerCase().trim();
   const idField = resource.identifier ?? resource.IDENTIFIER ?? '';
   const nameField = resource.resourceName ?? resource.resource_name ?? resource.RESOURCE_NAME ?? '';
@@ -200,6 +217,7 @@ function computeDedupKey(resource) {
 module.exports = {
   normalizeRawValue,
   normalizeName,
+  normalizeResourceTypeKey,
   extractIdentifierTokens,
   identifiersMatch,
   namesMatch,
