@@ -71,7 +71,14 @@ function getJob(type) {
   // through the exposed function keeps reactivity working across the boundary.
   return bgProcessesRef.value?.getJob?.(type) || null
 }
-const jobs = computed(() => bgProcessesRef.value?.jobs?.value || {})
+// `defineExpose` auto-unwraps refs through the component proxy, so
+// `bgProcessesRef.value.jobs` is already the underlying jobs map — adding
+// `.value` reads from a plain object and yields `undefined`, freezing this
+// computed to `{}` for the lifetime of the page. That breaks every downstream
+// computed that relies on it (anyProcessFinished, allProcessesFinished),
+// which in turn keeps the "Suggestions will be automatically populated"
+// empty-state visible even after every job has hit 'complete'.
+const jobs = computed(() => bgProcessesRef.value?.jobs || {})
 
 // Derive analyzing state from job poller
 const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))

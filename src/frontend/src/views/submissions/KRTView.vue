@@ -222,6 +222,39 @@ const proceedBlockedReason = computed(() => {
   return ''
 })
 
+/**
+ * Wire job-completion side-effects into the shared BackgroundProcesses
+ * wrapper. Mirrors PDFView::registerJobCallbacks — the user can sit on
+ * Step 2 while the background pipeline runs, and suggestions should
+ * populate automatically the moment pdf_analysis finishes. Without
+ * this, the curator has to refresh the page to see anything
+ * (the empty-state hint stays put even after "8/8 done").
+ */
+function registerJobCallbacks() {
+  const bg = bgProcessesRef.value
+  if (!bg) return
+
+  bg.onJobComplete('pdf_analysis', async () => {
+    await krtStore.fetchAiSuggestions(route.params.id)
+    notificationStore.success('AI suggestions ready')
+  })
+  bg.onJobFailed('pdf_analysis', () => {
+    notificationStore.error('Manuscript analysis failed — suggestions unavailable')
+  })
+  bg.onJobPendingInput('pdf_analysis', () => {
+    notificationStore.info(
+      'Availability Statement not found — please enter it manually, then start the analysis.',
+      30000
+    )
+  })
+  // DAS extraction updates submission.dataAvailabilityStatement; refresh
+  // the cached submission so the header (and any "DAS detected" pill)
+  // picks up the new text without requiring a navigation away and back.
+  bg.onJobComplete('das_extraction', async () => {
+    await submissionStore.fetchSubmission(route.params.id)
+  })
+}
+
 onMounted(async () => {
   // Reset local state for new submission
   uploading.value = false
@@ -232,6 +265,12 @@ onMounted(async () => {
 
   // Clear previous KRT data before loading new submission
   krtStore.clearKRT()
+
+  // BackgroundProcesses child mounts before the parent, so its ref is
+  // bound by the time we get here — wire our callbacks into the shared
+  // poller now so we don't miss any job-completion events that fire
+  // before the initial fetch settles.
+  registerJobCallbacks()
 
   await submissionStore.fetchSubmission(route.params.id)
   if (submission.value && submission.value.status !== 'draft') {
