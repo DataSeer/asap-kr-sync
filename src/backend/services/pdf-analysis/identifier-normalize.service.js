@@ -191,6 +191,27 @@ function normalizeResourceTypeKey(value) {
   return lc;
 }
 
+/**
+ * Display-form canonical resourceType. Like normalizeResourceTypeKey but
+ * returns the title-case label the rest of the app uses ("Software/code")
+ * instead of the lowercase merge key. Use this at emission boundaries —
+ * detectors / scanners — so DB rows that still carry the historic
+ * "Code/Software" spelling land on the KRT as "Software/code".
+ *
+ * Returns the input trimmed unchanged when no canonicalisation applies,
+ * so unfamiliar resourceTypes (Antibody, Recombinant DNA, etc.) pass
+ * through cleanly.
+ */
+function canonicalResourceType(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const lc = raw.toLowerCase();
+  if (lc === 'code/software' || lc === 'software/code' || lc === 'code' || lc === 'software') {
+    return 'Software/code';
+  }
+  return raw;
+}
+
 function computeDedupKey(resource) {
   const type = normalizeResourceTypeKey(resource.resourceType || resource.resource_type || '');
   const newReuse = String(resource.newReuse || resource.new_reuse || '').toLowerCase().trim();
@@ -218,6 +239,7 @@ module.exports = {
   normalizeRawValue,
   normalizeName,
   normalizeResourceTypeKey,
+  canonicalResourceType,
   extractIdentifierTokens,
   identifiersMatch,
   namesMatch,

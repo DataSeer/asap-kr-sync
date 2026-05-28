@@ -317,7 +317,7 @@ flowchart TD
 - **Red rows** — deleted
 - **Source tags** on each change: "AI", "Val" (validation), "User"
 
-**Filter tabs:** All, Datasets, Code/Software, Protocols, Key Lab Materials — each showing a resource count.
+**Filter tabs:** All, Datasets, Software/code, Protocols, Key Lab Materials — each showing a resource count.
 
 **Show Changes toggle:**
 - ON: Shows color-coded changes with source tags

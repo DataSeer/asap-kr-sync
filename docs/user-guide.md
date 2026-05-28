@@ -129,7 +129,7 @@ A Key Resource Table is a standardized document that lists all the key resources
 KR-Sync ships with 14 seeded resource types (the list is admin-editable from the Resource Types page):
 
 1. Dataset
-2. Code/Software
+2. Software/code
 3. Protocol
 4. Antibody
 5. Bacterial strain

@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const {
   normalizeRawValue,
   normalizeName,
+  canonicalResourceType,
   extractIdentifierTokens,
   identifiersMatch,
   namesMatch,
@@ -179,4 +180,29 @@ test('computeDedupKey: no identifier → uses name', () => {
     resourceName: 'PYTHON', identifier: null
   });
   assert.equal(k1, k2);
+});
+
+// ---------- canonicalResourceType ----------
+
+test('canonicalResourceType: collapses Code/Software variants to "Software/code"', () => {
+  assert.equal(canonicalResourceType('Code/Software'), 'Software/code');
+  assert.equal(canonicalResourceType('code/software'), 'Software/code');
+  assert.equal(canonicalResourceType('Software/code'), 'Software/code');
+  assert.equal(canonicalResourceType('software/code'), 'Software/code');
+  assert.equal(canonicalResourceType('Code'),          'Software/code');
+  assert.equal(canonicalResourceType('software'),      'Software/code');
+});
+
+test('canonicalResourceType: unknown types pass through trimmed (case preserved)', () => {
+  assert.equal(canonicalResourceType('Antibody'),                            'Antibody');
+  assert.equal(canonicalResourceType('Dataset'),                             'Dataset');
+  assert.equal(canonicalResourceType('  Experimental model: Cell line '),    'Experimental model: Cell line');
+  assert.equal(canonicalResourceType('Recombinant DNA'),                     'Recombinant DNA');
+});
+
+test('canonicalResourceType: empty / null / undefined → empty string', () => {
+  assert.equal(canonicalResourceType(''),         '');
+  assert.equal(canonicalResourceType('   '),      '');
+  assert.equal(canonicalResourceType(null),       '');
+  assert.equal(canonicalResourceType(undefined),  '');
 });

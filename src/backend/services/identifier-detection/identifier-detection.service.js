@@ -28,6 +28,7 @@ const { runWithDemoFallback } = require('../demo-fallback.service');
 const knownIdentifierIndex = require('./known-identifier-index.service');
 const knownIdentifierScanner = require('./known-identifier-scanner.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
+const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
 
 // Confidence floor we hand to merge-detections for tiebreaking. Identifier
@@ -144,7 +145,13 @@ function buildKrtItemsIdentifier(matches, markdownText) {
   if (!Array.isArray(matches)) return [];
   return matches.map(m => {
     const entry = m.entry;
-    const resourceType = entry.resourceType || CATEGORY_FALLBACK_TYPE[entry.category] || 'Resource';
+    // EnrichmentListEntry rows can still carry the historic "Code/Software"
+    // label; canonicalResourceType maps it to the current "Software/code"
+    // spelling so detected items don't trip the KRT validator's
+    // resource-type check downstream.
+    const resourceType = canonicalResourceType(
+      entry.resourceType || CATEGORY_FALLBACK_TYPE[entry.category] || 'Resource'
+    );
     return {
       resourceType,
       resourceName: entry.resourceName || '',

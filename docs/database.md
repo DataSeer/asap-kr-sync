@@ -166,7 +166,7 @@ There is **one** `enrichment_list_entries` table backing all four curated lists.
 |--------|------|-------|
 | `id` | UUID (PK) | Auto-generated |
 | `category` | VARCHAR(20) | `software`, `materials`, `datasets`, or `protocols` (enforced at the model layer via `isIn`) |
-| `resource_type` | VARCHAR(100) | KRT resource type (e.g., "Code/Software", "Dataset", "Antibody") |
+| `resource_type` | VARCHAR(100) | KRT resource type (e.g., "Software/code", "Dataset", "Antibody"). Historic "Code/Software" rows from before the 20260522 rename are migrated to "Software/code" by 20260528120000 — the backend also normalises at the emission boundary (`canonicalResourceType`) as a belt-and-braces guard. |
 | `resource_name` | VARCHAR(1000) | Resource name (required) — widened from 500 by migration 20260511160000 |
 | `source` | TEXT | URL, vendor, repository — widened from VARCHAR(500) by migration 20260512120000 |
 | `identifier` | TEXT | RRID, DOI, catalog number, etc. — widened from VARCHAR(500) by migration 20260511160000 |
