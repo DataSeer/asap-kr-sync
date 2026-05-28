@@ -24,7 +24,10 @@ const logger = require('../../utils/logger');
  *   - Omitted → always auto-advances.
  */
 const PIPELINE = [
-  { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [] },
+  // DAS extraction now reads the converted markdown (Gemini-based, replaces
+  // the Modal Llama fine-tune that ate the PDF directly), so it depends on
+  // MARKDOWN_CONVERT just like the other Gemini-based detectors.
+  { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
   { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [] },
   { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [] },
   { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [] },

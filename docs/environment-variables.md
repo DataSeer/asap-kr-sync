@@ -80,17 +80,21 @@ PDF Analysis is in-app since the `pdf_analysis` module landed — it merges ever
 | `PDF_ANALYSIS_DEMO_DATA_ENABLED` | Demo data fallback | `false` | No |
 | `PDF_ANALYSIS_API_BASE_URL` / `PDF_ANALYSIS_API_KEY` / `PDF_ANALYSIS_API_TIMEOUT` | Vestigial — unused by code | — | No |
 
-## DAS Extractor API
+## DAS Extraction (Google Gemini)
+
+Reads the converted manuscript markdown (produced by Markdown Convert)
+and asks Gemini to copy the requested section verbatim. Replaces the
+previous Modal-hosted Llama fine-tune endpoint (`PDF_DAS_EXTRACTOR_*`,
+removed). The DAS Extraction job now depends on Markdown Convert.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `PDF_DAS_EXTRACTOR_ENABLED` | Enable DAS extraction | `false` | No |
-| `PDF_DAS_EXTRACTOR_API_BASE_URL` | Modal API base URL | — | If enabled |
-| `PDF_DAS_EXTRACTOR_API_KEY` | API key | — | If enabled |
-| `PDF_DAS_EXTRACTOR_API_TIMEOUT` | Request timeout (ms) | `300000` | No |
-| `PDF_DAS_EXTRACTOR_SECTION` | Which section to extract (`das`, `funding_statement`, `patient_informed_consent_statement`, …) | `das` | No |
-| `PDF_DAS_EXTRACTOR_CONVERTER` | PDF→text converter used by the model (`markitdown` default; `docling` has higher recall on harder sections) | `markitdown` | No |
-| `PDF_DAS_EXTRACTOR_DEMO_DATA_ENABLED` | Demo data fallback | `true` | No |
+| `DAS_EXTRACTION_ENABLED` | Set to `false` to skip DAS extraction | `true` | No |
+| `DAS_EXTRACTION_GEMINI_API_KEY` | Per-service Gemini API key | — | If enabled |
+| `DAS_EXTRACTION_GEMINI_MODEL` | Gemini model | `gemini-2.5-flash` | No |
+| `DAS_EXTRACTION_API_TIMEOUT` | Request timeout (ms) | `120000` | No |
+| `DAS_EXTRACTION_SECTION` | Which section to extract (`das`, `funding_statement`, `patient_informed_consent_statement`, `ethics_statement`, `author_contributions`, `acknowledgements`, `coi_statement`, `keywords`) | `das` | No |
+| `DAS_EXTRACTION_DEMO_DATA_ENABLED` | Demo data fallback | `true` | No |
 
 ## Softcite API (Software Detection)
 

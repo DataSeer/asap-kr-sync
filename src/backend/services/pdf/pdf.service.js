@@ -9,8 +9,8 @@
 
 const { sequelize, File, ChangeLog, KRTData, ValidationResult, Submission, SubmissionJob } = require('../../models');
 const s3Service = require('../storage/s3.service');
-const dasExtractorClient = require('./pdf-das-extractor-client.service');
-const dasExtractorConfig = require('../../config/pdf-das-extractor-api');
+const dasExtractionService = require('./das-extraction.service');
+const dasExtractionConfig = require('../../config/das-extraction-api');
 const jobQueue = require('../queue/job-queue.service');
 const { generateS3Key } = require('../../utils/helpers');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
@@ -521,8 +521,8 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
   if (!submission) throw new NotFoundError('Submission');
 
   const result = await runWithDemoFallback({
-    isExternalEnabled: dasExtractorConfig.isConfigured(),
-    demoEnabled: process.env.PDF_DAS_EXTRACTOR_DEMO_DATA_ENABLED !== 'false',
+    isExternalEnabled: dasExtractionConfig.isConfigured() && dasExtractionService.hasPrompt(),
+    demoEnabled: process.env.DAS_EXTRACTION_DEMO_DATA_ENABLED !== 'false',
     runExternal: () => runDasExtractor(submission, jobLogger),
     getDemoData: async () => {
       const das = demoDataService.getDemoDAS(submission.manuscriptId);
@@ -543,7 +543,7 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
   submission.dataAvailabilityStatement = persisted;
   await submission.save();
 
-  logger.info('PDF_DAS_EXTRACTOR done', {
+  logger.info('DAS_EXTRACTION done', {
     submissionId,
     status: result.status, source: result.source,
     dasLength: das?.length || 0
@@ -553,34 +553,66 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
 }
 
 /**
- * Call the external DAS extractor API. Returns the helper-shaped { items, meta }
- * with the DAS text in meta.das (so the worker can read it without reaching
- * into items).
+ * Call Gemini to extract the configured section (default `das`) from the
+ * converted manuscript markdown. Returns the helper-shaped
+ * `{ items, meta }` with the DAS text in `meta.das` and the structured
+ * Gemini metadata (`partialMatch`, `sectionFragmented`) alongside it so
+ * the worker / UI can surface those flags later if useful.
+ *
+ * The markdown comes from the Markdown Convert job's S3 output — DAS
+ * extraction now depends on MARKDOWN_CONVERT in the orchestrator
+ * PIPELINE.
  */
 async function runDasExtractor(submission, jobLogger) {
   const submissionId = submission.id;
+  const round = submission.currentRound || 1;
 
-  const pdfFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.PDF },
+  const mdFile = await File.findOne({
+    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
     order: [['version', 'DESC']]
   });
-  if (!pdfFile) throw new Error('No PDF file found for DAS extraction');
+  if (!mdFile) throw new Error('No markdown file found for DAS extraction (Markdown Convert must run first)');
 
-  const pdfBuffer = await s3Service.downloadFile(pdfFile.s3Key);
-  jobLogger?.log('das_api_start', 'Calling DAS extractor API');
-  const extractedDas = await dasExtractorClient.extractDAS(pdfBuffer, pdfFile.fileName);
-  await jobLogger?.saveRawResponse('das-extractor-response', { das: extractedDas });
-  jobLogger?.log('das_api_done', 'DAS extractor returned', { dasLength: extractedDas?.length || 0 });
+  jobLogger?.log('download_markdown', 'Downloading markdown from S3', {
+    fileName: mdFile.fileName, s3Key: mdFile.s3Key
+  });
+  const mdBuffer = await s3Service.downloadFile(mdFile.s3Key);
+  const markdownText = mdBuffer.toString('utf-8');
+  jobLogger?.log('download_markdown_done', 'Markdown downloaded', {
+    markdownLength: markdownText.length
+  });
 
-  if (!extractedDas) {
+  jobLogger?.log('das_api_start', 'Calling Gemini for DAS extraction');
+  const extracted = await dasExtractionService.extractDAS(markdownText);
+  await jobLogger?.saveRawResponse('das-extractor-response', extracted);
+  jobLogger?.log('das_api_done', 'DAS extractor returned', {
+    dasLength: extracted?.content?.length || 0,
+    partialMatch: !!extracted?.partialMatch,
+    sectionFragmented: !!extracted?.sectionFragmented
+  });
+
+  const dasContent = extracted?.content || null;
+  if (!dasContent) {
     // External returned an empty DAS — still a valid "Done" outcome (status
     // distinguishes empty-from-external vs no-attempt).
-    return { items: [], meta: { das: null, dasLength: 0 } };
+    return {
+      items: [],
+      meta: {
+        das: null, dasLength: 0,
+        partialMatch: !!extracted?.partialMatch,
+        sectionFragmented: !!extracted?.sectionFragmented
+      }
+    };
   }
 
   return {
-    items: [{ das: extractedDas }],
-    meta: { das: extractedDas, dasLength: extractedDas.length }
+    items: [{ das: dasContent }],
+    meta: {
+      das: dasContent,
+      dasLength: dasContent.length,
+      partialMatch: !!extracted.partialMatch,
+      sectionFragmented: !!extracted.sectionFragmented
+    }
   };
 }
 
@@ -608,7 +640,7 @@ async function queueDASExtraction(submissionId, round = 1) {
       submissionJobId: submissionJob.id
     },
     {
-      // retryLimit and expireIn derived from JOB_CONFIG (PDF_DAS_EXTRACTOR_API_TIMEOUT)
+      // retryLimit and expireIn derived from JOB_CONFIG (DAS_EXTRACTION_API_TIMEOUT)
     }
   );
 

@@ -24,7 +24,7 @@ const { registerRefreshTokenCleanup } = require('../auth/refresh-token-cleanup')
 const { configState, isFinalAttempt: helperIsFinalAttempt } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
 
-const dasExtractorConfig = require('../../config/pdf-das-extractor-api');
+const dasExtractionConfig = require('../../config/das-extraction-api');
 const softciteConfig = require('../../config/softcite-api');
 const grobidConfig = require('../../config/grobid-api');
 const markdownConfig = require('../../config/pdf-markdown-api');
@@ -42,8 +42,8 @@ const pdfAnalysisConfig = require('../../config/pdf-analysis-api');
  */
 const SERVICE_CFG = {
   das_extraction: {
-    isExternalEnabled: () => dasExtractorConfig.isConfigured(),
-    isDemoEnabled: () => process.env.PDF_DAS_EXTRACTOR_DEMO_DATA_ENABLED !== 'false'
+    isExternalEnabled: () => dasExtractionConfig.isConfigured(),
+    isDemoEnabled: () => process.env.DAS_EXTRACTION_DEMO_DATA_ENABLED !== 'false'
   },
   pdf_analysis: {
     isExternalEnabled: () => pdfAnalysisConfig.isConfigured(),
@@ -220,7 +220,7 @@ async function initializeWorkers() {
         // Only propagate to the pipeline once pg-boss has truly given up. On
         // non-final attempts the retry will overwrite this failure, so
         // signalling dependents now would unblock them prematurely (see
-        // PDF_DAS_EXTRACTOR / pdf_analysis pending_input bug).
+        // DAS_EXTRACTION / pdf_analysis pending_input bug).
         if (isFinalAttempt) {
           await advancePipeline(submissionId, 'pdf_analysis', round, userId);
         }

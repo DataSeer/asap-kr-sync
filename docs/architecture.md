@@ -158,11 +158,11 @@ PDF upload triggers parallel background jobs via pg-boss. PDF Analysis is the in
 
 ```mermaid
 graph TD
-    PDF[PDF Upload] --> DAS[DAS Extraction]
-    PDF --> SW[Software Detection]
+    PDF[PDF Upload] --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
     PDF --> MAT[Materials Detection]
     PDF --> MD[Markdown Convert]
+    MD --> DAS[DAS Extraction]
     MD --> DS[Datasets Detection]
     MD --> PROT[Protocols Detection]
     MD --> ID[Identifier Detection]

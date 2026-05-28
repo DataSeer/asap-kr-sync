@@ -157,11 +157,11 @@ When a PDF is uploaded, nine background jobs start (eight detections plus the PD
 
 ```mermaid
 graph LR
-    PDF[PDF Upload] --> DAS[DAS Extraction]
-    PDF --> SW[Software Detection]
+    PDF[PDF Upload] --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
     PDF --> MAT[Materials Detection]
     PDF --> MD[Markdown Convert]
+    MD --> DAS[DAS Extraction]
     MD --> DS[Datasets Detection]
     MD --> PROT[Protocols Detection]
     MD --> ID[Identifier Detection]
@@ -192,10 +192,16 @@ ORCID Extraction is **not** a contributor to PDF Analysis — its output writes 
 Each job is displayed in the **JobStatusPanel** with live status updates:
 
 #### DAS Extraction
-- Extracts the Data Availability Statement from the PDF
+- Asks Google Gemini to copy the Data Availability Statement out of the
+  converted manuscript markdown, verbatim. The prompt also covers
+  `funding_statement`, `acknowledgements`, `ethics_statement`, etc. — the
+  active section is set via `DAS_EXTRACTION_SECTION` (default `das`).
+- **Depends on:** Markdown Convert (reads the markdown File from S3
+  rather than the PDF buffer)
 - **If found:** Shows "Availability Statement found" with extracted text
 - **If not found:** Job moves to `pending_input` status — user must manually enter a DAS or click "Advance" to skip
 - **User actions:** "Edit" button to view/modify the extracted DAS; "Advance" to skip if not found
+- The structured response (`partial_match`, `section_fragmented`) is preserved on the job's raw response for forensics; only `content` is persisted on `submission.extractedDataAvailabilityStatement`.
 
 #### PDF Analysis (in-app consolidator)
 - Merges items from every detection job into the Generated KRT — no external API call

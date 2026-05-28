@@ -6,7 +6,7 @@
 const express = require('express');
 const { KRT_TEMPLATE_URL, getResourceTypes } = require('../config/constants');
 const pdfAnalysisConfig = require('../config/pdf-analysis-api');
-const dasExtractorConfig = require('../config/pdf-das-extractor-api');
+const dasExtractionConfig = require('../config/das-extraction-api');
 const softciteConfig = require('../config/softcite-api');
 const grobidConfig = require('../config/grobid-api');
 const openalexConfig = require('../config/openalex-api');
@@ -75,8 +75,8 @@ router.get('/services', (req, res) => {
   res.json({
     services: {
       das_extraction: entry(
-        dasExtractorConfig.isConfigured(),
-        process.env.PDF_DAS_EXTRACTOR_DEMO_DATA_ENABLED !== 'false'
+        dasExtractionConfig.isConfigured(),
+        process.env.DAS_EXTRACTION_DEMO_DATA_ENABLED !== 'false'
       ),
       pdf_analysis: entry(
         pdfAnalysisConfig.isConfigured(),

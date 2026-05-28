@@ -53,9 +53,11 @@ const JOB_CONFIG = {
     retryDelay: 60
   },
   [QUEUES.DAS_EXTRACTION]: {
-    apiTimeoutMs: parseInt(process.env.PDF_DAS_EXTRACTOR_API_TIMEOUT, 10) || 300000,
+    apiTimeoutMs: parseInt(process.env.DAS_EXTRACTION_API_TIMEOUT, 10) || 120000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
-    typicalSeconds: 30,
+    // Gemini verbatim extraction is fast — bump the typical down from 30s
+    // (the Modal-hosted Llama fine-tune budget) to 15s.
+    typicalSeconds: 15,
     retryLimit: 2,
     retryDelay: 60
   },
