@@ -1731,6 +1731,13 @@ defineExpose({
                             <div class="tooltip-text">
                               <div class="tooltip-column">{{ suggestion.data?.column || 'Edit' }}</div>
                               <div class="tooltip-message">{{ suggestion.title }}</div>
+                              <!-- Detector context (UI-only, NOT written to the
+                                   KRT cell on accept). Shows why the AI made
+                                   this suggestion. -->
+                              <div v-if="suggestion.context" class="tooltip-context">
+                                <span class="tooltip-context-label">Why:</span>
+                                {{ suggestion.context }}
+                              </div>
                               <div class="tooltip-suggestion-hint">Click cell to accept/reject</div>
                             </div>
                           </div>
@@ -1891,6 +1898,11 @@ defineExpose({
                             <span class="old-value">{{ getCellSuggestion(row.id, col.key)?.data?.oldValue || '(empty)' }}</span>
                             <span class="arrow">→</span>
                             <span class="new-value">{{ getCellSuggestion(row.id, col.key)?.data?.newValue }}</span>
+                          </div>
+                          <!-- Detector context (UI-only, NOT persisted) -->
+                          <div v-if="getCellSuggestion(row.id, col.key)?.context" class="tooltip-context">
+                            <span class="tooltip-context-label">Why:</span>
+                            {{ getCellSuggestion(row.id, col.key).context }}
                           </div>
                           <div class="tooltip-suggestion-hint">Click cell to accept/reject</div>
                         </div>
@@ -2946,6 +2958,26 @@ tr:hover {
   font-size: 0.65rem;
   margin-top: 0.25rem;
   font-style: italic;
+}
+
+/* Detector context — the original ADDITIONAL INFORMATION blurb the AI
+   produced, surfaced as hover hint only. Never written to the KRT cell. */
+.tooltip-context {
+  color: #cbd5e1;
+  font-size: 0.7rem;
+  margin-top: 0.375rem;
+  padding-top: 0.375rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  line-height: 1.35;
+}
+
+.tooltip-context-label {
+  color: #f0abfc;
+  font-weight: 600;
+  margin-right: 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.6rem;
 }
 
 .tooltip-arrow-suggestion {

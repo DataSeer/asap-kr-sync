@@ -175,7 +175,12 @@ async function approveSuggestion(submissionId, suggestionId, userId, modifiedVal
       source:                ov.source                || resource.sourceUrl,
       identifier:            ov.identifier            || resource.identifier,
       newReuse:              ov.newReuse              || resource.newReuse,
-      additionalInformation: ov.additionalInformation || resource.additionalInformation
+      // Per ASAP: AI-driven inserts never populate ADDITIONAL INFORMATION.
+      // The detector context is held on `suggestion.context` (UI-only,
+      // hover-as-hint) and intentionally NOT written to the KRT cell.
+      // A user-supplied override still wins, so accept-with-modifications
+      // works the same way for this column as the others.
+      additionalInformation: ov.additionalInformation || ''
     }, userId, r);
     return { description: resource.resourceName || resource.identifier, type: 'add_row' };
   }

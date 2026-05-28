@@ -267,8 +267,22 @@ function getEvidence(g) {
 /**
  * Build the suggestion shape the frontend already consumes.
  */
+/**
+ * Per ASAP: the AI-generated ADDITIONAL INFORMATION blurb (detector
+ * context, "we saw X near Y in the manuscript", etc.) is informative
+ * for the curator but must NOT land on the persisted KRT row when a
+ * suggestion is accepted. The KRT cell stays blank; the original blurb
+ * is preserved on the suggestion object under `context` so the UI can
+ * surface it as hover/info text without it ever being written back.
+ *
+ *   suggestion.data.additionalInformation = ''      ← persisted on accept
+ *   suggestion.context                    = <blurb> ← UI-only hint
+ *
+ * `detail`/`evidence` stay populated for the legacy add-row tooltip.
+ */
 function makeAddSuggestion(g) {
   const evidence = getEvidence(g);
+  const context = g.additionalInformation || null;
   return {
     id: `add:${g.dedupKey}`,
     type: 'add_row',
@@ -279,8 +293,9 @@ function makeAddSuggestion(g) {
     description: `Add ${g.resourceType}: ${g.resourceName || g.identifier}`,
     // detail/evidence carry the manuscript snippet that justified the
     // suggestion, surfaced in the carousel's "More details" expand.
-    detail: g.additionalInformation || evidence || null,
+    detail: context || evidence || null,
     evidence,
+    context,
     confidence: g.confidence || 0,
     existsInKRT: 'false',
     matchedKrtRowId: null,
@@ -290,7 +305,8 @@ function makeAddSuggestion(g) {
       source: g.sourceUrl,
       identifier: g.identifier,
       newReuse: g.newReuse,
-      additionalInformation: g.additionalInformation
+      // Persisted KRT cell — always blank on AI-driven inserts.
+      additionalInformation: ''
     },
     mergedFrom: g.detectedBy
   };
@@ -298,6 +314,7 @@ function makeAddSuggestion(g) {
 
 function makeEditSuggestion(g, krtRow, fieldKey, oldValue, newValue) {
   const colMeta = COLUMN_MAP[fieldKey];
+  const context = g.additionalInformation || null;
   return {
     id: `edit:${g.dedupKey}:${fieldKey}`,
     type: 'edit',
@@ -306,7 +323,8 @@ function makeEditSuggestion(g, krtRow, fieldKey, oldValue, newValue) {
     source: 'pdf_analysis',
     title: `Update ${colMeta.label} of ${g.resourceName || g.identifier}`,
     description: `${colMeta.label}: "${oldValue || '(empty)'}" → "${newValue}"`,
-    detail: null,
+    detail: context,
+    context,
     confidence: g.confidence || 0,
     existsInKRT: 'update',
     matchedKrtRowId: krtRow.id,
@@ -321,7 +339,11 @@ function makeEditSuggestion(g, krtRow, fieldKey, oldValue, newValue) {
       source: g.sourceUrl,
       identifier: g.identifier,
       newReuse: g.newReuse,
-      additionalInformation: g.additionalInformation
+      // Edits never touch ADDITIONAL INFORMATION on the persisted row;
+      // computeSuggestions already drops that column from the edit set,
+      // and we keep the field empty here so a stray persistence path
+      // can't smuggle the blurb back in.
+      additionalInformation: ''
     },
     mergedFrom: g.detectedBy
   };
@@ -350,7 +372,11 @@ function computeSuggestions(generated, krtRows, rejectedAddSet = new Set(), reje
 
     // Match found → compare per-column. Resource_type and new_reuse are part
     // of dedup_key so they always match. Compare the remaining fields.
-    const editableColumns = ['resourceName', 'source', 'identifier', 'additionalInformation'];
+    // ADDITIONAL INFORMATION is intentionally NOT in this list: per ASAP,
+    // AI-driven changes never write to that cell. The detector context is
+    // still surfaced to the curator via `suggestion.context` (see
+    // makeAddSuggestion / makeEditSuggestion).
+    const editableColumns = ['resourceName', 'source', 'identifier'];
     const colReject = rejectedColumns.get(g.dedupKey) || new Set();
 
     for (const fieldKey of editableColumns) {

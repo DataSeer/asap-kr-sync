@@ -42,7 +42,9 @@ test('Generated identical to KRT → no suggestions', () => {
   assert.deepEqual(computeSuggestions(gen, krt), []);
 });
 
-test('Same dedup_key + different additional info → edit suggestion', () => {
+test('Same dedup_key + different additional info → NO edit suggestion (column off-limits)', () => {
+  // Per ASAP: AI-driven changes never write to ADDITIONAL INFORMATION.
+  // The detector blurb is surfaced as `suggestion.context` only.
   const gen = mergeDetections([
     { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x', additionalInformation: 'v3.10' })] }
   ]);
@@ -50,11 +52,7 @@ test('Same dedup_key + different additional info → edit suggestion', () => {
     id: 'r1', resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
     identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: ''
   }];
-  const sugs = computeSuggestions(gen, krt);
-  assert.equal(sugs.length, 1);
-  assert.equal(sugs[0].type, 'edit');
-  assert.equal(sugs[0].data.column, 'additionalInformation');
-  assert.equal(sugs[0].matchedKrtRowId, 'r1');
+  assert.deepEqual(computeSuggestions(gen, krt), []);
 });
 
 test('Rejected add → suggestion suppressed', () => {
@@ -66,18 +64,25 @@ test('Rejected add → suggestion suppressed', () => {
 });
 
 test('Rejected column → that column suppressed, others kept', () => {
+  // Generated differs from user in source AND identifier; rejecting `source`
+  // should leave an identifier edit behind. (additionalInformation is no
+  // longer in the editable set, so we use `identifier` as the surviving
+  // column for this test instead.)
   const gen = mergeDetections([
-    { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x', additionalInformation: 'v3.10', source: 'https://other.org' })] }
+    { source: 'a', items: [itemAddRow({
+      resourceName: 'Python', identifier: 'RRID:SCR_008394',
+      source: 'https://other.org'
+    })] }
   ]);
   const krt = [{
     id: 'r1', resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
-    identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: ''
+    identifier: '', newReuse: 'reuse', additionalInformation: ''
   }];
   const dk = gen[0].dedupKey;
   const rejCols = new Map([[dk, new Set(['source'])]]);
   const sugs = computeSuggestions(gen, krt, new Set(), rejCols);
   assert.equal(sugs.length, 1);
-  assert.equal(sugs[0].data.column, 'additionalInformation');
+  assert.equal(sugs[0].data.column, 'identifier');
 });
 
 test('Generator value is empty → no edit suggested (does not blank user data)', () => {
@@ -314,3 +319,59 @@ test('computeSuggestions: still surfaces enriching resourceName edit', () => {
   assert.ok(sugs.some(s => s.data?.column === 'resourceName' && s.data?.newValue === 'Rabbit anti-TH (clone TH2)'));
 });
 
+
+// ───────────────────────────────────────────────────────────────────────────
+// `additionalInformation` contract per ASAP:
+//   - Persisted KRT cell stays blank on AI-driven inserts/edits.
+//   - The detector blurb is preserved on suggestion.context for UI hover.
+// ───────────────────────────────────────────────────────────────────────────
+
+test('makeAddSuggestion: data.additionalInformation is blank; context holds the blurb', () => {
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({
+      resourceName: 'Fiji', identifier: 'RRID:SCR_002285',
+      additionalInformation: 'Detected near "image analysis was performed in Fiji…"'
+    })] }
+  ]);
+  const sugs = computeSuggestions(gen, []);
+  assert.equal(sugs.length, 1);
+  assert.equal(sugs[0].data.additionalInformation, '',
+    'persisted cell must be empty');
+  assert.equal(sugs[0].context,
+    'Detected near "image analysis was performed in Fiji…"',
+    'detector blurb must survive on suggestion.context');
+});
+
+test('makeAddSuggestion: no detector blurb → context is null, data.AI stays blank', () => {
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({
+      resourceName: 'Fiji', identifier: 'RRID:SCR_002285',
+      additionalInformation: ''
+    })] }
+  ]);
+  const sugs = computeSuggestions(gen, []);
+  assert.equal(sugs[0].context, null);
+  assert.equal(sugs[0].data.additionalInformation, '');
+});
+
+test('makeEditSuggestion: data.additionalInformation is blank; context held on suggestion', () => {
+  // Generated proposes a name edit; the user has a row with the same RRID.
+  // Verify the (non-additionalInformation) edit suggestion still carries the
+  // detector blurb as context, while the persisted-payload field stays empty.
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({
+      resourceType: 'Antibody', resourceName: 'Rabbit anti-TH (clone TH2)',
+      identifier: 'RRID:AB_2201407',
+      additionalInformation: 'Catalog T1299 nearby'
+    })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Antibody', resourceName: 'Anti-TH',
+    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: ''
+  }];
+  const sugs = computeSuggestions(gen, krt);
+  const nameEdit = sugs.find(s => s.data?.column === 'resourceName');
+  assert.ok(nameEdit, 'expected a resourceName edit suggestion');
+  assert.equal(nameEdit.data.additionalInformation, '');
+  assert.equal(nameEdit.context, 'Catalog T1299 nearby');
+});
