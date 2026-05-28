@@ -435,8 +435,18 @@ async function handleReplacePdfFile(event) {
  * Re-run all background processes via the orchestrator
  */
 async function handleRerunAnalysis() {
+  // Optimistically wipe the old AI suggestions the moment the user clicks
+  // Re-run all. Without this, `findings.value` stays populated through the
+  // `runAllProcesses` await and the next poller tick, so the user watches
+  // stale suggestions sit on screen while the progress bar already starts
+  // filling. The inner empty-state template (see below) treats `analyzing`
+  // as an in-flight signal so we render the spinner instead of the
+  // "Your KRT already contains everything we found" success copy during
+  // the gap before the poller picks up the new 'waiting' job statuses.
   analyzing.value = true
   analysisStatus.value = null
+  findings.value = []
+  krtStore.clearAiSuggestions()
   try {
     await jobService.runAllProcesses(route.params.id)
     notificationStore.info('All processes re-started')
@@ -1117,7 +1127,11 @@ function scrollToFindingRow(finding) {
 
         <!-- No suggestions yet (at least one process completed; KRT may already cover everything) -->
         <div v-else-if="findings.length === 0" class="text-center py-6 px-4">
-          <template v-if="allProcessesFinished">
+          <!-- `analyzing` flips to true the moment Re-run all is clicked
+               (before the poller picks up the new 'waiting' statuses), so
+               we hold off on the "all done" copy and keep showing the
+               spinner during that gap. -->
+          <template v-if="allProcessesFinished && !analyzing">
             <svg class="mx-auto w-8 h-8 text-green-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
