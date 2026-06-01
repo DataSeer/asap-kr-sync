@@ -16,6 +16,7 @@ const { sequelize, User, UserTeam, RefreshToken } = require('../../models');
 const jwtService = require('./jwt.service');
 const auth0Service = require('./auth0.service');
 const { AuthenticationError, ConflictError } = require('../../utils/errors');
+const { ROLES } = require('../../config/constants');
 const logger = require('../../utils/logger');
 
 // Constant bcrypt hash used to keep login response timing identical whether
@@ -66,19 +67,22 @@ async function issueSession(user, ctx) {
  * @returns {Promise<{user: object, tokens: object}>}
  */
 async function register(userData, ctx = {}) {
-  const { email, password, name, role, team } = userData;
+  const { email, password, name } = userData;
 
   const existing = await User.findOne({ where: { email: email.toLowerCase() } });
   if (existing) {
     throw new ConflictError('Email already registered');
   }
 
+  // Self-service signups are ALWAYS created as 'author'. The role is forced
+  // here and never read from the request, so a crafted register payload cannot
+  // escalate privileges. Elevated roles are granted only through the admin
+  // user-management endpoints (see users.controller.js / createUser schema).
   const user = await User.create({
     email,
     passwordHash: password,
     name,
-    role,
-    team
+    role: ROLES.AUTHOR
   });
 
   const tokens = await issueSession(user, ctx);

@@ -93,13 +93,12 @@ const requestSchemas = {
   register: Joi.object({
     email: schemas.email.required(),
     password: schemas.password.required(),
-    name: Joi.string().trim().min(2).max(100).required(),
-    role: schemas.role.default(ROLES.AUTHOR),
-    team: schemas.team.when('role', {
-      is: ROLES.ASAP_PM,
-      then: Joi.required(),
-      otherwise: Joi.optional()
-    })
+    name: Joi.string().trim().min(2).max(100).required()
+    // NOTE: `role` and `team` are intentionally NOT accepted on self-signup.
+    // Any client-supplied values are dropped by stripUnknown, and the role is
+    // forced to 'author' in auth.service.register(). This prevents privilege
+    // escalation via the public register endpoint. Roles/teams are assigned
+    // only through the admin user-management endpoints (createUser/updateUser).
   }),
 
   login: Joi.object({
