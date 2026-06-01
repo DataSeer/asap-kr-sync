@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, computed } from 'vue'
+import { ref, watch } from 'vue'
 
 const props = defineProps({
   show: {
@@ -26,8 +26,6 @@ watch(() => props.show, (val) => {
     pdfError.value = ''
   }
 })
-
-const canSubmit = computed(() => !!pdfFile.value && !props.loading)
 
 function onPdfChange(event) {
   const f = event.target.files?.[0] || null
@@ -78,7 +76,11 @@ function handleSubmit() {
               <input
                 type="file"
                 accept=".pdf,.docx,application/pdf"
-                class="block w-full text-sm text-gray-700 file:mr-3 file:py-2 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+                :aria-invalid="!!pdfError"
+                :class="[
+                  'block w-full text-sm text-gray-700 file:mr-3 file:py-2 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100 transition',
+                  pdfError ? 'ring-2 ring-red-400 bg-red-50 rounded-md p-2' : ''
+                ]"
                 @change="onPdfChange"
               />
               <p v-if="pdfFile" class="mt-1 text-xs text-gray-600">
@@ -136,7 +138,7 @@ function handleSubmit() {
               <button
                 type="submit"
                 class="btn-primary"
-                :disabled="!canSubmit"
+                :disabled="loading"
               >
                 <span v-if="loading">Processing...</span>
                 <span v-else>Start New Version</span>
