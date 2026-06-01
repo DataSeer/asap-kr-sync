@@ -6,10 +6,17 @@
  * dependencies have reached a terminal state (complete or failed).
  */
 
-const { sequelize, SubmissionJob } = require('../../models');
+const { Op } = require('sequelize');
+const { sequelize, SubmissionJob, Submission } = require('../../models');
 const { JOB_TYPES } = require('../../config/constants');
 const jobQueue = require('./job-queue.service');
 const logger = require('../../utils/logger');
+
+// Jobs younger than this are left alone by the reconciler — their dependencies
+// may simply still be running, and we don't want to race a checkAndAdvance that
+// just fired. A dropped advancement will still be older than this by the time
+// the periodic sweep runs.
+const RECONCILE_GRACE_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Pipeline definition — single source of truth for process ordering.
@@ -143,45 +150,127 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
   const jobsByType = new Map(allJobs.map(j => [j.jobType, j]));
 
   for (const step of dependentSteps) {
-    const job = jobsByType.get(step.jobType);
-    if (!job || job.status !== 'waiting') continue;
+    await tryAdvanceStep(step, jobsByType, submissionId, round, userId, completedJobType);
+  }
+}
 
-    // Check if ALL dependencies are in a terminal state
-    const allDependenciesDone = step.dependsOn.every(depType => {
-      const depJob = jobsByType.get(depType);
-      return depJob && (depJob.status === 'complete' || depJob.status === 'failed');
-    });
+/**
+ * Attempt to advance a single waiting pipeline step. Shared by checkAndAdvance
+ * (fired by a worker when its job finishes) and reconcileSubmission (the
+ * periodic safety-net sweep). Idempotent: only acts on a `waiting` job whose
+ * dependencies are all terminal, so calling it repeatedly is safe.
+ *
+ * @returns {Promise<boolean>} true if the job was enqueued
+ */
+async function tryAdvanceStep(step, jobsByType, submissionId, round, userId, triggeredBy) {
+  const job = jobsByType.get(step.jobType);
+  if (!job || job.status !== 'waiting') return false;
 
-    if (!allDependenciesDone) continue;
+  // Check if ALL dependencies are in a terminal state
+  const allDependenciesDone = step.dependsOn.every(depType => {
+    const depJob = jobsByType.get(depType);
+    return depJob && (depJob.status === 'complete' || depJob.status === 'failed');
+  });
 
-    // Check if this step has a conditional gate
-    if (step.canAutoAdvance && !step.canAutoAdvance(jobsByType)) {
-      // Gate condition not met — park job as pending_input
-      await job.markPendingInput({ reason: 'Auto-advance condition not met' });
+  if (!allDependenciesDone) return false;
 
-      logger.info('Pipeline paused: job needs user input', {
-        submissionId,
-        jobType: step.jobType,
-        triggeredBy: completedJobType
-      });
-      continue;
-    }
+  // Check if this step has a conditional gate
+  if (step.canAutoAdvance && !step.canAutoAdvance(jobsByType)) {
+    // Gate condition not met — park job as pending_input
+    await job.markPendingInput({ reason: 'Auto-advance condition not met' });
 
-    // All dependencies met and gate passed — enqueue this job
-    const queueName = JOB_TYPE_TO_QUEUE[step.jobType];
-    const jobData = buildJobData(step.jobType, submissionId, userId, job);
-
-    const pgBossJobId = await jobQueue.addJob(queueName, jobData);
-    job.status = 'queued';
-    job.pgBossJobId = pgBossJobId;
-    await job.save();
-
-    logger.info('Pipeline advanced: job enqueued', {
+    logger.info('Pipeline paused: job needs user input', {
       submissionId,
       jobType: step.jobType,
-      triggeredBy: completedJobType
+      triggeredBy
+    });
+    return false;
+  }
+
+  // All dependencies met and gate passed — enqueue this job
+  const queueName = JOB_TYPE_TO_QUEUE[step.jobType];
+  const jobData = buildJobData(step.jobType, submissionId, userId, job);
+
+  const pgBossJobId = await jobQueue.addJob(queueName, jobData);
+  job.status = 'queued';
+  job.pgBossJobId = pgBossJobId;
+  await job.save();
+
+  logger.info('Pipeline advanced: job enqueued', {
+    submissionId,
+    jobType: step.jobType,
+    triggeredBy
+  });
+  return true;
+}
+
+/**
+ * Re-drive every waiting step of one submission/round whose dependencies are
+ * already terminal. Used by the reconciler to recover a pipeline whose
+ * advancement was dropped (e.g. a transient DB/queue error inside
+ * checkAndAdvance) and would otherwise hang in `waiting` forever.
+ *
+ * @returns {Promise<number>} number of jobs enqueued
+ */
+async function reconcileSubmission(submissionId, round, userId) {
+  const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
+  const jobsByType = new Map(allJobs.map(j => [j.jobType, j]));
+
+  let advanced = 0;
+  for (const step of PIPELINE) {
+    const didAdvance = await tryAdvanceStep(
+      step, jobsByType, submissionId, round, userId, 'reconciler'
+    );
+    if (didAdvance) advanced++;
+  }
+  return advanced;
+}
+
+/**
+ * Safety-net sweep: find jobs stuck in `waiting` (older than the grace window)
+ * and re-drive their submission's pipeline. checkAndAdvance is the primary
+ * advancement path; this guarantees that even if an advancement was dropped,
+ * a stuck submission self-heals within one sweep interval instead of hanging.
+ *
+ * @param {{ graceMs?: number }} [opts]
+ * @returns {Promise<number>} total jobs re-driven across all submissions
+ */
+async function reconcileStuckJobs({ graceMs = RECONCILE_GRACE_MS } = {}) {
+  const cutoff = new Date(Date.now() - graceMs);
+
+  // Distinct (submission, round) pairs that have at least one long-waiting job.
+  const stuck = await SubmissionJob.findAll({
+    where: { status: 'waiting', createdAt: { [Op.lt]: cutoff } },
+    attributes: ['submissionId', 'round'],
+    group: ['submissionId', 'round'],
+    raw: true
+  });
+
+  if (stuck.length === 0) return 0;
+
+  let advancedTotal = 0;
+  for (const { submissionId, round } of stuck) {
+    const submission = await Submission.findByPk(submissionId, {
+      attributes: ['id', 'userId']
+    });
+    if (!submission) continue;
+
+    try {
+      advancedTotal += await reconcileSubmission(submissionId, round, submission.userId);
+    } catch (err) {
+      logger.error('Pipeline reconciler failed for submission', {
+        submissionId, round, error: err.message
+      });
+    }
+  }
+
+  if (advancedTotal > 0) {
+    logger.warn('Pipeline reconciler re-drove stuck jobs', {
+      submissions: stuck.length,
+      advanced: advancedTotal
     });
   }
+  return advancedTotal;
 }
 
 /**
@@ -340,6 +429,8 @@ module.exports = {
   PIPELINE,
   runAllProcesses,
   checkAndAdvance,
+  reconcileSubmission,
+  reconcileStuckJobs,
   advanceJob,
   cascadeRestart,
   computeDownstreamSet

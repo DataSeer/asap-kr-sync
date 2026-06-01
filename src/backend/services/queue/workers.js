@@ -21,6 +21,7 @@ const jobQueue = require('./job-queue.service');
 const orchestrator = require('./orchestrator.service');
 const { createJobLogger } = require('./job-logger.service');
 const { registerRefreshTokenCleanup } = require('../auth/refresh-token-cleanup');
+const { registerPipelineReconciler } = require('./pipeline-reconciler');
 const { configState, isFinalAttempt: helperIsFinalAttempt } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
 
@@ -155,16 +156,39 @@ async function loadSubmission(submissionId) {
   };
 }
 
+const ADVANCE_MAX_ATTEMPTS = 3;
+const ADVANCE_RETRY_DELAY_MS = 500;
+
 /**
  * After a job finishes (success or failure), advance the pipeline.
+ *
+ * checkAndAdvance failing here would leave dependent jobs stuck in `waiting`,
+ * so we retry a few times for transient errors. If it still fails we log loudly
+ * (alertable) and rely on the periodic pipeline reconciler (pipeline-reconciler.js)
+ * to re-drive the stuck submission — we deliberately do NOT re-throw, because the
+ * job that just finished is already complete and re-running its handler would
+ * repeat its side effects.
  */
 async function advancePipeline(submissionId, jobType, round, userId) {
-  try {
-    await orchestrator.checkAndAdvance(submissionId, jobType, round, userId);
-  } catch (err) {
-    logger.error('Failed to advance pipeline', {
-      submissionId, jobType, error: err.message
-    });
+  for (let attempt = 1; attempt <= ADVANCE_MAX_ATTEMPTS; attempt++) {
+    try {
+      await orchestrator.checkAndAdvance(submissionId, jobType, round, userId);
+      return;
+    } catch (err) {
+      const willRetry = attempt < ADVANCE_MAX_ATTEMPTS;
+      logger.error('Failed to advance pipeline', {
+        submissionId, jobType, round, attempt, willRetry, error: err.message
+      });
+      if (!willRetry) {
+        logger.error(
+          'Pipeline advancement permanently failed after retries — dependent jobs ' +
+          'may be stuck in "waiting" until the pipeline reconciler re-drives them',
+          { submissionId, jobType, round }
+        );
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, ADVANCE_RETRY_DELAY_MS * attempt));
+    }
   }
 }
 
@@ -660,6 +684,9 @@ async function initializeWorkers() {
 
   // Auth: cron-style cleanup of stale refresh tokens
   await registerRefreshTokenCleanup(jobQueue);
+
+  // Safety net: periodically re-drive pipelines whose advancement was dropped
+  await registerPipelineReconciler(jobQueue);
 
   logger.info('All job workers initialized');
 }
