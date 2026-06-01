@@ -128,7 +128,10 @@ Get available filter values (teams, users) for the current user's role.
 
 ### `POST /api/submissions`
 Create a submission.
-- **Body**: `{ title, manuscriptId?, dataAvailabilityStatement?, notes? }` — `title` 1-500 chars (required); `manuscriptId` must match `^[A-Z]{2}\d-\d{6}-\d{3}-org-[A-Z]-\d$` if provided (team auto-derived from it).
+- **Content-Type**: `multipart/form-data` (rate-limited by `uploadLimiter`).
+- **File field `krt`** (CSV/XLSX): the Key Resources Table. **Strongly recommended at creation time, but optional** — a submission can be started without it and the KRT added later. When provided, its column format is validated server-side before any DB write (a 400 is returned if the format is invalid). When omitted, the frontend shows a confirmation modal and submits a header-only empty KRT; the PDF analysis pipeline starts regardless, and the user can upload the real KRT afterwards (Step 1 / `POST /api/submissions/:id/krt/upload`).
+- **Other form fields**: `title` 1-500 chars (required); `manuscriptId` (optional; must match `^[A-Z]{2}\d-\d{6}-\d{3}-org-[A-Z]-\d$` if provided); `dataAvailabilityStatement?`, `notes?`. _(Note: the current create UI does not collect `manuscriptId` — it is set later via Edit Metadata.)_
+- The submission is created directly at status `step_krt`.
 
 ### `GET /api/submissions/:id`
 Get a submission by ID. **Requires submission access.**

@@ -245,6 +245,14 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 
 ## Google Gemini API (Materials Detection)
 
+> ⚠️ **Currently disabled — quality too low to ship.** Materials detection is intentionally
+> turned off because the module's output quality is not yet good enough for production use.
+> The prompt file (`src/backend/data/prompts/materials-detection.txt`) has been removed, so
+> `materials.service.js`'s `hasPrompt()` gate returns `false` and the external Gemini path never
+> runs — the detector returns an empty result (or demo data when demo mode is enabled). The
+> wiring below is retained for when the module is re-enabled after the quality issues are
+> addressed; to bring it back, restore the prompt file (and its `.txt.example`) and re-evaluate.
+
 Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Follows the same pattern as datasets detection.
 
 | Property | Value |

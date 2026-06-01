@@ -8,7 +8,7 @@ A full-stack web application for managing Key Resources Tables (KRT) in academic
 - **AI-Powered PDF Analysis** — Consolidate every detection's findings into a Generated KRT, then surface diff-based suggestions for the user to accept or reject
 - **Software Detection** — Detect software mentions via the Softcite API with reference list enrichment
 - **Datasets Detection** — Identify dataset mentions in manuscripts using Google Gemini with structured relevance scoring (two-pass: langextract signal extraction + Gemini consolidation)
-- **Materials Detection** — Identify lab materials/reagents in manuscripts using Google Gemini with KRT suggestion generation
+- **Materials Detection** — Identify lab materials/reagents in manuscripts using Google Gemini with KRT suggestion generation _(currently disabled — module result quality is too low to ship; see [docs/external-apis.md](./docs/external-apis.md#google-gemini-api-materials-detection))_
 - **Protocols Detection** — Identify protocol mentions in manuscripts using Google Gemini with KRT suggestion generation
 - **Identifier Detection** — Scan the converted manuscript markdown against the curated enrichment lists to recover identifier-based matches (DOIs, RRIDs, accessions, catalog numbers) across every KRT resource category in a single pass
 - **ORCID Extraction** — Identify authors and ORCIDs from PDFs using GROBID, OpenAlex, and the ORCID API

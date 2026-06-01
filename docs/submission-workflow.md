@@ -40,31 +40,41 @@ Users can navigate back to any previous step from the step indicator. Starting a
 
 **View:** `CreateSubmissionView`
 
+On the single create screen the user attaches the manuscript **PDF** (required) and their **KRT**
+(CSV/XLSX). The KRT is **strongly recommended at creation time but optional**: if the user has no
+KRT yet, a confirmation modal lets them proceed with a header-only empty KRT. Either way the PDF is
+uploaded immediately and the analysis pipeline starts at creation — the user can upload the real KRT
+later from Step 1. The Manuscript ID is **not** collected here; it is set later via Edit Metadata.
+
 ```mermaid
 flowchart TD
     A[Start] --> B[Enter title]
-    B --> C{Manuscript ID?}
-    C -->|Yes| D[Enter ID — team auto-extracted]
-    C -->|No| E[Skip]
-    D --> F{Supplemental file?}
-    E --> F
-    F -->|Yes| G[Upload PDF or Word]
-    F -->|No| H[Click Create & Continue]
-    G --> H
-    H --> I[Status: draft → step_krt]
-    I --> J[Navigate to Step 1]
+    B --> C[Attach manuscript PDF — required]
+    C --> D{KRT file?}
+    D -->|Yes| E[Attach KRT — format validated server-side]
+    D -->|No| F[Confirm modal → header-only empty KRT]
+    E --> G{Supplemental methods file?}
+    F --> G
+    G -->|Yes| H[Upload PDF or Word]
+    G -->|No| I[Click Create & Continue]
+    H --> I
+    I --> J[Submission created at status step_krt]
+    J --> K[PDF uploaded → analysis pipeline starts]
+    K --> L[Navigate to Step 1]
 ```
 
 **User actions:**
 1. Enter a title (required)
-2. Optionally enter a Manuscript ID — auto-extracts team code from the ID format (`XX#-######-###-org-X-#`)
-3. Optionally add notes
-4. Optionally upload a supplemental methods file (PDF or Word — Word files are auto-converted to PDF)
-5. Click **Create & Continue to Step 1**
+2. Attach the manuscript **PDF** (required)
+3. Attach the **KRT** (CSV/XLSX) — strongly recommended; if omitted, confirm to continue with an empty KRT and add it later
+4. Optionally add notes
+5. Optionally upload a supplemental methods file (PDF or Word — Word files are auto-converted to PDF)
+6. Click **Create & Continue to Step 1**
 
 **Demo mode:** A "Use Demo Metadata" button populates the form with one of 6 pre-configured demo submissions.
 
-**Result:** Creates submission with status `draft`, immediately transitions to `step_krt`, and navigates to KRTView.
+**Result:** Creates the submission directly at status `step_krt` (the `draft` state is effectively never
+persisted), uploads the PDF so the background pipeline begins, and navigates to KRTView.
 
 ---
 
@@ -440,12 +450,18 @@ flowchart TD
 
 ### Excel Report Contents
 
-The generated XLSX file contains 4 sheets:
+> ⚠️ **Pending / out of date.** The report sheet layout below is being reworked and does not
+> match the current export. In particular, the 4th sheet is currently titled **"Suggestions"**
+> (not "LM Analysis"), it is only added when suggestions exist, and its `Confidence` column is
+> not populated by the diff-based suggestion objects. This section will be updated once the
+> report rework lands; treat the details below as indicative only.
+
+The generated XLSX file contains up to 4 sheets:
 
 1. **Summary** — manuscript metadata, resource count, change count
 2. **KRT Data** — resource table sorted by type group then name
 3. **Change History** — chronological audit trail with user, action, source
-4. **LM Analysis** — AI findings with confidence scores and status
+4. **Suggestions** _(conditional)_ — AI suggestion list (Source / Type / Title / Description / Status)
 
 ---
 
