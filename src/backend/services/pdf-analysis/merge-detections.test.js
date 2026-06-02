@@ -365,3 +365,76 @@ test('mergeDetections: Code/Software and Software/code merge as one', () => {
   assert.equal(r.length, 1, 'Fiji must merge into a single entry across type variants');
   assert.equal(r[0].detectedBy.length, 2);
 });
+
+// ---------- SOURCE auto-detection from identifier ----------
+
+test('source inferred from identifier when no contributor supplied one', () => {
+  const r = mergeDetections([
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Software/code',
+      resourceName: 'MyTool',
+      identifier: 'https://github.com/foo/bar',
+      source: ''
+    })] }
+  ]);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].sourceUrl, 'GitHub');
+});
+
+test('inferred source does NOT overwrite a contributor-supplied source', () => {
+  const r = mergeDetections([
+    { source: 'software_detection', items: [itemAddRow({
+      resourceType: 'Software/code',
+      resourceName: 'MyTool',
+      identifier: 'https://github.com/foo/bar',
+      source: 'https://mytool.example.org'
+    })] }
+  ]);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].sourceUrl, 'https://mytool.example.org', 'real source must be preserved');
+});
+
+test('ambiguous / unknown identifier leaves source empty', () => {
+  const r = mergeDetections([
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Antibody',
+      resourceName: 'Anti-Foo',
+      identifier: 'RRID:AB_2744623',
+      source: ''
+    })] }
+  ]);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].sourceUrl, '', 'must not guess a source for a bare RRID');
+});
+
+test('zenodo DOI infers source when both contributors leave source blank', () => {
+  const r = mergeDetections([
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Dataset',
+      resourceName: 'My dataset',
+      identifier: '10.5281/zenodo.123456',
+      source: ''
+    })] },
+    { source: 'datasets_detection', items: [itemAddRow({
+      resourceType: 'Dataset',
+      resourceName: 'My dataset',
+      identifier: '10.5281/zenodo.123456',
+      source: ''
+    })] }
+  ]);
+  assert.equal(r.length, 1, 'same zenodo id → merged');
+  assert.equal(r[0].sourceUrl, 'Zenodo');
+});
+
+test('inferred source prefers DOI/accession over a URL (Zenodo DOI beats GitHub URL)', () => {
+  const r = mergeDetections([
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Software/code',
+      resourceName: 'MyTool',
+      identifier: 'https://github.com/foo/bar ; 10.5281/zenodo.123456',
+      source: ''
+    })] }
+  ]);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].sourceUrl, 'Zenodo');
+});

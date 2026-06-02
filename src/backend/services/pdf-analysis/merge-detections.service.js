@@ -20,6 +20,7 @@
 const {
   extractIdentifierTokens,
   computeDedupKey,
+  inferSourceFromIdentifier,
   normalizeName,
   normalizeRawValue,
   normalizeResourceTypeKey
@@ -265,6 +266,19 @@ function mergeDetections(contributions) {
       candidate.ownerConfidence = candidate.confidence;
       seedAliases(candidate);
       accepted.push(candidate);
+    }
+  }
+
+  // Auto-detect SOURCE from the identifier when NO contributor supplied one.
+  // The merge loop above fills `sourceUrl` from any contributor that had a
+  // source, so an empty `sourceUrl` here means none did — only then do we
+  // infer (allowlist-only; ambiguous identifiers return null and leave it
+  // blank). This never overwrites a real detector-provided source, and the
+  // diff engine separately refuses to overwrite a user-filled SOURCE cell.
+  for (const r of accepted) {
+    if (!r.sourceUrl) {
+      const inferred = inferSourceFromIdentifier(r.identifier);
+      if (inferred) r.sourceUrl = inferred;
     }
   }
 

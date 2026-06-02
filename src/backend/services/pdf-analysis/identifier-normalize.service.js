@@ -212,6 +212,106 @@ function canonicalResourceType(value) {
   return raw;
 }
 
+/**
+ * Allowlist for inferring a KRT SOURCE from an identifier alone.
+ *
+ * Philosophy (mirrors the protocol-finder convention): allowlist-ONLY, and
+ * never guess. Each rule maps an UNAMBIGUOUS identifier shape — a repository
+ * URL host, a registered DOI prefix, or a structured accession namespace — to
+ * the canonical source name a curator would type. Anything that isn't a
+ * high-confidence, prefix-unique match yields `null`.
+ *
+ * Deliberately OMITTED because the identifier alone is insufficient:
+ *   - Journal DOIs (10.1101/… bioRxiv, 10.1038/… Nature, 10.1371/… PLOS …):
+ *     the prefix is shared by every article from that publisher.
+ *   - 4-char PDB IDs, bare GenBank/UniProt accessions: too collision-prone.
+ *   - Zenodo-hosted software releases whose canonical home is GitHub: handled
+ *     by the conflict rule below (a string matching two distinct sources →
+ *     null), so we never invent a worse answer than the user would.
+ *
+ * Adding a source is a one-line entry here. `pattern` MUST NOT use the `g`
+ * flag (we call .test() repeatedly and `g` is stateful).
+ *
+ * Each rule carries a `kind`:
+ *   'url' — matched a repository/host URL
+ *   'id'  — matched a DOI prefix or a structured accession
+ * This drives conflict resolution in inferSourceFromIdentifier: a DOI/accession
+ * source outranks a URL source, because the registered/persistent identifier is
+ * the more authoritative pointer (e.g. a Zenodo DOI is preferred over a GitHub
+ * URL that appears alongside it).
+ */
+const SOURCE_INFERENCE_RULES = [
+  // --- Code repositories (URL host) ---
+  { source: 'GitHub',            kind: 'url', pattern: /\bgithub\.com\//i },
+  { source: 'GitLab',            kind: 'url', pattern: /\bgitlab\.com\//i },
+  { source: 'Bitbucket',         kind: 'url', pattern: /\bbitbucket\.org\//i },
+
+  // --- General-purpose data repositories (URL host) ---
+  { source: 'Zenodo',            kind: 'url', pattern: /\bzenodo\.org\//i },
+  { source: 'Dryad',             kind: 'url', pattern: /\bdatadryad\.org\//i },
+  { source: 'figshare',          kind: 'url', pattern: /\bfigshare\.com\//i },
+  { source: 'Open Science Framework', kind: 'url', pattern: /\bosf\.io\//i },
+  { source: 'protocols.io',      kind: 'url', pattern: /\bprotocols\.io\//i },
+
+  // --- General-purpose data repositories (DOI prefix) ---
+  { source: 'Zenodo',            kind: 'id',  pattern: /10\.5281\/zenodo\./i },
+  { source: 'Dryad',             kind: 'id',  pattern: /10\.5061\/dryad\./i },
+  { source: 'figshare',          kind: 'id',  pattern: /10\.6084\/m9\.figshare\./i },
+  { source: 'protocols.io',      kind: 'id',  pattern: /10\.17504\/protocols\.io\./i },
+
+  // --- Sequence / omics archives (structured accession) ---
+  { source: 'NCBI GEO',          kind: 'id',  pattern: /\bG(?:SE|SM|PL|DS)\d+\b/i },
+  { source: 'NCBI SRA',          kind: 'id',  pattern: /\bSR[RXPS]\d+\b/i },
+  { source: 'NCBI BioProject',   kind: 'id',  pattern: /\bPRJ[NED][A-Z]\d+\b/i },
+  { source: 'NCBI BioSample',    kind: 'id',  pattern: /\bSAM[NED][A-Z]?\d+\b/i },
+  { source: 'dbGaP',             kind: 'id',  pattern: /\bphs\d{6}\b/i },
+  { source: 'ArrayExpress',      kind: 'id',  pattern: /\bE-[A-Z]{4}-\d+\b/i },
+  { source: 'ProteomeXchange',   kind: 'id',  pattern: /\bPXD\d+\b/i },
+
+  // --- Structural biology archives ---
+  { source: 'EMPIAR',            kind: 'id',  pattern: /\bEMPIAR-\d+\b/i },
+  { source: 'EMDB',              kind: 'id',  pattern: /\bEMDB?-\d+\b/i },
+
+  // --- Plasmid repository ---
+  { source: 'Addgene',           kind: 'id',  pattern: /\baddgene[_\s#:]*\d+/i }
+];
+
+/**
+ * Infer the canonical KRT SOURCE from an identifier string, allowlist-only.
+ *
+ * Returns the source name (e.g. 'GitHub', 'Zenodo', 'NCBI GEO') or `null` when
+ * the identifier is unknown or genuinely ambiguous. The identifier may be a
+ * URL, a DOI, a bare accession, or a ';'-joined combination.
+ *
+ * Resolution order:
+ *   1. DOI/accession-derived sources take precedence over URL-derived sources
+ *      (the registered identifier is the more authoritative pointer).
+ *      Exactly one distinct DOI/accession source → return it.
+ *   2. Two or more distinct DOI/accession sources → null (ambiguous).
+ *   3. No DOI/accession signal: exactly one distinct URL source → return it.
+ *   4. Otherwise → null (unknown, or two distinct URL hosts).
+ *
+ * @param {string} identifier
+ * @returns {string|null}
+ */
+function inferSourceFromIdentifier(identifier) {
+  if (!identifier) return null;
+  const s = String(identifier);
+
+  const urlSources = new Set();
+  const idSources = new Set();
+  for (const rule of SOURCE_INFERENCE_RULES) {
+    if (!rule.pattern.test(s)) continue;
+    (rule.kind === 'url' ? urlSources : idSources).add(rule.source);
+  }
+
+  // DOI/accession beats URL on conflict (registered identifier is authoritative).
+  if (idSources.size === 1) return [...idSources][0];
+  if (idSources.size > 1) return null;
+  // No DOI/accession signal — fall back to the URL sources.
+  return urlSources.size === 1 ? [...urlSources][0] : null;
+}
+
 function computeDedupKey(resource) {
   const type = normalizeResourceTypeKey(resource.resourceType || resource.resource_type || '');
   const newReuse = String(resource.newReuse || resource.new_reuse || '').toLowerCase().trim();
@@ -240,6 +340,7 @@ module.exports = {
   normalizeName,
   normalizeResourceTypeKey,
   canonicalResourceType,
+  inferSourceFromIdentifier,
   extractIdentifierTokens,
   identifiersMatch,
   namesMatch,
