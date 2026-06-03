@@ -258,30 +258,50 @@ async function detectProtocols(markdownText) {
  */
 function buildKrtItemsProtocols(rawItems) {
   if (!Array.isArray(rawItems)) return [];
-  return rawItems.map(r => {
-    const resourceName = r.canonical_name || r.name || r.resourceName || '';
-    const resourceType = r.resource_type || r.resourceType || 'Protocol';
-    const relevance = r.krt_relevance || r.relevance || 'MEDIUM';
-    return {
-      resourceType,
-      resourceName,
-      identifier: r.identifier || '',
-      source: r.source || '',
-      newReuse: r.newReuse || r.new_reuse || '',
-      origin: 'protocols-gemini',
-      confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-      // text_excerpt is the prompt-provided ~200-char snippet describing the
-      // protocol use. Surface it as additionalInformation so the merger picks
-      // it up; keep the original on detectorMeta for any consumer that reads
-      // it directly.
-      additionalInformation: r.additionalInformation || r.text_excerpt || '',
-      detectorMeta: {
-        relevance,
-        text_excerpt: r.text_excerpt || '',
-        aliases: Array.isArray(r.aliases) ? r.aliases : []
-      }
-    };
-  });
+  return rawItems
+    .filter(r => !isInSilicoProtocol(r))
+    .map(r => {
+      const resourceName = r.canonical_name || r.name || r.resourceName || '';
+      const resourceType = r.resource_type || r.resourceType || 'Protocol';
+      const relevance = r.krt_relevance || r.relevance || 'MEDIUM';
+      return {
+        resourceType,
+        resourceName,
+        identifier: r.identifier || '',
+        source: r.source || '',
+        newReuse: r.newReuse || r.new_reuse || '',
+        origin: 'protocols-gemini',
+        confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
+        // text_excerpt is the prompt-provided ~200-char snippet describing the
+        // protocol use. Per ASAP request, do NOT push it into user-facing
+        // ADDITIONAL INFORMATION — only the internal team needs that context.
+        // Persisted on detectorMeta so the JobStatusPanel modal can still show it.
+        additionalInformation: '',
+        detectorMeta: {
+          relevance,
+          text_excerpt: r.text_excerpt || '',
+          context: r.additionalInformation || r.text_excerpt || '',
+          aliases: Array.isArray(r.aliases) ? r.aliases : []
+        }
+      };
+    });
+}
+
+/**
+ * Heuristic: drop "protocols" that are actually computational/in-silico
+ * methods (e.g. "in silico docking", "computational simulation",
+ * "in-silico binding study"). ASAP wants those classified as Software/code,
+ * not Protocols. The detector prompt occasionally surfaces them anyway — this
+ * post-filter is the safety net.
+ *
+ * Matches across resourceName and text_excerpt to catch both styles ("name:
+ * In silico docking" vs. "context: …computational simulation of…").
+ */
+function isInSilicoProtocol(r) {
+  const name = String(r?.canonical_name || r?.name || r?.resourceName || '').toLowerCase();
+  const excerpt = String(r?.text_excerpt || r?.additionalInformation || '').toLowerCase();
+  const COMPUTATIONAL_PATTERN = /\b(in[- ]silico|computational(?: method| modeling| simulation| analysis)?|simulation\b|molecular dynamics|monte carlo)\b/;
+  return COMPUTATIONAL_PATTERN.test(name) || COMPUTATIONAL_PATTERN.test(excerpt);
 }
 
 /**

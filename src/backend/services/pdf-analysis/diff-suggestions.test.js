@@ -7,12 +7,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { mergeDetections } = require('./merge-detections.service');
-const { computeSuggestions, parseSuggestionId } = require('./diff-suggestions.service');
+const { computeSuggestions, parseSuggestionId, isLossyRename } = require('./diff-suggestions.service');
 
 const itemAddRow = (overrides = {}) => ({
   type: 'add_row',
   data: {
-    resourceType: 'Code/Software',
+    resourceType: 'Software/code',
     resourceName: 'Python',
     source: 'https://python.org',
     identifier: '',
@@ -36,25 +36,23 @@ test('Generated identical to KRT → no suggestions', () => {
     { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x' })] }
   ]);
   const krt = [{
-    resourceType: 'Code/Software', resourceName: 'Python', source: 'https://python.org',
+    resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
     identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: ''
   }];
   assert.deepEqual(computeSuggestions(gen, krt), []);
 });
 
-test('Same dedup_key + different additional info → edit suggestion', () => {
+test('Same dedup_key + different additional info → NO edit suggestion (column off-limits)', () => {
+  // Per ASAP: AI-driven changes never write to ADDITIONAL INFORMATION.
+  // The detector blurb is surfaced as `suggestion.context` only.
   const gen = mergeDetections([
     { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x', additionalInformation: 'v3.10' })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'Python', source: 'https://python.org',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
     identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: ''
   }];
-  const sugs = computeSuggestions(gen, krt);
-  assert.equal(sugs.length, 1);
-  assert.equal(sugs[0].type, 'edit');
-  assert.equal(sugs[0].data.column, 'additionalInformation');
-  assert.equal(sugs[0].matchedKrtRowId, 'r1');
+  assert.deepEqual(computeSuggestions(gen, krt), []);
 });
 
 test('Rejected add → suggestion suppressed', () => {
@@ -66,18 +64,25 @@ test('Rejected add → suggestion suppressed', () => {
 });
 
 test('Rejected column → that column suppressed, others kept', () => {
+  // Generated differs from user in source AND identifier; rejecting `source`
+  // should leave an identifier edit behind. (additionalInformation is no
+  // longer in the editable set, so we use `identifier` as the surviving
+  // column for this test instead.)
   const gen = mergeDetections([
-    { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x', additionalInformation: 'v3.10', source: 'https://other.org' })] }
+    { source: 'a', items: [itemAddRow({
+      resourceName: 'Python', identifier: 'RRID:SCR_008394',
+      source: 'https://other.org'
+    })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'Python', source: 'https://python.org',
-    identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: ''
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
+    identifier: '', newReuse: 'reuse', additionalInformation: ''
   }];
   const dk = gen[0].dedupKey;
   const rejCols = new Map([[dk, new Set(['source'])]]);
   const sugs = computeSuggestions(gen, krt, new Set(), rejCols);
   assert.equal(sugs.length, 1);
-  assert.equal(sugs[0].data.column, 'additionalInformation');
+  assert.equal(sugs[0].data.column, 'identifier');
 });
 
 test('Generator value is empty → no edit suggested (does not blank user data)', () => {
@@ -85,7 +90,7 @@ test('Generator value is empty → no edit suggested (does not blank user data)'
     { source: 'a', items: [itemAddRow({ resourceName: 'Python', identifier: '10.1234/x', additionalInformation: '' })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'Python', source: 'https://python.org',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Python', source: 'https://python.org',
     identifier: '10.1234/x', newReuse: 'reuse', additionalInformation: 'lots of notes'
   }];
   assert.deepEqual(computeSuggestions(gen, krt), []);
@@ -141,7 +146,7 @@ test('alias match: user has name-only, detector has identifier → edit not add'
     })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'ImageJ',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'ImageJ',
     identifier: '', newReuse: 'reuse', source: '', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
@@ -206,7 +211,7 @@ test('alias matcher refuses cross-type matches', () => {
   // Same name + identifier but different resourceType → no match, surface as add.
   const gen = mergeDetections([
     { source: 'a', items: [itemAddRow({
-      resourceType: 'Code/Software', resourceName: 'Python', identifier: 'id-x'
+      resourceType: 'Software/code', resourceName: 'Python', identifier: 'id-x'
     })] }
   ]);
   const krt = [{
@@ -226,9 +231,147 @@ test('alias matcher matches across newReuse difference', () => {
     { source: 'a', items: [itemAddRow({ resourceName: 'Tool', identifier: 'id-1', newReuse: 'new' })] }
   ]);
   const krt = [{
-    id: 'r1', resourceType: 'Code/Software', resourceName: 'Tool',
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Tool',
     identifier: 'id-1', newReuse: 'reuse', source: '', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
   assert.ok(!sugs.some(s => s.type === 'add_row'));
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Lossy-rename guard (suppresses misleading resourceName EDIT suggestions
+// from the curated DB's canonical-name picks)
+// ───────────────────────────────────────────────────────────────────────────
+
+test('isLossyRename: cosmetic-only diff is lossy', () => {
+  assert.equal(isLossyRename('Fiji', 'fiji'), true);
+  assert.equal(isLossyRename('Image J', 'ImageJ'), true);
+  assert.equal(isLossyRename('  Python ', 'Python'), true);
+});
+
+test('isLossyRename: substring rename is lossy', () => {
+  assert.equal(isLossyRename('Sprague-Dawley rats', 'Sprague-Dawley'), true);
+  assert.equal(isLossyRename('Allen Brain Atlas', 'Allen Brain'), true);
+});
+
+test('isLossyRename: dropping qualifier is lossy', () => {
+  assert.equal(isLossyRename('Rabbit anti-TH', 'Anti-TH'), true);
+  assert.equal(isLossyRename('Monoclonal Mouse Anti-tubulin', 'Anti-tubulin'), true);
+});
+
+test('isLossyRename: zero-overlap rename is suspicious (different entity)', () => {
+  // Curated DB grouped the antibody and the target under one entry.
+  assert.equal(isLossyRename('Sheep anti-TH', 'tyrosine hydroxylase'), true);
+});
+
+test('isLossyRename: partial paraphrase that drops more than it adds is lossy', () => {
+  // Old uniquely has {monoclonal, mouse, anti}; new uniquely has {beta} —
+  // 3 dropped vs 1 added → net info loss.
+  assert.equal(isLossyRename('Monoclonal Mouse Anti-tubulin-βIII', 'a-Tubulin beta III'), true);
+});
+
+test('isLossyRename: empty new name is lossy', () => {
+  assert.equal(isLossyRename('Fiji', ''), true);
+  assert.equal(isLossyRename('Fiji', '   '), true);
+});
+
+test('isLossyRename: empty old name allows any rename', () => {
+  assert.equal(isLossyRename('', 'Fiji'), false);
+  assert.equal(isLossyRename(null, 'Fiji'), false);
+});
+
+test('isLossyRename: meaningful enrichment is NOT lossy', () => {
+  // New name adds info (more tokens, none lost).
+  assert.equal(isLossyRename('Anti-TH', 'Rabbit anti-TH (clone TH2)'), false);
+  // Different but overlapping naming convention — still informative.
+  assert.equal(isLossyRename('ImageJ', 'ImageJ / Fiji'), false);
+});
+
+test('computeSuggestions: suppresses lossy resourceName edit', () => {
+  // identifier-scan emits curated canonical "Anti-TH"; user has more specific "Rabbit anti-TH".
+  const gen = mergeDetections([
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Antibody', resourceName: 'Anti-TH', identifier: 'RRID:AB_2201407'
+    })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Antibody', resourceName: 'Rabbit anti-TH',
+    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: ''
+  }];
+  const sugs = computeSuggestions(gen, krt);
+  assert.equal(sugs.filter(s => s.data?.column === 'resourceName').length, 0,
+    'lossy resourceName edit must be suppressed');
+});
+
+test('computeSuggestions: still surfaces enriching resourceName edit', () => {
+  // user has bare 'Anti-TH'; the more specific curated name 'Rabbit anti-TH (clone TH2)' adds info.
+  const gen = mergeDetections([
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Antibody', resourceName: 'Rabbit anti-TH (clone TH2)',
+      identifier: 'RRID:AB_2201407'
+    })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Antibody', resourceName: 'Anti-TH',
+    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: ''
+  }];
+  const sugs = computeSuggestions(gen, krt);
+  assert.ok(sugs.some(s => s.data?.column === 'resourceName' && s.data?.newValue === 'Rabbit anti-TH (clone TH2)'));
+});
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// `additionalInformation` contract per ASAP:
+//   - Persisted KRT cell stays blank on AI-driven inserts/edits.
+//   - The detector blurb is preserved on suggestion.context for UI hover.
+// ───────────────────────────────────────────────────────────────────────────
+
+test('makeAddSuggestion: data.additionalInformation is blank; context holds the blurb', () => {
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({
+      resourceName: 'Fiji', identifier: 'RRID:SCR_002285',
+      additionalInformation: 'Detected near "image analysis was performed in Fiji…"'
+    })] }
+  ]);
+  const sugs = computeSuggestions(gen, []);
+  assert.equal(sugs.length, 1);
+  assert.equal(sugs[0].data.additionalInformation, '',
+    'persisted cell must be empty');
+  assert.equal(sugs[0].context,
+    'Detected near "image analysis was performed in Fiji…"',
+    'detector blurb must survive on suggestion.context');
+});
+
+test('makeAddSuggestion: no detector blurb → context is null, data.AI stays blank', () => {
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({
+      resourceName: 'Fiji', identifier: 'RRID:SCR_002285',
+      additionalInformation: ''
+    })] }
+  ]);
+  const sugs = computeSuggestions(gen, []);
+  assert.equal(sugs[0].context, null);
+  assert.equal(sugs[0].data.additionalInformation, '');
+});
+
+test('makeEditSuggestion: data.additionalInformation is blank; context held on suggestion', () => {
+  // Generated proposes a name edit; the user has a row with the same RRID.
+  // Verify the (non-additionalInformation) edit suggestion still carries the
+  // detector blurb as context, while the persisted-payload field stays empty.
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({
+      resourceType: 'Antibody', resourceName: 'Rabbit anti-TH (clone TH2)',
+      identifier: 'RRID:AB_2201407',
+      additionalInformation: 'Catalog T1299 nearby'
+    })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Antibody', resourceName: 'Anti-TH',
+    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: ''
+  }];
+  const sugs = computeSuggestions(gen, krt);
+  const nameEdit = sugs.find(s => s.data?.column === 'resourceName');
+  assert.ok(nameEdit, 'expected a resourceName edit suggestion');
+  assert.equal(nameEdit.data.additionalInformation, '');
+  assert.equal(nameEdit.context, 'Catalog T1299 nearby');
 });

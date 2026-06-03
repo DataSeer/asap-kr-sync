@@ -37,60 +37,76 @@ function getJobExpiry(apiTimeoutMs) {
 
 /**
  * Job configuration derived from API timeout env vars.
- * Each entry: { expireInSeconds, retryLimit, retryDelay, apiTimeoutMs }
+ * Each entry: { expireInSeconds, retryLimit, retryDelay, apiTimeoutMs, typicalSeconds }
+ *
+ * `typicalSeconds` is the median completion time observed in practice and
+ * powers the global ETA bar. These are rough hand-tuned defaults — replace
+ * with median-of-recent-runs once we have enough data. The ETA bar shows a
+ * range from typical → max so the user understands the variance.
  */
 const JOB_CONFIG = {
   [QUEUES.PDF_ANALYSIS]: {
     apiTimeoutMs: parseInt(process.env.PDF_ANALYSIS_API_TIMEOUT, 10) || 300000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 5,
     retryLimit: 2,
     retryDelay: 60
   },
   [QUEUES.DAS_EXTRACTION]: {
-    apiTimeoutMs: parseInt(process.env.PDF_DAS_EXTRACTOR_API_TIMEOUT, 10) || 300000,
+    apiTimeoutMs: parseInt(process.env.DAS_EXTRACTION_API_TIMEOUT, 10) || 120000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    // Gemini verbatim extraction is fast — bump the typical down from 30s
+    // (the Modal-hosted Llama fine-tune budget) to 15s.
+    typicalSeconds: 15,
     retryLimit: 2,
     retryDelay: 60
   },
   [QUEUES.SOFTWARE_DETECTION]: {
     apiTimeoutMs: parseInt(process.env.SOFTCITE_API_TIMEOUT, 10) || 600000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 90,
     retryLimit: 2,
     retryDelay: 60
   },
   [QUEUES.REPORT_GENERATION]: {
     apiTimeoutMs: 300000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 10,
     retryLimit: 2,
     retryDelay: 60
   },
   [QUEUES.ORCID_EXTRACTION]: {
     apiTimeoutMs: parseInt(process.env.GROBID_API_TIMEOUT, 10) || 30000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 15,
     retryLimit: 2,
     retryDelay: 30
   },
   [QUEUES.MARKDOWN_CONVERT]: {
     apiTimeoutMs: parseInt(process.env.PDF_MARKDOWN_TIMEOUT, 10) || 120000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 30,
     retryLimit: 2,
     retryDelay: 30
   },
   [QUEUES.DATASETS_DETECTION]: {
     apiTimeoutMs: parseInt(process.env.DATASETS_DETECTION_API_TIMEOUT, 10) || 300000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 90,
     retryLimit: 2,
     retryDelay: 60
   },
   [QUEUES.MATERIALS_DETECTION]: {
     apiTimeoutMs: parseInt(process.env.MATERIALS_DETECTION_API_TIMEOUT, 10) || 300000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 90,
     retryLimit: 2,
     retryDelay: 60
   },
   [QUEUES.PROTOCOLS_DETECTION]: {
     apiTimeoutMs: parseInt(process.env.PROTOCOLS_DETECTION_API_TIMEOUT, 10) || 300000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 90,
     retryLimit: 2,
     retryDelay: 60
   },
@@ -100,6 +116,7 @@ const JOB_CONFIG = {
   [QUEUES.IDENTIFIER_DETECTION]: {
     apiTimeoutMs: 60000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 5,
     retryLimit: 1,
     retryDelay: 30
   }

@@ -46,8 +46,9 @@ test('buildKrtItemsDatasets: raw Gemini consolidation → canonical KrtEntry', (
   assert.equal(item.newReuse, 'reuse'); // REUSED → reuse
   assert.equal(item.origin, 'datasets-gemini');
   assert.equal(item.confidence, 0.95);
-  // resource_type "Microarray" was the subtype — surfaced as additionalInformation
-  assert.equal(item.additionalInformation, 'Type: Microarray');
+  // Per ASAP request: ADDITIONAL INFORMATION stays blank on the merged
+  // item; the subtype hint lives on detectorMeta for the internal panel.
+  assert.equal(item.additionalInformation, '');
   assert.equal(item.detectorMeta.relevance, 'HIGH');
   assert.equal(item.detectorMeta.subtype, 'Microarray');
 });

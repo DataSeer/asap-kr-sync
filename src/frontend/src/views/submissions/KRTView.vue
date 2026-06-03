@@ -1,66 +1,41 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
-import { useAuthStore } from '@/stores/auth.store'
 import { setSubmissionTitle } from '@/router'
 import api from '@/services/api'
-import demosService from '@/services/demos.service'
+import pdfService from '@/services/pdf.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
 
 const route = useRoute()
 const router = useRouter()
 const submissionStore = useSubmissionStore()
 const krtStore = useKRTStore()
 const notificationStore = useNotificationStore()
-const authStore = useAuthStore()
-
-const isAdmin = computed(() => authStore.effectiveRole === 'admin')
 
 const fileInput = ref(null)
+const pdfFileInput = ref(null)
 const krtEditorRef = ref(null)
 const uploading = ref(false)
+const uploadingPdf = ref(false)
 const isDragging = ref(false)
 const krtTemplateUrl = ref('')
-const showDemoSelector = ref(false)
-const loadingDemo = ref(false)
 const submission = computed(() => submissionStore.currentSubmission)
 const latestFiles = computed(() => submissionStore.latestFiles)
 
-// Available demos — discovered server-side from src/frontend/public/demo-files/
-// + matching demo-findings/*-demo.json. Populated on mount via /api/demos.
-const allDemos = ref([])
+// Shared BackgroundProcesses wrapper handles the job poller, service status
+// fetch, and the inject contract — KRTView and PDFView use it identically.
+const bgProcessesRef = ref(null)
 
-// Computed list filtered to demos that have a KRT file, with the demo
-// matching the current submission's manuscriptId pinned to the top.
-const demoKRTFiles = computed(() => {
-  const base = allDemos.value.filter(d => d.krt)
-  const manuscriptId = submission.value?.manuscriptId?.toUpperCase()
-  if (!manuscriptId) return base
-
-  const matchingIndex = base.findIndex(d => d.id.toUpperCase() === manuscriptId)
-  if (matchingIndex === -1) return base
-
-  const sorted = [...base]
-  const [matching] = sorted.splice(matchingIndex, 1)
-  return [matching, ...sorted]
-})
-
-// Check if a demo matches the current submission
-function isDemoMatching(demoId) {
-  const manuscriptId = submission.value?.manuscriptId?.toUpperCase()
-  return manuscriptId && demoId.toUpperCase() === manuscriptId
-}
 const krtRows = computed(() => krtStore.rows)
 const summary = computed(() => krtStore.summary)
 const loading = computed(() => krtStore.loading)
 const krtFile = computed(() => submissionStore.latestFiles?.krt)
 const applyingFix = ref(false)
-const creatingEmpty = ref(false)
-const showNoKrtOptions = ref(false)
 const resourceTypes = ref([])
 
 // Manual batch fix modal state
@@ -218,8 +193,9 @@ function scrollToFixRow(fix) {
 // Step help items
 const helpItems = computed(() => [
   {
-    title: 'Upload or create a KRT',
-    done: !!krtFile.value || krtRows.value.length > 0
+    title: 'Review the Key Resources Table',
+    children: ['Add resources, edit cells, or replace the Key Resources Table with a different file'],
+    done: krtRows.value.length > 0
   },
   {
     title: 'Resolve validation errors',
@@ -227,18 +203,18 @@ const helpItems = computed(() => [
     done: summary.value.totalErrors === 0
   },
   {
-    title: 'Click "Continue" to proceed to Step 2',
+    title: 'Click "Continue" to proceed to Step 3',
     done: false
   }
 ])
 
-// Check if user can proceed to next step
-// Requires KRT to be uploaded/created first (krtFile or rows exist)
+// Check if user can proceed to next step. Auto-init guarantees a KRT exists
+// (even if empty), so we gate only on validation errors.
 const hasKrt = computed(() => !!krtFile.value || krtRows.value.length > 0)
 const canProceed = computed(() => hasKrt.value && summary.value.totalErrors === 0)
 const proceedBlockedReason = computed(() => {
   if (!hasKrt.value) {
-    return 'Upload or create a KRT before continuing'
+    return 'Upload or create a Key Resources Table before continuing'
   }
   if (summary.value.totalErrors > 0) {
     return `Fix ${summary.value.totalErrors} error${summary.value.totalErrors > 1 ? 's' : ''} before continuing`
@@ -246,18 +222,40 @@ const proceedBlockedReason = computed(() => {
   return ''
 })
 
-// Close dropdown when clicking outside
-function handleClickOutside(event) {
-  const target = event.target
-  if (!target.closest('.demo-krt-dropdown') && !target.closest('.demo-krt-button')) {
-    showDemoSelector.value = false
-  }
+/**
+ * Wire job-completion side-effects into the shared BackgroundProcesses
+ * wrapper. Mirrors PDFView::registerJobCallbacks — the user can sit on
+ * Step 2 while the background pipeline runs, and suggestions should
+ * populate automatically the moment pdf_analysis finishes. Without
+ * this, the curator has to refresh the page to see anything
+ * (the empty-state hint stays put even after "8/8 done").
+ */
+function registerJobCallbacks() {
+  const bg = bgProcessesRef.value
+  if (!bg) return
+
+  bg.onJobComplete('pdf_analysis', async () => {
+    await krtStore.fetchAiSuggestions(route.params.id)
+    notificationStore.success('AI suggestions ready')
+  })
+  bg.onJobFailed('pdf_analysis', () => {
+    notificationStore.error('Manuscript analysis failed — suggestions unavailable')
+  })
+  bg.onJobPendingInput('pdf_analysis', () => {
+    notificationStore.info(
+      'Availability Statement not found — please enter it manually, then start the analysis.',
+      30000
+    )
+  })
+  // DAS extraction updates submission.dataAvailabilityStatement; refresh
+  // the cached submission so the header (and any "DAS detected" pill)
+  // picks up the new text without requiring a navigation away and back.
+  bg.onJobComplete('das_extraction', async () => {
+    await submissionStore.fetchSubmission(route.params.id)
+  })
 }
 
 onMounted(async () => {
-  // Add click outside listener
-  document.addEventListener('click', handleClickOutside)
-
   // Reset local state for new submission
   uploading.value = false
   applyingFix.value = false
@@ -268,10 +266,11 @@ onMounted(async () => {
   // Clear previous KRT data before loading new submission
   krtStore.clearKRT()
 
-  // Discover demos available on the server (non-blocking)
-  demosService.list()
-    .then(list => { allDemos.value = list })
-    .catch(() => { allDemos.value = [] })
+  // BackgroundProcesses child mounts before the parent, so its ref is
+  // bound by the time we get here — wire our callbacks into the shared
+  // poller now so we don't miss any job-completion events that fire
+  // before the initial fetch settles.
+  registerJobCallbacks()
 
   await submissionStore.fetchSubmission(route.params.id)
   if (submission.value && submission.value.status !== 'draft') {
@@ -295,14 +294,10 @@ onMounted(async () => {
   }
 })
 
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-})
-
 // Update page title with submission ID
 watch(submission, (sub) => {
   if (sub?.manuscriptId) {
-    setSubmissionTitle(sub.manuscriptId || sub.title, 'Step 1: Validate KRT')
+    setSubmissionTitle(sub.manuscriptId || sub.title, 'Step 2: Fix the Key Resources Table')
   }
 }, { immediate: true })
 
@@ -317,52 +312,6 @@ function triggerFileUpload() {
   fileInput.value.click()
 }
 
-function toggleDemoSelector() {
-  showDemoSelector.value = !showDemoSelector.value
-}
-
-async function loadDemoKRT(demo) {
-  loadingDemo.value = true
-  showDemoSelector.value = false
-
-  try {
-    // Fetch the demo file from public folder
-    const response = await fetch(`/demo-files/${demo.krt}`)
-    if (!response.ok) {
-      throw new Error('Failed to fetch demo file')
-    }
-
-    // Guard against an HTML response (e.g. SPA fallback when the file is missing)
-    // being uploaded as a "KRT".
-    const contentType = response.headers.get('content-type') || ''
-    if (contentType.includes('text/html')) {
-      throw new Error(`Demo KRT not found: ${demo.krt}`)
-    }
-
-    const blob = await response.blob()
-
-    // Determine MIME type based on extension. After the xlsx → exceljs
-    // migration only .csv and .xlsx are supported; legacy .xls / .ods entries
-    // in demo data are no longer accepted.
-    const extension = demo.krt.split('.').pop().toLowerCase()
-    const mimeType = extension === 'xlsx'
-      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      : 'text/csv'
-
-    // Create a File object from the blob
-    const file = new File([blob], demo.krt, { type: mimeType })
-
-    // Upload using the existing store method
-    await krtStore.uploadKRT(route.params.id, file)
-    await submissionStore.fetchSubmission(route.params.id)
-    notificationStore.success(`Demo KRT "${demo.name}" loaded successfully`)
-  } catch (error) {
-    notificationStore.error(error.message || 'Failed to load demo KRT')
-  } finally {
-    loadingDemo.value = false
-  }
-}
-
 async function handleFileUpload(event) {
   const file = event.target.files[0]
   if (!file) return
@@ -371,11 +320,43 @@ async function handleFileUpload(event) {
   try {
     await krtStore.uploadKRT(route.params.id, file)
     await submissionStore.fetchSubmission(route.params.id)
-    notificationStore.success('KRT file uploaded successfully')
+    notificationStore.success('Key Resources Table uploaded successfully')
   } catch (error) {
-    notificationStore.error(error.response?.data?.error || 'Failed to upload KRT')
+    notificationStore.error(error.response?.data?.error || 'Failed to upload Key Resources Table')
   } finally {
     uploading.value = false
+    event.target.value = ''
+  }
+}
+
+function triggerPdfUpload() {
+  pdfFileInput.value?.click()
+}
+
+/**
+ * Replace-PDF fallback on Step 2.
+ *
+ * Primary path for a new round is the modal on Step 6, which already
+ * collects the PDF before bumping the submission to a new round. This
+ * fallback covers the cases the modal can't: an old client that didn't
+ * upload a PDF, or a user who wants to swap the PDF mid-round after
+ * spotting an issue. Backend `pdfService.upload` cascades the analysis
+ * pipeline so the background processes re-run automatically.
+ */
+async function handlePdfUpload(event) {
+  const file = event.target.files[0]
+  if (!file) return
+
+  uploadingPdf.value = true
+  try {
+    await pdfService.upload(route.params.id, file)
+    // Refresh the background processes panel so the new job set is visible.
+    bgProcessesRef.value?.refresh?.()
+    notificationStore.success('PDF replaced — analysis restarted')
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to replace PDF')
+  } finally {
+    uploadingPdf.value = false
     event.target.value = ''
   }
 }
@@ -387,9 +368,9 @@ async function handleValidate() {
     const warnings = summary.value.totalWarnings
 
     if (errors === 0 && warnings === 0) {
-      notificationStore.success('KRT is valid! You can proceed to Step 2.')
+      notificationStore.success('Key Resources Table is valid! You can proceed to Step 3.')
     } else if (errors === 0 && warnings > 0) {
-      notificationStore.success(`KRT is valid with ${warnings} warning${warnings > 1 ? 's' : ''}. You can proceed to Step 2.`)
+      notificationStore.success(`Key Resources Table is valid with ${warnings} warning${warnings > 1 ? 's' : ''}. You can proceed to Step 3.`)
     } else {
       const parts = []
       if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`)
@@ -477,21 +458,6 @@ async function applyManualBatchFix() {
   }
 }
 
-async function createEmptyKRT() {
-  creatingEmpty.value = true
-  try {
-    const csv = 'RESOURCE TYPE,RESOURCE NAME,SOURCE,IDENTIFIER,NEW/REUSE,ADDITIONAL INFORMATION\n'
-    const file = new File([csv], 'empty-krt.csv', { type: 'text/csv' })
-    await krtStore.uploadKRT(route.params.id, file)
-    await submissionStore.fetchSubmission(route.params.id)
-    notificationStore.success('Empty KRT created')
-  } catch (error) {
-    notificationStore.error(error.response?.data?.error || 'Failed to create empty KRT')
-  } finally {
-    creatingEmpty.value = false
-  }
-}
-
 // Drag-and-drop handlers for KRT upload
 function handleDragEnter(event) {
   event.preventDefault()
@@ -528,9 +494,9 @@ async function handleDrop(event) {
   try {
     await krtStore.uploadKRT(route.params.id, file)
     await submissionStore.fetchSubmission(route.params.id)
-    notificationStore.success('KRT file uploaded successfully')
+    notificationStore.success('Key Resources Table uploaded successfully')
   } catch (error) {
-    notificationStore.error(error.response?.data?.error || 'Failed to upload KRT')
+    notificationStore.error(error.response?.data?.error || 'Failed to upload Key Resources Table')
   } finally {
     uploading.value = false
   }
@@ -567,8 +533,8 @@ function scrollToFirstWarning() {
     <SubmissionHeader
       :submission="submission"
       :latest-files="latestFiles"
-      step-title="Step 1: Validate KRT"
-      step-description="Upload and validate your Key Resource Table"
+      step-title="Step 2: Fix the Key Resources Table"
+      step-description="Review and fix your Key Resources Table while background processes run"
       :help-items="helpItems"
       :show-navigation="true"
       :can-go-back="false"
@@ -585,6 +551,13 @@ function scrollToFirstWarning() {
           class="hidden"
           @change="handleFileUpload"
         />
+        <input
+          ref="pdfFileInput"
+          type="file"
+          accept=".pdf,.docx,application/pdf"
+          class="hidden"
+          @change="handlePdfUpload"
+        />
         <!-- KRT Template button -->
         <a
           v-if="krtTemplateUrl"
@@ -592,60 +565,31 @@ function scrollToFirstWarning() {
           target="_blank"
           rel="noopener noreferrer"
           class="btn-secondary text-sm inline-flex items-center"
-          title="Open KRT Template in Google Sheets"
+          title="Open Key Resources Table Template in Google Sheets"
         >
           <svg class="w-4 h-4 mr-1" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1.99 6H13V7h4.01v2zm0 4H13v-2h4.01v2zm0 4H13v-2h4.01v2zM7 7h4v2H7V7zm0 4h4v2H7v-2zm0 4h4v2H7v-2z" />
           </svg>
           Template
         </a>
-        <!-- Demo KRT dropdown — admin-only (preset KRT files used to seed
-             test submissions). End users follow the upload-or-template flow. -->
-        <div v-if="isAdmin && demoKRTFiles.length > 0" class="relative demo-krt-dropdown">
-          <button
-            :disabled="loadingDemo"
-            class="btn-secondary text-sm inline-flex items-center demo-krt-button"
-            @click="toggleDemoSelector"
-          >
-            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-            <span v-if="loadingDemo">Loading...</span>
-            <span v-else>Demo</span>
-            <svg class="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          <!-- Dropdown menu -->
-          <div
-            v-if="showDemoSelector"
-            class="absolute right-0 mt-2 w-96 bg-white rounded-lg shadow-lg border border-gray-200 z-50"
-          >
-            <div class="p-2">
-              <p class="text-xs text-gray-500 px-3 py-2 border-b border-gray-100">
-                Select a demo KRT to try the app
-              </p>
-              <div class="max-h-64 overflow-y-auto">
-                <button
-                  v-for="demo in demoKRTFiles"
-                  :key="demo.id"
-                  class="w-full text-left px-3 py-2 hover:bg-gray-50 rounded-md transition-colors"
-                  :class="{ 'bg-primary-50 border-l-2 border-primary-500': isDemoMatching(demo.id) }"
-                  @click="loadDemoKRT(demo)"
-                >
-                  <div class="flex items-center justify-between">
-                    <div class="font-mono text-sm font-medium" :class="isDemoMatching(demo.id) ? 'text-primary-700' : 'text-gray-900'">{{ demo.name }}</div>
-                    <span v-if="isDemoMatching(demo.id)" class="text-xs bg-primary-100 text-primary-700 px-2 py-0.5 rounded-full font-medium">Matches</span>
-                  </div>
-                  <div class="text-xs text-gray-500">{{ demo.description }}</div>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <!-- Replace button (only shown when KRT already uploaded) -->
+        <!-- Replace PDF — fallback for the new-round modal. Uploading triggers
+             a fresh analysis pipeline; suggestions from the previous PDF are
+             superseded. -->
         <button
-          v-if="krtFile"
+          :disabled="uploadingPdf"
+          class="btn-secondary text-sm inline-flex items-center"
+          title="Upload a new manuscript PDF; the analysis pipeline restarts automatically"
+          @click="triggerPdfUpload"
+        >
+          <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+          </svg>
+          <span v-if="uploadingPdf">Uploading PDF…</span>
+          <span v-else>Replace PDF</span>
+        </button>
+        <!-- Replace KRT button. Always rendered now that every submission lands
+             on this step with an auto-initialized KRT in place. -->
+        <button
           :disabled="uploading"
           class="btn-primary text-sm inline-flex items-center"
           @click="triggerFileUpload"
@@ -654,10 +598,18 @@ function scrollToFirstWarning() {
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
           </svg>
           <span v-if="uploading">Uploading...</span>
-          <span v-else>Replace KRT</span>
+          <span v-else>Replace Key Resources Table</span>
         </button>
       </template>
     </SubmissionHeader>
+
+    <!-- Background processes panel — embeds the wait-time ETA in its header
+         and exposes a "More details" toggle that reveals the per-job grid.
+         Same component used on step 3 so the UX is consistent. -->
+    <BackgroundProcesses
+      ref="bgProcessesRef"
+      :submission-id="route.params.id"
+    />
 
     <!-- Quick Fixes Section - Carousel Navigation -->
     <div v-if="allQuickFixes.length > 0 || krtStore.validating" class="card">
@@ -847,9 +799,8 @@ function scrollToFirstWarning() {
       </div>
     </div>
 
-    <!-- KRT Editor Section - show if rows exist or if KRT file was uploaded -->
+    <!-- KRT Editor Section -->
     <div
-      v-if="krtRows.length || krtFile"
       class="card relative"
       @dragenter="handleDragEnter"
       @dragleave="handleDragLeave"
@@ -865,10 +816,10 @@ function scrollToFirstWarning() {
           <svg class="mx-auto h-10 w-10 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
           </svg>
-          <p class="mt-2 text-sm font-medium text-primary-700">Drop to replace KRT file</p>
+          <p class="mt-2 text-sm font-medium text-primary-700">Drop to replace Key Resources Table file</p>
         </div>
       </div>
-      <h3 class="text-sm font-medium text-gray-700 mb-3">Key Resource Table</h3>
+      <h3 class="text-sm font-medium text-gray-700 mb-3">Key Resources Table</h3>
       <KRTEditor
         ref="krtEditorRef"
         :submission-id="route.params.id"
@@ -876,79 +827,6 @@ function scrollToFirstWarning() {
         :krt-file-url="krtFile?.s3Url"
         @revalidate="handleValidate"
       />
-    </div>
-
-    <!-- Empty state - clickable/droppable to upload (show only if no rows and no KRT file) -->
-    <div
-      v-if="!krtRows.length && !krtFile"
-      class="card text-center py-12 cursor-pointer transition-colors border-2 border-dashed"
-      :class="isDragging ? 'border-primary-500 bg-primary-50' : 'hover:border-primary-300 hover:bg-primary-50/30'"
-      @click="triggerFileUpload"
-      @dragenter="handleDragEnter"
-      @dragleave="handleDragLeave"
-      @dragover.prevent
-      @drop="handleDrop"
-    >
-      <svg class="mx-auto h-12 w-12" :class="isDragging ? 'text-primary-500' : 'text-gray-400'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-      </svg>
-      <h3 class="mt-2 text-sm font-medium text-gray-900">
-        {{ isDragging ? 'Drop file here' : 'Upload KRT' }}
-      </h3>
-      <p class="mt-1 text-sm text-gray-500">
-        {{ isDragging ? 'Release to upload your KRT file' : 'Drag & drop or click to upload a KRT file (.csv, .xlsx, .xls, .ods)' }}
-      </p>
-      <div v-if="!isDragging" class="mt-4" @click.stop>
-        <button
-          class="btn-secondary text-sm inline-flex items-center"
-          @click="showNoKrtOptions = !showNoKrtOptions"
-        >
-          <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          I don't have a KRT
-        </button>
-
-        <!-- Expanded options -->
-        <div v-if="showNoKrtOptions" class="mt-4 text-left bg-gray-50 border border-gray-200 rounded-lg p-4 max-w-lg mx-auto">
-          <p class="text-sm font-medium text-gray-700 mb-3">Please move forward with one of the following options:</p>
-          <div class="space-y-3">
-            <!-- Option 1: Prepare in spreadsheet -->
-            <div class="flex items-start gap-3 p-3 bg-white rounded-md border border-gray-200">
-              <span class="text-sm font-semibold text-gray-500 mt-0.5">1.</span>
-              <div class="flex-1">
-                <p class="text-sm text-gray-700">
-                  Prepare a KRT in a spreadsheet and upload it here
-                  <a
-                    v-if="krtTemplateUrl"
-                    :href="krtTemplateUrl"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="text-primary-600 hover:text-primary-700 font-medium underline"
-                  >(open template)</a>
-                </p>
-                <span class="inline-block mt-1 text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded">recommended</span>
-              </div>
-            </div>
-
-            <!-- Option 2: Create in app -->
-            <div class="flex items-start gap-3 p-3 bg-white rounded-md border border-gray-200">
-              <span class="text-sm font-semibold text-gray-500 mt-0.5">2.</span>
-              <div class="flex-1">
-                <p class="text-sm text-gray-700">Create a KRT in this app</p>
-                <button
-                  :disabled="creatingEmpty"
-                  class="mt-2 text-sm text-primary-600 hover:text-primary-700 font-medium underline"
-                  @click="createEmptyKRT"
-                >
-                  <span v-if="creatingEmpty">Creating...</span>
-                  <span v-else>Initialize an empty KRT</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 </template>

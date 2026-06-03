@@ -131,7 +131,7 @@ const isActive = (path) => route.path.startsWith(path)
         <!-- KRT Editor Section -->
         <div v-if="canManageResourceTypes" class="nav-section">
           <p v-if="!isCollapsed" class="nav-section-title">
-            KRT Editor
+            Key Resources Table Editor
           </p>
           <div v-else class="nav-section-divider"></div>
 
@@ -189,12 +189,12 @@ const isActive = (path) => route.path.startsWith(path)
             target="_blank"
             rel="noopener noreferrer"
             class="nav-item"
-            :title="isCollapsed ? 'KRT Template' : ''"
+            :title="isCollapsed ? 'Key Resources Table Template' : ''"
           >
             <svg class="nav-icon" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1.99 6H13V7h4.01v2zm0 4H13v-2h4.01v2zm0 4H13v-2h4.01v2zM7 7h4v2H7V7zm0 4h4v2H7v-2zm0 4h4v2H7v-2z" />
             </svg>
-            <span class="nav-label">KRT Template</span>
+            <span class="nav-label">Key Resources Table Template</span>
           </a>
         </div>
 

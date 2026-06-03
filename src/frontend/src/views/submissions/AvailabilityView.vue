@@ -65,7 +65,7 @@ const helpItems = computed(() => [
     done: false
   },
   {
-    title: 'Click "Continue" to generate a KRT Assist report',
+    title: 'Click "Continue" to generate a Key Resources Table Assist report',
     done: false
   }
 ])
@@ -125,22 +125,22 @@ const allRules = computed(() => {
   const rule1Applies = !hasNewDataset.value
   rules.push({
     severity: 'warning',
-    title: 'No new dataset in KRT',
-    message: 'This KRT does not include any new data. If you did collect data, add a row for the data you collected. If you did not collect data, add the text below to your Data/Code Availability Statement.',
+    title: 'No new dataset in the Key Resources Table',
+    message: 'This Key Resources Table does not include any new data. If you did collect data, add a row for the data you collected. If you did not collect data, add the text below to your Data/Code Availability Statement.',
     recommendedText: 'No new primary data were collected in this study.',
     applies: rule1Applies,
-    notApplicableReason: hasNewDataset.value ? 'KRT contains new dataset resources' : null
+    notApplicableReason: hasNewDataset.value ? 'Key Resources Table contains new dataset resources' : null
   })
 
   // Rule 2: No new code
   const rule2Applies = !hasNewCode.value
   rules.push({
     severity: 'warning',
-    title: 'No new code in KRT',
-    message: 'This KRT does not include any new code. If you did generate code for this study, add a row outlining the code you generated. If you did not generate any code, add the text below to your Data/Code Availability Statement.',
+    title: 'No new code in the Key Resources Table',
+    message: 'This Key Resources Table does not include any new code. If you did generate code for this study, add a row outlining the code you generated. If you did not generate any code, add the text below to your Data/Code Availability Statement.',
     recommendedText: 'No code was generated for this study; all data cleaning, preprocessing, analysis, and visualization was performed using [insert program name(s)].',
     applies: rule2Applies,
-    notApplicableReason: hasNewCode.value ? 'KRT contains new code/software resources' : null
+    notApplicableReason: hasNewCode.value ? 'Key Resources Table contains new Software/code resources' : null
   })
 
   // Rule 3: Resource type mention checks
@@ -148,36 +148,36 @@ const allRules = computed(() => {
   rules.push({
     severity: 'info',
     title: 'Dataset resources not mentioned',
-    message: 'Your KRT includes Dataset resources, but the Availability Statement does not mention them.',
+    message: 'Your Key Resources Table includes Dataset resources, but the Availability Statement does not mention them.',
     applies: rule3aApplies,
-    notApplicableReason: !hasDatasetRows.value ? 'No dataset resources in KRT' : text.includes('data') ? 'AS already mentions "data"' : null
+    notApplicableReason: !hasDatasetRows.value ? 'No dataset resources in the Key Resources Table' : text.includes('data') ? 'AS already mentions "data"' : null
   })
 
   const rule3bApplies = hasCodeRows.value && !text.includes('code') && !text.includes('software')
   rules.push({
     severity: 'info',
-    title: 'Code/Software resources not mentioned',
-    message: 'Your KRT includes Code/Software resources, but the Availability Statement does not mention them.',
+    title: 'Software/code resources not mentioned',
+    message: 'Your Key Resources Table includes Software/code resources, but the Availability Statement does not mention them.',
     applies: rule3bApplies,
-    notApplicableReason: !hasCodeRows.value ? 'No code/software resources in KRT' : (text.includes('code') || text.includes('software')) ? 'AS already mentions code/software' : null
+    notApplicableReason: !hasCodeRows.value ? 'No Software/code resources in the Key Resources Table' : (text.includes('code') || text.includes('software')) ? 'AS already mentions Software/code' : null
   })
 
   const rule3cApplies = hasProtocolRows.value && !text.includes('protocol')
   rules.push({
     severity: 'info',
     title: 'Protocol resources not mentioned',
-    message: 'Your KRT includes Protocol resources, but the Availability Statement does not mention them.',
+    message: 'Your Key Resources Table includes Protocol resources, but the Availability Statement does not mention them.',
     applies: rule3cApplies,
-    notApplicableReason: !hasProtocolRows.value ? 'No protocol resources in KRT' : text.includes('protocol') ? 'AS already mentions "protocol"' : null
+    notApplicableReason: !hasProtocolRows.value ? 'No protocol resources in the Key Resources Table' : text.includes('protocol') ? 'AS already mentions "protocol"' : null
   })
 
   const rule3dApplies = hasLabMaterialRows.value && !text.includes('material') && !text.includes('reagent') && !text.includes('resource')
   rules.push({
     severity: 'info',
     title: 'Lab Material resources not mentioned',
-    message: 'Your KRT includes Lab Material resources, but the Availability Statement does not mention them.',
+    message: 'Your Key Resources Table includes Lab Material resources, but the Availability Statement does not mention them.',
     applies: rule3dApplies,
-    notApplicableReason: !hasLabMaterialRows.value ? 'No lab material resources in KRT' : (text.includes('material') || text.includes('reagent') || text.includes('resource')) ? 'AS already mentions materials/reagents' : null
+    notApplicableReason: !hasLabMaterialRows.value ? 'No lab material resources in the Key Resources Table' : (text.includes('material') || text.includes('reagent') || text.includes('resource')) ? 'AS already mentions materials/reagents' : null
   })
 
   // Rule 4: No new data explicit statement
@@ -202,15 +202,15 @@ const allRules = computed(() => {
     notApplicableReason: hasNewCode.value ? 'KRT contains new code/software resources' : (text.includes('no code') || text.includes('no new code')) ? 'AS already states no new code' : null
   })
 
-  // Rule 6: KRT reference check
+  // Rule 6: Key Resources Table reference check
   const rule6Applies = !text.includes('key resource') && !text.includes('krt') && !text.includes('zenodo') && !text.includes('doi') && !text.includes('table number')
   rules.push({
     severity: 'warning',
-    title: 'Missing KRT reference',
+    title: 'Missing Key Resources Table reference',
     message: 'The AS must indicate that the Key Resources Table lists all research outputs alongside their identifiers.',
     recommendedText: 'The data, code, protocols, and key lab materials used and generated in this study are listed in a Key Resources Table alongside their persistent identifiers at [enter the Zenodo DOI or Table number].',
     applies: rule6Applies,
-    notApplicableReason: !rule6Applies ? 'AS references KRT, Zenodo, DOI, or table' : null
+    notApplicableReason: !rule6Applies ? 'AS references Key Resources Table, Zenodo, DOI, or table' : null
   })
 
   return rules

@@ -7,6 +7,106 @@ const { ValidationResult, KRTData } = require('../../models');
 const { getResourceTypes, getValidationRules, VALIDATION_SEVERITY } = require('../../config/constants');
 const identifierExtractor = require('./identifier-extractor');
 
+// ── Per-resource-type identifier validation ───────────────────────────────
+//
+// Map kinds (from identifier-extractor) → resource types where they're
+// considered valid. '*' means "valid for any resource type". These are
+// proposed defaults — ASAP can refine the allowed list per type without
+// changing the validator structure.
+const TYPE_ANTIBODY = 'Antibody';
+const TYPE_BACTERIAL = 'Bacterial strain';
+const TYPE_VIRAL = 'Viral vector';
+const TYPE_BIO_SAMPLE = 'Biological sample';
+const TYPE_CHEM = 'Chemical, peptide, or recombinant protein';
+const TYPE_CCA = 'Critical commercial assay';
+const TYPE_CELL_LINE = 'Experimental model: Cell line';
+const TYPE_ORGANISM = 'Experimental model: Organism/strain';
+const TYPE_OLIGO = 'Oligonucleotide';
+const TYPE_RECOMB_DNA = 'Recombinant DNA';
+const TYPE_DATASET = 'Dataset';
+const TYPE_SOFTWARE = 'Software/code';
+const TYPE_PROTOCOL = 'Protocol';
+const TYPE_OTHER = 'Other';
+
+const IDENTIFIER_KIND_ALLOWED_TYPES = {
+  // Universal — DOIs and URLs are accepted for everything.
+  doi: '*',
+  url: '*',
+  // RRIDs are the strict identifier for most lab materials + software.
+  rrid: [
+    TYPE_ANTIBODY, TYPE_BACTERIAL, TYPE_VIRAL, TYPE_CHEM, TYPE_CCA,
+    TYPE_CELL_LINE, TYPE_ORGANISM, TYPE_RECOMB_DNA, TYPE_SOFTWARE
+  ],
+  // Domain-specific dataset registries.
+  scr:                 [TYPE_SOFTWARE],
+  cellosaurus:         [TYPE_CELL_LINE],
+  addgene:             [TYPE_RECOMB_DNA],
+  emdb:                [TYPE_DATASET],
+  pdb:                 [TYPE_DATASET],
+  empiar:              [TYPE_DATASET],
+  genbank:             [TYPE_DATASET, TYPE_OLIGO],
+  uniprot:             [TYPE_DATASET, TYPE_CHEM],
+  pmid:                [TYPE_PROTOCOL],
+  // Catalog numbers are lenient for purchaseable lab materials.
+  catalogNumber: [
+    TYPE_ANTIBODY, TYPE_BACTERIAL, TYPE_VIRAL, TYPE_BIO_SAMPLE, TYPE_CHEM,
+    TYPE_CCA, TYPE_CELL_LINE, TYPE_ORGANISM, TYPE_RECOMB_DNA, TYPE_OTHER
+  ],
+  // New kinds (#10 + #8 from ASAP team request).
+  oligoSequence:       [TYPE_OLIGO],
+  biostudiesAccession: [TYPE_DATASET, TYPE_BIO_SAMPLE]
+};
+
+// Human labels for warning messages.
+const IDENTIFIER_KIND_LABELS = {
+  doi: 'DOI', rrid: 'RRID', scr: 'SCR code', url: 'URL',
+  cellosaurus: 'Cellosaurus ID', addgene: 'Addgene ID',
+  emdb: 'EMDB ID', pdb: 'PDB ID', empiar: 'EMPIAR ID',
+  genbank: 'GenBank accession', uniprot: 'UniProt ID', pmid: 'PMID',
+  catalogNumber: 'Catalog number', oligoSequence: 'Oligonucleotide sequence',
+  biostudiesAccession: 'BioStudies accession'
+};
+
+function isKindAllowedFor(kind, resourceType) {
+  const rule = IDENTIFIER_KIND_ALLOWED_TYPES[kind];
+  if (!rule) return false;
+  if (rule === '*') return true;
+  return rule.includes(resourceType);
+}
+
+function getDetectedKinds(extracted) {
+  return Object.entries(extracted)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([k]) => k);
+}
+
+/**
+ * Pick the single identifier value to surface as a Quick Fix suggestion
+ * when ADDITIONAL INFORMATION contains a recognized identifier but the
+ * IDENTIFIER column is empty. Priority follows specificity: RRID and
+ * Cellosaurus/PDB-style references first, then DOIs, then URLs, then bare
+ * accession/catalog numbers.
+ *
+ * Only kinds allowed for the row's resource type are considered, so we
+ * don't suggest copying e.g. a PMID into an Antibody row that wouldn't
+ * accept it.
+ */
+const QUICK_FIX_PRIORITY = [
+  'rrid', 'scr', 'cellosaurus', 'addgene',
+  'emdb', 'pdb', 'empiar', 'biostudiesAccession',
+  'doi', 'pmid', 'genbank', 'uniprot',
+  'url', 'catalogNumber', 'oligoSequence'
+];
+function pickBestExtractedValue(extracted, resourceType) {
+  for (const kind of QUICK_FIX_PRIORITY) {
+    const value = extracted[kind];
+    if (!value) continue;
+    if (!isKindAllowedFor(kind, resourceType)) continue;
+    return value;
+  }
+  return null;
+}
+
 // Cached resource types for validation
 let cachedResourceTypes = null;
 
@@ -161,10 +261,10 @@ function normalizeResourceType(value) {
     'recombinant dna': 'Recombinant DNA',
     'recombinant protein': 'Chemical, peptide, or recombinant protein',
     'recombinant proteins': 'Chemical, peptide, or recombinant protein',
-    'software': 'Code/Software',
-    'software/code': 'Code/Software',
-    'code/software': 'Code/Software',
-    'code': 'Code/Software',
+    'software': 'Software/code',
+    'software/code': 'Software/code',
+    'code/software': 'Software/code',
+    'code': 'Software/code',
     'viral vector': 'Viral vector',
     'viral vectors': 'Viral vector'
   };
@@ -312,31 +412,42 @@ function validateSource(value, rowId) {
 }
 
 /**
- * Validate IDENTIFIER field and extract identifiers
+ * Validate IDENTIFIER field with per-resource-type kind acceptance.
+ *
+ * The validator detects which identifier kinds (DOI, RRID, catalog number,
+ * URL, oligonucleotide sequence, BioStudies accession, etc.) are present in
+ * the cell, then checks whether any of those kinds is on the allowed list
+ * for the row's RESOURCE TYPE. This replaces the previous "any recognized
+ * identifier is valid" rule and matches ASAP's request for per-type strictness.
+ *
+ * Special cases:
+ *   - "No identifier exists" / "Identifier pending" are accepted escape hatches.
+ *   - "N/A" variants are still rejected.
+ *   - BioStudies accessions (S-BSSTxxx / S-BIADxxx) and their DOI form
+ *     (10.6019/S-BSSTxxx) are both accepted as valid — they're two
+ *     representations of the same identifier and no DOI-suggestion warning
+ *     is emitted.
  */
 async function validateIdentifier(row, submissionId) {
   const errors = [];
   const identifierValue = row.identifier || '';
   const additionalInfo = row.additionalInformation || '';
+  const resourceType = row.resourceType || '';
 
-  // Check if identifier is "No identifier exists" or "Identifier pending" (accepted non-identifier values)
+  // Accepted escape hatches.
   const trimmedLower = identifierValue.trim().toLowerCase();
-  const isNoIdentifier = trimmedLower === 'no identifier exists';
-  const isIdentifierPending = trimmedLower === 'identifier pending';
-
-  if (isNoIdentifier) {
+  if (trimmedLower === 'no identifier exists') {
     row.parsedIdentifiers = { noIdentifier: true };
     await row.save();
     return errors;
   }
-
-  if (isIdentifierPending) {
+  if (trimmedLower === 'identifier pending') {
     row.parsedIdentifiers = { identifierPending: true };
     await row.save();
     return errors;
   }
 
-  // Reject N/A variations — they are not allowed
+  // Reject N/A variations — they are not allowed.
   if (isNAVariation(identifierValue)) {
     errors.push({
       rowId: row.id,
@@ -349,31 +460,53 @@ async function validateIdentifier(row, submissionId) {
     return errors;
   }
 
-  // Extract identifiers from both columns
+  // Detect kinds in both columns. Note: BioStudies accessions (S-BSSTxxx /
+  // S-BIADxxx) and their DOI form (10.6019/S-BSSTxxx) are BOTH considered
+  // valid — they're two representations of the same identifier. The
+  // accession is allowed via the `biostudiesAccession` kind in
+  // IDENTIFIER_KIND_ALLOWED_TYPES; the DOI form passes through the universal
+  // `doi` kind. No warning is emitted: the team explicitly wants either
+  // form accepted without nagging.
   const identifierExtracted = identifierExtractor.extractAll(identifierValue);
   const additionalExtracted = identifierExtractor.extractAll(additionalInfo);
 
-  // Check if we have any valid identifier in either column
-  const hasValidId = (
-    identifierExtracted.doi || identifierExtracted.rrid || identifierExtracted.scr ||
-    identifierExtracted.emdb || identifierExtracted.pdb || identifierExtracted.empiar ||
-    identifierExtracted.cellosaurus || identifierExtracted.addgene ||
-    identifierExtracted.url || identifierExtracted.catalogNumber ||
-    additionalExtracted.doi || additionalExtracted.rrid || additionalExtracted.scr ||
-    additionalExtracted.emdb || additionalExtracted.pdb || additionalExtracted.empiar ||
-    additionalExtracted.cellosaurus || additionalExtracted.addgene || additionalExtracted.url
-  );
-
+  // Required check — empty IDENTIFIER column.
   if (!identifierValue || identifierValue.trim() === '') {
-    // If identifier column is empty but we found one in additional info, just warn
-    if (hasValidId) {
+    const additionalKinds = getDetectedKinds(additionalExtracted);
+    const allowedInAddl = additionalKinds.some(k => isKindAllowedFor(k, resourceType));
+    if (allowedInAddl) {
+      // Auto-copy: authors often paste real identifiers (oligonucleotide
+      // sequences, RRIDs, DOIs, etc.) into ADDITIONAL INFORMATION because
+      // they don't recognize them as "identifiers". When IDENTIFIER is
+      // empty and ADDITIONAL INFO has a value of an allowed kind for this
+      // resource type, silently move it into IDENTIFIER. We re-extract on
+      // the new IDENTIFIER value so the rest of this function sees the
+      // post-copy state and doesn't keep complaining.
+      const bestValue = pickBestExtractedValue(additionalExtracted, resourceType);
+      if (bestValue) {
+        row.identifier = bestValue;
+        await row.save();
+        // Persist parsedIdentifiers consistent with the new value and exit
+        // — the next validation cycle (or this caller's outer loop) will
+        // re-validate the row against its now-populated IDENTIFIER.
+        const reExtracted = identifierExtractor.extractAll(bestValue);
+        const merged = {};
+        for (const key of Object.keys(reExtracted)) {
+          merged[key] = reExtracted[key] || additionalExtracted[key];
+        }
+        row.parsedIdentifiers = merged;
+        await row.save();
+        return errors;
+      }
+      // Fell through — no auto-copyable value despite some additional
+      // identifiers existing. Surface as a soft hint.
       errors.push({
         rowId: row.id,
         columnName: 'IDENTIFIER',
         errorType: 'missing_but_found',
         errorMessage: 'Identifier column is empty but identifier found in Additional Information',
         severity: VALIDATION_SEVERITY.WARNING,
-        suggestion: 'Consider moving the identifier to the IDENTIFIER column'
+        suggestion: 'Move the identifier into the IDENTIFIER column'
       });
     } else {
       errors.push({
@@ -385,25 +518,45 @@ async function validateIdentifier(row, submissionId) {
         suggestion: 'Provide a DOI, RRID, URL, catalog number, "No identifier exists" or "Identifier pending"'
       });
     }
-  } else if (!hasValidId) {
-    // Identifier column has value but no recognized identifier format
-    errors.push({
-      rowId: row.id,
-      columnName: 'IDENTIFIER',
-      errorType: 'invalid_format',
-      errorMessage: 'Identifier not recognized',
-      severity: VALIDATION_SEVERITY.WARNING,
-      suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"'
-    });
+  } else {
+    // Identifier present — check which kinds were detected and whether any
+    // of them is allowed for the row's resource type.
+    const detectedKinds = getDetectedKinds(identifierExtracted);
+    const allowedKinds = detectedKinds.filter(k => isKindAllowedFor(k, resourceType));
+
+    if (detectedKinds.length === 0) {
+      errors.push({
+        rowId: row.id,
+        columnName: 'IDENTIFIER',
+        errorType: 'invalid_format',
+        errorMessage: 'Identifier not recognized',
+        severity: VALIDATION_SEVERITY.WARNING,
+        suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"'
+      });
+    } else if (allowedKinds.length === 0) {
+      // Kind detected, but not on the allowed list for this resource type.
+      const detectedLabel = detectedKinds.map(k => IDENTIFIER_KIND_LABELS[k] || k).join(', ');
+      errors.push({
+        rowId: row.id,
+        columnName: 'IDENTIFIER',
+        errorType: 'kind_not_accepted_for_type',
+        errorMessage: resourceType
+          ? `${detectedLabel} is not a typical identifier for "${resourceType}"`
+          : `${detectedLabel} detected, but RESOURCE TYPE is missing`,
+        severity: VALIDATION_SEVERITY.WARNING,
+        suggestion: 'Use a DOI, RRID, URL, or other identifier accepted for this resource type'
+      });
+    }
+    // else: at least one detected kind is allowed — silent pass.
   }
 
-  // Merge extracted identifiers (prefer identifier column, fallback to additional info)
+  // Merge & persist parsedIdentifiers (prefer IDENTIFIER column, fall back to
+  // ADDITIONAL INFORMATION). Downstream code (e.g. report generation) reads
+  // these to surface "extra info we found about this resource".
   const mergedExtracted = {};
   for (const key of Object.keys(identifierExtracted)) {
     mergedExtracted[key] = identifierExtracted[key] || additionalExtracted[key];
   }
-
-  // Update the row with parsed identifiers
   row.parsedIdentifiers = mergedExtracted;
   await row.save();
 

@@ -42,7 +42,7 @@ export const useResourceTypesStore = defineStore('resourceTypes', () => {
     const category = getTypeCategory(resourceTypeName)
     const mapping = {
       dataset: 'Datasets',
-      software: 'Code/Software',
+      software: 'Software/code',
       protocol: 'Protocols',
       lab_material: 'Lab Materials'
     }
@@ -56,6 +56,18 @@ export const useResourceTypesStore = defineStore('resourceTypes', () => {
     const category = getTypeCategory(resourceTypeName)
     const order = { dataset: 0, software: 1, protocol: 2, lab_material: 3 }
     return order[category] ?? 3
+  }
+
+  /**
+   * Get the per-resource-type sort order (used to order rows WITHIN a tab —
+   * e.g. Antibody before Bacterial strain). Derived from the position of the
+   * name in `resourceTypeNames`, which the backend already returns ordered by
+   * sort_order ASC. Unknown names sort last.
+   */
+  function getTypeSortOrder(resourceTypeName) {
+    if (!resourceTypeName) return Number.MAX_SAFE_INTEGER
+    const idx = resourceTypeNames.value.indexOf(resourceTypeName)
+    return idx === -1 ? Number.MAX_SAFE_INTEGER : idx
   }
 
   // Actions
@@ -178,6 +190,7 @@ export const useResourceTypesStore = defineStore('resourceTypes', () => {
     getTypeCategory,
     getTabGroup,
     getGroupSortOrder,
+    getTypeSortOrder,
     // Actions
     fetchResourceTypes,
     fetchResourceTypeNames,

@@ -27,7 +27,7 @@ const steps = computed(() => {
   }))
 })
 
-const stepLabels = ['KRT', 'Manuscript', 'Approve', 'Edit', 'Report']
+const stepLabels = ['Key Resources Table', 'Manuscript', 'Approve', 'Edit', 'Report']
 </script>
 
 <template>

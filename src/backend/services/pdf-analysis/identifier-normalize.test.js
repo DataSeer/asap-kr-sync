@@ -9,6 +9,8 @@ const assert = require('node:assert/strict');
 const {
   normalizeRawValue,
   normalizeName,
+  canonicalResourceType,
+  inferSourceFromIdentifier,
   extractIdentifierTokens,
   identifiersMatch,
   namesMatch,
@@ -133,7 +135,7 @@ test('namesMatch: empty → no match', () => {
 
 test('computeDedupKey: stable across input shapes', () => {
   const k1 = computeDedupKey({
-    resourceType: 'Code/Software',
+    resourceType: 'Software/code',
     resourceName: 'Python',
     newReuse: 'reuse',
     identifier: 'https://doi.org/10.1234/abc'
@@ -148,7 +150,7 @@ test('computeDedupKey: stable across input shapes', () => {
 });
 
 test('computeDedupKey: different new/reuse → different keys', () => {
-  const base = { resourceType: 'Code/Software', resourceName: 'Python', identifier: '' };
+  const base = { resourceType: 'Software/code', resourceName: 'Python', identifier: '' };
   assert.notEqual(
     computeDedupKey({ ...base, newReuse: 'new' }),
     computeDedupKey({ ...base, newReuse: 'reuse' })
@@ -179,4 +181,112 @@ test('computeDedupKey: no identifier → uses name', () => {
     resourceName: 'PYTHON', identifier: null
   });
   assert.equal(k1, k2);
+});
+
+// ---------- canonicalResourceType ----------
+
+test('canonicalResourceType: collapses Code/Software variants to "Software/code"', () => {
+  assert.equal(canonicalResourceType('Code/Software'), 'Software/code');
+  assert.equal(canonicalResourceType('code/software'), 'Software/code');
+  assert.equal(canonicalResourceType('Software/code'), 'Software/code');
+  assert.equal(canonicalResourceType('software/code'), 'Software/code');
+  assert.equal(canonicalResourceType('Code'),          'Software/code');
+  assert.equal(canonicalResourceType('software'),      'Software/code');
+});
+
+test('canonicalResourceType: unknown types pass through trimmed (case preserved)', () => {
+  assert.equal(canonicalResourceType('Antibody'),                            'Antibody');
+  assert.equal(canonicalResourceType('Dataset'),                             'Dataset');
+  assert.equal(canonicalResourceType('  Experimental model: Cell line '),    'Experimental model: Cell line');
+  assert.equal(canonicalResourceType('Recombinant DNA'),                     'Recombinant DNA');
+});
+
+test('canonicalResourceType: empty / null / undefined → empty string', () => {
+  assert.equal(canonicalResourceType(''),         '');
+  assert.equal(canonicalResourceType('   '),      '');
+  assert.equal(canonicalResourceType(null),       '');
+  assert.equal(canonicalResourceType(undefined),  '');
+});
+
+// ---------- inferSourceFromIdentifier ----------
+
+test('inferSourceFromIdentifier: code repository URLs', () => {
+  assert.equal(inferSourceFromIdentifier('https://github.com/foo/bar'), 'GitHub');
+  assert.equal(inferSourceFromIdentifier('http://www.gitlab.com/g/p'), 'GitLab');
+  assert.equal(inferSourceFromIdentifier('bitbucket.org/team/repo'), 'Bitbucket');
+});
+
+test('inferSourceFromIdentifier: Zenodo / Dryad / figshare via DOI and URL', () => {
+  assert.equal(inferSourceFromIdentifier('10.5281/zenodo.123456'), 'Zenodo');
+  assert.equal(inferSourceFromIdentifier('https://doi.org/10.5281/zenodo.123456'), 'Zenodo');
+  assert.equal(inferSourceFromIdentifier('https://zenodo.org/record/123456'), 'Zenodo');
+  assert.equal(inferSourceFromIdentifier('10.5061/dryad.abc123'), 'Dryad');
+  assert.equal(inferSourceFromIdentifier('10.6084/m9.figshare.1234567'), 'figshare');
+});
+
+test('inferSourceFromIdentifier: protocols.io', () => {
+  assert.equal(inferSourceFromIdentifier('10.17504/protocols.io.764hrgw'), 'protocols.io');
+  assert.equal(inferSourceFromIdentifier('https://www.protocols.io/view/abc'), 'protocols.io');
+});
+
+test('inferSourceFromIdentifier: omics / sequence accessions', () => {
+  assert.equal(inferSourceFromIdentifier('GSE12345'), 'NCBI GEO');
+  assert.equal(inferSourceFromIdentifier('SRR1234567'), 'NCBI SRA');
+  assert.equal(inferSourceFromIdentifier('PRJNA123456'), 'NCBI BioProject');
+  assert.equal(inferSourceFromIdentifier('SAMN01234567'), 'NCBI BioSample');
+  assert.equal(inferSourceFromIdentifier('E-MTAB-1234'), 'ArrayExpress');
+  assert.equal(inferSourceFromIdentifier('PXD012345'), 'ProteomeXchange');
+  assert.equal(inferSourceFromIdentifier('EMPIAR-10028'), 'EMPIAR');
+  assert.equal(inferSourceFromIdentifier('EMD-1234'), 'EMDB');
+});
+
+test('inferSourceFromIdentifier: Addgene plasmid', () => {
+  assert.equal(inferSourceFromIdentifier('Addgene #12345'), 'Addgene');
+  assert.equal(inferSourceFromIdentifier('RRID:Addgene_12345'), 'Addgene');
+});
+
+test('inferSourceFromIdentifier: returns null for ambiguous / unknown / empty', () => {
+  // Journal DOIs are intentionally not mapped (shared prefix).
+  assert.equal(inferSourceFromIdentifier('10.1038/s41586-020-2649-2'), null);
+  assert.equal(inferSourceFromIdentifier('10.1101/2020.01.01.123456'), null);
+  // Bare RRID for an antibody → vendor is not knowable from the ID.
+  assert.equal(inferSourceFromIdentifier('RRID:AB_2744623'), null);
+  // Empty / nullish.
+  assert.equal(inferSourceFromIdentifier(''), null);
+  assert.equal(inferSourceFromIdentifier(null), null);
+  assert.equal(inferSourceFromIdentifier(undefined), null);
+});
+
+test('inferSourceFromIdentifier: DOI/accession source beats a URL source on conflict', () => {
+  // Zenodo DOI alongside a GitHub URL: the registered DOI is authoritative, so
+  // the DOI source wins over the URL.
+  assert.equal(
+    inferSourceFromIdentifier('10.5281/zenodo.123 ; https://github.com/foo/bar'),
+    'Zenodo'
+  );
+  // GitHub URL alongside a GEO accession → the accession wins.
+  assert.equal(
+    inferSourceFromIdentifier('https://github.com/foo/bar and GSE12345'),
+    'NCBI GEO'
+  );
+});
+
+test('inferSourceFromIdentifier: two distinct URL hosts → null (ambiguous)', () => {
+  assert.equal(
+    inferSourceFromIdentifier('https://github.com/foo/bar ; https://gitlab.com/x/y'),
+    null
+  );
+});
+
+test('inferSourceFromIdentifier: two distinct DOI/accession sources → null', () => {
+  assert.equal(inferSourceFromIdentifier('GSE12345 ; PXD012345'), null);
+  assert.equal(inferSourceFromIdentifier('10.5281/zenodo.1 ; 10.5061/dryad.2'), null);
+});
+
+test('inferSourceFromIdentifier: same source matched twice → still resolves', () => {
+  // Zenodo DOI + Zenodo URL both map to Zenodo → one distinct source.
+  assert.equal(
+    inferSourceFromIdentifier('10.5281/zenodo.123 ; https://zenodo.org/record/123'),
+    'Zenodo'
+  );
 });

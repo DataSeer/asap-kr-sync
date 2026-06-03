@@ -15,28 +15,32 @@ PDF Analysis is the **in-app consolidator** that merges every detection's items 
 
 **Algorithm:** flatten every contributor's items into a uniform shape, then greedy-merge primaries using identifier-token intersection / opaque-id match / normalized-name match. `SOURCE_PRECEDENCE` gives software/datasets/protocols/materials precedence over identifier_detection when fields collide. Each merged resource records every contributing source under `detectedBy[]`. The final Generated KRT is persisted under `submission_jobs.result.data.items` for the `pdf_analysis` job and uploaded to S3 as `generated-krt.json`.
 
+**Source auto-detection:** when a merged resource has **no** SOURCE supplied by any contributor, `mergeDetections` infers one from the identifier via `inferSourceFromIdentifier` (`identifier-normalize.service.js`). This is **allowlist-only** — it maps unambiguous repository URLs (GitHub, GitLab, Bitbucket), registered DOI prefixes (Zenodo `10.5281/zenodo.`, Dryad `10.5061/dryad.`, figshare `10.6084/m9.figshare.`, protocols.io `10.17504/protocols.io.`), and structured accessions (NCBI GEO/SRA/BioProject/BioSample, dbGaP, ArrayExpress, ProteomeXchange, EMPIAR, EMDB, Addgene) to a canonical source name. Anything not on the allowlist (journal DOIs, bare RRIDs, PDB/GenBank/UniProt) returns `null` and the SOURCE stays blank — it never guesses. On conflict, a **DOI/accession source outranks a URL source** (the registered identifier is the more authoritative pointer); two distinct DOI/accession sources, or two distinct URL hosts, also return `null`. It never overwrites a detector-supplied source, and the diff engine separately refuses to overwrite a user-filled SOURCE cell.
+
 ORCID extraction is **not** a contributor — its output writes to `submission.authors`.
 
 ---
 
-## DAS Extractor LM API
+## DAS Extraction (Google Gemini)
 
-Extracts the Data Availability Statement from manuscript PDFs.
+Extracts the Data Availability Statement (or another section type) from the manuscript's converted markdown. Replaces the previous Modal-hosted Llama fine-tune endpoint.
 
 | Property | Value |
 |----------|-------|
-| **Config** | `src/backend/config/pdf-das-extractor-api.js` |
-| **Client** | `src/backend/services/pdf/pdf-das-extractor-client.service.js` |
-| **Auth** | `X-API-Key` header (`PDF_DAS_EXTRACTOR_API_KEY`) |
-| **Timeout** | 5 minutes (`PDF_DAS_EXTRACTOR_API_TIMEOUT`) |
-| **Retry** | 2 retries, 2s initial delay, 2× multiplier |
-| **Disable** | `PDF_DAS_EXTRACTOR_ENABLED=false` |
+| **Config** | `src/backend/config/das-extraction-api.js` |
+| **Client** | `src/backend/services/pdf/das-extraction.service.js` |
+| **Prompt** | `src/backend/data/prompts/das-extraction.txt` (copy from `.example`) |
+| **Auth** | `DAS_EXTRACTION_GEMINI_API_KEY` |
+| **Model** | `DAS_EXTRACTION_GEMINI_MODEL` (default `gemini-2.5-flash`) |
+| **Timeout** | 2 minutes (`DAS_EXTRACTION_API_TIMEOUT`) |
+| **Disable** | `DAS_EXTRACTION_ENABLED=false` |
+| **Depends on** | Markdown Convert (reads the markdown File from S3, not the PDF) |
 
-**Request:** POST multipart/form-data with field `article` containing the PDF.
+**Request:** Gemini `generateContent` with a single text part — the prompt followed by `Section type: das` and the full manuscript markdown.
 
-**Response:** `{ prompt, extracted_das }` — the extracted DAS text.
+**Response:** A JSON object `{ "content": "<verbatim>", "partial_match": <bool>, "section_fragmented": <bool> }`. The service normalises the keys to camelCase (`partialMatch`, `sectionFragmented`).
 
-**Processing:** Stores the extracted DAS as `extractedDataAvailabilityStatement` (read-only) and copies it to `dataAvailabilityStatement` (user-editable).
+**Processing:** Stores `content` as `extractedDataAvailabilityStatement` (read-only) and copies it to `dataAvailabilityStatement` (user-editable). Empty content persists as `"Not found"` so the user sees an extraction was attempted.
 
 ---
 
@@ -242,6 +246,14 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 ---
 
 ## Google Gemini API (Materials Detection)
+
+> ⚠️ **Currently disabled — quality too low to ship.** Materials detection is intentionally
+> turned off because the module's output quality is not yet good enough for production use.
+> The prompt file (`src/backend/data/prompts/materials-detection.txt`) has been removed, so
+> `materials.service.js`'s `hasPrompt()` gate returns `false` and the external Gemini path never
+> runs — the detector returns an empty result (or demo data when demo mode is enabled). The
+> wiring below is retained for when the module is re-enabled after the quality issues are
+> addressed; to bring it back, restore the prompt file (and its `.txt.example`) and re-evaluate.
 
 Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Follows the same pattern as datasets detection.
 

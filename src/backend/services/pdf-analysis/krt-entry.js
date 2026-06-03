@@ -18,7 +18,7 @@
 
 /**
  * @typedef {object} KrtEntry
- * @property {string} resourceType                  - 'Code/Software' | 'Dataset' | 'Protocol' | 'Lab Material' | ...
+ * @property {string} resourceType                  - 'Software/code' | 'Dataset' | 'Protocol' | 'Lab Material' | ...
  * @property {string} resourceName                  - canonical display name
  * @property {string} identifier                    - ';'-joined when multiple
  * @property {string} source                        - URL or curator source string

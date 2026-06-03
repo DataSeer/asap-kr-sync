@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, provide, nextTick } from 'vue'
+import { ref, computed, onMounted, watch, provide, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useKRTStore } from '@/stores/krt.store'
@@ -11,22 +11,13 @@ import orcidService from '@/services/orcid.service'
 import datasetsService from '@/services/datasets.service'
 import materialsService from '@/services/materials.service'
 import protocolsService from '@/services/protocols.service'
-import identifierDetectionService from '@/services/identifier-detection.service'
-import markdownService from '@/services/markdown.service'
 import suggestionService from '@/services/suggestion.service'
 import jobService from '@/services/job.service'
-import configService from '@/services/config.service'
-import demosService from '@/services/demos.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
-import JobStatusPanel from '@/components/submission/JobStatusPanel.vue'
+import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
-import { useJobPoller } from '@/composables'
-
-// Available demos — discovered server-side from src/frontend/public/demo-files/
-// + matching demo-findings/*-demo.json. Populated on mount via /api/demos.
-const allDemos = ref([])
 
 const route = useRoute()
 const router = useRouter()
@@ -36,110 +27,58 @@ const notificationStore = useNotificationStore()
 const authStore = useAuthStore()
 const resourceTypesStore = useResourceTypesStore()
 
+// Used to gate the developer "re-validate" button on the KRT editor.
 const isAdmin = computed(() => authStore.effectiveRole === 'admin')
 
-const fileInput = ref(null)
 const krtEditorRef = ref(null)
 const submissionHeaderRef = ref(null)
+const bgProcessesRef = ref(null)
 function handleEditDas() {
   submissionHeaderRef.value?.openEditModal?.()
 }
-const uploading = ref(false)
-const isDragging = ref(false)
+const replacingPdf = ref(false)
+const showReplacePdfModal = ref(false)
+const replacePdfInput = ref(null)
 const analyzing = ref(false)
 const analysisStatus = ref(null)
 const findings = ref([])
-const showPDFDemoSelector = ref(false)
-const loadingDemoPDF = ref(false)
 const submission = computed(() => submissionStore.currentSubmission)
 
-// Unified job poller — tracks all background jobs for this submission
-const { jobs, isAnyRunning, getJob, onJobComplete, onJobFailed, onJobPendingInput, refresh: refreshJobs } = useJobPoller(
-  computed(() => route.params.id)
-)
-
-// Provide jobs to SubmissionHeader's JobStatusPanel
-provide('submissionJobs', jobs)
-
-// Software mentions data for JobStatusPanel "Show more" modal
+// Per-detector data feeds the JobStatusPanel "Show more" modal. These stay
+// in the view because they're step-3-specific — KRTView doesn't fetch them.
+// Vue's provide resolution walks the entire ancestry, so even though the
+// BackgroundProcesses wrapper provides its own context below, JobStatusPanel
+// (its descendant) can still see these provides.
 const softwareMentionsItems = ref([])
 provide('submissionSoftwareMentions', softwareMentionsItems)
-
-// Authors data for JobStatusPanel "Show more" modal
 const authorsItems = ref([])
 provide('submissionAuthors', authorsItems)
-
-// Datasets data for JobStatusPanel "Show more" modal
 const datasetItems = ref([])
 provide('submissionDatasets', datasetItems)
-
-// Materials data for JobStatusPanel "Show more" modal
 const materialsItems = ref([])
 provide('submissionMaterials', materialsItems)
-
-// Protocols data for JobStatusPanel "Show more" modal
 const protocolsItems = ref([])
 provide('submissionProtocols', protocolsItems)
 
-// Service status (enabled/disabled) for JobStatusPanel badges
-const serviceStatus = ref({})
-provide('serviceStatus', serviceStatus)
-
-// Counter the JobStatusPanel watches to auto-expand when we trigger background
-// processing (e.g. after a fresh PDF upload).
-const expandJobsSignal = ref(0)
-provide('expandJobsSignal', expandJobsSignal)
-function revealJobsPanel() {
-  expandJobsSignal.value++
+// Shortcut accessors that delegate to the BackgroundProcesses ref once the
+// child is mounted. Wrapping `jobs` as a computed so consumers (watch /
+// other computed) react when the ref binds. defineExpose does NOT auto-
+// unwrap refs, so we unwrap explicitly via `.jobs?.value`.
+function refreshJobs() { return bgProcessesRef.value?.refresh?.() }
+function revealJobsPanel() { bgProcessesRef.value?.reveal?.() }
+function getJob(type) {
+  // `getJob` reads from the live jobs ref inside the wrapper; calling it
+  // through the exposed function keeps reactivity working across the boundary.
+  return bgProcessesRef.value?.getJob?.(type) || null
 }
-
-// Provide restart handler for JobStatusPanel
-provide('restartJob', async (jobType) => {
-  const id = route.params.id
-  switch (jobType) {
-    case 'das_extraction':
-      await pdfService.extractDAS(id)
-      notificationStore.info('DAS extraction re-started')
-      break
-    case 'pdf_analysis':
-      analyzing.value = true
-      analysisStatus.value = null
-      await pdfService.triggerAnalysis(id)
-      notificationStore.info('PDF analysis re-started')
-      break
-    case 'software_detection':
-      await softwareService.triggerDetection(id)
-      notificationStore.info('Software detection re-started')
-      break
-    case 'orcid_extraction':
-      await orcidService.triggerExtraction(id)
-      notificationStore.info('ORCID extraction re-started')
-      break
-    case 'markdown_convert':
-      await markdownService.triggerConvert(id)
-      notificationStore.info('Markdown conversion re-started')
-      break
-    case 'datasets_detection':
-      await datasetsService.triggerDetection(id)
-      notificationStore.info('Datasets detection re-started')
-      break
-    case 'materials_detection':
-      await materialsService.triggerDetection(id)
-      notificationStore.info('Materials detection re-started')
-      break
-    case 'protocols_detection':
-      await protocolsService.triggerDetection(id)
-      notificationStore.info('Protocols detection re-started')
-      break
-    case 'identifier_detection':
-      await identifierDetectionService.triggerDetection(id)
-      notificationStore.info('Identifier detection re-started')
-      break
-    default:
-      return
-  }
-  await refreshJobs()
-})
+// `defineExpose` auto-unwraps refs through the component proxy, so
+// `bgProcessesRef.value.jobs` is already the underlying jobs map — adding
+// `.value` reads from a plain object and yields `undefined`, freezing this
+// computed to `{}` for the lifetime of the page. That breaks every downstream
+// computed that relies on it (anyProcessFinished, allProcessesFinished),
+// which in turn keeps the "Suggestions will be automatically populated"
+// empty-state visible even after every job has hit 'complete'.
+const jobs = computed(() => bgProcessesRef.value?.jobs || {})
 
 // Derive analyzing state from job poller
 const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))
@@ -180,77 +119,75 @@ async function handleAdvanceAnalysis() {
   }
 }
 
-// Register job completion callbacks
-onJobComplete('pdf_analysis', async () => {
-  analyzing.value = false
-  analysisStatus.value = 'complete'
-  // Refresh all suggestions (PDF analysis + other sources)
-  await refreshSuggestions()
-  notificationStore.success('Analysis complete')
-})
+// Wires job-completion side-effects (refreshing suggestions, surfacing
+// notifications, etc.) into the shared BackgroundProcesses wrapper. Called
+// from onMounted once bgProcessesRef is bound — the wrapper itself runs
+// useJobPoller; we just register PDFView-specific reactions on top.
+function registerJobCallbacks() {
+  const bg = bgProcessesRef.value
+  if (!bg) return
 
-onJobFailed('pdf_analysis', () => {
-  analyzing.value = false
-  analysisStatus.value = 'failed'
-  notificationStore.error('Analysis failed')
-})
-
-onJobPendingInput('pdf_analysis', () => {
-  notificationStore.info('Availability Statement not found — please enter it manually, then start the analysis.', 30000)
-})
-
-onJobComplete('das_extraction', async () => {
-  await submissionStore.fetchSubmission(route.params.id)
-})
-
-onJobComplete('software_detection', async () => {
-  await loadSoftwareMentions()
-  // Software detection generates suggestions — refresh them
-  await refreshSuggestions()
-})
-
-onJobComplete('orcid_extraction', async () => {
-  await loadAuthors()
-})
-
-onJobComplete('datasets_detection', async () => {
-  await loadDatasets()
-  // Datasets detection now generates suggestions — refresh them
-  await refreshSuggestions()
-})
-
-onJobComplete('markdown_convert', () => {
-  // Markdown convert done — datasets detection will auto-start via pipeline
-})
-
-onJobComplete('materials_detection', async () => {
-  await loadMaterials()
-  await refreshSuggestions()
-})
-
-onJobComplete('protocols_detection', async () => {
-  await loadProtocols()
-  await refreshSuggestions()
-})
-
-onJobComplete('identifier_detection', async () => {
-  // Identifier scan items feed pdf_analysis directly via merge-detections,
-  // so there's no dedicated per-category panel to reload — refresh the
-  // suggestions stream so any new matches the user can act on appear.
-  await refreshSuggestions()
-})
+  bg.onJobComplete('pdf_analysis', async () => {
+    analyzing.value = false
+    analysisStatus.value = 'complete'
+    await refreshSuggestions()
+    notificationStore.success('Analysis complete')
+  })
+  bg.onJobFailed('pdf_analysis', () => {
+    analyzing.value = false
+    analysisStatus.value = 'failed'
+    notificationStore.error('Analysis failed')
+  })
+  bg.onJobPendingInput('pdf_analysis', () => {
+    notificationStore.info('Availability Statement not found — please enter it manually, then start the analysis.', 30000)
+  })
+  bg.onJobComplete('das_extraction', async () => {
+    await submissionStore.fetchSubmission(route.params.id)
+  })
+  bg.onJobComplete('software_detection', async () => {
+    await loadSoftwareMentions()
+    await refreshSuggestions()
+  })
+  bg.onJobComplete('orcid_extraction', async () => {
+    await loadAuthors()
+  })
+  bg.onJobComplete('datasets_detection', async () => {
+    await loadDatasets()
+    await refreshSuggestions()
+  })
+  bg.onJobComplete('markdown_convert', () => {
+    // Markdown convert done — datasets detection will auto-start via pipeline.
+  })
+  bg.onJobComplete('materials_detection', async () => {
+    await loadMaterials()
+    await refreshSuggestions()
+  })
+  bg.onJobComplete('protocols_detection', async () => {
+    await loadProtocols()
+    await refreshSuggestions()
+  })
+  bg.onJobComplete('identifier_detection', async () => {
+    // Identifier scan items feed pdf_analysis directly via merge-detections,
+    // so there's no per-category panel to reload — refresh suggestions so
+    // any new matches surface.
+    await refreshSuggestions()
+  })
+}
 const latestFiles = computed(() => submissionStore.latestFiles)
 const pdfFile = computed(() => latestFiles.value?.pdf)
 const krtFile = computed(() => latestFiles.value?.krt)
 
 // True when every background process has reached a final state (complete or
-// failed). Excludes pending_input — that's "waiting for user", not done, and
-// the user should still see the prompt that lets them act on it.
+// failed). Excludes pending_input and waiting — those are "blocked, not done",
+// and the user should still see the prompt that lets them act on it.
 const allProcessesFinished = computed(() => {
-  if (isAnyRunning.value) return false
   const list = Object.values(jobs.value || {})
   if (list.length === 0) return false
-  if (list.some(j => j.status === 'pending_input' || j.status === 'waiting')) return false
+  const inFlight = list.some(j =>
+    j.status === 'waiting' || j.status === 'queued' ||
+    j.status === 'processing' || j.status === 'pending_input'
+  )
+  if (inFlight) return false
   return list.every(j => j.status === 'complete' || j.status === 'failed')
 })
 
@@ -284,10 +221,6 @@ const validationDone = computed(() =>
 // Step help items
 const helpItems = computed(() => [
   {
-    title: 'Upload your manuscript',
-    done: !!pdfFile.value
-  },
-  {
     title: 'Review suggestions',
     children: ['Approve or reject each suggestion (required) and make relevant edits'],
     done: reviewSuggestionsDone.value
@@ -298,7 +231,7 @@ const helpItems = computed(() => [
     done: validationDone.value
   },
   {
-    title: 'Click "Continue" to proceed to Step 3',
+    title: 'Click "Continue" to proceed to Step 4',
     done: false
   }
 ])
@@ -335,76 +268,35 @@ const currentSuggestionIndex = ref(0)
 const suggestionTabGroups = [
   { key: 'all', label: 'All' },
   { key: 'Datasets', label: 'Datasets' },
-  { key: 'Code/Software', label: 'Code/Software' },
+  { key: 'Software/code', label: 'Software/code' },
   { key: 'Protocols', label: 'Protocols' },
   { key: 'Lab Materials', label: 'Key Lab Materials' }
 ]
 const activeSuggestionTab = ref('all')
-
-// Expanded suggestion detail
-const expandedSuggestionId = ref(null)
-
-function toggleSuggestionDetail(id) {
-  expandedSuggestionId.value = expandedSuggestionId.value === id ? null : id
-}
 
 // Rejection reason modal state
 const showRejectModal = ref(false)
 const rejectingFinding = ref(null)
 const rejectionReason = ref('')
 
-// Check if a demo matches the current submission's manuscriptId
-function isDemoMatching(demoId) {
-  const manuscriptId = submission.value?.manuscriptId?.toUpperCase()
-  return manuscriptId && demoId.toUpperCase() === manuscriptId
-}
-
-// Computed list that puts matching demo first based on submission's manuscriptId
-const demoPDFFiles = computed(() => {
-  const base = allDemos.value.filter(d => d.pdf)
-  const manuscriptId = submission.value?.manuscriptId?.toUpperCase()
-  if (!manuscriptId) return base
-
-  const matchingIndex = base.findIndex(d => d.id.toUpperCase() === manuscriptId)
-  if (matchingIndex === -1) return base
-
-  const sorted = [...base]
-  const [matching] = sorted.splice(matchingIndex, 1)
-  return [matching, ...sorted]
-})
-
-// Close dropdowns when clicking outside
-function handleClickOutside(event) {
-  const target = event.target
-  if (!target.closest('.demo-pdf-dropdown') && !target.closest('.demo-pdf-button')) {
-    showPDFDemoSelector.value = false
-  }
-}
-
 onMounted(async () => {
-  // Add click outside listener
-  document.addEventListener('click', handleClickOutside)
-
-  // Reset all local state for new submission
-  uploading.value = false
+  // Reset state for the new submission
+  replacingPdf.value = false
   analyzing.value = false
   analysisStatus.value = null
   findings.value = []
-  showPDFDemoSelector.value = false
 
   // Clear previous KRT data before loading new submission
   krtStore.clearKRT()
 
-  // Load service status and resource type categories (non-blocking)
-  configService.getServiceStatus()
-    .then(data => { serviceStatus.value = data.services || {} })
-    .catch(() => {})
-  resourceTypesStore.fetchResourceTypeNames().catch(() => {})
+  // The BackgroundProcesses child is mounted before the parent, so its ref
+  // is bound by the time we get here — wire our job-completion callbacks
+  // into the shared poller.
+  registerJobCallbacks()
 
-  // Discover demos available on the server (non-blocking)
-  demosService.list()
-    .then(list => { allDemos.value = list })
-    .catch(() => { allDemos.value = [] })
+  // Load resource type categories (non-blocking) — service status is owned
+  // by the BackgroundProcesses wrapper now.
+  resourceTypesStore.fetchResourceTypeNames().catch(() => {})
 
   await submissionStore.fetchSubmission(route.params.id)
   await krtStore.fetchKRT(route.params.id)
@@ -416,15 +308,10 @@ onMounted(async () => {
   await loadProtocols()
 })
 
-onUnmounted(() => {
-  // Remove click outside listener
-  document.removeEventListener('click', handleClickOutside)
-})
-
 // Update page title with submission ID
 watch(submission, (sub) => {
   if (sub?.manuscriptId) {
-    setSubmissionTitle(sub.manuscriptId || sub.title, 'Step 2: Parse manuscript')
+    setSubmissionTitle(sub.manuscriptId || sub.title, 'Step 3: Manage suggestions')
   }
 }, { immediate: true })
 
@@ -506,110 +393,41 @@ async function loadProtocols() {
   }
 }
 
-function triggerFileUpload() {
-  fileInput.value.click()
+// PDF replace flow — gated by the warning modal because re-uploading the
+// PDF restarts every background process and invalidates existing suggestions.
+function openReplacePdfDialog() {
+  showReplacePdfModal.value = true
 }
 
-function togglePDFDemoSelector() {
-  showPDFDemoSelector.value = !showPDFDemoSelector.value
+function closeReplacePdfModal() {
+  showReplacePdfModal.value = false
 }
 
-async function loadDemoPDF(demo) {
-  loadingDemoPDF.value = true
-  showPDFDemoSelector.value = false
-
-  try {
-    // Fetch the demo PDF from public folder
-    const response = await fetch(`/demo-files/${demo.pdf}`)
-    if (!response.ok) {
-      throw new Error('Failed to fetch demo PDF')
-    }
-
-    // Guard against an HTML response (e.g. SPA fallback when the file is missing)
-    // being uploaded as a "PDF".
-    const contentType = response.headers.get('content-type') || ''
-    if (contentType.includes('text/html')) {
-      throw new Error(`Demo PDF not found: ${demo.pdf}`)
-    }
-
-    const blob = await response.blob()
-
-    // Create a File object from the blob
-    const file = new File([blob], demo.pdf, { type: 'application/pdf' })
-
-    // Upload using the existing service
-    await pdfService.upload(route.params.id, file)
-    notificationStore.success(`Demo PDF "${demo.name}" loaded — analysis starting automatically`)
-    await submissionStore.fetchSubmission(route.params.id)
-    // Backend auto-triggers DAS extraction + PDF analysis on upload
-    await refreshJobs()
-    revealJobsPanel()
-  } catch (error) {
-    notificationStore.error(error.message || 'Failed to load demo PDF')
-  } finally {
-    loadingDemoPDF.value = false
-  }
+function triggerReplacePdfPicker() {
+  replacePdfInput.value?.click()
 }
 
-async function handleFileUpload(event) {
+async function handleReplacePdfFile(event) {
   const file = event.target.files[0]
   if (!file) return
+  closeReplacePdfModal()
 
-  uploading.value = true
+  replacingPdf.value = true
   try {
     await pdfService.upload(route.params.id, file)
-    notificationStore.success('PDF uploaded — analysis starting automatically')
+    notificationStore.success('PDF replaced — background processes are restarting')
     await submissionStore.fetchSubmission(route.params.id)
-    // Backend auto-triggers DAS extraction + PDF analysis on upload
-    // Job poller will pick up the new jobs
+    // Backend auto-triggers DAS + PDF analysis pipeline on upload, which is
+    // the same as restarting every process.
+    findings.value = []
+    analysisStatus.value = null
     await refreshJobs()
     revealJobsPanel()
   } catch (error) {
-    notificationStore.error(error.response?.data?.error || 'Failed to upload PDF')
+    notificationStore.error(error.response?.data?.error || 'Failed to replace PDF')
   } finally {
-    uploading.value = false
+    replacingPdf.value = false
     event.target.value = ''
-  }
-}
-
-// Drag-and-drop handlers for PDF upload
-function handleDragEnter(event) {
-  event.preventDefault()
-  isDragging.value = true
-}
-
-function handleDragLeave(event) {
-  if (!event.currentTarget.contains(event.relatedTarget)) {
-    isDragging.value = false
-  }
-}
-
-async function handleDrop(event) {
-  event.preventDefault()
-  isDragging.value = false
-
-  const file = event.dataTransfer?.files?.[0]
-  if (!file) return
-
-  // Validate file extension
-  const validExtensions = ['.pdf', '.docx']
-  const ext = '.' + file.name.split('.').pop().toLowerCase()
-  if (!validExtensions.includes(ext)) {
-    notificationStore.error(`Invalid file type. Accepted: ${validExtensions.join(', ')}`)
-    return
-  }
-
-  uploading.value = true
-  try {
-    await pdfService.upload(route.params.id, file)
-    notificationStore.success('PDF uploaded — analysis starting automatically')
-    await submissionStore.fetchSubmission(route.params.id)
-    await refreshJobs()
-    revealJobsPanel()
-  } catch (error) {
-    notificationStore.error(error.response?.data?.error || 'Failed to upload PDF')
-  } finally {
-    uploading.value = false
   }
 }
 
@@ -617,8 +435,18 @@ async function handleDrop(event) {
  * Re-run all background processes via the orchestrator
  */
 async function handleRerunAnalysis() {
+  // Optimistically wipe the old AI suggestions the moment the user clicks
+  // Re-run all. Without this, `findings.value` stays populated through the
+  // `runAllProcesses` await and the next poller tick, so the user watches
+  // stale suggestions sit on screen while the progress bar already starts
+  // filling. The inner empty-state template (see below) treats `analyzing`
+  // as an in-flight signal so we render the spinner instead of the
+  // "Your KRT already contains everything we found" success copy during
+  // the gap before the poller picks up the new 'waiting' job statuses.
   analyzing.value = true
   analysisStatus.value = null
+  findings.value = []
+  krtStore.clearAiSuggestions()
   try {
     await jobService.runAllProcesses(route.params.id)
     notificationStore.info('All processes re-started')
@@ -629,15 +457,80 @@ async function handleRerunAnalysis() {
   }
 }
 
+// Per-suggestion editable values keyed by suggestion id. For add_row
+// suggestions this holds the full row shape (resourceType, resourceName,
+// source, identifier, newReuse, additionalInformation) seeded from the AI's
+// values. The user can edit any cell inline; on Approve we diff against the
+// AI's values and send only the changed fields as `overrides`. For edit
+// suggestions we hold the single modified target value as a string.
+const suggestionOverrides = ref({})
+
+// Helper that seeds the override entry for a single pending suggestion.
+// The watcher that calls this lives AFTER currentSuggestion's declaration
+// further down in the file — putting it here would hit a temporal dead
+// zone on `currentSuggestion` at <script setup> load time.
+function seedSuggestionOverride(suggestion) {
+  if (!suggestion || suggestion.status !== 'pending') return
+  if (suggestionOverrides.value[suggestion.id]) return
+  if (suggestion.type === 'add_row' && suggestion.data) {
+    suggestionOverrides.value[suggestion.id] = {
+      resourceType:          suggestion.data.resourceType || '',
+      resourceName:          suggestion.data.resourceName || '',
+      source:                suggestion.data.source || '',
+      identifier:            suggestion.data.identifier || '',
+      newReuse:              suggestion.data.newReuse || '',
+      additionalInformation: suggestion.data.additionalInformation || ''
+    }
+  } else if (suggestion.type === 'edit' && suggestion.data) {
+    suggestionOverrides.value[suggestion.id] = suggestion.data.newValue || ''
+  }
+}
+
+/**
+ * Compute the overrides payload for backend approval. Returns the diff
+ * between the user's edits and the AI's original values, or null if nothing
+ * was changed. Backend's approveSuggestion falls back to AI values for any
+ * field not present in `overrides`, so we send only what the user touched.
+ */
+function getApprovalOverrides(finding) {
+  if (finding.type !== 'add_row') return null
+  const local = suggestionOverrides.value[finding.id]
+  if (!local || typeof local !== 'object') return null
+  const original = finding.data || {}
+  const diff = {}
+  for (const key of Object.keys(local)) {
+    const userVal = (local[key] ?? '').toString()
+    const aiVal = (original[key] ?? '').toString()
+    if (userVal !== aiVal) diff[key] = userVal
+  }
+  return Object.keys(diff).length > 0 ? diff : null
+}
+
+/**
+ * For edit suggestions, return the user's modified value (if any) — the
+ * approve endpoint accepts a single `modifiedValue` rather than the full
+ * overrides object for edits.
+ */
+function getEditModifiedValue(finding) {
+  if (finding.type !== 'edit') return null
+  const local = suggestionOverrides.value[finding.id]
+  if (typeof local !== 'string') return null
+  const aiVal = (finding.data?.newValue ?? '').toString()
+  return local !== aiVal ? local : null
+}
+
 async function handleApprove(finding) {
   try {
-    await suggestionService.approveSuggestion(route.params.id, finding.id)
+    const overrides = getApprovalOverrides(finding)
+    const modifiedValue = getEditModifiedValue(finding)
+    await suggestionService.approveSuggestion(route.params.id, finding.id, modifiedValue, overrides)
     finding.status = 'approved'
     // Update store status
     krtStore.updateSuggestionStatus(finding.id, 'approved')
     // Re-validate KRT to update validation errors after the change
     await krtStore.validate(route.params.id)
-    notificationStore.success('Change approved')
+    const userEdited = !!(overrides || modifiedValue)
+    notificationStore.success(userEdited ? 'Change approved with your edits' : 'Change approved')
     advanceToNextSuggestion()
   } catch (error) {
     notificationStore.error('Failed to approve change')
@@ -653,7 +546,6 @@ function openRejectModal(finding) {
 function cancelReject() {
   showRejectModal.value = false
   rejectingFinding.value = null
-  rejectionReason.value = ''
 }
 
 async function confirmReject() {
@@ -662,9 +554,20 @@ async function confirmReject() {
   const reason = rejectionReason.value.trim()
   showRejectModal.value = false
   rejectingFinding.value = null
-  rejectionReason.value = ''
   await handleReject(finding, reason)
 }
+
+// Belt-and-suspenders: any time the modal hides (cancel / confirm / overlay
+// click / programmatic dismissal), wipe the textarea state. Previously each
+// dismissal path reset the text individually, which let a value sometimes
+// leak to the next suggestion when a path was missed. Centralising the
+// reset on the close event guarantees we never carry state across openings.
+watch(showRejectModal, (visible) => {
+  if (!visible) {
+    rejectionReason.value = ''
+    rejectingFinding.value = null
+  }
+})
 
 async function handleReject(finding, reason = '') {
   try {
@@ -806,6 +709,7 @@ function getFindingSortKey(finding) {
   }
   return {
     groupOrder: resourceTypesStore.getGroupSortOrder(resourceType),
+    typeOrder: resourceTypesStore.getTypeSortOrder(resourceType),
     name: (resourceName || '').toLowerCase()
   }
 }
@@ -817,6 +721,7 @@ const sortedFindings = computed(() => {
     const ka = getFindingSortKey(a)
     const kb = getFindingSortKey(b)
     if (ka.groupOrder !== kb.groupOrder) return ka.groupOrder - kb.groupOrder
+    if (ka.typeOrder !== kb.typeOrder) return ka.typeOrder - kb.typeOrder
     const byName = ka.name.localeCompare(kb.name)
     if (byName !== 0) return byName
     // Same row / same target: keep edits stable, prefer pending so action
@@ -829,6 +734,12 @@ const sortedFindings = computed(() => {
 
 // Current suggestion being displayed (from sorted list)
 const currentSuggestion = computed(() => sortedFindings.value[currentSuggestionIndex.value] || null)
+
+// Seed an override entry whenever the user lands on a new pending suggestion.
+// Defined here (after `currentSuggestion`) to avoid a temporal dead zone —
+// the watcher's source function runs at setup time and would otherwise
+// reference an uninitialized binding.
+watch(currentSuggestion, seedSuggestionOverride, { immediate: true })
 
 // Total suggestions count
 const totalSuggestionsCount = computed(() => sortedFindings.value.length)
@@ -901,6 +812,17 @@ const krtColumns = [
   { key: 'ADDITIONAL INFORMATION', label: 'Additional Info' }
 ]
 
+// Lowercase field → uppercase KRT column key. Inverse of the partial map
+// `columnToKrtKey` below; explicit for clarity in the cellState helper.
+const FIELD_TO_KRT_COLUMN = {
+  resourceType:          'RESOURCE TYPE',
+  resourceName:          'RESOURCE NAME',
+  source:                'SOURCE',
+  identifier:            'IDENTIFIER',
+  newReuse:              'NEW/REUSE',
+  additionalInformation: 'ADDITIONAL INFORMATION'
+}
+
 // Map column name from finding data to KRT uppercase key
 const columnToKrtKey = {
   'resource_type': 'RESOURCE TYPE',
@@ -972,6 +894,64 @@ function getColumnKey(columnName) {
   return columnToKrtKey[columnName] || columnName
 }
 
+/**
+ * Compute the render state for one cell of a suggestion row. Centralizes the
+ * decision tree so the template doesn't have to branch through all the cases.
+ *
+ * For add_row: cells pre-fill from finding.data (editable for pending).
+ * For edit: target cell shows old strikethrough + new value (editable for
+ *           pending); non-target cells show the user's current KRT row value
+ *           as read-only context.
+ * For delete_row: all cells show the current KRT row value, struck through.
+ *
+ * Returns:
+ *   { mode, value, oldValue?, editable, isTarget? }
+ *   mode ∈ 'add' | 'edit_target' | 'edit_context' | 'delete' | 'plain'
+ */
+function cellState(suggestion, fieldKey) {
+  if (!suggestion) return { mode: 'plain', value: '', editable: false }
+  const status = suggestion.status
+  const type = suggestion.type
+  const data = suggestion.data || {}
+
+  if (type === 'add_row') {
+    return {
+      mode: 'add',
+      value: data[fieldKey] ?? '',
+      editable: status === 'pending'
+    }
+  }
+
+  if (type === 'edit') {
+    const targetKrtCol = columnToKrtKey[data.column]
+    const fieldKrtCol = FIELD_TO_KRT_COLUMN[fieldKey]
+    const krtRow = getKrtRowForFinding(suggestion)
+    const currentValue = krtRow ? (krtRow[fieldKrtCol] ?? '') : ''
+    if (targetKrtCol && targetKrtCol === fieldKrtCol) {
+      return {
+        mode: 'edit_target',
+        value: data.newValue ?? '',
+        oldValue: data.oldValue ?? currentValue ?? '',
+        editable: status === 'pending',
+        isTarget: true
+      }
+    }
+    return { mode: 'edit_context', value: currentValue, editable: false }
+  }
+
+  if (type === 'delete_row') {
+    const fieldKrtCol = FIELD_TO_KRT_COLUMN[fieldKey]
+    const krtRow = getKrtRowForFinding(suggestion)
+    return {
+      mode: 'delete',
+      value: krtRow ? (krtRow[fieldKrtCol] ?? '') : (data[fieldKey] ?? ''),
+      editable: false
+    }
+  }
+
+  return { mode: 'plain', value: data[fieldKey] ?? '', editable: false }
+}
+
 // Handle suggestion accepted from KRT Editor
 function handleSuggestionAccepted(suggestion) {
   const finding = findings.value.find(f => f.id === suggestion.id)
@@ -1033,8 +1013,8 @@ function scrollToFindingRow(finding) {
       ref="submissionHeaderRef"
       :submission="submission"
       :latest-files="latestFiles"
-      step-title="Step 2: Parse manuscript"
-      step-description="Upload manuscript PDF and review AI suggestions"
+      step-title="Step 3: Manage suggestions"
+      step-description="Review AI suggestions against your KRT and approve or reject changes"
       :help-items="helpItems"
       :show-navigation="true"
       :can-go-back="true"
@@ -1044,109 +1024,48 @@ function scrollToFindingRow(finding) {
       @go-next="handleNext"
     >
       <template #actions>
+        <!-- Hidden file picker for the Replace PDF flow. Opened from the
+             confirmation modal so users can't bypass the restart warning. -->
         <input
-          ref="fileInput"
+          ref="replacePdfInput"
           type="file"
           accept=".pdf,.docx"
           class="hidden"
-          @change="handleFileUpload"
+          @change="handleReplacePdfFile"
         />
-        <!-- Demo PDF dropdown — admin-only (used to seed test submissions
-             with a known PDF + matching KRT); hidden for end users so the
-             real upload flow is the only visible path. -->
-        <div v-if="isAdmin && demoPDFFiles.length > 0" class="relative demo-pdf-dropdown">
-          <button
-            :disabled="loadingDemoPDF"
-            class="btn-secondary text-sm inline-flex items-center demo-pdf-button"
-            @click="togglePDFDemoSelector"
-          >
-            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-            <span v-if="loadingDemoPDF">Loading...</span>
-            <span v-else>Demo</span>
-            <svg class="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          <!-- Dropdown menu -->
-          <div
-            v-if="showPDFDemoSelector"
-            class="absolute right-0 mt-2 w-96 bg-white rounded-lg shadow-lg border border-gray-200 z-50"
-          >
-            <div class="p-2">
-              <p class="text-xs text-gray-500 px-3 py-2 border-b border-gray-100">
-                Select a demo PDF to try the app
-              </p>
-              <div class="max-h-64 overflow-y-auto">
-                <button
-                  v-for="demo in demoPDFFiles"
-                  :key="demo.id"
-                  class="w-full text-left px-3 py-2 hover:bg-gray-50 rounded-md transition-colors"
-                  :class="{ 'bg-primary-50 border-l-2 border-primary-500': isDemoMatching(demo.id) }"
-                  @click="loadDemoPDF(demo)"
-                >
-                  <div class="flex items-center justify-between">
-                    <div class="font-mono text-sm font-medium" :class="isDemoMatching(demo.id) ? 'text-primary-700' : 'text-gray-900'">{{ demo.name }}</div>
-                    <div class="flex items-center gap-1.5">
-                      <!-- "KRT" pill — present when this demo ships with a matching KRT file
-                           (xlsx/csv); lets the user know they'll get a pre-filled table too -->
-                      <span
-                        v-if="demo.krt"
-                        class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium"
-                        :title="'Includes a KRT file: ' + demo.krt"
-                      >KRT</span>
-                      <span v-if="isDemoMatching(demo.id)" class="text-xs bg-primary-100 text-primary-700 px-2 py-0.5 rounded-full font-medium">Matches</span>
-                    </div>
-                  </div>
-                  <div class="text-xs text-gray-500">{{ demo.description }}</div>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <!-- Replace PDF button (only shown when PDF already uploaded) -->
         <button
-          v-if="pdfFile"
-          :disabled="uploading"
-          class="btn-primary text-sm inline-flex items-center"
-          @click="triggerFileUpload"
+          :disabled="replacingPdf"
+          class="btn-secondary text-sm inline-flex items-center"
+          @click="openReplacePdfDialog"
         >
           <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
           </svg>
-          <span v-if="uploading">Uploading...</span>
+          <span v-if="replacingPdf">Replacing...</span>
           <span v-else>Replace PDF</span>
         </button>
       </template>
     </SubmissionHeader>
 
-    <!-- Empty state: Upload zone when no PDF uploaded -->
-    <div
-      v-if="!pdfFile"
-      class="card text-center py-12 cursor-pointer transition-colors border-2 border-dashed"
-      :class="isDragging ? 'border-primary-500 bg-primary-50' : 'hover:border-primary-300 hover:bg-primary-50/30'"
-      @click="triggerFileUpload"
-      @dragenter="handleDragEnter"
-      @dragleave="handleDragLeave"
-      @dragover.prevent
-      @drop="handleDrop"
-    >
-      <svg class="mx-auto h-12 w-12" :class="isDragging ? 'text-primary-500' : 'text-gray-400'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-      </svg>
-      <h3 class="mt-2 text-sm font-medium text-gray-900">
-        {{ isDragging ? 'Drop file here' : 'Upload PDF' }}
-      </h3>
-      <p class="mt-1 text-sm text-gray-500">
-        {{ isDragging ? 'Release to upload your document' : 'Drag & drop or click to upload a PDF or DOCX file' }}
+    <!-- Fallback: if the PDF upload failed during step 1, surface a recovery
+         path. Step 1 enforces PDF-required at the form level, but a failed
+         upload after submission creation could land the user here without
+         one. We send them back to step 2 to retry. -->
+    <div v-if="!pdfFile" class="card text-center py-8">
+      <p class="text-sm text-gray-700 mb-2">
+        No PDF file is associated with this submission. The original upload may have failed.
       </p>
+      <button class="btn-secondary mt-2" @click="handleBack">Go back to Step 2</button>
     </div>
 
-    <template v-if="pdfFile">
-      <!-- Background processes panel — only shown on this step. Sits above
-         AI suggestions so the user sees pipeline progress in context. -->
-      <JobStatusPanel @edit-das="handleEditDas" />
+    <template v-else>
+      <!-- Background processes panel — embeds the wait-time ETA in its
+           header and exposes a "More details" toggle for the per-job grid. -->
+      <BackgroundProcesses
+        ref="bgProcessesRef"
+        :submission-id="route.params.id"
+        @edit-das="handleEditDas"
+      />
 
       <!-- AI Suggestions Section - Carousel Navigation -->
       <div v-if="findings.length > 0 || anyProcessFinished || pdfAnalysisInFlight" id="ai-suggestions-section" class="card">
@@ -1208,7 +1127,11 @@ function scrollToFindingRow(finding) {
 
         <!-- No suggestions yet (at least one process completed; KRT may already cover everything) -->
         <div v-else-if="findings.length === 0" class="text-center py-6 px-4">
-          <template v-if="allProcessesFinished">
+          <!-- `analyzing` flips to true the moment Re-run all is clicked
+               (before the poller picks up the new 'waiting' statuses), so
+               we hold off on the "all done" copy and keep showing the
+               spinner during that gap. -->
+          <template v-if="allProcessesFinished && !analyzing">
             <svg class="mx-auto w-8 h-8 text-green-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
@@ -1231,98 +1154,200 @@ function scrollToFindingRow(finding) {
         </div>
 
         <!-- Single item display -->
-        <div v-else-if="currentSuggestion" class="relative">
-          <div
-            class="flex items-center justify-between p-3 rounded-lg"
-            :class="{
-              'bg-blue-50 border border-blue-200': currentSuggestion.status === 'pending',
-              'bg-green-50 border border-green-200': currentSuggestion.status === 'approved',
-              'bg-gray-50 border border-gray-200': currentSuggestion.status === 'rejected'
-            }"
-          >
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2">
-                <span
-                  class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-                  :class="currentSuggestion.type === 'add_row' ? 'bg-blue-100 text-blue-800' : currentSuggestion.type === 'delete_row' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'"
+        <div v-else-if="currentSuggestion" class="suggestion-card" :class="`suggestion-card-${currentSuggestion.status}`">
+          <!-- Caption strip: type/source/title/confidence sit above the row
+               so the data cells stay clean and parseable, mirroring a KRT
+               table row visually. -->
+          <div class="suggestion-caption">
+            <span
+              class="suggestion-type-badge"
+              :class="`suggestion-type-${currentSuggestion.type}`"
+            >
+              {{ currentSuggestion.type === 'add_row' ? 'Add' : currentSuggestion.type === 'delete_row' ? 'Delete' : 'Edit' }}
+            </span>
+            <span
+              v-if="currentSuggestion.source"
+              class="suggestion-source-badge"
+              :class="currentSuggestion.source === 'software_detection' ? 'suggestion-source-software' : 'suggestion-source-pdf'"
+            >
+              {{ currentSuggestion.source === 'software_detection' ? 'Software' : currentSuggestion.source === 'pdf_analysis' ? 'PDF' : currentSuggestion.source }}
+            </span>
+            <span class="suggestion-title-text">{{ currentSuggestion.title }}</span>
+            <span v-if="currentSuggestion.confidence" class="suggestion-confidence">
+              {{ Math.round(currentSuggestion.confidence * 100) }}%
+            </span>
+            <span v-if="currentSuggestion.status !== 'pending'" class="suggestion-status-pill" :class="`suggestion-status-${currentSuggestion.status}`">
+              {{ currentSuggestion.status }}
+            </span>
+          </div>
+
+          <!-- KRT-style row: 5 cells on the top line (Type / Name / Source /
+               Identifier / New-Reuse) plus a full-width Additional Information
+               row underneath. Each cell decides its own rendering via
+               cellState(): add_row → editable input; edit target → old
+               strikethrough stacked above an editable input; edit context →
+               KRT row's current value (read-only); delete → strikethrough. -->
+          <div class="suggestion-row-scroll">
+            <div class="suggestion-row" :class="{ 'suggestion-row-delete': currentSuggestion.type === 'delete_row' }">
+              <!-- RESOURCE TYPE -->
+              <div class="suggestion-cell suggestion-cell-type" :class="{ 'suggestion-cell-target': cellState(currentSuggestion, 'resourceType').isTarget }">
+                <span class="suggestion-cell-label">Type</span>
+                <select
+                  v-if="cellState(currentSuggestion, 'resourceType').editable && cellState(currentSuggestion, 'resourceType').mode === 'add'"
+                  v-model="suggestionOverrides[currentSuggestion.id].resourceType"
+                  class="suggestion-input"
+                  title="Resource Type"
                 >
-                  {{ currentSuggestion.type === 'add_row' ? 'Add' : currentSuggestion.type === 'delete_row' ? 'Delete' : 'Edit' }}
-                </span>
-                <span
-                  v-if="currentSuggestion.source"
-                  class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium"
-                  :class="currentSuggestion.source === 'software_detection' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'"
-                >
-                  {{ currentSuggestion.source === 'software_detection' ? 'Software' : currentSuggestion.source === 'pdf_analysis' ? 'PDF' : currentSuggestion.source }}
-                </span>
-                <span class="text-sm font-medium text-gray-900 truncate">{{ currentSuggestion.title }}</span>
-                <span v-if="currentSuggestion.confidence" class="text-xs text-gray-400">
-                  {{ Math.round(currentSuggestion.confidence * 100) }}%
+                  <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
+                </select>
+                <div v-else-if="cellState(currentSuggestion, 'resourceType').mode === 'edit_target' && cellState(currentSuggestion, 'resourceType').editable" class="suggestion-cell-stack">
+                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'resourceType').oldValue || ''">{{ cellState(currentSuggestion, 'resourceType').oldValue || '(empty)' }}</span>
+                  <select v-model="suggestionOverrides[currentSuggestion.id]" class="suggestion-input">
+                    <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
+                  </select>
+                </div>
+                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'resourceType').value || ''">
+                  {{ cellState(currentSuggestion, 'resourceType').value || '—' }}
                 </span>
               </div>
-              <p class="text-sm text-gray-600 mt-1">
-                <template v-if="currentSuggestion.type === 'edit' && currentSuggestion.data">
-                  {{ currentSuggestion.data.column }}: "<span class="text-red-600 line-through">{{ currentSuggestion.data.oldValue || '(empty)' }}</span>" → "<span class="text-green-600">{{ currentSuggestion.data.newValue }}</span>"
-                </template>
-                <template v-else-if="currentSuggestion.type === 'add_row' && currentSuggestion.data">
-                  {{ currentSuggestion.data.resourceType }}: {{ currentSuggestion.data.resourceName }}
-                </template>
-                <template v-else>
-                  {{ currentSuggestion.description }}
-                </template>
-              </p>
-              <!-- More details toggle -->
-              <button
-                v-if="currentSuggestion.description || currentSuggestion.detail"
-                class="text-xs text-primary-600 hover:text-primary-800 mt-1"
-                @click="toggleSuggestionDetail(currentSuggestion.id)"
-              >
-                {{ expandedSuggestionId === currentSuggestion.id ? 'Less details' : 'More details' }}
-              </button>
-              <div
-                v-if="expandedSuggestionId === currentSuggestion.id"
-                class="mt-2 p-2 bg-white rounded border border-gray-200 text-xs text-gray-600 space-y-1"
-              >
-                <p v-if="currentSuggestion.description">{{ currentSuggestion.description }}</p>
-                <p v-if="currentSuggestion.detail" class="italic text-gray-500">"{{ currentSuggestion.detail }}"</p>
-                <p v-if="currentSuggestion.data?.identifier" class="text-gray-400">Identifier: {{ currentSuggestion.data.identifier }}</p>
-                <p v-if="currentSuggestion.data?.source" class="text-gray-400">URL: {{ currentSuggestion.data.source }}</p>
+
+              <!-- RESOURCE NAME -->
+              <div class="suggestion-cell" :class="{ 'suggestion-cell-target': cellState(currentSuggestion, 'resourceName').isTarget }">
+                <span class="suggestion-cell-label">Name</span>
+                <input
+                  v-if="cellState(currentSuggestion, 'resourceName').editable && cellState(currentSuggestion, 'resourceName').mode === 'add'"
+                  v-model="suggestionOverrides[currentSuggestion.id].resourceName"
+                  type="text"
+                  class="suggestion-input"
+                  title="Resource Name"
+                />
+                <div v-else-if="cellState(currentSuggestion, 'resourceName').mode === 'edit_target' && cellState(currentSuggestion, 'resourceName').editable" class="suggestion-cell-stack">
+                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'resourceName').oldValue || ''">{{ cellState(currentSuggestion, 'resourceName').oldValue || '(empty)' }}</span>
+                  <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
+                </div>
+                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'resourceName').value || ''">
+                  {{ cellState(currentSuggestion, 'resourceName').value || '—' }}
+                </span>
+              </div>
+
+              <!-- SOURCE -->
+              <div class="suggestion-cell" :class="{ 'suggestion-cell-target': cellState(currentSuggestion, 'source').isTarget }">
+                <span class="suggestion-cell-label">Source</span>
+                <input
+                  v-if="cellState(currentSuggestion, 'source').editable && cellState(currentSuggestion, 'source').mode === 'add'"
+                  v-model="suggestionOverrides[currentSuggestion.id].source"
+                  type="text"
+                  class="suggestion-input"
+                  title="Source"
+                />
+                <div v-else-if="cellState(currentSuggestion, 'source').mode === 'edit_target' && cellState(currentSuggestion, 'source').editable" class="suggestion-cell-stack">
+                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'source').oldValue || ''">{{ cellState(currentSuggestion, 'source').oldValue || '(empty)' }}</span>
+                  <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
+                </div>
+                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'source').value || ''">
+                  {{ cellState(currentSuggestion, 'source').value || '—' }}
+                </span>
+              </div>
+
+              <!-- IDENTIFIER -->
+              <div class="suggestion-cell" :class="{ 'suggestion-cell-target': cellState(currentSuggestion, 'identifier').isTarget }">
+                <span class="suggestion-cell-label">Identifier</span>
+                <input
+                  v-if="cellState(currentSuggestion, 'identifier').editable && cellState(currentSuggestion, 'identifier').mode === 'add'"
+                  v-model="suggestionOverrides[currentSuggestion.id].identifier"
+                  type="text"
+                  class="suggestion-input"
+                  title="Identifier"
+                />
+                <div v-else-if="cellState(currentSuggestion, 'identifier').mode === 'edit_target' && cellState(currentSuggestion, 'identifier').editable" class="suggestion-cell-stack">
+                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'identifier').oldValue || ''">{{ cellState(currentSuggestion, 'identifier').oldValue || '(empty)' }}</span>
+                  <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
+                </div>
+                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'identifier').value || ''">
+                  {{ cellState(currentSuggestion, 'identifier').value || '—' }}
+                </span>
+              </div>
+
+              <!-- NEW/REUSE -->
+              <div class="suggestion-cell suggestion-cell-reuse" :class="{ 'suggestion-cell-target': cellState(currentSuggestion, 'newReuse').isTarget }">
+                <span class="suggestion-cell-label">New/Reuse</span>
+                <select
+                  v-if="cellState(currentSuggestion, 'newReuse').editable && cellState(currentSuggestion, 'newReuse').mode === 'add'"
+                  v-model="suggestionOverrides[currentSuggestion.id].newReuse"
+                  class="suggestion-input"
+                  title="New/Reuse"
+                >
+                  <option value="">—</option>
+                  <option value="new">new</option>
+                  <option value="reuse">reuse</option>
+                </select>
+                <div v-else-if="cellState(currentSuggestion, 'newReuse').mode === 'edit_target' && cellState(currentSuggestion, 'newReuse').editable" class="suggestion-cell-stack">
+                  <span class="suggestion-diff-old">{{ cellState(currentSuggestion, 'newReuse').oldValue || '(empty)' }}</span>
+                  <select v-model="suggestionOverrides[currentSuggestion.id]" class="suggestion-input">
+                    <option value="">—</option>
+                    <option value="new">new</option>
+                    <option value="reuse">reuse</option>
+                  </select>
+                </div>
+                <span v-else class="suggestion-cell-text">
+                  {{ cellState(currentSuggestion, 'newReuse').value || '—' }}
+                </span>
+              </div>
+
+              <!-- ADDITIONAL INFORMATION — full-width row below the others. -->
+              <div class="suggestion-cell suggestion-cell-additional" :class="{ 'suggestion-cell-target': cellState(currentSuggestion, 'additionalInformation').isTarget }">
+                <span class="suggestion-cell-label">Additional Information</span>
+                <input
+                  v-if="cellState(currentSuggestion, 'additionalInformation').editable && cellState(currentSuggestion, 'additionalInformation').mode === 'add'"
+                  v-model="suggestionOverrides[currentSuggestion.id].additionalInformation"
+                  type="text"
+                  class="suggestion-input"
+                  title="Additional Information"
+                />
+                <div v-else-if="cellState(currentSuggestion, 'additionalInformation').mode === 'edit_target' && cellState(currentSuggestion, 'additionalInformation').editable" class="suggestion-cell-stack">
+                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'additionalInformation').oldValue || ''">{{ cellState(currentSuggestion, 'additionalInformation').oldValue || '(empty)' }}</span>
+                  <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
+                </div>
+                <span v-else class="suggestion-cell-text suggestion-cell-text-wrap" :title="cellState(currentSuggestion, 'additionalInformation').value || ''">
+                  {{ cellState(currentSuggestion, 'additionalInformation').value || '—' }}
+                </span>
               </div>
             </div>
-            <div class="flex items-center space-x-2 ml-4">
-              <!-- View in KRT button -->
-              <button
-                class="p-1.5 text-gray-500 hover:text-primary-600 hover:bg-gray-100 rounded-md transition-colors"
-                title="View in KRT Editor"
-                @click="scrollToFindingRow(currentSuggestion)"
-              >
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
+          </div>
+
+          <!-- Manuscript excerpt — always shown so the user can verify the
+               suggestion against the paper without an extra click. -->
+          <div v-if="currentSuggestion.evidence || currentSuggestion.description || currentSuggestion.detail" class="suggestion-evidence">
+            <p v-if="currentSuggestion.evidence" class="suggestion-evidence-line">
+              <span class="suggestion-evidence-label">Found in manuscript:</span>
+              <span class="italic">"{{ currentSuggestion.evidence }}"</span>
+            </p>
+            <p v-else-if="currentSuggestion.detail" class="suggestion-evidence-line italic">"{{ currentSuggestion.detail }}"</p>
+            <p v-if="currentSuggestion.description && !currentSuggestion.evidence" class="suggestion-evidence-desc">{{ currentSuggestion.description }}</p>
+          </div>
+
+          <!-- Action row -->
+          <div class="suggestion-actions">
+            <button
+              class="suggestion-view-btn"
+              title="View in KRT Editor"
+              @click="scrollToFindingRow(currentSuggestion)"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+              View in KRT
+            </button>
+            <div class="flex-1"></div>
+            <template v-if="currentSuggestion.status === 'pending'">
+              <button class="suggestion-approve-btn" @click="handleApprove(currentSuggestion)">
+                Approve
               </button>
-              <template v-if="currentSuggestion.status === 'pending'">
-                <button
-                  class="px-3 py-1.5 text-sm font-medium rounded-md bg-green-600 text-white hover:bg-green-700"
-                  @click="handleApprove(currentSuggestion)"
-                >
-                  Approve
-                </button>
-                <button
-                  class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-200 text-gray-700 hover:bg-gray-300"
-                  @click="openRejectModal(currentSuggestion)"
-                >
-                  Reject
-                </button>
-              </template>
-              <span
-                v-else
-                class="text-sm font-medium px-3 py-1 rounded-md"
-                :class="currentSuggestion.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'"
-              >
-                {{ currentSuggestion.status }}
-              </span>
-            </div>
+              <button class="suggestion-reject-btn" @click="openRejectModal(currentSuggestion)">
+                Reject
+              </button>
+            </template>
           </div>
         </div>
 
@@ -1413,7 +1438,7 @@ function scrollToFindingRow(finding) {
 
       <!-- KRT Editor Section -->
       <div class="card">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">Key Resource Table</h3>
+        <h3 class="text-sm font-medium text-gray-700 mb-3">Key Resources Table</h3>
         <KRTEditor
           ref="krtEditorRef"
           v-model="activeSuggestionTab"
@@ -1429,6 +1454,31 @@ function scrollToFindingRow(finding) {
         />
       </div>
     </template>
+
+    <!-- Replace PDF warning modal — gates the file picker because replacing
+         the PDF restarts every background process and discards in-flight
+         suggestions. -->
+    <Teleport to="body">
+      <div v-if="showReplacePdfModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="closeReplacePdfModal">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
+          <h3 class="text-sm font-semibold text-gray-900 mb-2">Replace the PDF?</h3>
+          <p class="text-sm text-gray-600 mb-3">
+            Uploading a new PDF will restart every background process — DAS extraction, Markdown conversion, software / datasets / materials / protocols / identifier detection, ORCID extraction, and PDF analysis.
+          </p>
+          <p class="text-sm text-gray-600 mb-4">
+            Existing AI suggestions will be regenerated against the new manuscript. Any unsaved review work on the current suggestions will be lost.
+          </p>
+          <div class="flex justify-end gap-2">
+            <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="closeReplacePdfModal">
+              Cancel
+            </button>
+            <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-red-600 text-white hover:bg-red-700" @click="triggerReplacePdfPicker">
+              Pick a new PDF
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Rejection Reason Modal -->
     <Teleport to="body">
@@ -1560,6 +1610,250 @@ function scrollToFindingRow(finding) {
 
 .stats-total {
   color: #6b7280;
+}
+
+/* ── KRT-style suggestion card ───────────────────────────────────────── */
+.suggestion-card {
+  padding: 0.625rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid;
+}
+.suggestion-card-pending  { background: #eff6ff; border-color: #bfdbfe; }
+.suggestion-card-approved { background: #f0fdf4; border-color: #bbf7d0; }
+.suggestion-card-rejected { background: #f9fafb; border-color: #e5e7eb; }
+
+/* Caption — sits above the row, holds badges + title + confidence. */
+.suggestion-caption {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  margin-bottom: 0.375rem;
+  flex-wrap: wrap;
+}
+.suggestion-type-badge {
+  font-weight: 600;
+  padding: 0.0625rem 0.5rem;
+  border-radius: 0.25rem;
+}
+.suggestion-type-add_row    { background: #dbeafe; color: #1e40af; }
+.suggestion-type-edit       { background: #fef3c7; color: #92400e; }
+.suggestion-type-delete_row { background: #fee2e2; color: #991b1b; }
+.suggestion-source-badge {
+  font-weight: 500;
+  padding: 0.0625rem 0.4rem;
+  border-radius: 0.25rem;
+  text-transform: uppercase;
+  font-size: 0.6875rem;
+  letter-spacing: 0.025em;
+}
+.suggestion-source-software { background: #ede9fe; color: #6d28d9; }
+.suggestion-source-pdf      { background: #f3f4f6; color: #4b5563; }
+.suggestion-title-text {
+  font-weight: 500;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28rem;
+}
+.suggestion-confidence {
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}
+.suggestion-status-pill {
+  margin-left: auto;
+  font-weight: 500;
+  padding: 0.0625rem 0.5rem;
+  border-radius: 9999px;
+}
+.suggestion-status-approved { background: #dcfce7; color: #166534; }
+.suggestion-status-rejected { background: #e5e7eb; color: #4b5563; }
+
+/* Row — mimics a KRT table row, but split into two visual rows so the
+   Additional Information column can wrap freely below the others without
+   squeezing the top cells. Top line: Type / Name / Source / Identifier /
+   New-Reuse. Bottom line: Additional Information (full-width). */
+.suggestion-row-scroll {
+  overflow-x: auto;
+}
+.suggestion-row {
+  display: grid;
+  grid-template-columns:
+    minmax(8rem,  0.8fr)  /* RESOURCE TYPE — dropdown-sized */
+    minmax(10rem, 1.6fr)  /* RESOURCE NAME */
+    minmax(10rem, 1.6fr)  /* SOURCE */
+    minmax(9rem,  1.3fr)  /* IDENTIFIER */
+    minmax(5rem,  0.4fr); /* NEW/REUSE */
+  gap: 0.25rem;
+  align-items: stretch;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  min-width: min-content;
+}
+.suggestion-cell-additional {
+  /* Span the entire row width on the second grid line. */
+  grid-column: 1 / -1;
+  border-top: 1px solid #f3f4f6;
+}
+.suggestion-row-delete .suggestion-cell-text {
+  color: #b91c1c;
+  text-decoration: line-through;
+}
+.suggestion-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.125rem;
+  padding: 0.375rem 0.5rem;
+  min-width: 0;  /* allow truncation inside grid track */
+  border-right: 1px solid #f3f4f6;
+}
+.suggestion-cell:last-child { border-right: 0; }
+.suggestion-cell-additional { border-right: 0; }
+.suggestion-cell-label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  color: #9ca3af;
+  line-height: 1;
+}
+.suggestion-cell-text {
+  font-size: 0.8125rem;
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+/* Additional Information cell allows wrapping so long context fits without
+   forcing a horizontal scroll. */
+.suggestion-cell-text-wrap {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+/* Stacked edit target — strikethrough old above the editable new value.
+   Gives the input the full cell width so the user can actually see what
+   they're typing. */
+.suggestion-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  width: 100%;
+}
+.suggestion-input {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 0.1875rem 0.375rem;
+  font-size: 0.8125rem;
+  color: #111827;
+  border-radius: 0.25rem;
+  transition: border-color 0.15s, background 0.15s;
+}
+.suggestion-input:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+.suggestion-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background: #fff;
+  box-shadow: 0 0 0 1px #3b82f6;
+}
+
+/* Edit-target cell — tinted amber so the user can spot which cell the
+   suggestion is modifying. The diff old/new live stacked inside via
+   .suggestion-cell-stack. */
+.suggestion-cell-target {
+  background: #fffbeb;
+  outline: 1px solid #fde68a;
+  outline-offset: -1px;
+}
+.suggestion-diff-old {
+  color: #b91c1c;
+  text-decoration: line-through;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+/* Actions row */
+.suggestion-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.suggestion-view-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: transparent;
+  border: 0;
+  padding: 0.25rem 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #2563eb;
+  cursor: pointer;
+}
+.suggestion-view-btn:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+.suggestion-approve-btn {
+  padding: 0.375rem 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  background: #16a34a;
+  color: #fff;
+  border: 0;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.suggestion-approve-btn:hover { background: #15803d; }
+.suggestion-reject-btn {
+  padding: 0.375rem 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  background: #e5e7eb;
+  color: #374151;
+  border: 0;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.suggestion-reject-btn:hover { background: #d1d5db; }
+
+/* Evidence panel — always rendered below the row (no toggle) so the user
+   sees the manuscript snippet that justified the suggestion without an
+   extra click. */
+.suggestion-evidence {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  color: #4b5563;
+}
+.suggestion-evidence-line {
+  margin: 0;
+  color: #374151;
+}
+.suggestion-evidence-label {
+  font-weight: 600;
+  color: #6b7280;
+  margin-right: 0.25rem;
+}
+.suggestion-evidence-desc {
+  margin: 0.25rem 0 0;
+  color: #4b5563;
 }
 </style>
 

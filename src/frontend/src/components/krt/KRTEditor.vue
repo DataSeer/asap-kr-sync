@@ -67,6 +67,20 @@ const showEditModal = ref(false)
 const modalCell = ref(null)
 const modalValue = ref('')
 const resourceTypes = ref([])
+
+// ── Bulk-ops selection state ─────────────────────────────────────────
+// Two parallel sets because suggestions and KRT rows take different
+// actions (approve/reject vs cell edit). Each selection is exclusive in
+// practice — the action bar resolves which action to expose based on
+// which set is non-empty.
+const selectedSuggestionIds = ref(new Set())
+const selectedRowIds = ref(new Set())
+const bulkSubmitting = ref(false)
+const showBulkResourceTypeModal = ref(false)
+const bulkResourceTypeValue = ref('')
+const showBulkEditCellsModal = ref(false)
+const bulkEditCellsColumn = ref('RESOURCE TYPE')
+const bulkEditCellsValue = ref('')
 const newRow = ref({
   resourceType: '',
   resourceName: '',
@@ -123,7 +137,7 @@ const columns = [
 const tabGroups = [
   { key: 'all', label: 'All' },
   { key: 'Datasets', label: 'Datasets' },
-  { key: 'Code/Software', label: 'Code/Software' },
+  { key: 'Software/code', label: 'Software/code' },
   { key: 'Protocols', label: 'Protocols' },
   { key: 'Lab Materials', label: 'Key Lab Materials' }
 ]
@@ -178,12 +192,27 @@ function getContributingSources(suggestion) {
   return suggestion?.source ? [suggestion.source] : []
 }
 
-// Default sort: by resource type group, then by resource name A-Z
+// Default sort: by tab group, then by resource type sort_order from DB.
+// Ties are broken by the row's original insertion order — authors often
+// arrange resources in a logical (not alphabetical) order, and we shouldn't
+// reshuffle that. Backend already returns rows ordered by created_at ASC,
+// and V8's Array.prototype.sort is stable since Node 12, so equal-keyed rows
+// keep their original relative position automatically.
 function defaultSort(a, b) {
   const groupA = resourceTypesStore.getGroupSortOrder(a['RESOURCE TYPE'])
   const groupB = resourceTypesStore.getGroupSortOrder(b['RESOURCE TYPE'])
   if (groupA !== groupB) return groupA - groupB
-  return (a['RESOURCE NAME'] || '').localeCompare(b['RESOURCE NAME'] || '')
+  const typeA = resourceTypesStore.getTypeSortOrder(a['RESOURCE TYPE'])
+  const typeB = resourceTypesStore.getTypeSortOrder(b['RESOURCE TYPE'])
+  return typeA - typeB
+}
+
+// Within-tab sort: resource type first (so all Antibodies sit together).
+// Insertion order preserved within each type (stable sort, see above).
+function withinTabSort(a, b) {
+  const typeA = resourceTypesStore.getTypeSortOrder(a['RESOURCE TYPE'])
+  const typeB = resourceTypesStore.getTypeSortOrder(b['RESOURCE TYPE'])
+  return typeA - typeB
 }
 
 // Filtered rows based on active tab (with group + name ordering) + search
@@ -194,7 +223,7 @@ const filteredRows = computed(() => {
   } else {
     rows = krtRows.value
       .filter(row => getResourceGroup(row['RESOURCE TYPE']) === activeTab.value)
-      .sort((a, b) => (a['RESOURCE NAME'] || '').localeCompare(b['RESOURCE NAME'] || ''))
+      .sort(withinTabSort)
   }
 
   // Apply search filter
@@ -452,6 +481,22 @@ function hasRowSuggestion(rowId) {
   return getRowSuggestions(rowId).length > 0
 }
 
+/**
+ * Unique detector sources across every pending edit suggestion attached
+ * to this row. Drives the module badges rendered in the # cell so update
+ * suggestions show the same origin chip as add suggestions.
+ */
+function getRowSuggestionSources(rowId) {
+  const seen = new Set()
+  const out = []
+  for (const suggestion of getRowSuggestions(rowId)) {
+    for (const src of getContributingSources(suggestion)) {
+      if (!seen.has(src)) { seen.add(src); out.push(src) }
+    }
+  }
+  return out
+}
+
 // Combined: has any issue OR suggestion
 function hasAnyCellHighlight(rowId, columnKey) {
   return hasCellIssue(rowId, columnKey) || hasCellSuggestion(rowId, columnKey)
@@ -696,6 +741,174 @@ const filteredAddRowSuggestions = computed(() => {
   })
 })
 
+// ── Bulk-ops helpers ──────────────────────────────────────────────
+function isSuggestionSelected(id) {
+  return selectedSuggestionIds.value.has(id)
+}
+function isRowSelected(id) {
+  return selectedRowIds.value.has(id)
+}
+function toggleSuggestionSelection(id) {
+  const next = new Set(selectedSuggestionIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedSuggestionIds.value = next
+  // Suggestion and row selection are mutually exclusive — selecting a
+  // suggestion clears any pending row selection so the action bar can show
+  // an unambiguous set of bulk actions.
+  if (next.size > 0) selectedRowIds.value = new Set()
+}
+function toggleRowSelection(id) {
+  const next = new Set(selectedRowIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedRowIds.value = next
+  if (next.size > 0) selectedSuggestionIds.value = new Set()
+}
+function clearBulkSelection() {
+  selectedSuggestionIds.value = new Set()
+  selectedRowIds.value = new Set()
+}
+
+const visibleSuggestionIds = computed(() => filteredAddRowSuggestions.value
+  .filter(s => s.status === 'pending')
+  .map(s => s.id))
+const visibleRowIds = computed(() => sortedFilteredRows.value.map(r => r.id))
+
+const allVisibleSuggestionsSelected = computed(() =>
+  visibleSuggestionIds.value.length > 0 &&
+  visibleSuggestionIds.value.every(id => selectedSuggestionIds.value.has(id))
+)
+const allVisibleRowsSelected = computed(() =>
+  visibleRowIds.value.length > 0 &&
+  visibleRowIds.value.every(id => selectedRowIds.value.has(id))
+)
+
+function toggleSelectAllVisibleSuggestions() {
+  if (allVisibleSuggestionsSelected.value) {
+    selectedSuggestionIds.value = new Set()
+  } else {
+    selectedSuggestionIds.value = new Set(visibleSuggestionIds.value)
+    selectedRowIds.value = new Set()
+  }
+}
+
+function toggleSelectAllVisibleRows() {
+  if (allVisibleRowsSelected.value) {
+    selectedRowIds.value = new Set()
+  } else {
+    selectedRowIds.value = new Set(visibleRowIds.value)
+    selectedSuggestionIds.value = new Set()
+  }
+}
+
+async function bulkApproveSelected(overrideType = null) {
+  if (selectedSuggestionIds.value.size === 0) return
+  bulkSubmitting.value = true
+  try {
+    // Build per-item payloads. Each suggestion can carry two kinds of edits:
+    //   1. inline per-cell edits the user made on the suggestion row
+    //   2. a bulk "force this Resource Type" override (when overrideType is set)
+    // The Resource Type override wins over the inline edit so the bulk action
+    // is predictable for the user; everything else flows from the inline edits.
+    const items = Array.from(selectedSuggestionIds.value).map(id => {
+      const suggestion = filteredAddRowSuggestions.value.find(s => s.id === id)
+        || krtStore.addRowSuggestions?.find(s => s.id === id)
+      const inlineDiff = suggestion ? diffSuggestionEdits(suggestion) : null
+      const item = { suggestionId: id }
+      const overrides = { ...(inlineDiff || {}) }
+      if (overrideType) overrides.resourceType = overrideType
+      if (Object.keys(overrides).length > 0) item.overrides = overrides
+      return item
+    })
+    const res = await suggestionService.bulkApprove(props.submissionId, items)
+    notificationStore.success(res.message || `${items.length} approved`)
+    // Mirror per-item status into the store so the UI updates immediately
+    // without waiting for a full refetch.
+    for (const r of res.results || []) {
+      if (r.status === 'approved') {
+        krtStore.updateSuggestionStatus(r.suggestionId, 'approved')
+        delete editorSuggestionEdits.value[r.suggestionId]
+      }
+    }
+    clearBulkSelection()
+    await krtStore.validate(props.submissionId)
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Bulk approve failed')
+  } finally {
+    bulkSubmitting.value = false
+    showBulkResourceTypeModal.value = false
+    bulkResourceTypeValue.value = ''
+  }
+}
+
+async function bulkRejectSelected() {
+  if (selectedSuggestionIds.value.size === 0) return
+  bulkSubmitting.value = true
+  try {
+    const items = Array.from(selectedSuggestionIds.value).map(id => ({ suggestionId: id }))
+    const res = await suggestionService.bulkReject(props.submissionId, items)
+    notificationStore.info(res.message || `${items.length} rejected`)
+    for (const r of res.results || []) {
+      if (r.status === 'rejected') krtStore.updateSuggestionStatus(r.suggestionId, 'rejected')
+    }
+    clearBulkSelection()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Bulk reject failed')
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
+function openBulkResourceTypeModal() {
+  if (selectedSuggestionIds.value.size === 0) return
+  bulkResourceTypeValue.value = ''
+  showBulkResourceTypeModal.value = true
+}
+async function confirmBulkResourceType() {
+  if (!bulkResourceTypeValue.value) return
+  await bulkApproveSelected(bulkResourceTypeValue.value)
+}
+
+function openBulkEditCellsModal() {
+  if (selectedRowIds.value.size === 0) return
+  bulkEditCellsColumn.value = 'RESOURCE TYPE'
+  bulkEditCellsValue.value = ''
+  showBulkEditCellsModal.value = true
+}
+
+async function applyBulkEditCells() {
+  if (selectedRowIds.value.size === 0) return
+  bulkSubmitting.value = true
+  try {
+    const field = columnKeyToField[bulkEditCellsColumn.value]
+    const updates = Array.from(selectedRowIds.value).map(rowId => ({
+      rowId,
+      column: field,
+      value: bulkEditCellsValue.value
+    }))
+    await krtStore.batchUpdateCells(props.submissionId, updates)
+    notificationStore.success(`Updated ${updates.length} row${updates.length > 1 ? 's' : ''}`)
+    clearBulkSelection()
+    await krtStore.validate(props.submissionId)
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Bulk edit failed')
+  } finally {
+    bulkSubmitting.value = false
+    showBulkEditCellsModal.value = false
+  }
+}
+
+// Maps display column names → store field names used by batchUpdateCells.
+const columnKeyToField = {
+  'RESOURCE TYPE': 'resource_type',
+  'RESOURCE NAME': 'resource_name',
+  'SOURCE': 'source',
+  'IDENTIFIER': 'identifier',
+  'NEW/REUSE': 'new_reuse',
+  'ADDITIONAL INFORMATION': 'additional_information'
+}
+
 // Combined rows + add-row suggestions in correct sort order
 // Suggestions appear at the position they would occupy after being accepted
 const interleavedAddSuggestions = computed(() => {
@@ -752,18 +965,85 @@ function hasDeleteSuggestion(rowId) {
   return !!getDeleteSuggestion(rowId)
 }
 
-// Accept an add_row suggestion
+// ── Per-suggestion inline edits ──────────────────────────────────────
+//
+// Each add_row suggestion in the editor table is fully editable: the user
+// can adjust any cell before clicking Accept. The edits live here keyed by
+// suggestion id, seeded from the AI's proposed values so v-model on the
+// row's inputs has a stable target.
+const editorSuggestionEdits = ref({})
+
+// Seed entries eagerly whenever the suggestion list changes, so v-model
+// has somewhere to write before the user touches a cell. Lazy seeding (on
+// first focus) would require the input's binding target to exist first.
+watch(() => krtStore.addRowSuggestions, (list) => {
+  if (!Array.isArray(list)) return
+  for (const s of list) {
+    if (s?.type === 'add_row' && s?.status === 'pending') {
+      ensureSuggestionEdit(s)
+    }
+  }
+}, { immediate: true, deep: true })
+
+function ensureSuggestionEdit(suggestion) {
+  if (!suggestion || suggestion.type !== 'add_row') return null
+  let entry = editorSuggestionEdits.value[suggestion.id]
+  if (!entry) {
+    entry = {
+      resourceType:          suggestion.data?.resourceType || '',
+      resourceName:          suggestion.data?.resourceName || '',
+      source:                suggestion.data?.source || '',
+      identifier:            suggestion.data?.identifier || '',
+      newReuse:              suggestion.data?.newReuse || '',
+      additionalInformation: suggestion.data?.additionalInformation || ''
+    }
+    editorSuggestionEdits.value[suggestion.id] = entry
+  }
+  return entry
+}
+
+function suggestionCell(suggestion, field) {
+  return ensureSuggestionEdit(suggestion)?.[field] ?? ''
+}
+
+function setSuggestionCell(suggestion, field, value) {
+  const entry = ensureSuggestionEdit(suggestion)
+  if (entry) entry[field] = value
+}
+
+/**
+ * Diff the user's edits against the AI's proposed values. Returns only the
+ * keys that changed, or null if nothing was touched. The backend's approve
+ * endpoint falls back to AI values for any field not in `overrides`.
+ */
+function diffSuggestionEdits(suggestion) {
+  const local = editorSuggestionEdits.value[suggestion.id]
+  if (!local) return null
+  const original = suggestion.data || {}
+  const diff = {}
+  for (const key of Object.keys(local)) {
+    const userVal = (local[key] ?? '').toString()
+    const aiVal = (original[key] ?? '').toString()
+    if (userVal !== aiVal) diff[key] = userVal
+  }
+  return Object.keys(diff).length > 0 ? diff : null
+}
+
+// Accept an add_row suggestion, applying any inline edits as overrides.
 async function acceptAddRowSuggestion(suggestion) {
   if (!suggestion) return
 
   try {
-    await suggestionService.approveSuggestion(props.submissionId, suggestion.id)
+    const overrides = diffSuggestionEdits(suggestion)
+    await suggestionService.approveSuggestion(props.submissionId, suggestion.id, null, overrides)
     krtStore.updateSuggestionStatus(suggestion.id, 'approved')
     await krtStore.fetchKRT(props.submissionId)
     // Re-validate to catch any issues with the new row (e.g., missing IDENTIFIER)
     await krtStore.validate(props.submissionId)
-    notificationStore.success('Row added')
+    notificationStore.success(overrides ? 'Row added with your edits' : 'Row added')
     emit('suggestion-accepted', suggestion)
+    // Drop the per-suggestion edit entry — it's no longer pending.
+    delete editorSuggestionEdits.value[suggestion.id]
 
     // Scroll to the newly added row
     await nextTick()
@@ -791,7 +1071,6 @@ function openRejectModal(suggestion) {
 function cancelRejectModal() {
   showRejectModal.value = false
   rejectingSuggestion.value = null
-  rejectReasonText.value = ''
 }
 
 async function confirmRejectModal() {
@@ -800,7 +1079,6 @@ async function confirmRejectModal() {
   const reason = rejectReasonText.value.trim()
   showRejectModal.value = false
   rejectingSuggestion.value = null
-  rejectReasonText.value = ''
 
   try {
     await suggestionService.rejectSuggestion(props.submissionId, suggestion.id, reason)
@@ -811,6 +1089,18 @@ async function confirmRejectModal() {
     notificationStore.error('Failed to reject suggestion')
   }
 }
+
+// Belt-and-suspenders: any time the modal hides (cancel / confirm / overlay
+// click / programmatic dismissal), wipe the textarea state. Previously each
+// dismissal path reset the text individually, which let a value sometimes
+// leak to the next suggestion when a path was missed. Centralising the
+// reset on the close event guarantees we never carry state across openings.
+watch(showRejectModal, (visible) => {
+  if (!visible) {
+    rejectReasonText.value = ''
+    rejectingSuggestion.value = null
+  }
+})
 
 // Reject an add_row suggestion (opens modal)
 function rejectAddRowSuggestion(suggestion) {
@@ -1181,12 +1471,45 @@ defineExpose({
       <p v-else>No {{ tabGroups.find(t => t.key === activeTab)?.label }} resources in this KRT.</p>
     </div>
 
+    <!-- Bulk action bar — appears when the user selects ≥1 row or suggestion.
+         Suggestion + KRT-row selections are mutually exclusive, so the bar
+         shows different actions depending on what's selected. -->
+    <div v-if="!readonly && (selectedSuggestionIds.size > 0 || selectedRowIds.size > 0)" class="bulk-action-bar">
+      <span class="bulk-action-count">
+        {{ selectedSuggestionIds.size > 0 ? selectedSuggestionIds.size : selectedRowIds.size }}
+        {{ selectedSuggestionIds.size > 0 ? 'suggestion' : 'row' }}{{ (selectedSuggestionIds.size > 0 ? selectedSuggestionIds.size : selectedRowIds.size) > 1 ? 's' : '' }} selected
+      </span>
+      <div class="bulk-action-buttons">
+        <template v-if="selectedSuggestionIds.size > 0">
+          <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="bulkApproveSelected()">
+            <span v-if="bulkSubmitting">Working…</span>
+            <span v-else>Approve selected</span>
+          </button>
+          <button class="btn-bulk" :disabled="bulkSubmitting" @click="openBulkResourceTypeModal">Approve with Resource Type…</button>
+          <button class="btn-bulk btn-bulk-danger" :disabled="bulkSubmitting" @click="bulkRejectSelected">Reject selected</button>
+        </template>
+        <template v-else>
+          <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="openBulkEditCellsModal">Edit column…</button>
+        </template>
+        <button class="btn-bulk btn-bulk-ghost" @click="clearBulkSelection">Clear</button>
+      </div>
+    </div>
+
     <!-- Table Container -->
     <div v-if="sortedFilteredRows.length || filteredAddRowSuggestions.length" ref="tableContainer" class="table-container">
       <div class="table-scroll">
         <table>
           <thead>
             <tr>
+              <th v-if="!readonly" class="col-bulk-check">
+                <input
+                  type="checkbox"
+                  class="bulk-check"
+                  :checked="visibleSuggestionIds.length > 0 ? allVisibleSuggestionsSelected : allVisibleRowsSelected"
+                  :title="visibleSuggestionIds.length > 0 ? 'Select all visible suggestions' : 'Select all visible rows'"
+                  @click.stop="visibleSuggestionIds.length > 0 ? toggleSelectAllVisibleSuggestions() : toggleSelectAllVisibleRows()"
+                />
+              </th>
               <th class="col-row-num">
                 <span class="th-content">#</span>
               </th>
@@ -1222,38 +1545,130 @@ defineExpose({
               :data-suggestion-id="suggestion.id"
               @click="emit('select-suggestion', suggestion.id)"
             >
-              <td class="col-row-num add-row-num">
+              <td v-if="!readonly" class="col-bulk-check" @click.stop>
+                <input
+                  type="checkbox"
+                  class="bulk-check"
+                  :disabled="suggestion.status !== 'pending'"
+                  :checked="isSuggestionSelected(suggestion.id)"
+                  @click.stop="toggleSuggestionSelection(suggestion.id)"
+                />
+              </td>
+              <td :class="['col-row-num', 'add-row-num', { 'tooltip-active': activeTooltip === suggestion.id }]">
                 <div class="row-num-content">
                   <svg class="add-icon-svg" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd" />
                   </svg>
-                </div>
-              </td>
-              <td class="col-data add-row-cell">
-                <div class="add-row-type-cell">
-                  {{ suggestion.data?.resourceType || '' }}
+                  <!-- Module badge(s) live in the # cell so origin column lines
+                       up across ADD and UPDATE suggestions. Order mirrors the
+                       edit-row pattern: <number/+> <badge> <info>. -->
                   <span
                     v-for="src in getContributingSources(suggestion)"
                     :key="src"
                     class="suggestion-source-badge"
                     :class="'source-' + src"
                   >{{ SOURCE_LABEL[src] || src }}</span>
+                  <!-- Same info indicator + tooltip the edit suggestions show
+                       on existing rows, mirrored here so every suggestion has
+                       the same hover-for-details affordance. -->
+                  <div
+                    class="issue-indicator"
+                    @mouseenter.stop="showTooltip(suggestion.id)"
+                    @mouseleave="hideTooltip"
+                  >
+                    <svg class="issue-icon icon-suggestion" fill="currentColor" viewBox="0 0 20 20">
+                      <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                    </svg>
+                    <div v-if="activeTooltip === suggestion.id" class="tooltip below">
+                      <div class="tooltip-content tooltip-suggestion-content">
+                        <div class="tooltip-item">
+                          <span class="tooltip-dot dot-suggestion"></span>
+                          <div class="tooltip-text">
+                            <div class="tooltip-column">Add {{ suggestion.data?.resourceType || 'row' }}</div>
+                            <div class="tooltip-message">{{ suggestion.title }}</div>
+                            <div v-if="suggestion.detail" class="tooltip-message">{{ suggestion.detail }}</div>
+                            <div class="tooltip-suggestion-hint">Accept (✓) or reject (✗) on the right</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="tooltip-arrow tooltip-arrow-suggestion"></div>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <!-- RESOURCE TYPE: editable dropdown for pending suggestions. -->
+              <td class="col-data add-row-cell" @click.stop>
+                <div class="add-row-type-cell">
+                  <select
+                    v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                    v-model="editorSuggestionEdits[suggestion.id].resourceType"
+                    class="suggestion-inline-input"
+                    title="Resource Type"
+                  >
+                    <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
+                  </select>
+                  <span v-else class="cell-display">{{ suggestion.data?.resourceType || '' }}</span>
                   <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
                   <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
                 </div>
               </td>
-              <td class="col-data add-row-cell">
-                <div class="cell-display" :title="suggestion.data?.resourceName || ''">{{ suggestion.data?.resourceName || '' }}</div>
+              <!-- RESOURCE NAME -->
+              <td class="col-data add-row-cell" @click.stop>
+                <input
+                  v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                  v-model="editorSuggestionEdits[suggestion.id].resourceName"
+                  type="text"
+                  class="suggestion-inline-input"
+                  title="Resource Name"
+                />
+                <div v-else class="cell-display" :title="suggestion.data?.resourceName || ''">{{ suggestion.data?.resourceName || '' }}</div>
               </td>
-              <td class="col-data add-row-cell">
-                <div class="cell-display" :title="suggestion.data?.source || ''">{{ suggestion.data?.source || '' }}</div>
+              <!-- SOURCE -->
+              <td class="col-data add-row-cell" @click.stop>
+                <input
+                  v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                  v-model="editorSuggestionEdits[suggestion.id].source"
+                  type="text"
+                  class="suggestion-inline-input"
+                  title="Source"
+                />
+                <div v-else class="cell-display" :title="suggestion.data?.source || ''">{{ suggestion.data?.source || '' }}</div>
               </td>
-              <td class="col-data add-row-cell">
-                <div class="cell-display" :title="suggestion.data?.identifier || ''">{{ suggestion.data?.identifier || '' }}</div>
+              <!-- IDENTIFIER -->
+              <td class="col-data add-row-cell" @click.stop>
+                <input
+                  v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                  v-model="editorSuggestionEdits[suggestion.id].identifier"
+                  type="text"
+                  class="suggestion-inline-input"
+                  title="Identifier"
+                />
+                <div v-else class="cell-display" :title="suggestion.data?.identifier || ''">{{ suggestion.data?.identifier || '' }}</div>
               </td>
-              <td class="col-data add-row-cell">{{ suggestion.data?.newReuse || '' }}</td>
-              <td class="col-data add-row-cell">
-                <div class="cell-display" :title="suggestion.data?.additionalInformation || ''">{{ suggestion.data?.additionalInformation || '' }}</div>
+              <!-- NEW/REUSE -->
+              <td class="col-data add-row-cell" @click.stop>
+                <select
+                  v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                  v-model="editorSuggestionEdits[suggestion.id].newReuse"
+                  class="suggestion-inline-input"
+                  title="New/Reuse"
+                >
+                  <option value="">—</option>
+                  <option value="new">new</option>
+                  <option value="reuse">reuse</option>
+                </select>
+                <span v-else>{{ suggestion.data?.newReuse || '' }}</span>
+              </td>
+              <!-- ADDITIONAL INFORMATION -->
+              <td class="col-data add-row-cell" @click.stop>
+                <input
+                  v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                  v-model="editorSuggestionEdits[suggestion.id].additionalInformation"
+                  type="text"
+                  class="suggestion-inline-input"
+                  title="Additional Information"
+                />
+                <div v-else class="cell-display" :title="suggestion.data?.additionalInformation || ''">{{ suggestion.data?.additionalInformation || '' }}</div>
               </td>
               <td v-if="!readonly" class="col-actions add-row-actions">
                 <div class="add-row-buttons">
@@ -1274,10 +1689,27 @@ defineExpose({
                 :data-row-id="row.id"
                 :class="getRowLevelIssueClass(row.id)"
               >
+                <td v-if="!readonly" class="col-bulk-check" @click.stop>
+                  <input
+                    type="checkbox"
+                    class="bulk-check"
+                    :checked="isRowSelected(row.id)"
+                    @click.stop="toggleRowSelection(row.id)"
+                  />
+                </td>
                 <!-- Row Number -->
                 <td :class="['col-row-num', { 'tooltip-active': activeTooltip === row.id }]">
                   <div class="row-num-content">
-                    <span>{{ rowIndex + 1 }}</span>
+                    <span class="row-num-label">{{ rowIndex + 1 }}</span>
+                    <!-- Module badges for any update suggestions on this row.
+                         Same chips that ADD suggestions show in the # cell,
+                         so the origin column is consistent across both. -->
+                    <span
+                      v-for="src in getRowSuggestionSources(row.id)"
+                      :key="src"
+                      class="suggestion-source-badge"
+                      :class="'source-' + src"
+                    >{{ SOURCE_LABEL[src] || src }}</span>
                     <!-- Suggestion indicator -->
                     <div
                       v-if="hasRowSuggestion(row.id) && !hasAnyIssue(row.id)"
@@ -1299,6 +1731,13 @@ defineExpose({
                             <div class="tooltip-text">
                               <div class="tooltip-column">{{ suggestion.data?.column || 'Edit' }}</div>
                               <div class="tooltip-message">{{ suggestion.title }}</div>
+                              <!-- Detector context (UI-only, NOT written to the
+                                   KRT cell on accept). Shows why the AI made
+                                   this suggestion. -->
+                              <div v-if="suggestion.context" class="tooltip-context">
+                                <span class="tooltip-context-label">Why:</span>
+                                {{ suggestion.context }}
+                              </div>
                               <div class="tooltip-suggestion-hint">Click cell to accept/reject</div>
                             </div>
                           </div>
@@ -1424,10 +1863,13 @@ defineExpose({
                       </svg>
                     </div>
                   </div>
-                  <!-- Cell tooltip for validation errors (shown on cell hover) -->
+                  <!-- Cell tooltip for validation errors (shown on cell hover).
+                       Flip to below the cell on the top few rows so it isn't
+                       clipped by the table header / surrounding container. -->
                   <div
                     v-if="hasCellIssue(row.id, col.key) && isCellTooltipActive(row.id, col.key)"
                     class="cell-tooltip"
+                    :class="getTooltipPosition(rowIndex) === 'below' ? 'cell-tooltip-below' : 'cell-tooltip-above'"
                   >
                     <div class="tooltip-content">
                       <div v-for="(error, idx) in getCellErrors(row.id, col.key)" :key="idx" class="tooltip-item">
@@ -1444,6 +1886,7 @@ defineExpose({
                   <div
                     v-if="hasCellSuggestion(row.id, col.key) && isSuggestionTooltipActive(row.id, col.key)"
                     class="cell-tooltip cell-tooltip-suggestion"
+                    :class="getTooltipPosition(rowIndex) === 'below' ? 'cell-tooltip-below' : 'cell-tooltip-above'"
                   >
                     <div class="tooltip-content tooltip-suggestion-content">
                       <div class="tooltip-item">
@@ -1455,6 +1898,11 @@ defineExpose({
                             <span class="old-value">{{ getCellSuggestion(row.id, col.key)?.data?.oldValue || '(empty)' }}</span>
                             <span class="arrow">→</span>
                             <span class="new-value">{{ getCellSuggestion(row.id, col.key)?.data?.newValue }}</span>
+                          </div>
+                          <!-- Detector context (UI-only, NOT persisted) -->
+                          <div v-if="getCellSuggestion(row.id, col.key)?.context" class="tooltip-context">
+                            <span class="tooltip-context-label">Why:</span>
+                            {{ getCellSuggestion(row.id, col.key).context }}
                           </div>
                           <div class="tooltip-suggestion-hint">Click cell to accept/reject</div>
                         </div>
@@ -1504,38 +1952,133 @@ defineExpose({
                 :data-suggestion-id="suggestion.id"
                 @click="emit('select-suggestion', suggestion.id)"
               >
-                <td class="col-row-num add-row-num">
+                <td v-if="!readonly" class="col-bulk-check" @click.stop>
+                  <input
+                    type="checkbox"
+                    class="bulk-check"
+                    :disabled="suggestion.status !== 'pending'"
+                    :checked="isSuggestionSelected(suggestion.id)"
+                    @click.stop="toggleSuggestionSelection(suggestion.id)"
+                  />
+                </td>
+                <td :class="['col-row-num', 'add-row-num', { 'tooltip-active': activeTooltip === suggestion.id }]">
                   <div class="row-num-content">
                     <svg class="add-icon-svg" fill="currentColor" viewBox="0 0 20 20">
                       <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd" />
                     </svg>
-                  </div>
-                </td>
-                <td class="col-data add-row-cell">
-                  <div class="add-row-type-cell">
-                    {{ suggestion.data?.resourceType || '' }}
+                    <!-- Module badge(s) live in the # cell so origin column lines
+                         up across ADD and UPDATE suggestions. Order mirrors the
+                         edit-row pattern: <number/+> <badge> <info>. -->
                     <span
                       v-for="src in getContributingSources(suggestion)"
                       :key="src"
                       class="suggestion-source-badge"
                       :class="'source-' + src"
                     >{{ SOURCE_LABEL[src] || src }}</span>
+                    <!-- Same info indicator + tooltip the edit suggestions show
+                         on existing rows, mirrored here so every suggestion has
+                         the same hover-for-details affordance. -->
+                    <div
+                      class="issue-indicator"
+                      @mouseenter.stop="showTooltip(suggestion.id)"
+                      @mouseleave="hideTooltip"
+                    >
+                      <svg class="issue-icon icon-suggestion" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                      </svg>
+                      <div
+                        v-if="activeTooltip === suggestion.id"
+                        :class="['tooltip', getTooltipPosition(rowIndex)]"
+                      >
+                        <div class="tooltip-content tooltip-suggestion-content">
+                          <div class="tooltip-item">
+                            <span class="tooltip-dot dot-suggestion"></span>
+                            <div class="tooltip-text">
+                              <div class="tooltip-column">Add {{ suggestion.data?.resourceType || 'row' }}</div>
+                              <div class="tooltip-message">{{ suggestion.title }}</div>
+                              <div v-if="suggestion.detail" class="tooltip-message">{{ suggestion.detail }}</div>
+                              <div class="tooltip-suggestion-hint">Accept (✓) or reject (✗) on the right</div>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="tooltip-arrow tooltip-arrow-suggestion"></div>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+                <!-- RESOURCE TYPE: editable dropdown for pending suggestions. -->
+                <td class="col-data add-row-cell" @click.stop>
+                  <div class="add-row-type-cell">
+                    <select
+                      v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                      v-model="editorSuggestionEdits[suggestion.id].resourceType"
+                      class="suggestion-inline-input"
+                      title="Resource Type"
+                    >
+                      <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
+                    </select>
+                    <span v-else class="cell-display">{{ suggestion.data?.resourceType || '' }}</span>
                     <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
                     <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
                   </div>
                 </td>
-                <td class="col-data add-row-cell">
-                  <div class="cell-display" :title="suggestion.data?.resourceName || ''">{{ suggestion.data?.resourceName || '' }}</div>
+                <!-- RESOURCE NAME -->
+                <td class="col-data add-row-cell" @click.stop>
+                  <input
+                    v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                    v-model="editorSuggestionEdits[suggestion.id].resourceName"
+                    type="text"
+                    class="suggestion-inline-input"
+                    title="Resource Name"
+                  />
+                  <div v-else class="cell-display" :title="suggestion.data?.resourceName || ''">{{ suggestion.data?.resourceName || '' }}</div>
                 </td>
-                <td class="col-data add-row-cell">
-                  <div class="cell-display" :title="suggestion.data?.source || ''">{{ suggestion.data?.source || '' }}</div>
+                <!-- SOURCE -->
+                <td class="col-data add-row-cell" @click.stop>
+                  <input
+                    v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                    v-model="editorSuggestionEdits[suggestion.id].source"
+                    type="text"
+                    class="suggestion-inline-input"
+                    title="Source"
+                  />
+                  <div v-else class="cell-display" :title="suggestion.data?.source || ''">{{ suggestion.data?.source || '' }}</div>
                 </td>
-                <td class="col-data add-row-cell">
-                  <div class="cell-display" :title="suggestion.data?.identifier || ''">{{ suggestion.data?.identifier || '' }}</div>
+                <!-- IDENTIFIER -->
+                <td class="col-data add-row-cell" @click.stop>
+                  <input
+                    v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                    v-model="editorSuggestionEdits[suggestion.id].identifier"
+                    type="text"
+                    class="suggestion-inline-input"
+                    title="Identifier"
+                  />
+                  <div v-else class="cell-display" :title="suggestion.data?.identifier || ''">{{ suggestion.data?.identifier || '' }}</div>
                 </td>
-                <td class="col-data add-row-cell">{{ suggestion.data?.newReuse || '' }}</td>
-                <td class="col-data add-row-cell">
-                  <div class="cell-display" :title="suggestion.data?.additionalInformation || ''">{{ suggestion.data?.additionalInformation || '' }}</div>
+                <!-- NEW/REUSE -->
+                <td class="col-data add-row-cell" @click.stop>
+                  <select
+                    v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                    v-model="editorSuggestionEdits[suggestion.id].newReuse"
+                    class="suggestion-inline-input"
+                    title="New/Reuse"
+                  >
+                    <option value="">—</option>
+                    <option value="new">new</option>
+                    <option value="reuse">reuse</option>
+                  </select>
+                  <span v-else>{{ suggestion.data?.newReuse || '' }}</span>
+                </td>
+                <!-- ADDITIONAL INFORMATION -->
+                <td class="col-data add-row-cell" @click.stop>
+                  <input
+                    v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
+                    v-model="editorSuggestionEdits[suggestion.id].additionalInformation"
+                    type="text"
+                    class="suggestion-inline-input"
+                    title="Additional Information"
+                  />
+                  <div v-else class="cell-display" :title="suggestion.data?.additionalInformation || ''">{{ suggestion.data?.additionalInformation || '' }}</div>
                 </td>
                 <td v-if="!readonly" class="col-actions add-row-actions">
                   <div class="add-row-buttons">
@@ -1587,6 +2130,80 @@ defineExpose({
             </button>
             <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-red-600 text-white hover:bg-red-700" @click="confirmRejectModal">
               Reject
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Bulk: Approve with Resource Type modal -->
+    <Teleport to="body">
+      <div v-if="showBulkResourceTypeModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showBulkResourceTypeModal = false">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
+          <h3 class="text-sm font-semibold text-gray-900 mb-2">Approve {{ selectedSuggestionIds.size }} suggestion{{ selectedSuggestionIds.size > 1 ? 's' : '' }}</h3>
+          <p class="text-sm text-gray-500 mb-3">
+            Pick a Resource Type to apply to every selected add suggestion before approving.
+            The detector's suggested type will be overridden with your choice.
+          </p>
+          <select
+            v-model="bulkResourceTypeValue"
+            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+          >
+            <option value="">Select Resource Type…</option>
+            <option v-for="type in resourceTypes" :key="type" :value="type">{{ type }}</option>
+          </select>
+          <div class="flex justify-end gap-2 mt-4">
+            <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="showBulkResourceTypeModal = false">Cancel</button>
+            <button :disabled="!bulkResourceTypeValue || bulkSubmitting" class="px-3 py-1.5 text-sm font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50" @click="confirmBulkResourceType">
+              {{ bulkSubmitting ? 'Approving…' : 'Approve with type' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Bulk: Edit column on selected KRT rows -->
+    <Teleport to="body">
+      <div v-if="showBulkEditCellsModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showBulkEditCellsModal = false">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
+          <h3 class="text-sm font-semibold text-gray-900 mb-2">Edit column on {{ selectedRowIds.size }} row{{ selectedRowIds.size > 1 ? 's' : '' }}</h3>
+          <p class="text-sm text-gray-500 mb-3">Choose a column and the value to apply to every selected row.</p>
+          <label class="text-xs font-medium text-gray-600">Column</label>
+          <select
+            v-model="bulkEditCellsColumn"
+            class="w-full px-3 py-2 mt-1 mb-3 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+          >
+            <option v-for="col in columns" :key="col.key" :value="col.key">{{ col.label }}</option>
+          </select>
+          <label class="text-xs font-medium text-gray-600">Value</label>
+          <select
+            v-if="bulkEditCellsColumn === 'RESOURCE TYPE'"
+            v-model="bulkEditCellsValue"
+            class="w-full px-3 py-2 mt-1 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+          >
+            <option value="">Select Resource Type…</option>
+            <option v-for="type in resourceTypes" :key="type" :value="type">{{ type }}</option>
+          </select>
+          <select
+            v-else-if="bulkEditCellsColumn === 'NEW/REUSE'"
+            v-model="bulkEditCellsValue"
+            class="w-full px-3 py-2 mt-1 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+          >
+            <option value="">Select…</option>
+            <option value="new">new</option>
+            <option value="reuse">reuse</option>
+          </select>
+          <input
+            v-else
+            v-model="bulkEditCellsValue"
+            type="text"
+            class="w-full px-3 py-2 mt-1 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+            placeholder="Enter new value"
+          />
+          <div class="flex justify-end gap-2 mt-4">
+            <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="showBulkEditCellsModal = false">Cancel</button>
+            <button :disabled="!bulkEditCellsValue || bulkSubmitting" class="px-3 py-1.5 text-sm font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50" @click="applyBulkEditCells">
+              {{ bulkSubmitting ? 'Applying…' : 'Apply to selected' }}
             </button>
           </div>
         </div>
@@ -1905,8 +2522,14 @@ td {
 
 /* Column Widths */
 .col-row-num {
-  width: 60px;
-  min-width: 60px;
+  /* Slightly wider than before to fit the per-row module badge ("SW", "PROT",
+     "ID", …) introduced alongside update suggestions. Tighter horizontal
+     padding than the default td so the row number, badge, and info icon all
+     land on the same line. */
+  width: 88px;
+  min-width: 88px;
+  padding-left: 0.375rem;
+  padding-right: 0.375rem;
   position: sticky;
   left: 0;
   z-index: 5;
@@ -1988,7 +2611,16 @@ tr:hover {
 .row-num-content {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  /* Tight gap so the row number, badge, and info icon fit on one line in
+     the sticky # column without wrapping. */
+  gap: 0.1875rem;
+  flex-wrap: wrap;
+}
+
+/* Row number stays on the first line, narrow enough to leave room for a
+   short module-source badge next to it (e.g. "12 PROT"). */
+.row-num-label {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Issue Indicator */
@@ -2040,10 +2672,21 @@ tr:hover {
 .cell-tooltip {
   position: absolute;
   left: 0;
-  bottom: 100%;
-  margin-bottom: 0.25rem;
   z-index: 60;
   width: 280px;
+}
+
+/* Default placement above the cell — used for rows beyond the first few. */
+.cell-tooltip-above {
+  bottom: 100%;
+  margin-bottom: 0.25rem;
+}
+
+/* Top-of-table rows render the tooltip BELOW the cell so it isn't clipped
+   by the table header / surrounding scroll container. */
+.cell-tooltip-below {
+  top: 100%;
+  margin-top: 0.25rem;
 }
 
 .cell-tooltip .tooltip-content {
@@ -2055,12 +2698,22 @@ tr:hover {
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
 }
 
-.cell-tooltip .tooltip-arrow {
+/* Arrow under the tooltip when it sits above the cell. */
+.cell-tooltip-above .tooltip-arrow {
   position: absolute;
   left: 1rem;
   top: 100%;
   border: 6px solid transparent;
   border-top-color: #1f2937;
+}
+
+/* Arrow above the tooltip when it sits below the cell — flip the colored edge. */
+.cell-tooltip-below .tooltip-arrow {
+  position: absolute;
+  left: 1rem;
+  bottom: 100%;
+  border: 6px solid transparent;
+  border-bottom-color: #1f2937;
 }
 
 /* Tooltip */
@@ -2307,6 +2960,26 @@ tr:hover {
   font-style: italic;
 }
 
+/* Detector context — the original ADDITIONAL INFORMATION blurb the AI
+   produced, surfaced as hover hint only. Never written to the KRT cell. */
+.tooltip-context {
+  color: #cbd5e1;
+  font-size: 0.7rem;
+  margin-top: 0.375rem;
+  padding-top: 0.375rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  line-height: 1.35;
+}
+
+.tooltip-context-label {
+  color: #f0abfc;
+  font-weight: 600;
+  margin-right: 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.6rem;
+}
+
 .tooltip-arrow-suggestion {
   border-bottom-color: #1e3a8a !important;
   border-top-color: #1e3a8a !important;
@@ -2317,8 +2990,13 @@ tr:hover {
   background: #1e3a8a;
 }
 
-.cell-tooltip-suggestion .tooltip-arrow {
+/* Suggestion-variant arrows — only override the visible edge depending on
+   whether the tooltip is above or below the cell. */
+.cell-tooltip-suggestion.cell-tooltip-above .tooltip-arrow {
   border-top-color: #1e3a8a;
+}
+.cell-tooltip-suggestion.cell-tooltip-below .tooltip-arrow {
+  border-bottom-color: #1e3a8a;
 }
 
 .tooltip-suggestion-value {
@@ -2355,23 +3033,36 @@ tr:hover {
   white-space: nowrap;
 }
 
-/* Add Row Suggestion Styles */
+/* Add Row Suggestion Styles
+ *
+ * The blue highlight covers the row-num column + every data cell, but NOT
+ * the bulk-check column at the leading edge. That matches the pattern used
+ * for `.row-suggestion / .row-warning / .row-error` (which also leaves
+ * `.col-bulk-check` neutral) so all highlight types behave consistently. */
 .add-row-suggestion {
-  background: #eff6ff;
-  border-left: 3px solid #3b82f6;
   cursor: pointer;
 }
 
-.add-row-suggestion:hover {
+.add-row-suggestion > td:not(.col-bulk-check) {
+  background: #eff6ff;
+}
+
+.add-row-suggestion > .col-row-num.add-row-num {
+  border-left: 3px solid #3b82f6;
+}
+
+.add-row-suggestion:hover > td:not(.col-bulk-check) {
   background: #dbeafe;
 }
 
 /* Currently-displayed suggestion in the parent's AI suggestions panel —
    darker bg + thicker accent so it's obvious which row the detail view shows.
    Uses the same blue family as the base row, just stepped up. */
-.add-row-suggestion-active,
-.add-row-suggestion-active:hover {
+.add-row-suggestion-active > td:not(.col-bulk-check),
+.add-row-suggestion-active:hover > td:not(.col-bulk-check) {
   background: #bfdbfe;
+}
+.add-row-suggestion-active > .col-row-num.add-row-num {
   border-left-color: #1d4ed8;
 }
 .add-row-suggestion-active .add-row-num {
@@ -2462,8 +3153,10 @@ tr:hover {
 }
 
 .add-icon-svg {
-  width: 1.25rem;
-  height: 1.25rem;
+  /* Sized to match `.issue-icon` so the + and ? icons line up visually
+     when both share the # cell. */
+  width: 1rem;
+  height: 1rem;
   color: #2563eb;
 }
 
@@ -2659,6 +3352,111 @@ tr.highlight-flash td {
 
 .download-dropdown-item + .download-dropdown-item {
   border-top: 1px solid #f3f4f6;
+}
+
+/* ── Bulk-ops UI ───────────────────────────────────────────────── */
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.875rem;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+  position: sticky;
+  top: 0.5rem;
+  z-index: 10;
+}
+.bulk-action-count {
+  font-weight: 600;
+  color: #1e40af;
+}
+.bulk-action-buttons {
+  margin-left: auto;
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+.btn-bulk {
+  padding: 0.3125rem 0.625rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: #fff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-bulk:hover:not(:disabled) { background: #f3f4f6; }
+.btn-bulk:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-bulk-primary {
+  background: #2563eb;
+  color: #fff;
+  border-color: #2563eb;
+}
+.btn-bulk-primary:hover:not(:disabled) { background: #1d4ed8; }
+.btn-bulk-danger {
+  background: #ef4444;
+  color: #fff;
+  border-color: #ef4444;
+}
+.btn-bulk-danger:hover:not(:disabled) { background: #dc2626; }
+.btn-bulk-ghost {
+  border-color: transparent;
+  color: #6b7280;
+}
+.btn-bulk-ghost:hover:not(:disabled) { background: transparent; color: #374151; }
+
+/* Checkbox column — narrow leading column for bulk selection */
+.col-bulk-check {
+  width: 2.25rem;
+  text-align: center;
+  vertical-align: middle;
+}
+.bulk-check {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #2563eb;
+}
+.bulk-check:disabled { cursor: not-allowed; opacity: 0.4; }
+
+/* Inline inputs on suggestion rows — flat, table-cell-style. Border only
+   appears on hover/focus so the row reads like a row, not a form. */
+.suggestion-inline-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.125rem 0.25rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.25rem;
+  font-size: inherit;
+  font-family: inherit;
+  color: #111827;
+  transition: border-color 0.15s, background 0.15s;
+}
+.suggestion-inline-input:hover {
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+.suggestion-inline-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px #3b82f6;
+}
+/* Native <select> appearance is OS-dependent; force a consistent compact look. */
+select.suggestion-inline-input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 1.25rem;
+  background-image: linear-gradient(45deg, transparent 50%, #6b7280 50%),
+                    linear-gradient(135deg, #6b7280 50%, transparent 50%);
+  background-position: calc(100% - 0.5rem) 50%, calc(100% - 0.3rem) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
 }
 
 </style>

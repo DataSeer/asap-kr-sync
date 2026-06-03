@@ -8,7 +8,7 @@
  * copy the correct RESOURCE TYPE from the CSV row whose RESOURCE NAME matches
  * canonical_name (case-insensitive, whitespace-normalized).
  *
- * KRT rows of type Dataset / Code/Software are excluded from the lookup so a
+ * KRT rows of type Dataset / Software/code are excluded from the lookup so a
  * stray name collision can't flip a lab material into a dataset.
  *
  * Usage:

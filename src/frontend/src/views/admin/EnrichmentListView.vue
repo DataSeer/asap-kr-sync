@@ -10,7 +10,7 @@ import enrichmentListService from '@/services/enrichment-list.service'
 
 const CATEGORIES = [
   { key: 'all',       label: 'All',       defaultResourceType: '' },
-  { key: 'software',  label: 'Software',  defaultResourceType: 'Code/Software' },
+  { key: 'software',  label: 'Software',  defaultResourceType: 'Software/code' },
   { key: 'materials', label: 'Materials', defaultResourceType: 'Lab Material' },
   { key: 'datasets',  label: 'Datasets',  defaultResourceType: 'Dataset' },
   { key: 'protocols', label: 'Protocols', defaultResourceType: 'Protocol' }
@@ -60,7 +60,7 @@ function emptyForm(category) {
     resourceName: '',
     source: '',
     identifier: '',
-    newReuse: cfg.defaultResourceType === 'Code/Software' ? 'reuse' : '',
+    newReuse: cfg.defaultResourceType === 'Software/code' ? 'reuse' : '',
     additionalInformation: '',
     suggestedEntity: ''
   }

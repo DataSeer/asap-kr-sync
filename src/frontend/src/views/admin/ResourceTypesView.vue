@@ -9,7 +9,7 @@ const notificationStore = useNotificationStore()
 
 const RESOURCE_TYPE_CATEGORIES = [
   { value: 'dataset', label: 'Dataset' },
-  { value: 'software', label: 'Code/Software' },
+  { value: 'software', label: 'Software/code' },
   { value: 'protocol', label: 'Protocol' },
   { value: 'lab_material', label: 'Lab Material' }
 ]
@@ -418,7 +418,7 @@ async function handleImport() {
               <select v-model="editForm.type" class="input">
                 <option v-for="cat in RESOURCE_TYPE_CATEGORIES" :key="cat.value" :value="cat.value">{{ cat.label }}</option>
               </select>
-              <p class="mt-1 text-xs text-gray-500">Groups this resource type in the KRT editor and suggestion tabs</p>
+              <p class="mt-1 text-xs text-gray-500">Groups this resource type in the Key Resources Table editor and suggestion tabs</p>
             </div>
             <div>
               <label class="label">Description (optional)</label>
@@ -461,7 +461,7 @@ async function handleImport() {
               <select v-model="createForm.type" class="input">
                 <option v-for="cat in RESOURCE_TYPE_CATEGORIES" :key="cat.value" :value="cat.value">{{ cat.label }}</option>
               </select>
-              <p class="mt-1 text-xs text-gray-500">Groups this resource type in the KRT editor and suggestion tabs</p>
+              <p class="mt-1 text-xs text-gray-500">Groups this resource type in the Key Resources Table editor and suggestion tabs</p>
             </div>
             <div>
               <label class="label">Description (optional)</label>

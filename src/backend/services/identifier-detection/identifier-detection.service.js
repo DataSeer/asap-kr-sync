@@ -28,6 +28,7 @@ const { runWithDemoFallback } = require('../demo-fallback.service');
 const knownIdentifierIndex = require('./known-identifier-index.service');
 const knownIdentifierScanner = require('./known-identifier-scanner.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
+const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
 
 // Confidence floor we hand to merge-detections for tiebreaking. Identifier
@@ -39,10 +40,10 @@ const RELEVANCE_TO_CONFIDENCE = {
 };
 
 // Fallback resourceType when the curated entry's resourceType is empty.
-// Strings match the labels used elsewhere in the consolidator (`Code/Software`
+// Strings match the labels used elsewhere in the consolidator (`Software/code`
 // is what software.service.js stamps on Softcite output).
 const CATEGORY_FALLBACK_TYPE = {
-  software:  'Code/Software',
+  software:  'Software/code',
   datasets:  'Dataset',
   materials: 'Lab Material',
   protocols: 'Protocol'
@@ -144,7 +145,13 @@ function buildKrtItemsIdentifier(matches, markdownText) {
   if (!Array.isArray(matches)) return [];
   return matches.map(m => {
     const entry = m.entry;
-    const resourceType = entry.resourceType || CATEGORY_FALLBACK_TYPE[entry.category] || 'Resource';
+    // EnrichmentListEntry rows can still carry the historic "Code/Software"
+    // label; canonicalResourceType maps it to the current "Software/code"
+    // spelling so detected items don't trip the KRT validator's
+    // resource-type check downstream.
+    const resourceType = canonicalResourceType(
+      entry.resourceType || CATEGORY_FALLBACK_TYPE[entry.category] || 'Resource'
+    );
     return {
       resourceType,
       resourceName: entry.resourceName || '',
@@ -153,13 +160,17 @@ function buildKrtItemsIdentifier(matches, markdownText) {
       newReuse: entry.newReuse || '',
       origin: 'identifier-scan',
       confidence: RELEVANCE_TO_CONFIDENCE[m.relevance] ?? 0.4,
-      additionalInformation: snippetAt(markdownText, m.position, 80),
+      // Per ASAP request: don't put the manuscript snippet in user-facing
+      // ADDITIONAL INFORMATION. It's stored on detectorMeta.context for
+      // internal review only.
+      additionalInformation: '',
       detectorMeta: {
         relevance: m.relevance,
         matchedTypes: m.types,
         position: m.position,
         catalogContext: m.catalogContext,
-        category: entry.category
+        category: entry.category,
+        context: snippetAt(markdownText, m.position, 80)
       }
     };
   });

@@ -280,7 +280,7 @@ function parseSoftware(wb) {
         const firstUrl = url.split(/\s*;\s*/)[0] || null;
         const identifier = joinIdentifiers(doi, url);
 
-        items.push(makeDemoItem(name, 'Code/Software', firstUrl, identifier, 'new'));
+        items.push(makeDemoItem(name, 'Software/code', firstUrl, identifier, 'new'));
       } else {
         // Re-use section
         const name = String(row['Software Name'] || '').trim();
@@ -294,7 +294,7 @@ function parseSoftware(wb) {
         const source = suggestedURL || url || null;
         const identifier = joinIdentifiers(rrid, suggestedRRID, suggestedURL);
 
-        items.push(makeDemoItem(name, 'Code/Software', source, identifier, 'reuse'));
+        items.push(makeDemoItem(name, 'Software/code', source, identifier, 'reuse'));
       }
     }
   }

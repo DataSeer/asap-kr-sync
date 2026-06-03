@@ -93,13 +93,12 @@ const requestSchemas = {
   register: Joi.object({
     email: schemas.email.required(),
     password: schemas.password.required(),
-    name: Joi.string().trim().min(2).max(100).required(),
-    role: schemas.role.default(ROLES.AUTHOR),
-    team: schemas.team.when('role', {
-      is: ROLES.ASAP_PM,
-      then: Joi.required(),
-      otherwise: Joi.optional()
-    })
+    name: Joi.string().trim().min(2).max(100).required()
+    // NOTE: `role` and `team` are intentionally NOT accepted on self-signup.
+    // Any client-supplied values are dropped by stripUnknown, and the role is
+    // forced to 'author' in auth.service.register(). This prevents privilege
+    // escalation via the public register endpoint. Roles/teams are assigned
+    // only through the admin user-management endpoints (createUser/updateUser).
   }),
 
   login: Joi.object({
@@ -249,14 +248,50 @@ const requestSchemas = {
   }),
 
   // ── Submission flow: suggestion approve / reject ──────────────────
+  // `overrides` lets the user change one or more fields BEFORE approving an
+  // add_row suggestion — for example, picking a different Resource Type than
+  // the one the detector suggested. Per-field max lengths match the KRT
+  // column caps in seeders/20250101000002-seed-config.js.
   approveSuggestion: Joi.object({
     suggestionId: Joi.string().trim().min(1).max(500).required(),
-    modifiedValue: Joi.string().max(5000).allow('', null)
+    modifiedValue: Joi.string().max(5000).allow('', null),
+    overrides: Joi.object({
+      resourceType: Joi.string().trim().max(255).allow('', null),
+      resourceName: Joi.string().trim().max(500).allow('', null),
+      source: Joi.string().trim().max(500).allow('', null),
+      identifier: Joi.string().trim().max(500).allow('', null),
+      newReuse: Joi.string().trim().max(20).allow('', null),
+      additionalInformation: Joi.string().max(2000).allow('', null)
+    }).optional()
   }),
 
   rejectSuggestion: Joi.object({
     suggestionId: Joi.string().trim().min(1).max(500).required(),
     reason: Joi.string().trim().max(2000).allow('', null)
+  }),
+
+  // Bulk variants — same per-item shapes as the single endpoints, capped to
+  // keep request bodies reasonable (UI rarely selects more than a screen full).
+  bulkApproveSuggestions: Joi.object({
+    items: Joi.array().items(Joi.object({
+      suggestionId: Joi.string().trim().min(1).max(500).required(),
+      modifiedValue: Joi.string().max(5000).allow('', null),
+      overrides: Joi.object({
+        resourceType: Joi.string().trim().max(255).allow('', null),
+        resourceName: Joi.string().trim().max(500).allow('', null),
+        source: Joi.string().trim().max(500).allow('', null),
+        identifier: Joi.string().trim().max(500).allow('', null),
+        newReuse: Joi.string().trim().max(20).allow('', null),
+        additionalInformation: Joi.string().max(2000).allow('', null)
+      }).optional()
+    })).min(1).max(500).required()
+  }),
+
+  bulkRejectSuggestions: Joi.object({
+    items: Joi.array().items(Joi.object({
+      suggestionId: Joi.string().trim().min(1).max(500).required(),
+      reason: Joi.string().trim().max(2000).allow('', null)
+    })).min(1).max(500).required()
   }),
 
   // ── Submission flow: generate report ──────────────────────────────

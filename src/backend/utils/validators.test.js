@@ -253,3 +253,19 @@ test('schemas strip unknown fields', () => {
   assert.equal(v.isAdmin, undefined);
   assert.equal(v.passwordHash, undefined);
 });
+
+test('register: rejects client-supplied role/team (privilege escalation guard)', () => {
+  // Self-signup must never let the caller pick their role. The register schema
+  // does not declare role/team, so stripUnknown drops them; the service then
+  // forces role='author'. This guards against escalation via POST /auth/register.
+  const v = validate('register', {
+    email: 'a@b.com',
+    password: 'abc12345',
+    name: 'Jane',
+    role: ROLES.ADMIN,   // escalation attempt
+    team: 'WH'
+  });
+  assert.equal(v.role, undefined);
+  assert.equal(v.team, undefined);
+  assert.deepEqual(Object.keys(v).sort(), ['email', 'name', 'password']);
+});

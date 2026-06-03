@@ -35,7 +35,7 @@ Each queue derives its timeout from the corresponding API timeout environment va
 
 | Queue | Env Var for Timeout | Default Timeout | Retry Limit | Retry Delay |
 |-------|---------------------|-----------------|-------------|-------------|
-| DAS Extraction | `PDF_DAS_EXTRACTOR_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
+| DAS Extraction | `DAS_EXTRACTION_API_TIMEOUT` | 120s (2 min) | 2 | 60s |
 | Software Detection | `SOFTCITE_API_TIMEOUT` | 600s (10 min) | 2 | 60s |
 | ORCID Extraction | `GROBID_API_TIMEOUT` | 30s | 2 | 30s |
 | Markdown Convert | `PDF_MARKDOWN_TIMEOUT` | 120s (2 min) | 2 | 30s |
@@ -77,12 +77,12 @@ PDF upload triggers a pipeline of parallel and dependent jobs:
 
 ```mermaid
 graph TD
-    PDF[PDF Upload] --> DAS[DAS Extraction]
-    PDF --> SW[Software Detection]
+    PDF[PDF Upload] --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
     PDF --> MAT[Materials Detection]
     PDF --> MD[Markdown Convert]
 
+    MD --> DAS[DAS Extraction]
     MD --> DS[Datasets Detection]
     MD --> PROT[Protocols Detection]
     MD --> ID[Identifier Detection]
@@ -116,7 +116,7 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 
 | Job Type | Depends On | Auto-Advance Condition |
 |----------|-----------|------------------------|
-| DAS Extraction | (none) | Always |
+| DAS Extraction | Markdown Convert | Always |
 | Software Detection | (none) | Always |
 | ORCID Extraction | (none) | Always |
 | Materials Detection | (none) | Always |

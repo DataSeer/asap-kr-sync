@@ -30,8 +30,11 @@ export const useAuthStore = defineStore('auth', () => {
     return userRole.value
   })
 
-  // Auth0 user check
-  const isAuth0User = computed(() => !!user.value?.auth0Sub)
+  // Auth0 user check. The backend's `User.toJSON()` strips the raw `auth0Sub`
+  // claim before sending the user object to the client and replaces it with
+  // the boolean `isAuth0User` flag — read from the flag here, not the stripped
+  // field, otherwise this always evaluates to false.
+  const isAuth0User = computed(() => !!user.value?.isAuth0User)
 
   // Permission checks use effectiveRole for UI simulation
   const canCreateSubmission = computed(() => !!user.value)

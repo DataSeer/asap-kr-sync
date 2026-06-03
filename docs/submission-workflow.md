@@ -19,8 +19,7 @@ stateDiagram-v2
     step_as --> step_review : Go Back
     step_report --> step_as : Go Back
 
-    completed --> step_krt : New Round (with new KRT)
-    completed --> step_pdf : New Round (keep KRT)
+    completed --> step_krt : New Round
 ```
 
 | Status | Step | View |
@@ -33,7 +32,7 @@ stateDiagram-v2
 | `step_report` | 5 | ReportView |
 | `completed` | 5 | ReportView |
 
-Users can navigate back to any previous step from the step indicator. Starting a new round resets the status to `step_krt` or `step_pdf` and increments `currentRound`.
+Users can navigate back to any previous step from the step indicator. Starting a new round always resets the status to `step_krt` (the new PDF is collected up front in the **Process New Version** modal, so the user lands on Step 2 with the analysis pipeline already running) and increments `currentRound`.
 
 ---
 
@@ -41,31 +40,41 @@ Users can navigate back to any previous step from the step indicator. Starting a
 
 **View:** `CreateSubmissionView`
 
+On the single create screen the user attaches the manuscript **PDF** (required) and their **KRT**
+(CSV/XLSX). The KRT is **strongly recommended at creation time but optional**: if the user has no
+KRT yet, a confirmation modal lets them proceed with a header-only empty KRT. Either way the PDF is
+uploaded immediately and the analysis pipeline starts at creation — the user can upload the real KRT
+later from Step 1. The Manuscript ID is **not** collected here; it is set later via Edit Metadata.
+
 ```mermaid
 flowchart TD
     A[Start] --> B[Enter title]
-    B --> C{Manuscript ID?}
-    C -->|Yes| D[Enter ID — team auto-extracted]
-    C -->|No| E[Skip]
-    D --> F{Supplemental file?}
-    E --> F
-    F -->|Yes| G[Upload PDF or Word]
-    F -->|No| H[Click Create & Continue]
-    G --> H
-    H --> I[Status: draft → step_krt]
-    I --> J[Navigate to Step 1]
+    B --> C[Attach manuscript PDF — required]
+    C --> D{KRT file?}
+    D -->|Yes| E[Attach KRT — format validated server-side]
+    D -->|No| F[Confirm modal → header-only empty KRT]
+    E --> G{Supplemental methods file?}
+    F --> G
+    G -->|Yes| H[Upload PDF or Word]
+    G -->|No| I[Click Create & Continue]
+    H --> I
+    I --> J[Submission created at status step_krt]
+    J --> K[PDF uploaded → analysis pipeline starts]
+    K --> L[Navigate to Step 1]
 ```
 
 **User actions:**
 1. Enter a title (required)
-2. Optionally enter a Manuscript ID — auto-extracts team code from the ID format (`XX#-######-###-org-X-#`)
-3. Optionally add notes
-4. Optionally upload a supplemental methods file (PDF or Word — Word files are auto-converted to PDF)
-5. Click **Create & Continue to Step 1**
+2. Attach the manuscript **PDF** (required)
+3. Attach the **KRT** (CSV/XLSX) — strongly recommended; if omitted, confirm to continue with an empty KRT and add it later
+4. Optionally add notes
+5. Optionally upload a supplemental methods file (PDF or Word — Word files are auto-converted to PDF)
+6. Click **Create & Continue to Step 1**
 
 **Demo mode:** A "Use Demo Metadata" button populates the form with one of 6 pre-configured demo submissions.
 
-**Result:** Creates submission with status `draft`, immediately transitions to `step_krt`, and navigates to KRTView.
+**Result:** Creates the submission directly at status `step_krt` (the `draft` state is effectively never
+persisted), uploads the PDF so the background pipeline begins, and navigates to KRTView.
 
 ---
 
@@ -158,11 +167,11 @@ When a PDF is uploaded, nine background jobs start (eight detections plus the PD
 
 ```mermaid
 graph LR
-    PDF[PDF Upload] --> DAS[DAS Extraction]
-    PDF --> SW[Software Detection]
+    PDF[PDF Upload] --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
     PDF --> MAT[Materials Detection]
     PDF --> MD[Markdown Convert]
+    MD --> DAS[DAS Extraction]
     MD --> DS[Datasets Detection]
     MD --> PROT[Protocols Detection]
     MD --> ID[Identifier Detection]
@@ -193,10 +202,16 @@ ORCID Extraction is **not** a contributor to PDF Analysis — its output writes 
 Each job is displayed in the **JobStatusPanel** with live status updates:
 
 #### DAS Extraction
-- Extracts the Data Availability Statement from the PDF
+- Asks Google Gemini to copy the Data Availability Statement out of the
+  converted manuscript markdown, verbatim. The prompt also covers
+  `funding_statement`, `acknowledgements`, `ethics_statement`, etc. — the
+  active section is set via `DAS_EXTRACTION_SECTION` (default `das`).
+- **Depends on:** Markdown Convert (reads the markdown File from S3
+  rather than the PDF buffer)
 - **If found:** Shows "Availability Statement found" with extracted text
 - **If not found:** Job moves to `pending_input` status — user must manually enter a DAS or click "Advance" to skip
 - **User actions:** "Edit" button to view/modify the extracted DAS; "Advance" to skip if not found
+- The structured response (`partial_match`, `section_fragmented`) is preserved on the job's raw response for forensics; only `content` is persisted on `submission.extractedDataAvailabilityStatement`.
 
 #### PDF Analysis (in-app consolidator)
 - Merges items from every detection job into the Generated KRT — no external API call
@@ -204,6 +219,18 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 - **Auto-advances only if:** DAS extraction returned `result.status.detected === true`
 - **If DAS not detected:** Job moves to `pending_input` — user must click "Advance" to consolidate without DAS context
 - **On complete:** Shows the consolidated resource count (and multi-source overlap count) and refreshes the KRT suggestions
+- **Merge rule** (`merge-detections.service.js`): two detection items merge iff they share **resource type** (case-insensitive, with `Code/Software` and `Software/code` normalized to the same key) **and** New/Reuse **and** their identifier tokens overlap or their normalized names match. The merged row's display fields come from the highest-precedence contributor (Software / Datasets / Protocols / Materials beat Identifier-scan)
+
+#### Diff → suggestions
+The Generated KRT is diffed against the user's KRT (`diff-suggestions.service.js`). Each generated row matches a user row by identifier token, opaque-id, or normalized-name overlap. Per-column edits are emitted **unless** one of these guards trips:
+
+- **No-blank guard** — never overwrites a user value with `""`.
+- **Source-field protection** — `source` is only edited when the user's cell is empty.
+- **Identifier normalisation** — `AB_141607`, `RRID: AB_141607`, and `RRID:AB_141607` compare equal; cosmetic-only diffs are dropped.
+- **Resource-type normalisation** — `Code/Software` ↔ `Software/code` don't surface as edits.
+- **Lossy-rename guard** (`isLossyRename`) — refuses any `resourceName` edit that is a substring of the user's name, that drops more informative tokens than it adds, that shares zero meaningful tokens (different entity), or that differs only in case/whitespace/punctuation. Catches "Rabbit anti-TH" → "Anti-TH", "Sprague-Dawley rats" → "Sprague-Dawley", "Sheep anti-TH" → "tyrosine hydroxylase", etc.
+
+Curated-DB hygiene applied upstream of suggestions (in `tmp/identifiers/build-curated-csvs.js`): per-entry URL hard cap (3), hostname-dedup, resolver-URL drop (a bare DOI suppresses the matching `https://doi.org/<DOI>` URL), and a generic-name guard that prevents "Cell culture", "Code", "Confocal images", etc. from merging across unrelated submissions.
 
 #### Software Detection
 - Detects software mentions in the manuscript via Softcite API
@@ -300,7 +327,7 @@ flowchart TD
 - **Red rows** — deleted
 - **Source tags** on each change: "AI", "Val" (validation), "User"
 
-**Filter tabs:** All, Datasets, Code/Software, Protocols, Key Lab Materials — each showing a resource count.
+**Filter tabs:** All, Datasets, Software/code, Protocols, Key Lab Materials — each showing a resource count.
 
 **Show Changes toggle:**
 - ON: Shows color-coded changes with source tags
@@ -406,29 +433,35 @@ A carousel or expanded list of smart rules that check the DAS against the KRT co
 
 ```mermaid
 flowchart TD
-    A[Click Process New Version] --> B{New KRT file?}
-    B -->|No, keep current KRT| C[Reset to step_pdf]
-    B -->|Yes, upload new KRT| D[Reset to step_krt]
-    C --> E[Round incremented]
-    D --> E
-    E --> F[New PDF upload required]
+    A[Click Process New Version] --> B[Modal: pick new PDF + KRT choice]
+    B --> C[POST /new-round: round++ , status = step_krt]
+    C --> D[POST /pdf/upload: PDF stored on new round]
+    D --> E[Background pipeline cascades automatically]
+    E --> F[Land on Step 2 with KRT ready to review]
 ```
 
 - Click **Process New Version**
-- A modal asks: "Do you have a new KRT file?"
-  - **No, keep current KRT** → resets to `step_pdf` (skip KRT upload, go straight to PDF)
-  - **Yes, upload new KRT** → resets to `step_krt` (start from Step 1)
-- Increments `currentRound` (Version 2, 3, etc.)
-- A new PDF upload is always required
+- The modal collects two things up front:
+  - **New PDF** (required) — file picker, accepts PDF or DOCX. The file is uploaded immediately after the round bump, so the analysis pipeline is already running by the time the user lands on Step 2.
+  - **Do you have a new KRT file?** — radio choice. *No* keeps the current KRT (it is copied forward to the new round). *Yes* leaves the KRT empty so the user uploads a replacement on Step 2.
+- The submission always lands on `step_krt` (Step 2 in the UI). The dedicated `step_pdf` redirect is gone.
+- Increments `currentRound` (Version 2, 3, etc.).
+- A "Replace PDF" button on Step 2 provides the same upload affordance as a fallback for users who want to swap the manuscript later in the round (it cascades the analysis pipeline the same way).
 
 ### Excel Report Contents
 
-The generated XLSX file contains 4 sheets:
+> ⚠️ **Pending / out of date.** The report sheet layout below is being reworked and does not
+> match the current export. In particular, the 4th sheet is currently titled **"Suggestions"**
+> (not "LM Analysis"), it is only added when suggestions exist, and its `Confidence` column is
+> not populated by the diff-based suggestion objects. This section will be updated once the
+> report rework lands; treat the details below as indicative only.
+
+The generated XLSX file contains up to 4 sheets:
 
 1. **Summary** — manuscript metadata, resource count, change count
 2. **KRT Data** — resource table sorted by type group then name
 3. **Change History** — chronological audit trail with user, action, source
-4. **LM Analysis** — AI findings with confidence scores and status
+4. **Suggestions** _(conditional)_ — AI suggestion list (Source / Type / Title / Description / Status)
 
 ---
 
@@ -520,28 +553,16 @@ flowchart TD
 
 ### Path with New Round (Revision)
 
+Both new-round paths (keep KRT / new KRT) now land on Step 2 (`step_krt`) because the modal collects the new PDF up front and the frontend uploads it immediately after bumping `currentRound`.
+
 ```mermaid
 flowchart TD
-    A[Step 5: Report generated] --> B[Process New Version]
-    B -->|Keep current KRT| C[Reset to step_pdf]
-    C --> D[Round incremented to V2]
-    D --> E[Step 2: Upload new PDF]
-    E --> F[Jobs run again]
+    A[Step 5: Report generated] --> B[Process New Version modal]
+    B --> C[Pick new PDF + 'Keep KRT' or 'Upload new KRT']
+    C --> D[Round incremented to V2 — status: step_krt]
+    D --> E[PDF auto-uploaded → analysis pipeline restarts]
+    E --> F[Step 2: KRT review<br/>carried-forward or blank, depending on choice]
     F --> G[Steps 3–5: Review → Availability → Report V2]
-
-    style A fill:#10b981,color:#fff
-    style D fill:#3b82f6,color:#fff
-```
-
-### Path with New Round + New KRT
-
-```mermaid
-flowchart TD
-    A[Step 5: Report generated] --> B[Process New Version]
-    B -->|Upload new KRT| C[Reset to step_krt]
-    C --> D[Round incremented to V2]
-    D --> E[Step 1: Upload new KRT → validate]
-    E --> F[Steps 2–5: Full workflow again V2]
 
     style A fill:#10b981,color:#fff
     style D fill:#3b82f6,color:#fff

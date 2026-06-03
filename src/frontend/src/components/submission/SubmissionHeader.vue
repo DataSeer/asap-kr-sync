@@ -14,8 +14,19 @@ import FilesInfoModal from './FilesInfoModal.vue'
 import StepHelpPanel from './StepHelpPanel.vue'
 import fileService from '@/services/file.service'
 import krtService from '@/services/krt.service'
+import jobService from '@/services/job.service'
 import { useNotificationStore } from '@/stores/notification.store'
 import { statusToStep } from '@/utils/submission'
+
+// Optional injection — present on step 2 and step 3 (provided by KRTView /
+// PDFView's useJobPoller). Other views render the header without it, so the
+// banner stays hidden.
+const injectedJobs = inject('submissionJobs', ref({}))
+
+const pdfAnalysisPendingInput = computed(() => {
+  const j = injectedJobs.value?.pdf_analysis
+  return j?.status === 'pending_input'
+})
 
 const props = defineProps({
   /** The submission object */
@@ -107,7 +118,7 @@ const currentStep = computed(() => statusToStep(props.submission?.status))
 const isComplete = computed(() => props.submission?.status === 'completed')
 
 // Step labels for navigation
-const stepLabels = ['KRT', 'Manuscript', 'Approve', 'Edit', 'Report']
+const stepLabels = ['Key Resources Table', 'Manuscript', 'Approve', 'Edit', 'Report']
 
 // Truncate title if longer than 100 characters
 const truncatedTitle = computed(() => {
@@ -136,6 +147,35 @@ const showFilesModal = ref(false)
 
 function openEditModal() {
   showEditModal.value = true
+}
+
+/**
+ * Handler for the DAS pending-input banner. Opens the metadata edit modal
+ * for the user to type the DAS; once the modal closes (on save), nudge the
+ * pdf_analysis job out of pending_input so it can run. Errors are
+ * non-fatal — the user can re-open the banner if the advance call fails.
+ */
+async function handleDasBannerClick() {
+  openEditModal()
+}
+
+async function handleDasModalClosed() {
+  showEditModal.value = false
+  // Only advance if the job is still in pending_input — the user may have
+  // dismissed the modal without saving, in which case the DAS is still empty.
+  if (props.submission?.dataAvailabilityStatement) {
+    try {
+      await jobService.advanceJob(props.submission.id, 'pdf_analysis')
+      notificationStore.success('PDF analysis is starting')
+    } catch (err) {
+      // If the job isn't actually in pending_input anymore (race), the
+      // backend returns an error — surface it but don't break the modal flow.
+      const message = err?.response?.data?.error || err?.message || 'Could not start PDF analysis'
+      if (!/not in pending_input/i.test(message)) {
+        notificationStore.error(message)
+      }
+    }
+  }
 }
 
 function openFilesModal() {
@@ -328,6 +368,21 @@ async function downloadCurrentKRT(round) {
       </div>
     </div><!-- /.submission-sticky-bar -->
 
+    <!-- DAS pending-input banner — surfaces from step 2 onward whenever the
+         consolidator is waiting for a manually-entered Availability Statement.
+         Resolves anywhere in the flow so the user doesn't have to jump to
+         step 5 just to unblock the pipeline. -->
+    <div v-if="pdfAnalysisPendingInput" class="das-pending-banner" role="alert">
+      <svg class="das-pending-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+      </svg>
+      <div class="das-pending-body">
+        <p class="das-pending-title">Availability Statement not found in the PDF</p>
+        <p class="das-pending-sub">PDF analysis is paused until you enter it. You can resolve this from any step.</p>
+      </div>
+      <button type="button" class="das-pending-btn" @click="handleDasBannerClick">Enter it now</button>
+    </div>
+
     <!-- ─── REST — page title, description, help panel (NOT sticky) ─── -->
     <div class="submission-header-rest" style="overflow: visible;">
       <!-- Page title and actions -->
@@ -370,7 +425,7 @@ async function downloadCurrentKRT(round) {
     <EditMetadataModal
       :show="showEditModal"
       :submission="submission"
-      @close="showEditModal = false"
+      @close="handleDasModalClosed"
     />
 
     <!-- Files Info Modal -->
@@ -564,4 +619,48 @@ async function downloadCurrentKRT(round) {
   15%, 45%, 75% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5); }
   30%, 60% { box-shadow: none; }
 }
+
+/* DAS pending-input banner */
+.das-pending-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.875rem;
+}
+.das-pending-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  color: #ea580c;
+  flex-shrink: 0;
+}
+.das-pending-body {
+  flex: 1;
+  min-width: 0;
+}
+.das-pending-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #9a3412;
+}
+.das-pending-sub {
+  font-size: 0.75rem;
+  color: #7c2d12;
+  margin-top: 0.125rem;
+}
+.das-pending-btn {
+  flex-shrink: 0;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  background: #ea580c;
+  color: #fff;
+  border-radius: 0.375rem;
+  border: 0;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.das-pending-btn:hover { background: #c2410c; }
 </style>

@@ -14,7 +14,7 @@ const logger = require('../utils/logger');
 async function getProfile(req, res, next) {
   try {
     const user = await User.findByPk(req.userId, {
-      attributes: ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt', 'auth0Sub'],
       include: [{
         model: UserTeam,
         as: 'userTeams',
@@ -73,7 +73,7 @@ async function updateProfile(req, res, next) {
 
     // Fetch updated user with teams
     const updatedUser = await User.findByPk(req.userId, {
-      attributes: ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt', 'auth0Sub'],
       include: [{
         model: UserTeam,
         as: 'userTeams',

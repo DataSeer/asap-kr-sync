@@ -5,6 +5,7 @@ import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
 import reportService from '@/services/report.service'
+import pdfService from '@/services/pdf.service'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import NewRoundModal from '@/components/submission/NewRoundModal.vue'
 
@@ -116,18 +117,31 @@ async function handleBack() {
 async function handleNewRound(data) {
   newRoundLoading.value = true
   try {
-    const updated = await submissionStore.processNewVersion(route.params.id, data)
+    // 1. Bump the submission to a new round on the backend. The modal sent
+    //    `hasNewKRT` (keep-or-replace KRT) along with the PDF file; we only
+    //    forward the flag here — the PDF is uploaded in step 2 below so the
+    //    file goes against the *new* currentRound.
+    const updated = await submissionStore.processNewVersion(route.params.id, {
+      hasNewKRT: data.hasNewKRT
+    })
+
+    // 2. Upload the new PDF to the round the backend just created. uploadPDF
+    //    triggers the full analysis pipeline (markdown → DAS → suggestions),
+    //    so by the time the user lands on Step 2 the background jobs are
+    //    already running.
+    if (data.pdfFile) {
+      await pdfService.upload(route.params.id, data.pdfFile)
+    }
+
     showNewRoundModal.value = false
     notificationStore.success(`Version ${updated.currentRound} started`)
 
-    // Navigate based on whether they have a new KRT
-    if (data.hasNewKRT) {
-      router.push({ name: 'submission-krt', params: { id: route.params.id } })
-    } else {
-      router.push({ name: 'submission-pdf', params: { id: route.params.id } })
-    }
+    // Always go to Step 2 (KRT). The KRT is either carried forward (when the
+    // user picked "keep current KRT") or blank for upload (when they picked
+    // "upload new KRT"). The KRT view handles both cases.
+    router.push({ name: 'submission-krt', params: { id: route.params.id } })
   } catch (error) {
-    notificationStore.error(error.response?.data?.error || 'Failed to start new round')
+    notificationStore.error(error.response?.data?.error || error.message || 'Failed to start new round')
   } finally {
     newRoundLoading.value = false
   }

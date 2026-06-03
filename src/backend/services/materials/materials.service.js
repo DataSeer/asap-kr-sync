@@ -247,10 +247,16 @@ function buildKrtItemsMaterials(rawItems) {
       newReuse: r.newReuse || r.new_reuse || '',
       origin: 'materials-gemini',
       confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-      additionalInformation: r.additionalInformation || '',
+      // Leave ADDITIONAL INFORMATION empty for user-facing suggestions. The
+      // detector's contextual info (the "why we picked this") is stashed in
+      // detectorMeta.context for the internal team to inspect via the
+      // background-processes panel; we don't want to push it into the KRT
+      // where it competes with the user's own notes.
+      additionalInformation: '',
       detectorMeta: {
         relevance,
-        aliases: Array.isArray(r.aliases) ? r.aliases : []
+        aliases: Array.isArray(r.aliases) ? r.aliases : [],
+        context: r.additionalInformation || ''
       }
     };
   });

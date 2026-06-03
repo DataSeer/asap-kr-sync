@@ -20,8 +20,10 @@
 const {
   extractIdentifierTokens,
   computeDedupKey,
+  inferSourceFromIdentifier,
   normalizeName,
-  normalizeRawValue
+  normalizeRawValue,
+  normalizeResourceTypeKey
 } = require('./identifier-normalize.service');
 
 /**
@@ -117,7 +119,7 @@ function toResource(item, source) {
  *   C (name='Other', id='id-2') ──┘  match by id-2 in primary._idTokens
  */
 function shouldMerge(primary, candidate) {
-  if (primary.resourceType.toLowerCase() !== candidate.resourceType.toLowerCase()) return false;
+  if (normalizeResourceTypeKey(primary.resourceType) !== normalizeResourceTypeKey(candidate.resourceType)) return false;
   if (primary.newReuse !== candidate.newReuse) return false;
   // Identifier-token intersection
   const candTokens = extractIdentifierTokens(candidate.identifier);
@@ -267,6 +269,19 @@ function mergeDetections(contributions) {
     }
   }
 
+  // Auto-detect SOURCE from the identifier when NO contributor supplied one.
+  // The merge loop above fills `sourceUrl` from any contributor that had a
+  // source, so an empty `sourceUrl` here means none did — only then do we
+  // infer (allowlist-only; ambiguous identifiers return null and leave it
+  // blank). This never overwrites a real detector-provided source, and the
+  // diff engine separately refuses to overwrite a user-filled SOURCE cell.
+  for (const r of accepted) {
+    if (!r.sourceUrl) {
+      const inferred = inferSourceFromIdentifier(r.identifier);
+      if (inferred) r.sourceUrl = inferred;
+    }
+  }
+
   // Stamp the dedup_key on each (computed from final identifying fields).
   for (const r of accepted) {
     r.dedupKey = computeDedupKey({
@@ -298,6 +313,7 @@ module.exports = {
   toResource,
   shouldMerge,
   mergeAdditionalInfo,
+  normalizeResourceTypeKey,
   outranks,
   SOURCE_PRECEDENCE
 };

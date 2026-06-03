@@ -173,7 +173,7 @@ function buildKrtItemsSoftware(rawItems) {
     // the post-build shape with `resource_type`/`resourceType`. Be permissive
     // on input so both paths produce the same canonical output.
     const resourceName = m.normalizedName || m.resourceName || m.name || '';
-    const resourceType = m.resource_type || m.resourceType || 'Code/Software';
+    const resourceType = m.resource_type || m.resourceType || 'Software/code';
     const source = m.source || m.url || '';
     return {
       resourceType,
@@ -183,7 +183,10 @@ function buildKrtItemsSoftware(rawItems) {
       newReuse: m.newReuse || m.new_reuse || '',
       origin: 'softcite',
       confidence: typeof m.confidence === 'number' ? m.confidence : DEFAULT_CONFIDENCE,
-      additionalInformation: m.additionalInformation || m.context || '',
+      // Per ASAP request, do NOT push Softcite's context blurb into user-
+      // facing ADDITIONAL INFORMATION. The blurb is preserved on
+      // detectorMeta.context for the internal Softcite Detection panel.
+      additionalInformation: '',
       detectorMeta: {
         // Preserve the unnormalized Softcite name so the UI can show it if the
         // normalized form is less recognizable.
@@ -191,8 +194,10 @@ function buildKrtItemsSoftware(rawItems) {
         normalizedName: m.normalizedName || '',
         version: m.version || '',
         creator: m.creator || '',
-        // The Softcite Detection panel reads `context` directly; keep it
-        // alongside additionalInformation so existing consumers don't break.
+        // The Softcite Detection panel reads `context` directly; preserve
+        // the raw Softcite context blurb alongside additionalInformation so
+        // both consumers (panel + downstream enrichment) have what they need.
+        additionalInformation: m.additionalInformation || m.context || '',
         context: m.context || ''
       }
     };

@@ -53,9 +53,15 @@ router.get('/filter-options',
   submissionsController.getFilterOptions
 );
 
-// POST /api/submissions - Create submission (author only)
+// POST /api/submissions - Create submission (author only).
+// Multipart: metadata fields + required `krt` file. The controller
+// validates the KRT format BEFORE any DB writes, so an invalid KRT
+// returns 400 and leaves no orphan submission behind.
 router.post('/',
   canCreateSubmission,
+  uploadLimiter,
+  uploadKRT.single('krt'),
+  handleMulterError,
   validateBody('createSubmission'),
   submissionsController.create
 );
@@ -243,11 +249,25 @@ router.post('/:id/suggestions/approve',
   suggestionController.approveSuggestion
 );
 
+// POST /api/submissions/:id/suggestions/bulk-approve - Approve many in one call
+router.post('/:id/suggestions/bulk-approve',
+  canAccessSubmission,
+  validateBody('bulkApproveSuggestions'),
+  suggestionController.bulkApproveSuggestions
+);
+
 // POST /api/submissions/:id/suggestions/reject - Reject suggestion
 router.post('/:id/suggestions/reject',
   canAccessSubmission,
   validateBody('rejectSuggestion'),
   suggestionController.rejectSuggestion
+);
+
+// POST /api/submissions/:id/suggestions/bulk-reject - Reject many in one call
+router.post('/:id/suggestions/bulk-reject',
+  canAccessSubmission,
+  validateBody('bulkRejectSuggestions'),
+  suggestionController.bulkRejectSuggestions
 );
 
 // ===== Software Detection =====

@@ -31,7 +31,7 @@ const RELEVANCE_TO_CONFIDENCE = { HIGH: 0.95, MEDIUM: 0.7, LOW: 0.4 };
 const FIJI = {
   id: 'e-fiji',
   category: 'software',
-  resourceType: 'Code/Software',
+  resourceType: 'Software/code',
   resourceName: 'Fiji',
   source: 'https://fiji.sc',
   identifier: 'RRID:SCR_002285',
@@ -78,7 +78,7 @@ test('buildKrtItemsIdentifier emits canonical KrtEntry fields', () => {
   assert.equal(items.length, 1);
   const item = items[0];
   // Canonical top-level fields
-  assert.equal(item.resourceType, 'Code/Software');
+  assert.equal(item.resourceType, 'Software/code');
   assert.equal(item.resourceName, 'Fiji');
   assert.equal(item.identifier, 'RRID:SCR_002285');
   assert.equal(item.source, 'https://fiji.sc');
@@ -127,7 +127,7 @@ test('pipeline output merges into Generated KRT via mergeDetections', () => {
   const fiji = merged.find(r => r.resourceName === 'Fiji');
   assert.ok(fiji, 'Fiji row missing');
   assert.match(fiji.identifier, /SCR_002285/i);
-  assert.equal(fiji.resourceType, 'Code/Software');
+  assert.equal(fiji.resourceType, 'Software/code');
 });
 
 test('identifier-scan and software_detection items dedup on shared identifier', () => {
@@ -142,7 +142,7 @@ test('identifier-scan and software_detection items dedup on shared identifier', 
   // the four-step refactor reaches the software detector (P6); until then
   // the merger's permissive toResource() handles both spellings.
   const softciteItems = [{
-    resourceType: 'Code/Software',
+    resourceType: 'Software/code',
     resourceName: 'Fiji',
     source: 'https://fiji.sc',
     identifier: '',

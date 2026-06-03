@@ -59,9 +59,10 @@ credentials/*.pem
 credentials/*.key
 !credentials/.gitkeep
 
-# Prompts (real prompts are deployment-specific, examples are committed)
-src/backend/data/prompts/*.txt
-!src/backend/data/prompts/*.txt.example
+# Prompts: the live `.txt` files are now version-controlled alongside the
+# `.txt.example` templates. Earlier this directory ignored `.txt` so each
+# deployment could carry its own customisations; we've consolidated on a
+# single canonical prompt set and track it in git.
 
 # Data files (seeded into DB, kept locally for re-seeding)
 src/backend/data/software-list.json

@@ -10,7 +10,8 @@ const parserService = require('./parser.service');
 const validatorService = require('./validator.service');
 const s3Service = require('../storage/s3.service');
 const { generateS3Key } = require('../../utils/helpers');
-const { KRT_COLUMNS, FILE_TYPES, getResourceTypeGroupOrder } = require('../../config/constants');
+const { KRT_COLUMNS, FILE_TYPES, getResourceTypeGroupOrder, getResourceTypeSortOrder } = require('../../config/constants');
+const { ValidationError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
 
 /**
@@ -28,13 +29,23 @@ async function uploadAndProcess(submissionId, file, userId, round = 1) {
     file.originalname
   );
 
-  // Validate columns
+  // Validate columns. We reject (rather than just warn) when required headers
+  // are missing — typically this happens when the user's file has the header
+  // row on row 2 or 3 (extra title rows above). Silently letting it through
+  // produced empty/garbage rows and a confusing "0 resources, use Add Row"
+  // state. A clear error naming the expected columns is more actionable.
   const columnValidation = parserService.validateColumns(rows);
   if (!columnValidation.valid) {
     logger.warn('KRT file missing columns', {
       submissionId,
       missingColumns: columnValidation.missingColumns
     });
+    const expectedColumns = KRT_COLUMNS.join(', ');
+    throw new ValidationError(
+      "This file doesn't look like a Key Resources Table. " +
+      `Make sure the first row contains the column headers: ${expectedColumns}. ` +
+      `(Missing or unrecognized: ${columnValidation.missingColumns.join(', ')}.)`
+    );
   }
 
   // Get submission for manuscriptId (read-only — outside the transaction)
@@ -138,13 +149,21 @@ async function generateDownload(submissionId, format = 'csv', round) {
     order: [['createdAt', 'ASC']]
   });
 
-  // Sort rows by resource type group order, then by resource name A-Z
+  // Sort rows by resource type group order, then by resource type sort_order.
+  // Ties (rows with the same resource type) keep their original insertion
+  // order — authors arrange resources logically and we shouldn't reshuffle
+  // them alphabetically by name. The `findAll` above already returns rows
+  // in createdAt ASC; Array.prototype.sort is stable in Node 12+, so equal
+  // keys preserve their relative position.
   const groupOrder = await getResourceTypeGroupOrder();
+  const typeOrder = await getResourceTypeSortOrder();
   rows.sort((a, b) => {
     const groupA = groupOrder[a.resourceType] ?? 99;
     const groupB = groupOrder[b.resourceType] ?? 99;
     if (groupA !== groupB) return groupA - groupB;
-    return (a.resourceName || '').localeCompare(b.resourceName || '');
+    const tA = typeOrder[a.resourceType] ?? 99;
+    const tB = typeOrder[b.resourceType] ?? 99;
+    return tA - tB;
   });
 
   // Convert to plain objects (use ?? to preserve empty strings)

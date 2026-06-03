@@ -45,7 +45,9 @@ test('buildKrtItemsProtocols: prompt-shape → canonical KrtEntry', () => {
   assert.equal(item.newReuse, 'reuse');
   assert.equal(item.origin, 'protocols-gemini');
   assert.equal(item.confidence, 0.95);
-  assert.equal(item.additionalInformation, 'WB was performed as in (Doe et al. 2020)…');
+  // Per ASAP request: text excerpt is preserved on detectorMeta.context
+  // for the internal panel but kept out of user-facing ADDITIONAL INFORMATION.
+  assert.equal(item.additionalInformation, '');
   assert.equal(item.detectorMeta.relevance, 'HIGH');
   assert.deepEqual(item.detectorMeta.aliases, ['WB']);
 });

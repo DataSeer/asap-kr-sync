@@ -74,7 +74,7 @@ const summaryExpanded = ref(true)
 const tabGroups = [
   { key: 'all', label: 'All' },
   { key: 'Datasets', label: 'Datasets' },
-  { key: 'Code/Software', label: 'Code/Software' },
+  { key: 'Software/code', label: 'Software/code' },
   { key: 'Protocols', label: 'Protocols' },
   { key: 'Lab Materials', label: 'Key Lab Materials' }
 ]

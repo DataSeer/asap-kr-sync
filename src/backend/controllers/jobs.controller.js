@@ -90,7 +90,13 @@ async function getJobs(req, res, next) {
             retryDelay: config.retryDelay || 60,
             maxTotalSeconds: (config.expireInSeconds * (config.retryLimit + 1))
               + ((config.retryDelay || 60) * config.retryLimit)
-          } : null
+          } : null,
+          // Public budget hints used by the global wait-time indicator. Even
+          // authors get these so the ETA bar works for every role; they're
+          // just the per-attempt expiry budget (max) and the median
+          // completion time (typical) — not the full internal queue config.
+          expireInSeconds: config ? config.expireInSeconds : null,
+          typicalSeconds: config ? config.typicalSeconds : null
         };
       })
     });

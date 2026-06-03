@@ -21,14 +21,15 @@ export default {
    * Approve a suggestion
    * @param {string} submissionId
    * @param {string} suggestionId
-   * @param {string|null} modifiedValue - Optional modified value
+   * @param {string|null} modifiedValue - Optional modified value (edit suggestions)
+   * @param {object|null} overrides - Optional per-field overrides for add_row
+   *   suggestions (e.g. { resourceType: 'Antibody' }).
    * @returns {Promise<object>}
    */
-  async approveSuggestion(submissionId, suggestionId, modifiedValue = null) {
-    const response = await api.post(`/submissions/${submissionId}/suggestions/approve`, {
-      suggestionId,
-      modifiedValue
-    })
+  async approveSuggestion(submissionId, suggestionId, modifiedValue = null, overrides = null) {
+    const body = { suggestionId, modifiedValue }
+    if (overrides && Object.keys(overrides).length > 0) body.overrides = overrides
+    const response = await api.post(`/submissions/${submissionId}/suggestions/approve`, body)
     return response.data
   },
 
@@ -44,6 +45,28 @@ export default {
       suggestionId,
       reason
     })
+    return response.data
+  },
+
+  /**
+   * Bulk-approve multiple suggestions in a single request.
+   * @param {string} submissionId
+   * @param {Array<{ suggestionId: string, modifiedValue?: string, overrides?: object }>} items
+   * @returns {Promise<object>}
+   */
+  async bulkApprove(submissionId, items) {
+    const response = await api.post(`/submissions/${submissionId}/suggestions/bulk-approve`, { items })
+    return response.data
+  },
+
+  /**
+   * Bulk-reject multiple suggestions in a single request.
+   * @param {string} submissionId
+   * @param {Array<{ suggestionId: string, reason?: string }>} items
+   * @returns {Promise<object>}
+   */
+  async bulkReject(submissionId, items) {
+    const response = await api.post(`/submissions/${submissionId}/suggestions/bulk-reject`, { items })
     return response.data
   }
 }

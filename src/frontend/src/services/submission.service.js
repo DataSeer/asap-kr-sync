@@ -28,12 +28,26 @@ export default {
   },
 
   /**
-   * Create a new submission
-   * @param {Object} data - Submission data (title, manuscriptId, dataAvailabilityStatement)
+   * Create a new submission. Sends multipart/form-data with the metadata
+   * fields and a required KRT file. The server validates the KRT format
+   * before creating anything — if the file isn't a properly-formatted
+   * Key Resources Table the call rejects with 400 and no submission row
+   * is created.
+   * @param {Object} data - Submission data (title, manuscriptId, dataAvailabilityStatement, notes)
+   * @param {File} krtFile - The Key Resources Table file (required)
    * @returns {Promise<Object>} - Created submission
    */
-  async create(data) {
-    const response = await api.post('/submissions', data)
+  async create(data, krtFile) {
+    const formData = new FormData()
+    if (data.title) formData.append('title', data.title)
+    if (data.manuscriptId) formData.append('manuscriptId', data.manuscriptId)
+    if (data.notes) formData.append('notes', data.notes)
+    if (data.dataAvailabilityStatement) formData.append('dataAvailabilityStatement', data.dataAvailabilityStatement)
+    if (krtFile) formData.append('krt', krtFile)
+    const response = await api.post('/submissions', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000
+    })
     return response.data
   },
 

@@ -85,6 +85,24 @@ export default {
   },
 
   /**
+   * Pre-flight check that a KRT file is properly formatted. Stateless —
+   * no submission is created. Returns { valid: true } on success or throws
+   * an axios error with { valid: false, error, missingColumns } in the
+   * response body when the headers are missing.
+   * @param {File} file
+   * @returns {Promise<{ valid: boolean }>}
+   */
+  async validateFormat(file) {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await api.post('/krt/validate-format', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000
+    })
+    return response.data
+  },
+
+  /**
    * Download KRT as CSV or Excel
    * @param {string} submissionId - The submission ID
    * @param {string} format - 'csv' or 'xlsx'

@@ -20,6 +20,7 @@ const {
   normalizeName,
   identifiersMatch
 } = require('./identifier-normalize.service');
+const { normalizeResourceTypeKey } = require('./merge-detections.service');
 
 const KRT_COLUMNS = [
   'resourceType',
@@ -70,7 +71,9 @@ function indexKrtForLookup(krtRows) {
     const name = row.resourceName ?? row['RESOURCE NAME'] ?? '';
     return {
       row,
-      type: String(row.resourceType ?? row['RESOURCE TYPE'] ?? '').toLowerCase().trim(),
+      // Same normalization mergeDetections.shouldMerge uses, so e.g. a
+      // user row "Code/Software" matches a generated entry "Software/code".
+      type: normalizeResourceTypeKey(row.resourceType ?? row['RESOURCE TYPE'] ?? ''),
       idTokens: extractIdentifierTokens(id),
       idValue: normalizeRawValue(id),
       nameNorm: normalizeName(name)
@@ -78,7 +81,7 @@ function indexKrtForLookup(krtRows) {
   });
 
   function findMatch(generated) {
-    const gType = String(generated.resourceType || '').toLowerCase().trim();
+    const gType = normalizeResourceTypeKey(generated.resourceType);
     const gTokens = extractIdentifierTokens(generated.identifier);
     const gIdValue = normalizeRawValue(generated.identifier);
     const gName = normalizeName(generated.resourceName);
@@ -146,10 +149,140 @@ function fieldEqual(fieldKey, oldVal, newVal) {
   return valuesEqual(oldVal, newVal);
 }
 
+// Common words that don't add information to a resource name — used by the
+// lossy-rename guard to decide whether a rename actually changes meaning.
+// Short list of high-frequency English / KRT filler; intentionally narrow so
+// it doesn't strip discriminative tokens by accident.
+const NAME_STOPWORDS = new Set([
+  'the', 'a', 'an', 'of', 'and', 'or', 'for', 'in', 'on', 'to', 'with',
+  'antibody', 'reagent', 'kit', 'software', 'tool'
+]);
+
+/**
+ * Split a resource name into normalized informative tokens. Lowercased, with
+ * non-alphanumeric stripped and stopwords removed. Used by isLossyRename().
+ */
+function nameTokens(value) {
+  if (!value) return new Set();
+  const lc = String(value).toLowerCase();
+  const tokens = lc.split(/[^a-z0-9]+/).filter(Boolean);
+  return new Set(tokens.filter(t => t.length >= 2 && !NAME_STOPWORDS.has(t)));
+}
+
+/**
+ * Whether proposing `newName` in place of `oldName` would lose information
+ * or change the entity entirely. Used to suppress noise resourceName EDIT
+ * suggestions that come from the curated DB's canonicalization picking a
+ * shorter / target-protein name over the user's more specific entry.
+ *
+ * Returns true (= suppress) when any of:
+ *   1. newName, after normalization, is a substring of oldName — the
+ *      proposed rename drops trailing/leading qualifiers
+ *      ("Sprague-Dawley rats" → "Sprague-Dawley").
+ *   2. newName's informative tokens are a strict subset of oldName's, AND
+ *      newName has fewer of them — strictly less specific
+ *      ("Rabbit anti-TH" → "Anti-TH").
+ *   3. The two names share NO informative tokens — almost certainly a
+ *      different entity ("Sheep anti-TH" → "tyrosine hydroxylase"). The
+ *      strongest signal that the curated DB conflated unrelated rows.
+ *   4. The only difference is case / whitespace / punctuation — cosmetic,
+ *      not worth surfacing.
+ *   5. The rename drops MORE informative tokens than it adds (partial
+ *      paraphrase where the curated canonical lost qualifiers). Example:
+ *      "Monoclonal Mouse Anti-tubulin-βIII" → "a-Tubulin beta III" —
+ *      old uniquely had {monoclonal, mouse, anti}; new uniquely has {beta}.
+ *      3 dropped vs 1 added → net info loss → suppress.
+ *
+ * Conservative on purpose: when in doubt, we'd rather drop a marginal
+ * suggestion than show the user a confusing or wrong one.
+ */
+function isLossyRename(oldName, newName) {
+  const oldStr = String(oldName ?? '').trim();
+  const newStr = String(newName ?? '').trim();
+  if (!newStr) return true;                              // nothing to propose
+  if (!oldStr) return false;                             // user has no name; any name is an improvement
+
+  // Rule 4: cosmetic-only difference (case/whitespace/punctuation).
+  const oldNorm = oldStr.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const newNorm = newStr.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (oldNorm === newNorm) return true;
+
+  // Rule 1: new is a substring of old (info dropped).
+  // Compare on lowercase / collapsed whitespace so "Sprague-Dawley rats" →
+  // "Sprague-Dawley" trips even with case-only padding differences.
+  const oldLc = oldStr.toLowerCase().replace(/\s+/g, ' ');
+  const newLc = newStr.toLowerCase().replace(/\s+/g, ' ');
+  if (oldLc.includes(newLc) && newLc.length < oldLc.length) return true;
+
+  const oldToks = nameTokens(oldStr);
+  const newToks = nameTokens(newStr);
+
+  // Rules 2, 3, 5 — all token-based. Only fire when both sides have
+  // informative tokens (otherwise we'd suppress every "Anti-TH" replacement
+  // for a single-letter name).
+  if (oldToks.size > 0 && newToks.size > 0) {
+    let overlap = 0;
+    for (const t of newToks) if (oldToks.has(t)) overlap++;
+
+    // Rule 3: zero overlap → different entity.
+    if (overlap === 0) return true;
+
+    // Rule 2: strict subset AND fewer tokens — drops info without adding any.
+    if (newToks.size < oldToks.size) {
+      let allInOld = true;
+      for (const t of newToks) if (!oldToks.has(t)) { allInOld = false; break; }
+      if (allInOld) return true;
+    }
+
+    // Rule 5: partial paraphrase that drops more tokens than it adds.
+    const uniqueToOld = oldToks.size - overlap;
+    const uniqueToNew = newToks.size - overlap;
+    if (uniqueToOld > uniqueToNew) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Pull the most informative manuscript excerpt from the merged contributors.
+ * Surfacing this to the user (request #21/#22/#23) lets them verify a
+ * suggestion against the actual paper text instead of guessing where it came
+ * from. Falls back through context → text_excerpt → catalogContext on each
+ * detectedBy entry, picks the first non-empty one. Returns null if every
+ * contributor was empty — common for datasets today; will improve once the
+ * datasets prompt is updated to return excerpts too.
+ */
+function getEvidence(g) {
+  if (!Array.isArray(g?.detectedBy)) return null;
+  for (const entry of g.detectedBy) {
+    const meta = entry?.originalItem?.detectorMeta || {};
+    const candidate = meta.context || meta.text_excerpt || meta.catalogContext;
+    if (candidate && String(candidate).trim()) {
+      return String(candidate).trim();
+    }
+  }
+  return null;
+}
+
 /**
  * Build the suggestion shape the frontend already consumes.
  */
+/**
+ * Per ASAP: the AI-generated ADDITIONAL INFORMATION blurb (detector
+ * context, "we saw X near Y in the manuscript", etc.) is informative
+ * for the curator but must NOT land on the persisted KRT row when a
+ * suggestion is accepted. The KRT cell stays blank; the original blurb
+ * is preserved on the suggestion object under `context` so the UI can
+ * surface it as hover/info text without it ever being written back.
+ *
+ *   suggestion.data.additionalInformation = ''      ← persisted on accept
+ *   suggestion.context                    = <blurb> ← UI-only hint
+ *
+ * `detail`/`evidence` stay populated for the legacy add-row tooltip.
+ */
 function makeAddSuggestion(g) {
+  const evidence = getEvidence(g);
+  const context = g.additionalInformation || null;
   return {
     id: `add:${g.dedupKey}`,
     type: 'add_row',
@@ -158,7 +291,11 @@ function makeAddSuggestion(g) {
     source: 'pdf_analysis',
     title: g.resourceName || g.identifier || '(unnamed resource)',
     description: `Add ${g.resourceType}: ${g.resourceName || g.identifier}`,
-    detail: g.additionalInformation || null,
+    // detail/evidence carry the manuscript snippet that justified the
+    // suggestion, surfaced in the carousel's "More details" expand.
+    detail: context || evidence || null,
+    evidence,
+    context,
     confidence: g.confidence || 0,
     existsInKRT: 'false',
     matchedKrtRowId: null,
@@ -168,7 +305,8 @@ function makeAddSuggestion(g) {
       source: g.sourceUrl,
       identifier: g.identifier,
       newReuse: g.newReuse,
-      additionalInformation: g.additionalInformation
+      // Persisted KRT cell — always blank on AI-driven inserts.
+      additionalInformation: ''
     },
     mergedFrom: g.detectedBy
   };
@@ -176,6 +314,7 @@ function makeAddSuggestion(g) {
 
 function makeEditSuggestion(g, krtRow, fieldKey, oldValue, newValue) {
   const colMeta = COLUMN_MAP[fieldKey];
+  const context = g.additionalInformation || null;
   return {
     id: `edit:${g.dedupKey}:${fieldKey}`,
     type: 'edit',
@@ -184,7 +323,8 @@ function makeEditSuggestion(g, krtRow, fieldKey, oldValue, newValue) {
     source: 'pdf_analysis',
     title: `Update ${colMeta.label} of ${g.resourceName || g.identifier}`,
     description: `${colMeta.label}: "${oldValue || '(empty)'}" → "${newValue}"`,
-    detail: null,
+    detail: context,
+    context,
     confidence: g.confidence || 0,
     existsInKRT: 'update',
     matchedKrtRowId: krtRow.id,
@@ -199,7 +339,11 @@ function makeEditSuggestion(g, krtRow, fieldKey, oldValue, newValue) {
       source: g.sourceUrl,
       identifier: g.identifier,
       newReuse: g.newReuse,
-      additionalInformation: g.additionalInformation
+      // Edits never touch ADDITIONAL INFORMATION on the persisted row;
+      // computeSuggestions already drops that column from the edit set,
+      // and we keep the field empty here so a stray persistence path
+      // can't smuggle the blurb back in.
+      additionalInformation: ''
     },
     mergedFrom: g.detectedBy
   };
@@ -228,7 +372,11 @@ function computeSuggestions(generated, krtRows, rejectedAddSet = new Set(), reje
 
     // Match found → compare per-column. Resource_type and new_reuse are part
     // of dedup_key so they always match. Compare the remaining fields.
-    const editableColumns = ['resourceName', 'source', 'identifier', 'additionalInformation'];
+    // ADDITIONAL INFORMATION is intentionally NOT in this list: per ASAP,
+    // AI-driven changes never write to that cell. The detector context is
+    // still surfaced to the curator via `suggestion.context` (see
+    // makeAddSuggestion / makeEditSuggestion).
+    const editableColumns = ['resourceName', 'source', 'identifier'];
     const colReject = rejectedColumns.get(g.dedupKey) || new Set();
 
     for (const fieldKey of editableColumns) {
@@ -239,6 +387,20 @@ function computeSuggestions(generated, krtRows, rejectedAddSet = new Set(), reje
       // Don't suggest blanking out a non-empty user value.
       if (!String(newValue).trim()) continue;
       if (fieldEqual(fieldKey, oldValue, newValue)) continue;
+      // Per ASAP request: enrichment/detection should not aggressively
+      // overwrite SOURCE values the user already filled in. Only suggest a
+      // SOURCE edit when the user's cell is empty. Other columns can still
+      // surface edit suggestions normally because they're typically
+      // corrections (typos, missing RRID, etc.) the user welcomes.
+      if (fieldKey === 'source' && String(oldValue).trim() !== '') continue;
+      // Lossy-rename guard. The identifier scanner emits the curated DB's
+      // canonical resourceName for any RRID/DOI it matches. When that name
+      // is shorter, less specific, or a different entity than the user's
+      // name, surfacing it as an edit confuses more than it helps
+      // ("Rabbit anti-TH" → "Anti-TH", "Sheep anti-TH" → "tyrosine
+      // hydroxylase"). Skip these — user-side names always win when the
+      // proposed replacement loses information or changes meaning.
+      if (fieldKey === 'resourceName' && isLossyRename(oldValue, newValue)) continue;
       suggestions.push(makeEditSuggestion(g, matched, fieldKey, oldValue, newValue));
     }
   }
@@ -273,5 +435,6 @@ module.exports = {
   computeSuggestions,
   parseSuggestionId,
   indexKrtForLookup,
+  isLossyRename,
   COLUMN_MAP
 };

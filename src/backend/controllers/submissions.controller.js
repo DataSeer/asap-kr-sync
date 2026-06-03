@@ -7,6 +7,9 @@ const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, sequel
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const { extractTeamFromManuscriptId, parsePagination, buildPaginationMeta, statusToStep, buildS3Folder } = require('../utils/helpers');
 const s3Service = require('../services/storage/s3.service');
+const parserService = require('../services/krt/parser.service');
+const krtService = require('../services/krt/krt.service');
+const { KRT_COLUMNS } = require('../config/constants');
 const logger = require('../utils/logger');
 
 /**
@@ -101,16 +104,62 @@ async function list(req, res, next) {
 }
 
 /**
- * Create submission
+ * Create submission. Accepts multipart/form-data with metadata fields and a
+ * required KRT file ("krt"). The KRT format is validated **before** any DB
+ * writes — if the file isn't a properly-formatted Key Resources Table, the
+ * endpoint returns 400 and no submission row is created. This enforces the
+ * "no orphan submissions" invariant on the server so the create flow can't
+ * be bypassed by skipping the frontend's pre-flight check.
+ *
  * POST /api/submissions
  */
 async function create(req, res, next) {
   try {
     const { title, dataAvailabilityStatement, manuscriptId, notes } = req.validatedBody;
 
-    // Extract team from manuscript ID (if provided)
+    // 1. KRT file is required — frontend always attaches it.
+    if (!req.file) {
+      throw new ValidationError('A Key Resources Table file is required to create a submission.');
+    }
+
+    // 2. Parse the file. Parser errors (bad CSV / unsupported format) come
+    //    out as ValidationError already; we surface them as 400.
+    let parsedRows;
+    try {
+      parsedRows = await parserService.parseFile(
+        req.file.buffer,
+        req.file.mimetype,
+        req.file.originalname
+      );
+    } catch (err) {
+      return res.status(400).json({
+        valid: false,
+        error: err.message,
+        missingColumns: KRT_COLUMNS
+      });
+    }
+
+    // 3. Column header check. If the headers aren't on row 1 (or any
+    //    required column is missing), reject — no DB writes yet.
+    const columnCheck = parserService.validateColumns(parsedRows);
+    if (!columnCheck.valid) {
+      return res.status(400).json({
+        valid: false,
+        error: 'Ensure the first row of the Key Resources Table includes the correct values.',
+        missingColumns: columnCheck.missingColumns
+      });
+    }
+
+    // 4. Validation passed — create the submission, then persist the KRT.
+    //    If KRT persistence fails after submission creation (S3 outage,
+    //    DB error), we clean up the submission so the user doesn't see an
+    //    orphan record on the dashboard.
     const team = manuscriptId ? await extractTeamFromManuscriptId(manuscriptId) : null;
 
+    // The KRT is uploaded as part of create now, so the submission is
+    // already past the 'draft' phase (which historically meant "no files
+    // yet"). Start at 'step_krt' so the KRT view's `status !== 'draft'`
+    // gate lets the row fetch run.
     const submission = await Submission.create({
       userId: req.userId,
       title,
@@ -118,8 +167,25 @@ async function create(req, res, next) {
       manuscriptId: manuscriptId || null,
       team,
       notes,
-      status: 'draft'
+      status: 'step_krt'
     });
+
+    try {
+      await krtService.uploadAndProcess(submission.id, req.file, req.userId, 1);
+    } catch (krtErr) {
+      // Roll back the submission so the user can retry cleanly. We catch
+      // and log the destroy failure separately — losing the cleanup is
+      // worse than the original KRT error, so don't mask it.
+      try {
+        await Submission.destroy({ where: { id: submission.id } });
+      } catch (cleanupErr) {
+        logger.error('Failed to clean up submission after KRT persistence error', {
+          submissionId: submission.id,
+          cleanupError: cleanupErr.message
+        });
+      }
+      throw krtErr;
+    }
 
     // Log the creation
     await ChangeLog.create({
@@ -128,10 +194,14 @@ async function create(req, res, next) {
       action: 'upload',
       step: 1,
       round: 1,
-      description: 'Submission created'
+      description: 'Submission created with Key Resources Table'
     });
 
-    logger.info('Submission created', { submissionId: submission.id, userId: req.userId });
+    logger.info('Submission created with KRT', {
+      submissionId: submission.id,
+      userId: req.userId,
+      krtRows: parsedRows.length
+    });
 
     res.status(201).json({ submission });
   } catch (error) {
@@ -506,11 +576,16 @@ async function processNewVersion(req, res, next) {
       const previousRound = submission.currentRound;
       const newRound = previousRound + 1;
 
-      // Update submission — clear DAS fields so they get re-extracted from the new PDF
+      // Update submission — clear DAS fields so they get re-extracted from the new PDF.
+      // Status always lands on step_krt: the NewRoundModal collects the new PDF up
+      // front and the frontend uploads it immediately after this call, so by the
+      // time the user lands on Step 2 (KRT) the PDF is already in flight. If a
+      // legacy caller skips the PDF upload step they can still replace the PDF
+      // via the "Replace PDF" fallback button on Step 2.
       submission.currentRound = newRound;
       submission.dataAvailabilityStatement = null;
       submission.extractedDataAvailabilityStatement = null;
-      submission.status = hasNewKRT ? 'step_krt' : 'step_pdf';
+      submission.status = 'step_krt';
       await submission.save({ transaction: t });
 
       // If no new KRT, copy all KRT rows and file from previous round

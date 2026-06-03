@@ -61,7 +61,7 @@ async function parseCSV(buffer) {
 
   // Pass 1: auto-detect.
   const first = await runPapaParse(content);
-  if (first.ok) return normalizeRows(first.data);
+  if (first.ok) return attachHeaders(normalizeRows(first.data), first.fields);
 
   const triggeredRetry = first.errors.some(e => e.code === 'UndetectableDelimiter');
   if (!triggeredRetry) {
@@ -75,15 +75,33 @@ async function parseCSV(buffer) {
     firstErrors: first.errors.slice(0, 3).map(e => e.code || e.message)
   });
   const second = await runPapaParse(content, { delimiter: ',' });
-  if (second.ok) return normalizeRows(second.data);
+  if (second.ok) return attachHeaders(normalizeRows(second.data), second.fields);
 
   logCsvFailure(buffer, content, second.errors, 'comma-fallback');
   throw new ValidationError(`CSV parsing error: ${formatErrors(second.errors)}`);
 }
 
 /**
- * Wrap Papa.parse in a promise. Returns `{ ok, data, errors }` so we can
- * branch on errors without throwing/catching across two attempts.
+ * Attach the actual parsed header names to the rows array as a non-
+ * enumerable property. Lets `validateColumns` accept header-only files
+ * (zero data rows but a valid header line) without changing the array
+ * return shape that downstream code relies on.
+ */
+function attachHeaders(rows, headers) {
+  Object.defineProperty(rows, 'headers', {
+    value: Array.isArray(headers) ? headers : [],
+    enumerable: false,
+    writable: false
+  });
+  return rows;
+}
+
+/**
+ * Wrap Papa.parse in a promise. Returns `{ ok, data, errors, fields }` so
+ * we can branch on errors without throwing/catching across two attempts.
+ * `fields` is the normalized header names from `meta.fields` — needed so
+ * `validateColumns` can recognize a header-only CSV (zero data rows but
+ * correct headers) as valid.
  */
 function runPapaParse(content, extraOptions = {}) {
   return new Promise((resolve) => {
@@ -94,10 +112,13 @@ function runPapaParse(content, extraOptions = {}) {
       ...extraOptions,
       complete: (results) => {
         const errors = results.errors || [];
-        resolve({ ok: errors.length === 0, data: results.data, errors });
+        const fields = (results.meta && Array.isArray(results.meta.fields))
+          ? results.meta.fields
+          : [];
+        resolve({ ok: errors.length === 0, data: results.data, errors, fields });
       },
       error: (error) => {
-        resolve({ ok: false, data: [], errors: [{ message: error.message, code: 'ParserError' }] });
+        resolve({ ok: false, data: [], errors: [{ message: error.message, code: 'ParserError' }], fields: [] });
       }
     });
   });
@@ -170,7 +191,7 @@ async function parseExcel(buffer) {
       data.push(obj);
     });
 
-    return normalizeRows(data);
+    return attachHeaders(normalizeRows(data), headers.filter(Boolean));
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     throw new ValidationError(`Excel parsing error: ${error.message}`);
@@ -247,54 +268,61 @@ function preprocessRow(row) {
     }
   }
 
-  // Try to detect and populate identifier from various sources
+  // Try to detect and populate identifier from various sources. Authors
+  // frequently paste real identifiers (oligonucleotide sequences, RRIDs,
+  // DOIs, BioStudies accessions, etc.) into ADDITIONAL INFORMATION because
+  // they don't think of them as "identifiers". When the IDENTIFIER column
+  // is empty (or only has a catalog number) and ADDITIONAL INFORMATION has
+  // a recognized identifier of any supported kind, we silently move it on
+  // ingest so the validator and downstream consumers see the right shape.
   const identifierValue = row['IDENTIFIER'] || '';
   const additionalInfo = row['ADDITIONAL INFORMATION'] || '';
 
-  // Check if identifier column is empty or only has a catalog number
   const identifierExtracted = identifierExtractor.extractAll(identifierValue);
-  const hasStrongIdentifier = identifierExtracted.doi || identifierExtracted.rrid ||
-    identifierExtracted.scr || identifierExtracted.emdb || identifierExtracted.pdb ||
-    identifierExtracted.empiar || identifierExtracted.cellosaurus || identifierExtracted.url;
+  const hasStrongIdentifier =
+    identifierExtracted.doi ||
+    identifierExtracted.rrid ||
+    identifierExtracted.scr ||
+    identifierExtracted.emdb ||
+    identifierExtracted.pdb ||
+    identifierExtracted.empiar ||
+    identifierExtracted.cellosaurus ||
+    identifierExtracted.addgene ||
+    identifierExtracted.biostudiesAccession ||
+    identifierExtracted.oligoSequence ||
+    identifierExtracted.pmid ||
+    identifierExtracted.genbank ||
+    identifierExtracted.uniprot ||
+    identifierExtracted.url;
 
-  // If no strong identifier in IDENTIFIER column, check ADDITIONAL INFORMATION
-  if (!hasStrongIdentifier && additionalInfo) {
+  // Only auto-copy when IDENTIFIER is entirely empty — never overwrite a
+  // value the author put there explicitly. Same rule applied at runtime by
+  // validator.service.js so upload-time and edit-time behaviours match.
+  if (!hasStrongIdentifier && !identifierValue && additionalInfo) {
     const additionalExtracted = identifierExtractor.extractAll(additionalInfo);
 
-    // Priority: RRID > DOI > SCR > EMDB/PDB > URL > other
-    if (additionalExtracted.rrid) {
-      // Move RRID to identifier if identifier is empty or just a catalog number
-      if (!identifierValue || identifierExtracted.catalogNumber) {
-        row['IDENTIFIER'] = additionalExtracted.rrid;
+    // Priority list — first match wins. Specific repository identifiers
+    // first (RRID etc.), then DOIs, then identifier-without-namespace
+    // patterns (oligo sequence, biostudies accession), then catch-alls
+    // (URL, PMID, GenBank, UniProt). Catalog numbers are intentionally
+    // last because they're the most ambiguous.
+    const priority = [
+      'rrid', 'scr', 'cellosaurus', 'addgene',
+      'emdb', 'pdb', 'empiar', 'biostudiesAccession',
+      'doi', 'oligoSequence',
+      'pmid', 'genbank', 'uniprot', 'url'
+    ];
+    for (const kind of priority) {
+      const value = additionalExtracted[kind];
+      if (!value) continue;
+      // EMDB + PDB get joined if both present — historical behaviour the
+      // downstream consumers (suggestion service) rely on.
+      if (kind === 'emdb' && additionalExtracted.pdb) {
+        row['IDENTIFIER'] = `${additionalExtracted.emdb} ${additionalExtracted.pdb}`;
+      } else {
+        row['IDENTIFIER'] = value;
       }
-    } else if (additionalExtracted.doi) {
-      if (!identifierValue) {
-        row['IDENTIFIER'] = additionalExtracted.doi;
-      }
-    } else if (additionalExtracted.scr) {
-      if (!identifierValue) {
-        row['IDENTIFIER'] = additionalExtracted.scr;
-      }
-    } else if (additionalExtracted.emdb || additionalExtracted.pdb) {
-      if (!identifierValue) {
-        // Combine EMDB and PDB if both present
-        const parts = [];
-        if (additionalExtracted.emdb) parts.push(additionalExtracted.emdb);
-        if (additionalExtracted.pdb) parts.push(additionalExtracted.pdb);
-        row['IDENTIFIER'] = parts.join(' ');
-      }
-    } else if (additionalExtracted.empiar) {
-      if (!identifierValue) {
-        row['IDENTIFIER'] = additionalExtracted.empiar;
-      }
-    } else if (additionalExtracted.cellosaurus) {
-      if (!identifierValue) {
-        row['IDENTIFIER'] = additionalExtracted.cellosaurus;
-      }
-    } else if (additionalExtracted.url) {
-      if (!identifierValue) {
-        row['IDENTIFIER'] = additionalExtracted.url;
-      }
+      break;
     }
   }
 
@@ -310,17 +338,26 @@ function preprocessRow(row) {
 }
 
 /**
- * Validate that file has required columns
- * @param {Array} rows - Parsed rows
+ * Validate that file has required columns. Inspects the parsed header line
+ * (attached as `rows.headers` by the parser) when available — that way a
+ * header-only file (zero data rows but the correct header line) is still
+ * accepted as a valid empty KRT. Falls back to the first row's keys for
+ * older call sites that don't go through the parser.
+ *
+ * @param {Array} rows - Parsed rows. May carry a non-enumerable `.headers`
+ *                       property with the actual parsed header names.
  * @returns {object} { valid: boolean, missingColumns: string[] }
  */
 function validateColumns(rows) {
-  if (!rows || rows.length === 0) {
+  let presentColumns;
+  if (rows && Array.isArray(rows.headers) && rows.headers.length > 0) {
+    presentColumns = rows.headers;
+  } else if (rows && rows.length > 0) {
+    presentColumns = Object.keys(rows[0]);
+  } else {
     return { valid: false, missingColumns: KRT_COLUMNS };
   }
 
-  const firstRow = rows[0];
-  const presentColumns = Object.keys(firstRow);
   const requiredColumns = KRT_COLUMNS.filter(col => col !== 'ADDITIONAL INFORMATION');
   const missingColumns = requiredColumns.filter(col =>
     !presentColumns.some(present =>

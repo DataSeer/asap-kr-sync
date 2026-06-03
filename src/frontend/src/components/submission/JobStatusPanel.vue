@@ -59,6 +59,18 @@ const jobSummary = computed(() => {
   const total = list.length
   return { complete, running, failed, pending, waiting, total }
 })
+
+// ── ETA computation ──────────────────────────────────────────────────
+// Pipeline dependency map: each entry lists job types that must finish
+// before this job can finish. Drives the cumulative remaining-time math
+// so siblings run in parallel and downstream jobs stack on top of upstreams.
+const ETA_DEPS = {
+  pdf_analysis: ['das_extraction', 'software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection'],
+  datasets_detection: ['markdown_convert'],
+  protocols_detection: ['markdown_convert'],
+  identifier_detection: ['markdown_convert']
+}
+
 const now = ref(Date.now())
 let tickTimer = null
 
@@ -147,10 +159,164 @@ const jobList = computed(() => {
       serviceSubServices: svcInfo?.subServices || null
     }
   })
-  // Hide modules whose external service is disabled (env: <MODULE>_ENABLED=false).
-  // We keep modules with `liveEnabled === null` visible — that's the brief
-  // window before /api/config/services has loaded; better than flash-hiding.
-  .filter(j => j.liveEnabled !== false)
+  // Hide modules that are fully off — both the external service AND demo
+  // data are disabled (env: <MODULE>_ENABLED=false AND <MODULE>_DEMO_DATA_ENABLED=false).
+  // We honor either the live flags from /api/config/services or the persisted
+  // execution snapshot, so the module disappears immediately on initial render
+  // without flash-then-hide once /api/config/services lands.
+  .filter(j => {
+    const liveOff = j.liveEnabled === false && j.liveDemoEnabled === false
+    const persistedOff = j.configState === 'off'
+    return !(liveOff || persistedOff)
+  })
+})
+
+// ── ETA bar computation ──────────────────────────────────────────────
+//
+// Shows a TYPICAL → MAX range ("30s to 3 min remaining"). Typical comes
+// from the backend's per-job `typicalSeconds` (median runtime); max comes
+// from `expireInSeconds` (per-attempt timeout cap). The progress bar fills
+// based on typical so it moves at a meaningful pace; if typical is exhausted
+// the bar pins and the label switches to "still working — up to X remaining".
+function jobRemainingMs(job, which) {
+  if (!job) return 0
+  if (job.status === 'pending_input') return 0
+  if (job.status === 'complete' || job.status === 'failed') return 0
+
+  const budgetSec = which === 'typical' ? job.typicalSeconds : job.expireInSeconds
+  if (!budgetSec) return 0
+  const budgetMs = budgetSec * 1000
+
+  if (job.status === 'waiting' || job.status === 'queued') return budgetMs
+
+  const start = job.startedAt ? new Date(job.startedAt).getTime() : null
+  if (!start) return budgetMs
+  const elapsed = now.value - start
+  return Math.max(0, budgetMs - elapsed)
+}
+
+function effectiveRemainingMs(type, jobMap, which, seen = new Set()) {
+  if (seen.has(type)) return 0
+  seen.add(type)
+  const own = jobRemainingMs(jobMap[type], which)
+  const deps = ETA_DEPS[type] || []
+  let upstream = 0
+  for (const dep of deps) {
+    const depRemaining = effectiveRemainingMs(dep, jobMap, which, seen)
+    if (depRemaining > upstream) upstream = depRemaining
+  }
+  return upstream + own
+}
+
+function pipelineRemainingMs(jobMap, which) {
+  // pdf_analysis is the terminal job — its effective-remaining already
+  // includes every upstream dep chain. Fall back to max across all jobs
+  // when pdf_analysis hasn't been scheduled yet.
+  const anchored = effectiveRemainingMs('pdf_analysis', jobMap, which)
+  if (anchored > 0) return anchored
+  let max = 0
+  for (const type of Object.keys(jobMap)) {
+    const r = effectiveRemainingMs(type, jobMap, which)
+    if (r > max) max = r
+  }
+  return max
+}
+
+const etaJobMap = computed(() => {
+  // Use the raw jobs map (not the post-filter jobList) so the ETA still
+  // covers disabled modules' upstream blocking. Same data shape.
+  return jobs.value || {}
+})
+const remainingTypicalMs = computed(() => pipelineRemainingMs(etaJobMap.value, 'typical'))
+const remainingMaxMs = computed(() => pipelineRemainingMs(etaJobMap.value, 'max'))
+
+const anyInFlight = computed(() => {
+  const list = Object.values(etaJobMap.value)
+  return list.some(j =>
+    j.status === 'waiting' || j.status === 'queued' || j.status === 'processing'
+  )
+})
+
+const anyPendingInput = computed(() => {
+  const list = Object.values(etaJobMap.value)
+  return list.some(j => j.status === 'pending_input')
+})
+
+// True when there are tracked jobs AND every one of them has reached a
+// terminal state. Used to render the bar fully filled (in a success color)
+// so the panel always communicates *something* even when collapsed and
+// idle — rather than going visually empty after the pipeline finishes.
+const allDone = computed(() => {
+  const list = Object.values(etaJobMap.value).filter(j => !!j?.status)
+  if (list.length === 0) return false
+  return list.every(j => j.status === 'complete' || j.status === 'failed')
+})
+
+// Render the bar whenever there's anything to report — in-flight, waiting
+// for input, OR all done. Empty (no jobs at all) hides the bar entirely.
+const etaVisible = computed(() => {
+  if (anyInFlight.value || anyPendingInput.value) return true
+  if (allDone.value) return true
+  return false
+})
+
+function formatEtaDuration(ms) {
+  if (ms <= 0) return '0s'
+  const totalSec = Math.ceil(ms / 1000)
+  if (totalSec < 60) return `${totalSec}s`
+  const min = Math.ceil(totalSec / 60)
+  return min === 1 ? '1 min' : `${min} min`
+}
+
+const etaLabel = computed(() => {
+  if (anyPendingInput.value && !anyInFlight.value) return 'Waiting for input'
+  if (allDone.value) return 'All processes complete'
+  if (!anyInFlight.value) return 'Finishing up…'
+
+  const typical = remainingTypicalMs.value
+  const max = remainingMaxMs.value
+
+  if (typical <= 0 && max > 0) return `still working — up to ${formatEtaDuration(max)} remaining`
+  if (typical <= 0 && max <= 0) return 'Finishing up…'
+
+  return `${formatEtaDuration(typical)} to ${formatEtaDuration(max)} remaining`
+})
+
+/**
+ * Progress fraction across the whole pipeline, weighted by each job's
+ * typical duration. Computed from the persisted job states (and elapsed
+ * time for running jobs), NOT from a session-local peak — so a fresh page
+ * load already reflects whatever's done. Falls back to 0 when no typicals
+ * are known yet.
+ *
+ * numerator   = completed/failed jobs' full typical + processing jobs'
+ *               elapsed portion of their typical
+ * denominator = sum of every visible job's typical
+ */
+function jobTypicalMs(job) {
+  return (job?.typicalSeconds || 0) * 1000
+}
+function jobIsDone(job) {
+  return job?.status === 'complete' || job?.status === 'failed'
+}
+const etaProgress = computed(() => {
+  const map = etaJobMap.value
+  let total = 0
+  let done = 0
+  for (const job of Object.values(map)) {
+    const budget = jobTypicalMs(job)
+    if (budget === 0) continue
+    total += budget
+    if (jobIsDone(job)) {
+      done += budget
+    } else if (job?.status === 'processing') {
+      // Count the elapsed slice of an in-flight job so the bar grows smoothly
+      // while a single long-running job is the only thing left.
+      done += Math.max(0, budget - jobRemainingMs(job, 'typical'))
+    }
+  }
+  if (total === 0) return 0
+  return Math.max(0, Math.min(1, done / total))
 })
 
 /**
@@ -939,35 +1105,58 @@ async function downloadMarkdownFile(fileId) {
 </script>
 
 <template>
-  <div class="job-status-wrapper">
-    <!-- Collapsed summary bar / Expand header -->
-    <div class="job-status-header" @click="toggleCollapsed">
-      <div class="job-status-header-left">
-        <svg
-          class="job-header-chevron"
-          :class="{ 'chevron-collapsed': isCollapsed }"
-          fill="none" stroke="currentColor" viewBox="0 0 24 24"
-        >
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+  <div class="job-status-wrapper job-status-card">
+    <!-- ETA header — always visible. The status summary pills (running /
+         waiting / failed / done) sit on the right of the title row no matter
+         what, so the user always sees pipeline progress even when the
+         pipeline is fully idle. The ETA "X to Y min remaining" text +
+         progress bar only render while jobs are actually in-flight. -->
+    <div class="job-status-eta">
+      <div class="job-status-eta-row">
+        <svg class="job-status-eta-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <span class="job-header-title">Background Processes</span>
+        <span class="job-status-eta-label">Background processes</span>
+        <span v-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
+        <div class="job-header-badges">
+          <span v-if="jobSummary.running > 0" class="job-summary-badge job-status-running">
+            {{ jobSummary.running }} running
+          </span>
+          <span v-if="jobSummary.waiting > 0" class="job-summary-badge job-status-waiting">
+            {{ jobSummary.waiting }} waiting
+          </span>
+          <span v-if="jobSummary.pending > 0" class="job-summary-badge job-status-pending-input">
+            {{ jobSummary.pending }} needs input
+          </span>
+          <span v-if="jobSummary.failed > 0" class="job-summary-badge job-status-failed">
+            {{ jobSummary.failed }} failed
+          </span>
+          <span class="job-summary-badge job-status-complete">
+            {{ jobSummary.complete }}/{{ jobSummary.total }} done
+          </span>
+        </div>
       </div>
-      <div class="job-header-badges">
-        <span v-if="jobSummary.running > 0" class="job-summary-badge job-status-running">
-          {{ jobSummary.running }} running
-        </span>
-        <span v-if="jobSummary.waiting > 0" class="job-summary-badge job-status-waiting">
-          {{ jobSummary.waiting }} waiting
-        </span>
-        <span v-if="jobSummary.pending > 0" class="job-summary-badge job-status-pending-input">
-          {{ jobSummary.pending }} needs input
-        </span>
-        <span v-if="jobSummary.failed > 0" class="job-summary-badge job-status-failed">
-          {{ jobSummary.failed }} failed
-        </span>
-        <span class="job-summary-badge job-status-complete">
-          {{ jobSummary.complete }}/{{ jobSummary.total }} done
-        </span>
+      <div v-if="etaVisible" class="job-status-eta-track">
+        <div
+          class="job-status-eta-fill"
+          :class="{ 'job-status-eta-fill-done': allDone }"
+          :style="{ width: `${etaProgress * 100}%` }"
+        ></div>
+      </div>
+      <p v-if="anyInFlight" class="job-status-eta-hint">
+        You can keep editing the Key Resources Table while these finish — suggestions will appear once they're done.
+      </p>
+      <div class="job-status-eta-footer">
+        <button type="button" class="job-status-eta-toggle" @click="toggleCollapsed">
+          <svg
+            class="job-status-eta-chevron"
+            :class="{ 'chevron-collapsed': isCollapsed }"
+            fill="none" stroke="currentColor" viewBox="0 0 24 24"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+          {{ isCollapsed ? 'More details' : 'Hide details' }}
+        </button>
       </div>
     </div>
 
@@ -1155,7 +1344,7 @@ async function downloadMarkdownFile(fileId) {
                   <tbody>
                     <template v-for="(item, i) in modalItems" :key="i">
                       <tr>
-                        <td class="text-xs">{{ item.resourceType || item.resource_type || 'Code/Software' }}</td>
+                        <td class="text-xs">{{ item.resourceType || item.resource_type || 'Software/code' }}</td>
                         <td class="font-medium">
                           {{ getMentionName(item) }}
                           <span
@@ -1272,10 +1461,11 @@ async function downloadMarkdownFile(fileId) {
                           'pdf-analysis-row',
                           row.groupIndex % 2 === 0 ? 'pdf-analysis-group-even' : 'pdf-analysis-group-odd',
                           { 'pdf-analysis-row-duplicate': row.isDuplicate,
-                            'pdf-analysis-group-start':   row.isGroupStart,
-                            'pdf-analysis-group-end':     row.isGroupEnd,
-                            'pdf-analysis-group-merged':  row.groupSize > 1 }
-                        ]">
+                            'pdf-analysis-group-start': row.isGroupStart,
+                            'pdf-analysis-group-end': row.isGroupEnd,
+                            'pdf-analysis-group-merged': row.groupSize > 1 }
+                        ]"
+                      >
                         <td>
                           <span v-if="row.source" class="job-modal-source-badge source-enriched">
                             {{ pdfAnalysisSourceLabel(row.source) }}
@@ -1459,6 +1649,102 @@ async function downloadMarkdownFile(fileId) {
   gap: 0.375rem;
 }
 
+/* ── Unified ETA + status card (replaces the old separate JobsEtaBar) ── */
+.job-status-card {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.875rem;
+  margin-top: 0;
+}
+.job-status-card.job-status-wrapper {
+  /* override the legacy "marginTop: 0.5rem" + plain border styling that
+     applied when the panel was its own card */
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+.job-status-eta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.job-status-eta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+}
+.job-status-eta-icon {
+  width: 1rem;
+  height: 1rem;
+  color: #2563eb;
+  flex-shrink: 0;
+}
+.job-status-eta-label {
+  font-weight: 600;
+  color: #1e40af;
+}
+.job-status-eta-remaining {
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
+}
+/* Summary badges always render in the top header row; push them to the
+   right edge so they sit next to the chevron column visually. */
+.job-status-eta-row > .job-header-badges {
+  margin-left: auto;
+}
+.job-status-eta-track {
+  height: 4px;
+  background: #dbeafe;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+.job-status-eta-fill {
+  height: 100%;
+  background: #2563eb;
+  border-radius: 9999px;
+  transition: width 0.6s ease-out, background 0.3s ease-out;
+}
+/* All-done variant — green so the user gets a positive visual confirmation
+   that the pipeline finished, even when the panel is collapsed. */
+.job-status-eta-fill-done {
+  background: #16a34a;
+}
+.job-status-eta-hint {
+  font-size: 0.75rem;
+  color: #475569;
+  margin: 0;
+}
+.job-status-eta-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.job-status-eta-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: transparent;
+  border: 0;
+  padding: 0.25rem 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #2563eb;
+  cursor: pointer;
+}
+.job-status-eta-toggle:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+.job-status-eta-chevron {
+  width: 0.875rem;
+  height: 0.875rem;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
 .job-header-chevron {
   width: 0.875rem;
   height: 0.875rem;
@@ -1497,8 +1783,11 @@ async function downloadMarkdownFile(fileId) {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 0.25rem 0.75rem;
-  padding: 0.375rem 0.75rem 0.5rem;
-  border-top: 1px solid #e5e7eb;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem 0.625rem;
+  background: #fff;
+  border: 1px solid #dbeafe;
+  border-radius: 0.375rem;
   font-size: 0.75rem;
   overflow: visible;
 }
