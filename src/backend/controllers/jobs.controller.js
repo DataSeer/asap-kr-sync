@@ -145,7 +145,7 @@ async function advanceJob(req, res, next) {
     );
 
     res.json({
-      message: `Job ${jobType} advanced to queued`,
+      message: `Job ${jobType} is now '${job.status}'`,
       job: { id: job.id, jobType: job.jobType, status: job.status, round: job.round }
     });
   } catch (error) {
