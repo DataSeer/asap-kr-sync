@@ -56,15 +56,17 @@ flowchart LR
 
 Every detector is built the same way — learn this once and each module below is just the specifics.
 
-### 2.1 The four-stage detector contract
+### 2.1 The three-stage detector contract
 
 A detector turns its raw findings into the canonical **`KrtEntry`** shape (`services/pdf-analysis/krt-entry.js`)
-through four stages:
+through three stages:
 
 1. **`detect(input)`** — call the engine (external API, LLM, or local scan) → raw output.
 2. **`buildKrtItems(raw)`** — map raw output to `KrtEntry[]` (canonical shape, not yet deduped).
-3. **`enrich(items)`** — fill blank fields from the curated **enrichment list** for that category (§2.4).
-4. **`dedupeKrtItems(items)`** — collapse duplicates within this detector (reuses the same merge engine as PDF Analysis).
+3. **`dedupeKrtItems(items)`** — collapse duplicates within this detector (reuses the same merge engine as PDF Analysis).
+
+> **No enrichment step.** Detectors no longer fill blanks from the curated enrichment lists — only the
+> **Identifier Detection** module (§3.7) consults the enrichment lists (as its data source, see §2.4).
 
 A `KrtEntry` carries: `resourceType`, `resourceName`, `identifier`, `source`, `newReuse` (`new|reuse|''`),
 `origin` (detector label), `confidence` (0–1), `additionalInformation`, and a `detectorMeta` object for
@@ -104,11 +106,11 @@ accept/reject suggestions the curator sees in Step 3. ORCID output is the except
 
 ### 2.4 Enrichment lists
 
-Software / datasets / materials / protocols detectors cross-reference their mentions against the curated
-`enrichment_list_entries` table (one row per known resource, by `category`). Enrichment **only fills blanks** —
-it never overwrites a detector-supplied value — turning a bare "ImageJ" into a fully-specified row with the
-correct RRID and source. The same data backs the always-on `identifier_detection` scanner (§3.7). Admins manage
-these lists in the UI (see [Master Setup Guide §6.5](./master-setup-guide.md#65--step-7--import-the-enrichment-lists)).
+The curated `enrichment_list_entries` table (one row per known resource, by `category`) is consulted by **only one
+module: `identifier_detection` (§3.7)**, which builds its scan index from it. The text/NER detectors
+(software, datasets, materials, protocols) **no longer** cross-reference these lists — they emit exactly what the
+engine returned (deduped). Admins manage the lists in the UI (see
+[Master Setup Guide §6.5](./master-setup-guide.md#65--step-7--import-the-enrichment-lists)).
 
 ---
 
@@ -154,8 +156,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Engine:** **Softcite** — a purpose-built academic NER service (**not** an LLM; deterministic, no token cost,
   no prompt). Returns mentions with offsets and per-mention confidence.
 - **Depends on:** nothing (immediate). **Input:** the PDF (Softcite multipart field `input`).
-- **How it works:** Softcite mentions → `KrtEntry[]` (resourceType `Software/code`) → enriched against the
-  software enrichment list → deduped.
+- **How it works:** Softcite mentions → `KrtEntry[]` (resourceType `Software/code`) → deduped.
 - **Config:** `SOFTCITE_API_ENABLED`, `SOFTCITE_API_BASE_URL`, `SOFTCITE_API_TIMEOUT`,
   `SOFTWARE_DETECTION_DEMO_DATA_ENABLED`.
 - **Demo:** `getDemoSoftwareMentions(manuscriptId)`.
@@ -189,8 +190,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Purpose (when enabled):** detect antibodies, cell lines, reagents and other lab materials.
 - **Engine:** **Google Gemini**, reading the **PDF directly** (inline base64) so it can interpret reagent tables
   that Markdown conversion would mangle.
-- **Depends on:** nothing (immediate). **Output:** `KrtEntry[]` (Antibody / Cell line / etc.), enriched against
-  the materials list.
+- **Depends on:** nothing (immediate). **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
 - **Config:** `MATERIALS_DETECTION_ENABLED`, `MATERIALS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `MATERIALS_DETECTION_API_TIMEOUT`, `MATERIALS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:** *(absent by design)*.
 - **Demo:** `getDemoLabMaterialMentions(manuscriptId)`.
@@ -202,7 +202,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Engine:** **Google Gemini** over the Markdown, with a **post-filter** that reclassifies purely computational
   / in-silico "protocols" as software (`isInSilicoProtocol`) — encoding an ASAP domain rule in code. Parses
   defensively (fenced-code stripping, markdown-escape repair).
-- **Depends on:** `markdown_convert`. **Output:** `KrtEntry[]` (Protocol), enriched against the protocols list.
+- **Depends on:** `markdown_convert`. **Output:** `KrtEntry[]` (Protocol).
 - **Config:** `PROTOCOLS_DETECTION_ENABLED`, `PROTOCOLS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `PROTOCOLS_DETECTION_API_TIMEOUT`, `PROTOCOLS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
   `data/prompts/protocols-detection.txt`.

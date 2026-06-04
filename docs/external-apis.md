@@ -278,7 +278,7 @@ Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Fo
 
 **Prompt file:** `src/backend/data/prompts/materials-detection.txt`
 
-**Enrichment:** Detected materials are cross-referenced against the curated list (rows in `enrichment_list_entries` with `category='materials'`) via the unified `enrichment-list.service.js`.
+**Enrichment:** _Removed._ Detected materials are no longer cross-referenced against the curated list — only the **Identifier Detection** module consults `enrichment_list_entries` now.
 
 ---
 
@@ -303,7 +303,7 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 
 **Prompt file:** `src/backend/data/prompts/protocols-detection.txt`
 
-**Enrichment:** Detected protocols are cross-referenced against the curated list (rows in `enrichment_list_entries` with `category='protocols'`) via the unified `enrichment-list.service.js`.
+**Enrichment:** _Removed._ Detected protocols are no longer cross-referenced against the curated list — only the **Identifier Detection** module consults `enrichment_list_entries` now.
 
 ---
 

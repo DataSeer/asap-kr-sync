@@ -2,20 +2,13 @@
  * Tests for the datasets pipeline steps.
  *
  * detectDatasets runs langextract + Gemini and is exercised via integration.
- * Here we test buildKrtItemsDatasets and enrichDatasets in isolation.
+ * Here we test buildKrtItemsDatasets in isolation.
  */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 
-const {
-  buildKrtItemsDatasets,
-  enrichDatasets
-} = require('./datasets.service');
-const { createCsvProvider } = require('../enrichment-list-providers');
+const { buildKrtItemsDatasets } = require('./datasets.service');
 
 test('buildKrtItemsDatasets: empty / non-array → []', () => {
   assert.deepEqual(buildKrtItemsDatasets([]), []);
@@ -86,25 +79,4 @@ test('buildKrtItemsDatasets: legacy demo shape (resource_type=Dataset, joined id
   assert.equal(items[0].resourceType, 'Dataset');
   assert.equal(items[0].identifier, 'GSE999');
   assert.equal(items[0].newReuse, 'reuse');
-});
-
-test('enrichDatasets: fills blanks from CSV provider', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ds-enrich-'));
-  fs.writeFileSync(path.join(dir, 'curated-datasets.csv'),
-    'resourceName,resourceType,source,identifier,newReuse\n' +
-    'Cortex scRNA-seq,Dataset,GEO,GSE165095,reuse\n'
-  );
-  const provider = createCsvProvider(dir);
-
-  const items = buildKrtItemsDatasets([{
-    canonical_name: 'Cortex scRNA-seq', accessions: ['GSE165095'], dataset_role: 'REUSED'
-  }]);
-  // Pre-enrich: source filled from `repository` (absent here, so empty)
-  assert.equal(items[0].source, '');
-  const { enriched } = await enrichDatasets(items, { provider });
-  // Post-enrich: source filled from curated list
-  assert.equal(enriched[0].source, 'GEO');
-  assert.equal(enriched[0].detectorMeta.enrichmentMeta.matched, true);
-
-  fs.rmSync(dir, { recursive: true, force: true });
 });

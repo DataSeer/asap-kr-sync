@@ -3,11 +3,13 @@
  *
  * Detects lab material/reagent mentions via Google Gemini on the manuscript PDF.
  *
- * Four-step pipeline:
+ * Three-step pipeline:
  *   1. detectMaterials(pdfBuffer, fileName) → raw Gemini items (prompt-shape)
  *   2. buildKrtItemsMaterials(raw)          → canonical KrtEntry[]
- *   3. enrichMaterials(items, {provider})   → blanks filled from curated list
- *   4. dedupeKrtItems(items, 'materials')   → one entry per logical resource
+ *   3. dedupeKrtItems(items, 'materials')   → one entry per logical resource
+ *
+ * Note: the curated enrichment list is no longer applied here — only the
+ * Identifier Detection module consults the enrichment lists now.
  */
 
 const fs = require('fs');
@@ -21,8 +23,6 @@ const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
-const enrichmentListService = require('../enrichment-list.service');
-const { dbProvider } = require('../enrichment-list-providers');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
@@ -131,11 +131,8 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   // ── Step 2: buildKrtItems
   const krtItems = buildKrtItemsMaterials(rawItems);
 
-  // ── Step 3: enrich
-  const { enriched, durationMs: enrichMs } = await enrichMaterials(krtItems, { provider: dbProvider });
-
-  // ── Step 4: dedupe
-  const items = dedupeKrtItems(enriched, 'materials-gemini');
+  // ── Step 3: dedupe
+  const items = dedupeKrtItems(krtItems, 'materials-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 
@@ -145,7 +142,7 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount,
-      geminiMs, enrichMs,
+      geminiMs,
       totalMs: Date.now() - startTime,
       model: materialsConfig.model
     }
@@ -262,31 +259,6 @@ function buildKrtItemsMaterials(rawItems) {
   });
 }
 
-/**
- * Step 3: fill blanks from the curated materials list.
- * @param {object[]} items
- * @param {object} [options]
- * @param {object} [options.provider]
- * @returns {Promise<{ enriched: object[], durationMs: number }>}
- */
-async function enrichMaterials(items, { provider = dbProvider } = {}) {
-  const { enriched, durationMs } = await enrichmentListService.enrichMentions(
-    'materials', items, { provider }
-  );
-  const cleaned = enriched.map(e => {
-    const { customListMatch, enrichmentMeta, ...rest } = e;
-    return {
-      ...rest,
-      detectorMeta: {
-        ...(rest.detectorMeta || {}),
-        ...(enrichmentMeta ? { enrichmentMeta } : {}),
-        ...(customListMatch ? { customListMatch } : {})
-      }
-    };
-  });
-  return { enriched: cleaned, durationMs };
-}
-
 async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
@@ -315,6 +287,5 @@ module.exports = {
   getMaterialsMentions,
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectMaterials,
-  buildKrtItemsMaterials,
-  enrichMaterials
+  buildKrtItemsMaterials
 };

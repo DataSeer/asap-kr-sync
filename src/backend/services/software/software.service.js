@@ -1,21 +1,21 @@
 /**
  * Software Detection Service
  *
- * Detects software/code mentions using Softcite + curated enrichment list.
+ * Detects software/code mentions using Softcite.
  *
- * Four-step pipeline:
+ * Three-step pipeline:
  *   1. detectSoftware(pdfBuffer, fileName) → raw Softcite mentions
  *   2. buildKrtItemsSoftware(mentions)     → canonical KrtEntry[]
- *   3. enrichSoftware(items, {provider})   → blanks filled from curated list
- *   4. dedupeKrtItems(items, 'software')   → one entry per logical resource
+ *   3. dedupeKrtItems(items, 'software')   → one entry per logical resource
+ *
+ * Note: the curated enrichment list is no longer applied here — only the
+ * Identifier Detection module consults the enrichment lists now.
  */
 
 // Sequelize models are lazy-loaded inside the worker functions below — see
 // the matching comment in protocols.service.js for the rationale.
 const s3Service = require('../storage/s3.service');
 const softciteClient = require('./softcite-client.service');
-const enrichmentListService = require('../enrichment-list.service');
-const { dbProvider } = require('../enrichment-list-providers');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const softciteConfig = require('../../config/softcite-api');
 const jobQueue = require('../queue/job-queue.service');
@@ -91,7 +91,7 @@ async function processSoftwareDetection(submissionId, jobLogger = null, { isFina
 }
 
 /**
- * Worker entry point: Softcite + enrichment + dedupe.
+ * Worker entry point: Softcite + dedupe.
  */
 async function detectSoftwareForSubmission(submission, jobLogger) {
   const { File } = require('../../models');
@@ -119,19 +119,15 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
   // ── Step 2: buildKrtItems
   const krtItems = buildKrtItemsSoftware(rawMentions);
 
-  // ── Step 3: enrich
-  const { enriched, durationMs: enrichMs } = await enrichSoftware(krtItems, { provider: dbProvider });
-
-  // ── Step 4: dedupe
-  const items = dedupeKrtItems(enriched, 'software-softcite');
+  // ── Step 3: dedupe
+  const items = dedupeKrtItems(krtItems, 'software-softcite');
 
   return {
     items,
     meta: {
       rawMentionCount: rawMentions.length,
       uniqueCount: items.length,
-      enrichedCount: items.filter(i => i.detectorMeta?.enrichmentMeta?.matched).length,
-      softciteMs, enrichMs,
+      softciteMs,
       totalMs: Date.now() - startTime
     }
   };
@@ -205,41 +201,6 @@ function buildKrtItemsSoftware(rawItems) {
 }
 
 /**
- * Step 3: fill blanks from the curated software list.
- *
- * The legacy code derived `source`/`identifier`/`newReuse`/`suggestedURL` from
- * `customListMatch` on each mention. After enrichment, we lift the
- * `customListMatch.source` into the top-level `source` if blank, and stash
- * the full match payload on detectorMeta for the UI to render provenance.
- *
- * @param {object[]} items
- * @param {object} [options]
- * @param {object} [options.provider]
- * @returns {Promise<{ enriched: object[], durationMs: number }>}
- */
-async function enrichSoftware(items, { provider = dbProvider } = {}) {
-  const { enriched, durationMs } = await enrichmentListService.enrichMentions(
-    'software', items, { provider }
-  );
-  const cleaned = enriched.map(e => {
-    const { customListMatch, enrichmentMeta, ...rest } = e;
-    // Pull the curated-list `source` into the top-level `source` field if the
-    // detector didn't supply one. The merger uses this as `sourceUrl`.
-    const finalSource = rest.source || customListMatch?.source || '';
-    return {
-      ...rest,
-      source: finalSource,
-      detectorMeta: {
-        ...(rest.detectorMeta || {}),
-        ...(enrichmentMeta ? { enrichmentMeta } : {}),
-        ...(customListMatch ? { customListMatch } : {})
-      }
-    };
-  });
-  return { enriched: cleaned, durationMs };
-}
-
-/**
  * Persist helper output's data on the SubmissionJob so downstream suggestion
  * generation can read it via SubmissionJob.getLatest().
  */
@@ -274,6 +235,5 @@ module.exports = {
   getSoftwareMentions,
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectSoftware,
-  buildKrtItemsSoftware,
-  enrichSoftware
+  buildKrtItemsSoftware
 };
