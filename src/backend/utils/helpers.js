@@ -218,10 +218,40 @@ function statusToStep(status) {
   return map[status] || 1;
 }
 
+/**
+ * Build a human-friendly download filename for a generated report.
+ * Prefers the manuscript ID; falls back to the uploaded PDF's filename (sans
+ * extension); finally 'report'. Hyphens are preserved (so a manuscript ID like
+ * "WH1-000282-012-org-t-2" stays recognisable), unlike sanitizeFilename which
+ * collapses them for S3 keys.
+ *
+ * @param {string|null} manuscriptId
+ * @param {string|null} pdfFileName - original PDF filename (may include extension)
+ * @param {string} [ext='xlsx']
+ * @returns {string} e.g. "WH1-000282-012-org-t-2.xlsx"
+ */
+function buildReportFilename(manuscriptId, pdfFileName, ext = 'xlsx') {
+  let base = (manuscriptId && String(manuscriptId).trim()) || '';
+  if (!base && pdfFileName) {
+    const name = String(pdfFileName);
+    const dot = name.lastIndexOf('.');
+    base = dot > 0 ? name.slice(0, dot) : name;
+  }
+  base = base
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9._-]/g, '')   // keep alnum, dot, underscore, hyphen
+    .replace(/_{2,}/g, '_')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 100);
+  if (!base) base = 'report';
+  return `${base}.${ext}`;
+}
+
 module.exports = {
   extractTeamFromManuscriptId,
   statusToStep,
   sanitizeFilename,
+  buildReportFilename,
   buildS3Folder,
   generateS3Key,
   generateJobS3Key,

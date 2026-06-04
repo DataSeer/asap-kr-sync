@@ -450,18 +450,18 @@ flowchart TD
 
 ### Excel Report Contents
 
-> ⚠️ **Pending / out of date.** The report sheet layout below is being reworked and does not
-> match the current export. In particular, the 4th sheet is currently titled **"Suggestions"**
-> (not "LM Analysis"), it is only added when suggestions exist, and its `Confidence` column is
-> not populated by the diff-based suggestion objects. This section will be updated once the
-> report rework lands; treat the details below as indicative only.
+The generated XLSX file (`ExcelExporter.js`) contains up to 4 sheets:
 
-The generated XLSX file contains up to 4 sheets:
-
-1. **Summary** — manuscript metadata, resource count, change count
-2. **KRT Data** — resource table sorted by type group then name
-3. **Change History** — chronological audit trail with user, action, source
-4. **Suggestions** _(conditional)_ — AI suggestion list (Source / Type / Title / Description / Status)
+1. **Summary** — a single overview sheet with three sections:
+   - *Submission* — manuscript ID, title, team, status, submitter, current round, created/updated, notes.
+   - *Detected authors* — each detected author with their ORCID (from ORCID extraction).
+   - *Data Availability Statement* — the final provided DAS and the AI-extracted DAS.
+   - *KRT statistics* — total resources, new vs reuse, with/without identifier, with source, changes logged,
+     outstanding suggestions, and a **resources-by-type** breakdown.
+2. **KRT** — the complete Key Resources Table (RESOURCE TYPE / RESOURCE NAME / SOURCE / IDENTIFIER /
+   NEW/REUSE / ADDITIONAL INFORMATION), sorted by resource-type group then name, with a frozen header row and filters.
+3. **Change History** — chronological audit trail (date, user, action, step, column, old/new value, description).
+4. **Suggestions** _(only when present)_ — outstanding AI suggestions (Source / Type / Title / Description / Status).
 
 ---
 

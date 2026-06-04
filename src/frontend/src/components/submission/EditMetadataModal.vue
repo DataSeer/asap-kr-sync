@@ -11,9 +11,11 @@
  *   @saved="handleSaved"
  * />
  */
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
+import { useAuthStore } from '@/stores/auth.store'
+import demosService from '@/services/demos.service'
 
 const props = defineProps({
   /** Whether the modal is visible */
@@ -32,8 +34,18 @@ const emit = defineEmits(['close', 'saved'])
 
 const submissionStore = useSubmissionStore()
 const notificationStore = useNotificationStore()
+const authStore = useAuthStore()
+
+// Demo lookup is admin-only, mirroring the "Use Demo Data" button on Create.
+const isAdmin = computed(() => authStore.isAdmin)
+const demos = ref([])
+const demoLoading = ref(false)
+const demoSearchOpen = ref(false)
+const demoQuery = ref('')
 
 const saving = ref(false)
+// DAS value when the modal opened — used to report whether the user changed it.
+const originalDas = ref('')
 const editForm = ref({
   title: '',
   manuscriptId: '',
@@ -50,8 +62,75 @@ watch(() => [props.show, props.submission], ([show, submission]) => {
       dataAvailabilityStatement: submission.dataAvailabilityStatement || '',
       notes: submission.notes || ''
     }
+    originalDas.value = submission.dataAvailabilityStatement || ''
+    demoSearchOpen.value = false
+    demoQuery.value = ''
   }
 }, { immediate: true })
+
+/** Original PDF filename for this submission (used to auto-detect a demo). */
+function getPdfFileName() {
+  const files = props.submission?.files
+  if (!Array.isArray(files)) return null
+  const pdf = files.find(f => f.type === 'pdf') || files.find(f => f.type === 'pdf_original')
+  return pdf?.fileName || null
+}
+
+async function loadDemos() {
+  if (demos.value.length || demoLoading.value) return
+  demoLoading.value = true
+  try {
+    demos.value = await demosService.list()
+  } catch {
+    demos.value = []
+    notificationStore.error('Failed to load the demo list')
+  } finally {
+    demoLoading.value = false
+  }
+}
+
+/**
+ * Admin helper: try to auto-fill the Manuscript ID by matching the submission's
+ * uploaded PDF filename against the known demos. If no exact match is found,
+ * open a searchable list (pre-filled with the PDF base name) to pick from.
+ */
+async function findDemoManuscriptId() {
+  await loadDemos()
+  const pdfName = getPdfFileName()
+  const base = pdfName ? pdfName.replace(/\.[^.]+$/, '') : ''
+  if (base) {
+    const match = demos.value.find(d =>
+      (d.id || '').toLowerCase() === base.toLowerCase() ||
+      (d.pdf || '').toLowerCase() === (pdfName || '').toLowerCase()
+    )
+    if (match) {
+      editForm.value.manuscriptId = match.id
+      notificationStore.success(`Matched demo: ${match.id}`)
+      demoSearchOpen.value = false
+      return
+    }
+  }
+  // No automatic match — let the admin search and pick.
+  demoQuery.value = base
+  demoSearchOpen.value = true
+}
+
+const filteredDemos = computed(() => {
+  const list = demos.value.filter(d => d.pdf)
+  const q = demoQuery.value.trim().toLowerCase()
+  const matches = q
+    ? list.filter(d =>
+        (d.id || '').toLowerCase().includes(q) ||
+        (d.title || d.description || '').toLowerCase().includes(q))
+    : list
+  return matches.slice(0, 50)
+})
+
+function selectDemo(d) {
+  editForm.value.manuscriptId = d.id
+  demoSearchOpen.value = false
+  demoQuery.value = ''
+}
 
 function closeModal() {
   emit('close')
@@ -61,6 +140,8 @@ async function saveMetadata() {
   if (!props.submission?.id) return
 
   saving.value = true
+  const newDas = editForm.value.dataAvailabilityStatement || ''
+  const dasChanged = newDas !== (originalDas.value || '')
   try {
     await submissionStore.updateSubmission(props.submission.id, {
       title: editForm.value.title,
@@ -69,7 +150,9 @@ async function saveMetadata() {
       notes: editForm.value.notes || null
     })
     notificationStore.success('Metadata updated successfully')
-    emit('saved', props.submission)
+    // Second arg lets listeners (e.g. SubmissionHeader) decide whether to
+    // advance pdf_analysis: only when the DAS was actually changed.
+    emit('saved', props.submission, { dasChanged, das: newDas })
     closeModal()
   } catch (error) {
     // Show detailed validation errors if available
@@ -129,6 +212,45 @@ async function saveMetadata() {
               placeholder="e.g., XX1-000000-001-org-X-1"
             />
             <p class="text-xs text-gray-500 mt-1">Format: XX#-######-###-org-X-# (team auto-extracted from first 2 letters)</p>
+
+            <!-- Admin-only: auto-fill the Manuscript ID from a matching demo -->
+            <div v-if="isAdmin" class="mt-2">
+              <button
+                type="button"
+                class="inline-flex items-center text-xs font-medium text-primary-600 hover:text-primary-700 disabled:opacity-50"
+                :disabled="demoLoading"
+                @click="findDemoManuscriptId"
+              >
+                <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
+                </svg>
+                {{ demoLoading ? 'Searching demos…' : 'Find from demo' }}
+              </button>
+
+              <div v-if="demoSearchOpen" class="mt-2 border border-gray-200 rounded-md p-2 bg-gray-50">
+                <input
+                  v-model="demoQuery"
+                  type="text"
+                  placeholder="Search demo manuscript ID…"
+                  class="w-full px-2 py-1 text-sm border border-gray-300 rounded mb-2 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                />
+                <ul class="max-h-40 overflow-y-auto divide-y divide-gray-100 bg-white rounded border border-gray-100">
+                  <li v-for="d in filteredDemos" :key="d.id">
+                    <button
+                      type="button"
+                      class="w-full text-left px-2 py-1.5 text-xs hover:bg-primary-50"
+                      @click="selectDemo(d)"
+                    >
+                      <span class="font-mono text-primary-700">{{ d.id }}</span>
+                      <span v-if="d.title && d.title !== d.id" class="text-gray-500"> — {{ d.title }}</span>
+                    </button>
+                  </li>
+                  <li v-if="filteredDemos.length === 0" class="px-2 py-1.5 text-xs text-gray-400">
+                    No matching demos
+                  </li>
+                </ul>
+              </div>
+            </div>
           </div>
 
           <!-- Data Availability Statement -->

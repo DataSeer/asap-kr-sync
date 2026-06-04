@@ -39,7 +39,10 @@ export default {
    */
   async advanceJob(submissionId, jobType, round = null) {
     const params = round ? { round } : {}
-    const response = await api.post(`/submissions/${submissionId}/jobs/${jobType}/advance`, null, { params })
+    // Send an empty object (not null): the backend's strict JSON body parser
+    // rejects a literal `null` body. This endpoint carries no payload — the
+    // round travels as a query param.
+    const response = await api.post(`/submissions/${submissionId}/jobs/${jobType}/advance`, {}, { params })
     return response.data
   },
 

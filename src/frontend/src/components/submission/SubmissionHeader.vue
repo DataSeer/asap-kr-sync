@@ -150,31 +150,32 @@ function openEditModal() {
 }
 
 /**
- * Handler for the DAS pending-input banner. Opens the metadata edit modal
- * for the user to type the DAS; once the modal closes (on save), nudge the
- * pdf_analysis job out of pending_input so it can run. Errors are
- * non-fatal — the user can re-open the banner if the advance call fails.
+ * Handler for the DAS pending-input banner — opens the metadata editor so the
+ * user can enter the Data Availability Statement.
  */
 async function handleDasBannerClick() {
   openEditModal()
 }
 
-async function handleDasModalClosed() {
+function handleDasModalClosed() {
   showEditModal.value = false
-  // Only advance if the job is still in pending_input — the user may have
-  // dismissed the modal without saving, in which case the DAS is still empty.
-  if (props.submission?.dataAvailabilityStatement) {
-    try {
-      await jobService.advanceJob(props.submission.id, 'pdf_analysis')
-      notificationStore.success('PDF analysis is starting')
-    } catch (err) {
-      // If the job isn't actually in pending_input anymore (race), the
-      // backend returns an error — surface it but don't break the modal flow.
-      const message = err?.response?.data?.error || err?.message || 'Could not start PDF analysis'
-      if (!/not in pending_input/i.test(message)) {
-        notificationStore.error(message)
-      }
-    }
+}
+
+/**
+ * After metadata is saved, advance pdf_analysis ONLY when it is awaiting input
+ * AND the DAS content was actually changed to a non-empty value. Any other
+ * metadata change (title, notes, manuscript ID, or DAS edits while the job is
+ * not pending_input) has no effect on the pipeline. The `dasChanged`/`das`
+ * flags come from the modal so detection doesn't depend on prop-update timing.
+ */
+async function handleMetadataSaved(_submission, meta) {
+  if (!(pdfAnalysisPendingInput.value && meta?.dasChanged && meta?.das)) return
+  try {
+    await jobService.advanceJob(props.submission.id, 'pdf_analysis')
+    notificationStore.success('PDF analysis is starting')
+  } catch (err) {
+    const message = err?.response?.data?.error || err?.message || 'Could not start PDF analysis'
+    notificationStore.error(message)
   }
 }
 
@@ -425,6 +426,7 @@ async function downloadCurrentKRT(round) {
     <EditMetadataModal
       :show="showEditModal"
       :submission="submission"
+      @saved="handleMetadataSaved"
       @close="handleDasModalClosed"
     />
 

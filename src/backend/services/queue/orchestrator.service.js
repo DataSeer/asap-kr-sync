@@ -9,6 +9,7 @@
 const { Op } = require('sequelize');
 const { sequelize, SubmissionJob, Submission } = require('../../models');
 const { JOB_TYPES } = require('../../config/constants');
+const { NotFoundError, ConflictError, ValidationError } = require('../../utils/errors');
 const jobQueue = require('./job-queue.service');
 const logger = require('../../utils/logger');
 
@@ -287,16 +288,28 @@ async function advanceJob(submissionId, jobType, round, userId) {
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
 
   if (!job) {
-    throw new Error(`No ${jobType} job found for submission ${submissionId} round ${round}`);
+    throw new NotFoundError(`${jobType} job`);
+  }
+
+  // Idempotent: if the job has already moved past pending_input, treat advance
+  // as a no-op success — the desired outcome (job running or done) is already
+  // achieved. This avoids 500s when the UI fires a redundant advance (e.g. the
+  // shared Edit-Metadata modal closing on a submission whose analysis finished).
+  if (['queued', 'processing', 'complete'].includes(job.status)) {
+    logger.info('Advance is a no-op: job already advanced', {
+      submissionId, jobType, round, status: job.status
+    });
+    return job;
   }
 
   if (job.status !== 'pending_input') {
-    throw new Error(`Job ${jobType} is '${job.status}', expected 'pending_input'`);
+    // 'waiting' (dependencies not finished) or 'failed' — cannot advance.
+    throw new ConflictError(`Cannot advance ${jobType}: job is '${job.status}', not awaiting input`);
   }
 
   const queueName = JOB_TYPE_TO_QUEUE[jobType];
   if (!queueName) {
-    throw new Error(`Unknown job type: ${jobType}`);
+    throw new ValidationError(`Unknown job type: ${jobType}`);
   }
 
   const jobData = buildJobData(jobType, submissionId, userId, job);

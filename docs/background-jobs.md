@@ -2,6 +2,9 @@
 
 The application uses **pg-boss** (PostgreSQL-based job queue) for asynchronous background processing. Jobs are tracked in the `submission_jobs` table, and an orchestrator manages dependencies between jobs. The frontend polls for status updates with exponential backoff.
 
+> This document covers the **queue & orchestration layer** (how jobs are scheduled, sequenced, retried, and polled).
+> For what each module *does and how it works internally*, see [background-modules.md](./background-modules.md).
+
 ## Queue Configuration
 
 pg-boss runs in a dedicated `pgboss` schema, separate from application tables.

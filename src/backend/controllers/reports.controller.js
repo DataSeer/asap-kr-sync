@@ -2,11 +2,13 @@
  * Reports Controller
  */
 
+const { Op } = require('sequelize');
 const reportService = require('../services/reports/report.service');
 const s3Service = require('../services/storage/s3.service');
-const { Report } = require('../models');
+const { Report, File } = require('../models');
 const { NotFoundError, ValidationError } = require('../utils/errors');
-const { REPORT_TYPES } = require('../config/constants');
+const { FILE_TYPES } = require('../config/constants');
+const { buildReportFilename } = require('../utils/helpers');
 const logger = require('../utils/logger');
 
 /**
@@ -115,16 +117,34 @@ async function download(req, res, next) {
       s3Key = url.pathname.slice(1); // Remove leading slash
     }
 
-    // Generate presigned URL (1 hour expiry)
-    const presignedUrl = await s3Service.getPresignedDownloadUrl(s3Key, 3600);
+    // Friendly download filename: prefer the manuscript ID; if the submission
+    // has none, fall back to the round's uploaded PDF filename.
+    const submission = req.submission; // attached by canAccessSubmission
+    let pdfFileName = null;
+    if (!submission?.manuscriptId) {
+      const pdf = await File.findOne({
+        where: {
+          submissionId: req.params.id,
+          type: { [Op.in]: [FILE_TYPES.PDF, FILE_TYPES.PDF_ORIGINAL] },
+          round: report.round || 1
+        },
+        order: [['version', 'DESC']]
+      });
+      pdfFileName = pdf?.fileName || null;
+    }
+    const downloadFilename = buildReportFilename(submission?.manuscriptId, pdfFileName);
+
+    // Generate presigned URL (1 hour expiry) that forces the download filename
+    const presignedUrl = await s3Service.getPresignedDownloadUrl(s3Key, 3600, downloadFilename);
 
     logger.info('Report download URL generated', {
       reportId: report.id,
-      submissionId: req.params.id
+      submissionId: req.params.id,
+      downloadFilename
     });
 
     // Return URL as JSON (frontend will open it)
-    res.json({ url: presignedUrl });
+    res.json({ url: presignedUrl, filename: downloadFilename });
   } catch (error) {
     next(error);
   }

@@ -67,6 +67,7 @@ See [Getting Started](./docs/getting-started.md) for full setup instructions.
 | [Submission Workflow](./docs/submission-workflow.md) | Detailed 5-step workflow, user actions, conditions, all paths |
 | [Authentication](./docs/authentication.md) | JWT flow, Auth0 integration, roles, middleware, rate limiting |
 | [Background Jobs](./docs/background-jobs.md) | Job queue, pipeline, workers, statuses, polling |
+| [Background Modules](./docs/background-modules.md) | Module-by-module reference — each detector, its engine, the 4-stage contract, demo fallback, and how outputs become the Generated KRT |
 | [External APIs](./docs/external-apis.md) | GROBID, OpenAlex, ORCID, Softcite, Gemini, LM APIs, S3, Google Sheets |
 | [Frontend](./docs/frontend.md) | Vue 3 SPA architecture, routing, stores, composables, components |
 | [Environment Variables](./docs/environment-variables.md) | All environment variables with descriptions and defaults |
