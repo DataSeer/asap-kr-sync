@@ -1,10 +1,10 @@
 /**
  * Enrichment list providers
  *
- * Both the enrichment-list service (`enrichMentions`) and the identifier-scan
- * index (`loadIndex`) read curated reference data. In production that data
- * lives in the `EnrichmentListEntry` table; in benchmarks and tests we need
- * to drive the same code from local CSVs without DB access.
+ * The identifier-scan index (`loadIndex`) reads curated reference data to build
+ * its scan index. In production that data lives in the `EnrichmentListEntry`
+ * table; in benchmarks and tests we need to drive the same code from local CSVs
+ * without DB access.
  *
  * A "provider" is a small object with one method:
  *   `loadEntries(category?: string)` → Promise<EnrichmentEntry[]>
