@@ -33,6 +33,11 @@ const demoFilter = ref('')
 // when the pre-flight validation fails. Holds `{ message, missingColumns }`.
 const krtFormatError = ref(null)
 
+// Highlight flags for the required inputs, set on a submit attempt that is
+// missing a value and cleared as soon as the user provides one.
+const titleInvalid = ref(false)
+const pdfInvalid = ref(false)
+
 // KRT template URL (Google Sheets) — fetched on mount and surfaced in the
 // error block so the user has a one-click way to grab a correctly-formatted
 // template when their upload is rejected.
@@ -67,6 +72,7 @@ function handlePdfFile(event) {
     return
   }
   pdfFile.value = file
+  pdfInvalid.value = false
 }
 
 function clearPdfFile() {
@@ -180,6 +186,10 @@ async function selectDemoDocument(doc) {
   showDemoSelector.value = false
   demoFilter.value = ''
 
+  // Loading a demo fills the required fields — clear any stale highlight.
+  titleInvalid.value = false
+  pdfInvalid.value = false
+
   title.value = doc.title
   notes.value = `Demo submission - matches ${doc.manuscriptId} demo files`
 
@@ -216,8 +226,11 @@ async function selectDemoDocument(doc) {
  *      its format check while leaving the table empty for step 2).
  */
 function handleSubmitClick() {
-  if (!pdfFile.value) {
-    notificationStore.error('A Manuscript PDF is required.')
+  // Highlight any missing required input (title + manuscript PDF).
+  titleInvalid.value = !title.value.trim()
+  pdfInvalid.value = !pdfFile.value
+  if (titleInvalid.value || pdfInvalid.value) {
+    notificationStore.error('Please fill in the required fields.')
     return
   }
   if (!krtFile.value) {
@@ -394,9 +407,11 @@ function handleCancel() {
           v-model="title"
           type="text"
           required
-          class="input"
+          :class="['input', titleInvalid ? 'ring-2 ring-red-400 border-red-400' : '']"
           placeholder="Enter manuscript title"
+          @input="titleInvalid = false"
         />
+        <p v-if="titleInvalid" class="mt-1 text-xs text-red-600">A title is required.</p>
       </div>
 
       <!-- 2. Upload Key Resources Table (required) -->
@@ -434,14 +449,17 @@ function handleCancel() {
           Upload Manuscript <span class="text-red-500">*</span>
         </label>
         <p class="mb-2 text-sm text-gray-500">PDF or DOCX. Background processes start automatically after upload.</p>
-        <div v-if="!pdfFile" class="flex items-center">
-          <input
-            id="pdfFile"
-            type="file"
-            :accept="ACCEPTED_PDF"
-            class="input file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
-            @change="handlePdfFile"
-          />
+        <div v-if="!pdfFile">
+          <div class="flex items-center">
+            <input
+              id="pdfFile"
+              type="file"
+              :accept="ACCEPTED_PDF"
+              :class="['input file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100', pdfInvalid ? 'ring-2 ring-red-400 border-red-400' : '']"
+              @change="handlePdfFile"
+            />
+          </div>
+          <p v-if="pdfInvalid" class="mt-1 text-xs text-red-600">A manuscript PDF is required.</p>
         </div>
         <div v-else class="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
           <svg class="w-5 h-5 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -524,10 +542,10 @@ function handleCancel() {
 
       <div class="flex items-center justify-end space-x-4 pt-4 border-t">
         <button type="button" class="btn-secondary" @click="handleCancel">Cancel</button>
-        <!-- KRT is no longer a hard requirement here — if missing, the click
-             handler opens a confirmation modal instead of blocking. Only the
-             PDF is unconditionally required. -->
-        <button type="submit" :disabled="loading || !pdfFile" class="btn-primary">
+        <!-- Always clickable (except while loading) so the click handler can
+             highlight missing required inputs (title + PDF). A missing KRT opens
+             a confirmation modal instead of blocking. -->
+        <button type="submit" :disabled="loading" class="btn-primary">
           <span v-if="loading">Creating...</span>
           <span v-else>Create & Continue to Step 2</span>
         </button>

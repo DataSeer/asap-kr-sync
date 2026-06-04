@@ -162,29 +162,25 @@ function checkServiceAvailability() {
 async function runProtocols(markdownText) {
   const { resources } = await protocolsService.detectProtocols(markdownText);
   const krt = protocolsService.buildKrtItemsProtocols(resources);
-  const { enriched } = await protocolsService.enrichProtocols(krt, { provider: csvProvider });
-  return dedupeKrtItems(enriched, 'protocols-gemini');
+  return dedupeKrtItems(krt, 'protocols-gemini');
 }
 
 async function runDatasets(markdownText) {
   const { resources } = await datasetsService.detectDatasets(markdownText);
   const krt = datasetsService.buildKrtItemsDatasets(resources);
-  const { enriched } = await datasetsService.enrichDatasets(krt, { provider: csvProvider });
-  return dedupeKrtItems(enriched, 'datasets-gemini');
+  return dedupeKrtItems(krt, 'datasets-gemini');
 }
 
 async function runSoftware(pdfBuffer, fileName) {
   const { resources } = await softwareService.detectSoftware(pdfBuffer, fileName);
   const krt = softwareService.buildKrtItemsSoftware(resources);
-  const { enriched } = await softwareService.enrichSoftware(krt, { provider: csvProvider });
-  return dedupeKrtItems(enriched, 'software-softcite');
+  return dedupeKrtItems(krt, 'software-softcite');
 }
 
 async function runMaterials(pdfBuffer, fileName) {
   const { resources } = await materialsService.detectMaterials(pdfBuffer, fileName);
   const krt = materialsService.buildKrtItemsMaterials(resources);
-  const { enriched } = await materialsService.enrichMaterials(krt, { provider: csvProvider });
-  return dedupeKrtItems(enriched, 'materials-gemini');
+  return dedupeKrtItems(krt, 'materials-gemini');
 }
 
 let _indexBuilt = false;

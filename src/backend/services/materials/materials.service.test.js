@@ -2,20 +2,13 @@
  * Tests for the materials pipeline steps.
  *
  * detectMaterials hits Gemini (PDF input) and is exercised via integration.
- * Here we test buildKrtItemsMaterials and enrichMaterials in isolation.
+ * Here we test buildKrtItemsMaterials in isolation.
  */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 
-const {
-  buildKrtItemsMaterials,
-  enrichMaterials
-} = require('./materials.service');
-const { createCsvProvider } = require('../enrichment-list-providers');
+const { buildKrtItemsMaterials } = require('./materials.service');
 
 test('buildKrtItemsMaterials: empty / non-array → []', () => {
   assert.deepEqual(buildKrtItemsMaterials([]), []);
@@ -48,24 +41,4 @@ test('buildKrtItemsMaterials: prompt-shape → canonical KrtEntry', () => {
 test('buildKrtItemsMaterials: defaults resourceType to Lab Material when missing', () => {
   const items = buildKrtItemsMaterials([{ canonical_name: 'Some reagent' }]);
   assert.equal(items[0].resourceType, 'Lab Material');
-});
-
-test('enrichMaterials: fills blanks from CSV provider', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mat-enrich-'));
-  fs.writeFileSync(path.join(dir, 'curated-materials.csv'),
-    'resourceName,resourceType,source,identifier,newReuse\n' +
-    'Anti-Tubulin antibody,Antibodies,Sigma-Aldrich,A8592,reuse\n'
-  );
-  const provider = createCsvProvider(dir);
-
-  const items = buildKrtItemsMaterials([{ canonical_name: 'Anti-Tubulin antibody' }]);
-  const { enriched } = await enrichMaterials(items, { provider });
-
-  assert.equal(enriched.length, 1);
-  assert.equal(enriched[0].source, 'Sigma-Aldrich');
-  assert.equal(enriched[0].identifier, 'A8592');
-  assert.equal(enriched[0].newReuse, 'reuse');
-  assert.equal(enriched[0].detectorMeta.enrichmentMeta.matched, true);
-
-  fs.rmSync(dir, { recursive: true, force: true });
 });

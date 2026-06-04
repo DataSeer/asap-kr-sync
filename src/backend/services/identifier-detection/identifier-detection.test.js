@@ -134,13 +134,10 @@ test('identifier-scan and software_detection items dedup on shared identifier', 
   const text = 'Fiji (RRID:SCR_002285) was used.';
   const scannerItems = runPipeline(text, [FIJI]);
 
-  // Softcite items always pass through enrichmentListService.enrichMentions
-  // before reaching the consolidator, so newReuse gets populated from the
-  // curated list. Mirror that here so the merge contract is exercised
-  // realistically — empty newReuse vs populated newReuse is a known
-  // non-merge condition by design. Softcite items use canonical fields once
-  // the four-step refactor reaches the software detector (P6); until then
-  // the merger's permissive toResource() handles both spellings.
+  // The Softcite item carries a populated newReuse here so the merge contract
+  // is exercised realistically — empty newReuse vs populated newReuse is a
+  // known non-merge condition by design. The merger's permissive toResource()
+  // handles both field spellings.
   const softciteItems = [{
     resourceType: 'Software/code',
     resourceName: 'Fiji',

@@ -4,11 +4,13 @@
  * Detects protocol mentions via Google Gemini on the manuscript markdown.
  * Requires the MARKDOWN_CONVERT job to have completed first (markdown file).
  *
- * Four-step pipeline:
+ * Three-step pipeline:
  *   1. detectProtocols(md)                 → raw Gemini items (prompt-shape)
  *   2. buildKrtItemsProtocols(raw)         → canonical KrtEntry[]
- *   3. enrichProtocols(items, {provider})  → blanks filled from curated list
- *   4. dedupeKrtItems(items, 'protocols')  → one entry per logical resource
+ *   3. dedupeKrtItems(items, 'protocols')  → one entry per logical resource
+ *
+ * Note: the curated enrichment list is no longer applied here — only the
+ * Identifier Detection module consults the enrichment lists now.
  */
 
 const fs = require('fs');
@@ -24,8 +26,6 @@ const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
-const enrichmentListService = require('../enrichment-list.service');
-const { dbProvider } = require('../enrichment-list-providers');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
@@ -143,11 +143,8 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   // ── Step 2: buildKrtItems
   const krtItems = buildKrtItemsProtocols(rawItems);
 
-  // ── Step 3: enrich
-  const { enriched, durationMs: enrichMs } = await enrichProtocols(krtItems, { provider: dbProvider });
-
-  // ── Step 4: dedupe
-  const items = dedupeKrtItems(enriched, 'protocols-gemini');
+  // ── Step 3: dedupe
+  const items = dedupeKrtItems(krtItems, 'protocols-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 
@@ -157,7 +154,7 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount,
-      geminiMs, enrichMs,
+      geminiMs,
       totalMs: Date.now() - startTime,
       model: protocolsConfig.model
     }
@@ -304,39 +301,6 @@ function isInSilicoProtocol(r) {
   return COMPUTATIONAL_PATTERN.test(name) || COMPUTATIONAL_PATTERN.test(excerpt);
 }
 
-/**
- * Step 3: fill blanks from the curated protocols list.
- *
- * Thin wrapper around enrichmentListService.enrichMentions so the pipeline
- * step has a name in this module. The wrapper also normalizes the
- * `customListMatch` provenance onto `detectorMeta.enrichmentMeta` so the
- * canonical top-level shape stays flat.
- *
- * @param {object[]} items
- * @param {object} [options]
- * @param {object} [options.provider]
- * @returns {Promise<{ enriched: object[], durationMs: number }>}
- */
-async function enrichProtocols(items, { provider = dbProvider } = {}) {
-  const { enriched, durationMs } = await enrichmentListService.enrichMentions(
-    'protocols', items, { provider }
-  );
-  // Move enrichmentMeta + customListMatch into detectorMeta to keep the
-  // canonical shape flat at the top level.
-  const cleaned = enriched.map(e => {
-    const { customListMatch, enrichmentMeta, ...rest } = e;
-    return {
-      ...rest,
-      detectorMeta: {
-        ...(rest.detectorMeta || {}),
-        ...(enrichmentMeta ? { enrichmentMeta } : {}),
-        ...(customListMatch ? { customListMatch } : {})
-      }
-    };
-  });
-  return { enriched: cleaned, durationMs };
-}
-
 async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
@@ -365,6 +329,5 @@ module.exports = {
   getProtocolsMentions,
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectProtocols,
-  buildKrtItemsProtocols,
-  enrichProtocols
+  buildKrtItemsProtocols
 };

@@ -5,7 +5,7 @@
  * pipeline is wrapped in runExternal so a failure of either step (or a missing
  * markdown prereq) falls through the standard external→demo workflow.
  *
- * Four-step pipeline:
+ * Three-step pipeline:
  *   1. detectDatasets(markdownText)        → raw Gemini consolidation items
  *                                            (langextract is an internal step
  *                                            of detect — the caller still sees
@@ -13,8 +13,10 @@
  *   2. buildKrtItemsDatasets(raw)          → canonical KrtEntry[]
  *                                            (transformConsolidatedItem lives
  *                                            here now, not in the JSON parser)
- *   3. enrichDatasets(items, {provider})   → blanks filled from curated list
- *   4. dedupeKrtItems(items, 'datasets')   → one entry per logical resource
+ *   3. dedupeKrtItems(items, 'datasets')   → one entry per logical resource
+ *
+ * Note: the curated enrichment list is no longer applied here — only the
+ * Identifier Detection module consults the enrichment lists now.
  */
 
 const fs = require('fs');
@@ -29,8 +31,6 @@ const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
-const enrichmentListService = require('../enrichment-list.service');
-const { dbProvider } = require('../enrichment-list-providers');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
@@ -177,13 +177,8 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   // ── Step 2: buildKrtItems
   const krtItems = buildKrtItemsDatasets(rawItems);
 
-  // ── Step 3: enrich
-  jobLogger?.log('enrich_start', 'Enriching with curated datasets list');
-  const { enriched, durationMs: enrichMs } = await enrichDatasets(krtItems, { provider: dbProvider });
-  jobLogger?.log('enrich_done', 'Enrichment complete', { enrichMs });
-
-  // ── Step 4: dedupe
-  const items = dedupeKrtItems(enriched, 'datasets-gemini');
+  // ── Step 3: dedupe
+  const items = dedupeKrtItems(krtItems, 'datasets-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
   jobLogger?.log('consolidate_done', 'Consolidation complete', {
@@ -195,7 +190,7 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
     meta: {
       totalCount: items.length, uniqueCount: items.length, highRelevanceCount,
       signalExtractionCount: extractedRows.length,
-      signalMs, consolidationMs, enrichMs,
+      signalMs, consolidationMs,
       totalMs: Date.now() - startTime,
       model: datasetsConfig.model
     }
@@ -387,31 +382,6 @@ function buildKrtItemsDatasets(rawItems) {
   return rawItems.map(transformConsolidatedItem).filter(Boolean);
 }
 
-/**
- * Step 3: fill blanks from the curated datasets list.
- * @param {object[]} items
- * @param {object} [options]
- * @param {object} [options.provider]
- * @returns {Promise<{ enriched: object[], durationMs: number }>}
- */
-async function enrichDatasets(items, { provider = dbProvider } = {}) {
-  const { enriched, durationMs } = await enrichmentListService.enrichMentions(
-    'datasets', items, { provider }
-  );
-  const cleaned = enriched.map(e => {
-    const { customListMatch, enrichmentMeta, ...rest } = e;
-    return {
-      ...rest,
-      detectorMeta: {
-        ...(rest.detectorMeta || {}),
-        ...(enrichmentMeta ? { enrichmentMeta } : {}),
-        ...(customListMatch ? { customListMatch } : {})
-      }
-    };
-  });
-  return { enriched: cleaned, durationMs };
-}
-
 async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
@@ -440,6 +410,5 @@ module.exports = {
   getDatasetMentions,
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectDatasets,
-  buildKrtItemsDatasets,
-  enrichDatasets
+  buildKrtItemsDatasets
 };
