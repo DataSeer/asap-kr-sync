@@ -157,12 +157,17 @@ async function fileExists(key) {
  * @param {number} expiresIn - Expiration in seconds (default 1 hour)
  * @returns {Promise<string>} Presigned URL
  */
-async function getPresignedDownloadUrl(key, expiresIn = 3600) {
+async function getPresignedDownloadUrl(key, expiresIn = 3600, downloadFilename) {
   const fullKey = key.startsWith(bucketPrefix) ? key : `${bucketPrefix}${key}`;
 
   const command = new GetObjectCommand({
     Bucket: bucketName,
-    Key: fullKey
+    Key: fullKey,
+    // When provided, force the browser to save the object under this name
+    // (S3/MinIO echo this as the response's Content-Disposition header).
+    ...(downloadFilename
+      ? { ResponseContentDisposition: `attachment; filename="${downloadFilename}"` }
+      : {})
   });
 
   return getSignedUrl(s3Client, command, { expiresIn });
