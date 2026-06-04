@@ -333,6 +333,22 @@ const tabCounts = computed(() => {
   return counts
 })
 
+// Tab keys that currently contain at least one validation error. Drives the
+// red dot on each tab so the user notices errors in tabs they aren't viewing
+// (any error also flags the "All" tab).
+const tabsWithErrors = computed(() => {
+  const set = new Set()
+  for (const row of krtRows.value) {
+    const errs = krtStore.validationErrors[row.id] || []
+    if (errs.some(e => e.severity === 'error')) {
+      const group = getResourceGroup(row['RESOURCE TYPE'])
+      if (group) set.add(group)
+      set.add('all')
+    }
+  }
+  return set
+})
+
 // Row-level issues: issues that don't target a specific column
 function getRowLevelErrors(rowId) {
   const errors = krtStore.validationErrors[rowId] || []
@@ -1426,6 +1442,12 @@ defineExpose({
         >
           {{ tab.label }}
           <span class="tab-count">{{ tabCounts[tab.key]?.rows || 0 }}</span>
+          <!-- Red dot: this tab contains validation errors -->
+          <span
+            v-if="tabsWithErrors.has(tab.key)"
+            class="tab-error-dot"
+            title="This tab contains errors"
+          ></span>
           <!-- Custom tooltip -->
           <div v-if="activeTabTooltip === tab.key" class="tooltip below" style="left: 50%; transform: translateX(-50%); width: auto; min-width: 160px;">
             <div class="tooltip-content" style="white-space: nowrap;">
@@ -2415,6 +2437,19 @@ defineExpose({
 .tab-active .tab-count {
   background: #dbeafe;
   color: #2563eb;
+}
+
+/* Red dot marking a tab that contains validation errors */
+.tab-error-dot {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: #ef4444;
+  /* white ring so the dot stands out on the active/hover tab background */
+  box-shadow: 0 0 0 2px #fff;
 }
 
 /* Empty state for filtered view */
