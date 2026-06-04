@@ -2,6 +2,10 @@
 
 The application integrates with several external services for PDF analysis, software detection, author extraction, and report generation. Each integration follows a consistent pattern: a config module for environment-based settings, a client service with retry logic, and a main service that orchestrates the business logic.
 
+> This document covers the **external-service call specifics** (endpoints, auth, request/response). For how each
+> background module works end-to-end (engine, the 4-stage contract, demo fallback, outputs), see
+> [background-modules.md](./background-modules.md).
+
 ## PDF Analysis (in-app KRT consolidator)
 
 PDF Analysis is the **in-app consolidator** that merges every detection's items into the Generated KRT. It has no external API call — `pdf-analysis-client.service.js` and the `PDF_ANALYSIS_API_*` env vars are vestigial and unused.

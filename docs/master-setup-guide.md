@@ -7,9 +7,9 @@
 >
 > **Deep-dive references** (optional): [Architecture](./architecture.md) · [Database](./database.md) ·
 > [External APIs](./external-apis.md) · [Background Jobs](./background-jobs.md) ·
-> [Authentication](./authentication.md) · [Auth0 Integration](./auth0-integration.md) ·
-> [Environment Variables](./environment-variables.md) · [Submission Workflow](./submission-workflow.md) ·
-> [EC2 Deployment](./ec2-deployment.md).
+> [Background Modules](./background-modules.md) · [Authentication](./authentication.md) ·
+> [Auth0 Integration](./auth0-integration.md) · [Environment Variables](./environment-variables.md) ·
+> [Submission Workflow](./submission-workflow.md) · [EC2 Deployment](./ec2-deployment.md).
 
 ---
 
@@ -169,6 +169,10 @@ And one of two **outcome states** after a run:
 > and the API key); most demo paths default **on** so the app is clickable out of the box.
 
 ### 4.4 Per-module reference (engine, inputs, config)
+
+> This table is the **configuration** view. For each module's full internal workflow (the 4-stage detector
+> contract, demo fallback, outputs, and how results become the Generated KRT), see
+> **[Background Modules](./background-modules.md)**.
 
 | Module | `.env` prefix | Engine / how it works | Prompt / config file |
 |--------|---------------|------------------------|----------------------|
