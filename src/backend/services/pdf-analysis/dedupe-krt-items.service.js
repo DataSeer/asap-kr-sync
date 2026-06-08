@@ -1,8 +1,8 @@
 /**
  * In-detector deduplication
  *
- * The last step of every detection module's four-step pipeline:
- *   detect<X>  →  buildKrtItems<X>  →  enrich<X>  →  dedupeKrtItems
+ * The last step of every detection module's three-step pipeline:
+ *   detect<X>  →  buildKrtItems<X>  →  dedupeKrtItems
  *
  * Uses the same match rule mergeDetections uses cross-detector (same
  * resourceType, same newReuse, identifier-token intersection OR name match)
