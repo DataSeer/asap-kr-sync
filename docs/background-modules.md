@@ -209,15 +209,25 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Demo:** `getDemoProtocolMentions(manuscriptId)`.
 - **Key files:** `services/protocols/protocols.service.js`, `config/protocols-detection-api.js`.
 
-### 3.7 `identifier_detection` — Known-identifier scan *(always-on, local)*
+### 3.7 `identifier_detection` — Known-identifier scan *(local; enabled by default)*
 
 - **Purpose:** recover known RRIDs, DOIs, accessions and catalog numbers the NER/LLM detectors miss.
 - **Engine:** a **pure local scanner** — no external API, no LLM, no prompt. It builds an in-memory index from the
-  curated `enrichment_list_entries` and scans the Markdown in a single pass. Always `isExternalEnabled: true`,
-  `demoEnabled: false` (no env flags, no demo path).
+  curated `enrichment_list_entries` and scans the Markdown in a single pass. Enabled by default
+  (`demoEnabled: false` — no demo path); set `IDENTIFIER_DETECTION_ENABLED=false` to turn the module Off.
 - **Depends on:** `markdown_convert`. **Output:** **cross-category** `KrtEntry[]` (it can emit software / materials
   / datasets / protocols items in one pass) for PDF Analysis to consolidate.
-- **Config:** none (driven by the enrichment lists). Index caches after first load.
+- **References cutoff:** by default the scanner **truncates the document at the first markdown heading matching
+  `References` / `Bibliography` / `Citations`** (`cutAtReferences`, default on) and scans only the text *before*
+  it — so cited-paper DOIs in the bibliography don't create false positives. Toggle with
+  `IDENTIFIER_DETECTION_CUT_AT_REFERENCES=false` to scan the whole document.
+  ⚠️ **Caveat (combined PDFs):** the analysed PDF is the main manuscript **+** supplemental concatenated, so the
+  Key Resources / reagent table usually sits **after** the main manuscript's References heading. If the markdown
+  converter emits "References" as a real `#` heading (Docling does; MarkItDown does not), the cutoff discards the
+  supplemental table and the scanner finds nothing — set `IDENTIFIER_DETECTION_CUT_AT_REFERENCES=false` to avoid
+  this. See `KNOWN_ISSUES.md`.
+- **Config:** `IDENTIFIER_DETECTION_ENABLED` (default `true`), `IDENTIFIER_DETECTION_CUT_AT_REFERENCES`
+  (default `true`) — see `config/identifier-detection-api.js`. Index caches after first load.
 - **Key files:** `services/identifier-detection/identifier-detection.service.js`,
   `known-identifier-index.service.js`, `known-identifier-scanner.service.js`.
 

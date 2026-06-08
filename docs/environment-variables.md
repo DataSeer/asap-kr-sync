@@ -182,6 +182,13 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 | `ORCID_API_ENABLED` | Enable ORCID name search | `true` | No |
 | `ORCID_API_TIMEOUT` | Request timeout per search (ms) | `5000` | No |
 
+## Identifier Detection (local scan — no external API)
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `IDENTIFIER_DETECTION_ENABLED` | Enable the module. Set to `false` to skip identifier detection (job produces no data). | `true` | No |
+| `IDENTIFIER_DETECTION_CUT_AT_REFERENCES` | Truncate the document at the first "References"/"Bibliography" heading before scanning (avoids bibliography false positives). Set to `false` to scan the whole document — needed for combined manuscript+supplemental PDFs where the Key Resources table sits after the references heading. | `true` | No |
+
 ## Logging
 
 | Variable | Description | Default | Required |
