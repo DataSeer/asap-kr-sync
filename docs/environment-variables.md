@@ -78,6 +78,7 @@ PDF Analysis is in-app since the `pdf_analysis` module landed — it merges ever
 |----------|-------------|---------|----------|
 | `PDF_ANALYSIS_ENABLED` | Enable the consolidator | `true` | No |
 | `PDF_ANALYSIS_DEMO_DATA_ENABLED` | Demo data fallback | `false` | No |
+| `PDF_ANALYSIS_SUPPRESS_SUGGESTIONS` | Filter out AI suggestions by kind. Comma-separated `<action>[:<column>[:<state>]]` tokens — **action**: `add`/`edit`/`update`; **column**: `source`/`identifier`/`resourceName`; optional **state**: `empty`/`filled` (the user's current cell value). E.g. `update:source:filled` drops SOURCE edits only when the cell already has a value (no overwrite), still allowing an empty cell to be filled. A value **replaces** the default; use `none` to suppress nothing. The default blocks name-change suggestions and SOURCE overwrites on existing rows. | `update:resourceName,update:source:filled` | No |
 | `PDF_ANALYSIS_API_BASE_URL` / `PDF_ANALYSIS_API_KEY` / `PDF_ANALYSIS_API_TIMEOUT` | Vestigial — unused by code | — | No |
 
 ## DAS Extraction (Google Gemini)
