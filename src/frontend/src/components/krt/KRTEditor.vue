@@ -38,6 +38,15 @@ const props = defineProps({
   activeSuggestionId: {
     type: String,
     default: null
+  },
+  /**
+   * Whether AI suggestions (add-row ghosts, cell-edit hints, delete hints) are
+   * surfaced in the editor. Set false on Step 1 (Validate KRT) so it shows only
+   * the user's own data. Validation errors/fixes are unaffected by this flag.
+   */
+  showSuggestions: {
+    type: Boolean,
+    default: true
   }
 })
 
@@ -125,8 +134,8 @@ const summary = computed(() => krtStore.summary)
 const loading = computed(() => krtStore.loading)
 
 const columns = [
-  { key: 'RESOURCE TYPE', field: 'resource_type', label: 'Resource Type' },
-  { key: 'RESOURCE NAME', field: 'resource_name', label: 'Resource Name' },
+  { key: 'RESOURCE TYPE', field: 'resource_type', label: 'Resource Type', cssClass: 'col-resource-type' },
+  { key: 'RESOURCE NAME', field: 'resource_name', label: 'Resource Name', cssClass: 'col-resource-name' },
   { key: 'SOURCE', field: 'source', label: 'Source' },
   { key: 'IDENTIFIER', field: 'identifier', label: 'Identifier' },
   { key: 'NEW/REUSE', field: 'new_reuse', label: 'New/Reuse' },
@@ -314,7 +323,9 @@ const displaySummary = computed(() => {
 
 // Count rows and pending suggestions per group for tab badges
 const tabCounts = computed(() => {
-  const pendingSuggestions = (krtStore.addRowSuggestions || []).filter(s => s.status === 'pending')
+  const pendingSuggestions = props.showSuggestions
+    ? (krtStore.addRowSuggestions || []).filter(s => s.status === 'pending')
+    : []
 
   const counts = {}
   for (const tab of tabGroups) {
@@ -482,6 +493,7 @@ function handleCellMouseLeave() {
 
 // AI Suggestions
 function getCellSuggestion(rowId, columnKey) {
+  if (!props.showSuggestions) return null
   return krtStore.getCellSuggestion(rowId, columnKey)
 }
 
@@ -490,6 +502,7 @@ function hasCellSuggestion(rowId, columnKey) {
 }
 
 function getRowSuggestions(rowId) {
+  if (!props.showSuggestions) return []
   return krtStore.getRowSuggestions(rowId)
 }
 
@@ -732,7 +745,7 @@ async function rejectSuggestion(suggestion, reason = '') {
 }
 
 // Add row suggestions
-const addRowSuggestions = computed(() => krtStore.addRowSuggestions)
+const addRowSuggestions = computed(() => props.showSuggestions ? (krtStore.addRowSuggestions || []) : [])
 
 // Filtered add-row suggestions based on the active tab, sorted alphabetically
 // by resource name (case-insensitive). On the "all" tab we additionally group
@@ -974,6 +987,7 @@ const interleavedAddSuggestions = computed(() => {
 
 // Check if a row has a delete suggestion
 function getDeleteSuggestion(rowId) {
+  if (!props.showSuggestions) return null
   return krtStore.getDeleteSuggestion(rowId)
 }
 
@@ -1538,7 +1552,7 @@ defineExpose({
               <th
                 v-for="col in columns"
                 :key="col.key"
-                class="col-data col-sortable"
+                :class="['col-data', 'col-sortable', col.cssClass]"
                 @click="toggleSort(col.key)"
               >
                 <span class="th-content">
@@ -1723,6 +1737,15 @@ defineExpose({
                 <td :class="['col-row-num', { 'tooltip-active': activeTooltip === row.id }]">
                   <div class="row-num-content">
                     <span class="row-num-label">{{ rowIndex + 1 }}</span>
+                    <!-- Provenance chip: this row was inserted by the pipeline
+                         (an accepted AI add_row), not entered/uploaded by the
+                         user. Shown on every step, independent of the
+                         suggestion-display toggle. -->
+                    <span
+                      v-if="row.addedByTool"
+                      class="tool-added-badge"
+                      title="Added by AI from manuscript analysis"
+                    >AI</span>
                     <!-- Module badges for any update suggestions on this row.
                          Same chips that ADD suggestions show in the # cell,
                          so the origin column is consistent across both. -->
@@ -1825,7 +1848,7 @@ defineExpose({
                   v-for="col in columns"
                   :key="col.key"
                   :data-column-key="col.key"
-                  :class="['col-data', getCellClass(row.id, col.key), { 'has-cell-tooltip': hasCellIssue(row.id, col.key) || hasCellSuggestion(row.id, col.key) }]"
+                  :class="['col-data', col.cssClass, getCellClass(row.id, col.key), { 'has-cell-tooltip': hasCellIssue(row.id, col.key) || hasCellSuggestion(row.id, col.key) }]"
                   @click="startEdit(row, col, rowIndex)"
                   @mouseenter="handleCellMouseEnter(row.id, col.key)"
                   @mouseleave="handleCellMouseLeave"
@@ -2590,6 +2613,25 @@ tbody tr:hover .col-row-num {
   /* No min-width - allow free resizing */
 }
 
+/* Per-column sizing: RESOURCE TYPE values are short keywords, so keep that
+   column narrow and give the reclaimed space to RESOURCE NAME, which holds
+   the longest free-text values. Full value stays available via the cell's
+   title-attribute hover tooltip. */
+.col-resource-type {
+  width: 140px;
+  max-width: 140px;
+}
+.col-resource-type .cell-display {
+  max-width: 130px;
+}
+.col-resource-name {
+  width: 360px;
+  min-width: 260px;
+}
+.col-resource-name .cell-display {
+  max-width: 340px;
+}
+
 .col-actions {
   width: 60px;
   min-width: 60px;
@@ -3139,6 +3181,21 @@ tr:hover {
   text-transform: uppercase;
   letter-spacing: 0.03em;
   white-space: nowrap;
+}
+
+/* Provenance chip marking rows the pipeline inserted (vs user-entered). */
+.tool-added-badge {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  background: #dcfce7;
+  color: #15803d;
 }
 
 .source-software_detection {
