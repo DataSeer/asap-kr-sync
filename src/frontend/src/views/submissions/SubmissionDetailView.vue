@@ -45,7 +45,7 @@ onMounted(async () => {
 // Update page title with submission ID or title
 watch(submission, (sub) => {
   if (sub) {
-    setSubmissionTitle(sub.manuscriptId || sub.title)
+    setSubmissionTitle(sub.title || sub.manuscriptId)
   }
 }, { immediate: true })
 
