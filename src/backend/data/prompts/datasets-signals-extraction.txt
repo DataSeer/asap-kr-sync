@@ -12,21 +12,27 @@ Extract a DATASET_ROW ONLY if at least one of the following is true:
 
 1. Clearly defined datasets:
 
-* sequencing datasets (RNA-seq, metagenomics, etc.)
-* datasets deposited in repositories (SRA, GEO, Zenodo, etc.)
-* structured data files supporting results
-* supplementary datasets explicitly described as data
-* patient and human sensitive data
+* genetic datasets (RNA-seq, metagenomics, read alignment, qRT-PCR, Sanger sequencing etc.)
+* protein structures with PDB IDs
+* datasets deposited in repositories (NCBI BioProject, SRA, GEO, Zenodo, PRIDE, MassIVE, EMDB, PDB etc.)
+* supplementary datasets explicitly described as data (Source Data, Extended Data etc.)
+* patient clinical and human sensitive data
 
 2. Reused datasets:
 
-* reference genomes
-* external datasets directly used as input data in the study
+* reference genomes used for alignment
+* external datasets directly used as input data in the study (GP2, UK BioBank, GWAS etc.)
 
 3. Explicitly recorded experimental measurement datasets:
 
-* counts, intensity, behavioral measurements
-* ONLY if clearly described as collected or recorded data
+* cell counts, flow cytometry (FACS), fluorometry
+* assays (ELISA etc.)
+* fluorescence intensity, spectrometry
+* behavioral tasks
+* LC-MS (proteomics, lipidomics)
+* images (immunofluorescence, immunohistochemistry, microscopy, electron microscopy, MRI, CT, Western blots, immunoblots etc.)
+* video recordings
+* ONLY if clearly described as acquired, collected or recorded data
 * NOT if they are part of statistical analysis or derived metrics
 
 ---
@@ -36,9 +42,10 @@ Extract a DATASET_ROW ONLY if at least one of the following is true:
 DO NOT create DATASET_ROW for:
 
 * biological entities (genes, proteins, taxa)
-* statistical outputs (PCA, diversity metrics, correlations)
+* lab materials (plasmids)
+* statistical analyses (PCA, diversity metrics, correlations)
 * derived or transformed data (log2 values, normalized values)
-* plots, figures, or visualizations
+* plots, figures, tables or visualizations
 * references to tables/figures without explicit dataset description
 * software/tools (unless paired with dataset)
 * vague mentions of "data" without clear dataset identity
