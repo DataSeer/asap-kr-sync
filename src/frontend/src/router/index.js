@@ -193,14 +193,14 @@ router.afterEach((to) => {
   }
 })
 
-// Helper function to update title with submission info
-export function setSubmissionTitle(manuscriptId, stepTitle) {
+// Helper function to update the browser tab/page title with submission info.
+// We lead with the human-readable submission title (falling back to the
+// manuscript id, then the workflow step) so curators can tell submissions
+// apart across tabs instead of every step reading "Step X".
+export function setSubmissionTitle(submissionTitle, stepTitle) {
   const baseTitle = 'KRT Assist'
-  if (manuscriptId && stepTitle) {
-    document.title = `${manuscriptId} - ${stepTitle} | ${baseTitle}`
-  } else if (manuscriptId) {
-    document.title = `${manuscriptId} | ${baseTitle}`
-  }
+  const label = submissionTitle || stepTitle
+  document.title = label ? `${label} | ${baseTitle}` : baseTitle
 }
 
 export default router

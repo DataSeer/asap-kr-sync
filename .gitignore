@@ -44,6 +44,9 @@ coverage/
 *.seed
 *.pid.lock
 
+# Local-only known-issues log (not tracked)
+KNOWN_ISSUES.md
+
 # Frontend specific
 src/frontend/.vite/
 src/frontend/dist/

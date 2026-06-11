@@ -7,7 +7,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { mergeDetections } = require('./merge-detections.service');
-const { computeSuggestions, parseSuggestionId, isLossyRename } = require('./diff-suggestions.service');
+const { computeSuggestions, parseSuggestionId, isLossyRename, buildSuppressionFilter } = require('./diff-suggestions.service');
 
 const itemAddRow = (overrides = {}) => ({
   type: 'add_row',
@@ -166,8 +166,11 @@ test('alias match: user has identifier-only, detector has name → edit not add'
     identifier: '10.5281/zenodo.1', newReuse: 'reuse', source: '', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
-  assert.ok(sugs.every(s => s.type === 'edit'));
-  assert.ok(sugs.some(s => s.data.column === 'resourceName'));
+  // It's a match (by identifier) → NOT surfaced as an add row...
+  assert.ok(sugs.every(s => s.type !== 'add_row'));
+  // ...and RESOURCE NAME edits are no longer suggested for existing rows,
+  // even to fill an empty name.
+  assert.ok(sugs.every(s => s.data?.column !== 'resourceName'));
 });
 
 test('alias match: identifier formats differ but normalize equal', () => {
@@ -303,8 +306,9 @@ test('computeSuggestions: suppresses lossy resourceName edit', () => {
     'lossy resourceName edit must be suppressed');
 });
 
-test('computeSuggestions: still surfaces enriching resourceName edit', () => {
-  // user has bare 'Anti-TH'; the more specific curated name 'Rabbit anti-TH (clone TH2)' adds info.
+test('computeSuggestions: never surfaces resourceName edits (even enriching ones)', () => {
+  // Per ASAP, the tool must not suggest renaming an existing KRT row — not even
+  // a more-specific curated name. resourceName is excluded from editableColumns.
   const gen = mergeDetections([
     { source: 'identifier_detection', items: [itemAddRow({
       resourceType: 'Antibody', resourceName: 'Rabbit anti-TH (clone TH2)',
@@ -316,7 +320,7 @@ test('computeSuggestions: still surfaces enriching resourceName edit', () => {
     identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
-  assert.ok(sugs.some(s => s.data?.column === 'resourceName' && s.data?.newValue === 'Rabbit anti-TH (clone TH2)'));
+  assert.equal(sugs.filter(s => s.data?.column === 'resourceName').length, 0);
 });
 
 
@@ -355,23 +359,129 @@ test('makeAddSuggestion: no detector blurb → context is null, data.AI stays bl
 });
 
 test('makeEditSuggestion: data.additionalInformation is blank; context held on suggestion', () => {
-  // Generated proposes a name edit; the user has a row with the same RRID.
-  // Verify the (non-additionalInformation) edit suggestion still carries the
-  // detector blurb as context, while the persisted-payload field stays empty.
+  // Generated proposes an IDENTIFIER edit (the user's row matches by name but
+  // has no identifier yet). Verify the edit suggestion carries the detector
+  // blurb as context, while the persisted-payload field stays empty.
   const gen = mergeDetections([
     { source: 'a', items: [itemAddRow({
-      resourceType: 'Antibody', resourceName: 'Rabbit anti-TH (clone TH2)',
+      resourceType: 'Antibody', resourceName: 'Anti-TH', source: '',
       identifier: 'RRID:AB_2201407',
       additionalInformation: 'Catalog T1299 nearby'
     })] }
   ]);
   const krt = [{
     id: 'r1', resourceType: 'Antibody', resourceName: 'Anti-TH',
-    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: ''
+    identifier: '', newReuse: 'reuse', source: '', additionalInformation: ''
   }];
   const sugs = computeSuggestions(gen, krt);
-  const nameEdit = sugs.find(s => s.data?.column === 'resourceName');
-  assert.ok(nameEdit, 'expected a resourceName edit suggestion');
-  assert.equal(nameEdit.data.additionalInformation, '');
-  assert.equal(nameEdit.context, 'Catalog T1299 nearby');
+  const idEdit = sugs.find(s => s.data?.column === 'identifier');
+  assert.ok(idEdit, 'expected an identifier edit suggestion');
+  assert.equal(idEdit.data.additionalInformation, '');
+  assert.equal(idEdit.context, 'Catalog T1299 nearby');
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Configurable suggestion suppression (PDF_ANALYSIS_SUPPRESS_SUGGESTIONS)
+// ───────────────────────────────────────────────────────────────────────────
+
+test('buildSuppressionFilter: unset → default suppresses resourceName edits + SOURCE overwrites', () => {
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+  const f = buildSuppressionFilter();
+  assert.equal(f({ type: 'edit', data: { column: 'resourceName', oldValue: 'X' } }), true);
+  assert.equal(f({ type: 'edit', data: { column: 'source', oldValue: 'https://x' } }), true); // filled → overwrite suppressed
+  assert.equal(f({ type: 'edit', data: { column: 'source', oldValue: '' } }), false);          // empty → fill allowed
+  assert.equal(f({ type: 'edit', data: { column: 'identifier', oldValue: '' } }), false);
+  assert.equal(f({ type: 'add_row' }), false);
+});
+
+test('buildSuppressionFilter: state qualifier targets empty vs filled', () => {
+  process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS = 'update:source:filled, update:identifier:empty';
+  const f = buildSuppressionFilter();
+  assert.equal(f({ type: 'edit', data: { column: 'source', oldValue: 'x' } }), true);     // filled → drop
+  assert.equal(f({ type: 'edit', data: { column: 'source', oldValue: '' } }), false);      // empty → keep
+  assert.equal(f({ type: 'edit', data: { column: 'identifier', oldValue: '' } }), true);   // empty → drop
+  assert.equal(f({ type: 'edit', data: { column: 'identifier', oldValue: 'x' } }), false); // filled → keep
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+});
+
+test('buildSuppressionFilter: none → suppresses nothing', () => {
+  process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS = 'none';
+  const f = buildSuppressionFilter();
+  assert.equal(f({ type: 'edit', data: { column: 'resourceName' } }), false);
+  assert.equal(f({ type: 'add_row' }), false);
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+});
+
+test('buildSuppressionFilter: update:source drops SOURCE edits only', () => {
+  process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS = 'update:source';
+  const f = buildSuppressionFilter();
+  assert.equal(f({ type: 'edit', data: { column: 'source' } }), true);
+  assert.equal(f({ type: 'edit', data: { column: 'identifier' } }), false);
+  assert.equal(f({ type: 'add_row' }), false);
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+});
+
+test('buildSuppressionFilter: multiple tokens + bare actions', () => {
+  process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS = 'add, edit:identifier';
+  const f = buildSuppressionFilter();
+  assert.equal(f({ type: 'add_row' }), true);
+  assert.equal(f({ type: 'edit', data: { column: 'identifier' } }), true);
+  assert.equal(f({ type: 'edit', data: { column: 'source' } }), false);
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+});
+
+test('computeSuggestions honours PDF_ANALYSIS_SUPPRESS_SUGGESTIONS (drops SOURCE edits)', () => {
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({
+      resourceType: 'Software/code', resourceName: 'Tool', source: 'https://example.org',
+      identifier: 'RRID:SCR_000001'
+    })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Tool',
+    identifier: 'RRID:SCR_000001', newReuse: 'reuse', source: '', additionalInformation: ''
+  }];
+  // Baseline: a SOURCE edit is produced (user's source is empty).
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+  assert.ok(computeSuggestions(gen, krt).some(s => s.data?.column === 'source'));
+  // With the filter: the SOURCE edit is dropped.
+  process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS = 'update:source';
+  assert.equal(computeSuggestions(gen, krt).filter(s => s.data?.column === 'source').length, 0);
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+});
+
+test('computeSuggestions: with none, a non-lossy resourceName edit surfaces; lossy stays suppressed', () => {
+  process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS = 'none';
+  // Non-lossy enrichment: user 'Anti-TH' → curated 'Rabbit anti-TH (clone TH2)' adds info.
+  const genGood = mergeDetections([{ source: 'identifier_detection', items: [itemAddRow({
+    resourceType: 'Antibody', resourceName: 'Rabbit anti-TH (clone TH2)', identifier: 'RRID:AB_2201407'
+  })] }]);
+  const krtGood = [{ id: 'r1', resourceType: 'Antibody', resourceName: 'Anti-TH',
+    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: '' }];
+  assert.ok(computeSuggestions(genGood, krtGood).some(s => s.data?.column === 'resourceName'));
+
+  // Lossy rename stays suppressed by the lossy guard even with the filter off.
+  const genLossy = mergeDetections([{ source: 'identifier_detection', items: [itemAddRow({
+    resourceType: 'Antibody', resourceName: 'Anti-TH', identifier: 'RRID:AB_2201407'
+  })] }]);
+  const krtLossy = [{ id: 'r1', resourceType: 'Antibody', resourceName: 'Rabbit anti-TH',
+    identifier: 'RRID:AB_2201407', newReuse: 'reuse', source: '', additionalInformation: '' }];
+  assert.equal(computeSuggestions(genLossy, krtLossy).filter(s => s.data?.column === 'resourceName').length, 0);
+
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+});
+
+test('computeSuggestions: default fills an empty SOURCE but never overwrites a filled one', () => {
+  delete process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+  const gen = mergeDetections([{ source: 'a', items: [itemAddRow({
+    resourceName: 'Tool', identifier: 'RRID:SCR_000001', source: 'https://detector.org'
+  })] }]);
+  // user SOURCE filled → no source edit (overwrite suppressed by update:source:filled)
+  const krtFilled = [{ id: 'r1', resourceType: 'Software/code', resourceName: 'Tool',
+    identifier: 'RRID:SCR_000001', newReuse: 'reuse', source: 'https://user.org', additionalInformation: '' }];
+  assert.equal(computeSuggestions(gen, krtFilled).filter(s => s.data?.column === 'source').length, 0);
+  // user SOURCE empty → source edit suggested
+  const krtEmpty = [{ id: 'r1', resourceType: 'Software/code', resourceName: 'Tool',
+    identifier: 'RRID:SCR_000001', newReuse: 'reuse', source: '', additionalInformation: '' }];
+  assert.ok(computeSuggestions(gen, krtEmpty).some(s => s.data?.column === 'source'));
 });

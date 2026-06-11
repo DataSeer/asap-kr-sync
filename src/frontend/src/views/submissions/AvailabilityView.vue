@@ -78,7 +78,7 @@ onMounted(async () => {
 
 watch(submission, (sub) => {
   if (sub) {
-    setSubmissionTitle(sub.manuscriptId || sub.title, 'Step 4: Edit manuscript')
+    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 4: Edit manuscript')
   }
 }, { immediate: true })
 

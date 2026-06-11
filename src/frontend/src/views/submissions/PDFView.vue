@@ -308,10 +308,10 @@ onMounted(async () => {
   await loadProtocols()
 })
 
-// Update page title with submission ID
+// Update page title with the submission title (manuscriptId is optional).
 watch(submission, (sub) => {
-  if (sub?.manuscriptId) {
-    setSubmissionTitle(sub.manuscriptId || sub.title, 'Step 3: Manage suggestions')
+  if (sub?.title || sub?.manuscriptId) {
+    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 3: Manage suggestions')
   }
 }, { immediate: true })
 
