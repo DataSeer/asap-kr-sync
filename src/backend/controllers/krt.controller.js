@@ -69,6 +69,17 @@ async function getData(req, res, next) {
       where: { submissionId: req.params.id, round }
     });
 
+    // Provenance for the "added by tool" badge: a row was inserted by the
+    // pipeline (an accepted AI add_row suggestion) iff it has an add_row
+    // change-log entry sourced from 'ai_suggestion'. Manual "Add Row" writes
+    // the same action with source 'manual', so the two are distinguishable
+    // without any extra column on krt_data.
+    const toolAddLogs = await ChangeLog.findAll({
+      where: { submissionId: req.params.id, round, action: 'add_row', source: 'ai_suggestion' },
+      attributes: ['rowId']
+    });
+    const toolAddedRowIds = new Set(toolAddLogs.map(log => log.rowId).filter(Boolean));
+
     // Group validation errors by row ID
     const errorsByRow = {};
     validationResults.forEach(error => {
@@ -85,7 +96,10 @@ async function getData(req, res, next) {
     });
 
     res.json({
-      rows: krtData.map(row => row.toKRTRow()),
+      rows: krtData.map(row => ({
+        ...row.toKRTRow(),
+        addedByTool: toolAddedRowIds.has(row.id)
+      })),
       validationErrors: errorsByRow,
       totalErrors: validationResults.filter(e => e.severity === 'error').length,
       totalWarnings: validationResults.filter(e => e.severity === 'warning').length

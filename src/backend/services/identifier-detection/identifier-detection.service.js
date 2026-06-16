@@ -27,6 +27,7 @@ const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const knownIdentifierIndex = require('./known-identifier-index.service');
 const knownIdentifierScanner = require('./known-identifier-scanner.service');
+const identifierConfig = require('../../config/identifier-detection-api');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
@@ -87,7 +88,9 @@ async function processIdentifierDetection(submissionId, jobLogger = null, { isFi
   if (!submission) throw new NotFoundError('Submission');
 
   const result = await runWithDemoFallback({
-    isExternalEnabled: true,    // always available — pure local scanner
+    // Pure local scanner — "external" just means "produce real data". Enabled
+    // by default; IDENTIFIER_DETECTION_ENABLED=false turns the module Off.
+    isExternalEnabled: identifierConfig.isEnabled(),
     demoEnabled: false,         // no demo path
     runExternal: () => detectIdentifiersForSubmission(submission, jobLogger),
     getDemoData: async () => null,
@@ -121,10 +124,11 @@ function snippetAt(text, position, radius = 80) {
  *
  * @param {string} markdownText
  * @param {object} index - result of knownIdentifierIndex.buildIndex(entries)
+ * @param {object} [opts] - scanner options (e.g. { cutAtReferences })
  * @returns {{ matches: object[], referencesCutoff: number, scannedLength: number }}
  */
-function detectIdentifiers(markdownText, index) {
-  return knownIdentifierScanner.scan(markdownText, index);
+function detectIdentifiers(markdownText, index, opts = {}) {
+  return knownIdentifierScanner.scan(markdownText, index, opts);
 }
 
 /**
@@ -227,9 +231,11 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     catalogTokens: index.catalogTokens.size
   });
 
-  // 3. Pipeline: detect → buildKrtItems → enrich (no-op) → dedupe
+  // 3. Pipeline: detect → buildKrtItems → dedupe
   const scanStart = Date.now();
-  const { matches, referencesCutoff, scannedLength } = detectIdentifiers(markdownText, index);
+  const { matches, referencesCutoff, scannedLength } = detectIdentifiers(markdownText, index, {
+    cutAtReferences: identifierConfig.cutAtReferences()
+  });
   const scanMs = Date.now() - scanStart;
   jobLogger?.log('scan_done', 'Identifier scan complete', {
     matchCount: matches.length,

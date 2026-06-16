@@ -294,10 +294,12 @@ onMounted(async () => {
   }
 })
 
-// Update page title with submission ID
+// Update page title with the submission title (manuscriptId is optional, so
+// gate on either identifier — otherwise submissions without a manuscript id
+// keep the router's generic "Step X" title).
 watch(submission, (sub) => {
-  if (sub?.manuscriptId) {
-    setSubmissionTitle(sub.manuscriptId || sub.title, 'Step 2: Fix the Key Resources Table')
+  if (sub?.title || sub?.manuscriptId) {
+    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 2: Fix the Key Resources Table')
   }
 }, { immediate: true })
 
@@ -824,6 +826,7 @@ function scrollToFirstWarning() {
         ref="krtEditorRef"
         :submission-id="route.params.id"
         :show-revalidate="true"
+        :show-suggestions="false"
         :krt-file-url="krtFile?.s3Url"
         @revalidate="handleValidate"
       />

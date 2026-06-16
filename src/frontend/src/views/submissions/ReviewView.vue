@@ -352,7 +352,7 @@ async function fetchChanges() {
 
 watch(submission, (sub) => {
   if (sub) {
-    setSubmissionTitle(sub.manuscriptId || sub.title, 'Step 3: Approve KRT')
+    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 3: Approve KRT')
   }
 }, { immediate: true })
 

@@ -371,11 +371,13 @@ function computeSuggestions(generated, krtRows, rejectedAddSet = new Set(), reje
     }
 
     // Match found → compare per-column. Resource_type and new_reuse are part
-    // of dedup_key so they always match. Compare the remaining fields.
-    // ADDITIONAL INFORMATION is intentionally NOT in this list: per ASAP,
-    // AI-driven changes never write to that cell. The detector context is
-    // still surfaced to the curator via `suggestion.context` (see
-    // makeAddSuggestion / makeEditSuggestion).
+    // of dedup_key so they always match. RESOURCE NAME / SOURCE / IDENTIFIER can
+    // each produce an edit here; which ones actually reach the user is then
+    // controlled by the PDF_ANALYSIS_SUPPRESS_SUGGESTIONS filter applied at the
+    // end of this function. Its DEFAULT suppresses RESOURCE NAME renames and
+    // SOURCE overwrites (don't replace a SOURCE the user already filled in) —
+    // both stay configurable. ADDITIONAL INFORMATION is never editable: AI-driven
+    // changes never write to that cell (detector context → `suggestion.context`).
     const editableColumns = ['resourceName', 'source', 'identifier'];
     const colReject = rejectedColumns.get(g.dedupKey) || new Set();
 
@@ -387,25 +389,73 @@ function computeSuggestions(generated, krtRows, rejectedAddSet = new Set(), reje
       // Don't suggest blanking out a non-empty user value.
       if (!String(newValue).trim()) continue;
       if (fieldEqual(fieldKey, oldValue, newValue)) continue;
-      // Per ASAP request: enrichment/detection should not aggressively
-      // overwrite SOURCE values the user already filled in. Only suggest a
-      // SOURCE edit when the user's cell is empty. Other columns can still
-      // surface edit suggestions normally because they're typically
-      // corrections (typos, missing RRID, etc.) the user welcomes.
-      if (fieldKey === 'source' && String(oldValue).trim() !== '') continue;
-      // Lossy-rename guard. The identifier scanner emits the curated DB's
-      // canonical resourceName for any RRID/DOI it matches. When that name
-      // is shorter, less specific, or a different entity than the user's
-      // name, surfacing it as an edit confuses more than it helps
-      // ("Rabbit anti-TH" → "Anti-TH", "Sheep anti-TH" → "tyrosine
-      // hydroxylase"). Skip these — user-side names always win when the
-      // proposed replacement loses information or changes meaning.
+      // Lossy-rename guard (only matters when resourceName edits are NOT
+      // suppressed by the filter): skip renames that drop information or change
+      // the entity ("Rabbit anti-TH" → "Anti-TH", etc.).
       if (fieldKey === 'resourceName' && isLossyRename(oldValue, newValue)) continue;
       suggestions.push(makeEditSuggestion(g, matched, fieldKey, oldValue, newValue));
     }
   }
 
-  return suggestions;
+  const suppress = buildSuppressionFilter();
+  return suggestions.filter(s => !suppress(s));
+}
+
+/**
+ * Suggestion-suppression filter, configured via the `PDF_ANALYSIS_SUPPRESS_SUGGESTIONS`
+ * env var. Comma-separated tokens, each `<action>[:<column>[:<state>]]`:
+ *   - `action` — `add` (drop add-row suggestions) · `edit`|`update` (drop edits)
+ *   - `column` — `source` | `identifier` | `resourceName` (omit = any column)
+ *   - `state`  — `empty` | `filled` — matches the user's CURRENT value in that
+ *                cell (omit = match regardless). Lets you target only edits that
+ *                FILL an empty cell, or only ones that OVERWRITE a filled cell.
+ *
+ * Examples:
+ *   - `update:source`          → drop ALL SOURCE edits
+ *   - `update:source:filled`   → drop SOURCE edits only when the user already
+ *                                has a value (don't overwrite); still fill empties
+ *   - `update:identifier:empty`→ drop IDENTIFIER edits only when the cell is empty
+ *
+ * `update` is an alias of `edit`; tokens/columns/states match case-insensitively.
+ * Unrecognised tokens are ignored.
+ *
+ * DEFAULT (when unset/blank): `update:resourceName,update:source:filled` — no
+ * name-change suggestions on existing rows, and never overwrite a SOURCE the
+ * user filled in. A non-empty value REPLACES the default; set `none` to suppress nothing.
+ *
+ * @returns {(suggestion: object) => boolean} true ⇒ drop the suggestion
+ */
+const DEFAULT_SUPPRESS_SUGGESTIONS = 'update:resourceName,update:source:filled';
+function buildSuppressionFilter() {
+  const env = process.env.PDF_ANALYSIS_SUPPRESS_SUGGESTIONS;
+  let raw = (env === undefined ? DEFAULT_SUPPRESS_SUGGESTIONS : String(env)).trim();
+  if (raw === '') raw = DEFAULT_SUPPRESS_SUGGESTIONS; // unset/blank → default
+  if (raw.toLowerCase() === 'none') return () => false; // explicit opt-out
+  const rules = [];
+  for (const tok of raw.split(',').map(t => t.trim()).filter(Boolean)) {
+    const parts = tok.split(':').map(s => (s || '').trim());
+    const action = (parts[0] || '').toLowerCase();
+    const type = (action === 'add' || action === 'add_row') ? 'add_row'
+               : (action === 'edit' || action === 'update') ? 'edit'
+               : null;
+    if (!type) continue;
+    const column = parts[1] ? parts[1].toLowerCase() : null;
+    const s = (parts[2] || '').toLowerCase();
+    const state = s === 'empty' ? 'empty'
+                : (s === 'filled' || s === 'nonempty' || s === 'value') ? 'filled'
+                : null;
+    rules.push({ type, column, state });
+  }
+  return (sug) => rules.some(r => {
+    if (r.type !== sug.type) return false;
+    if (r.column && String(sug.data?.column || '').toLowerCase() !== r.column) return false;
+    if (r.state) {
+      const filled = String(sug.data?.oldValue ?? '').trim() !== '';
+      if (r.state === 'empty' && filled) return false;
+      if (r.state === 'filled' && !filled) return false;
+    }
+    return true;
+  });
 }
 
 /**
@@ -436,5 +486,6 @@ module.exports = {
   parseSuggestionId,
   indexKrtForLookup,
   isLossyRename,
+  buildSuppressionFilter,
   COLUMN_MAP
 };
