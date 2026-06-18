@@ -124,6 +124,21 @@ async function getById(req, res, next) {
     userData.teams = userData.userTeams ? userData.userTeams.map(ut => ut.team) : [];
     delete userData.userTeams;
 
+    // Mirror the team-scoping that `list` enforces: an ASAP PM may only read
+    // users who share one of their teams (or teamless users if the PM has no
+    // teams). Without this a PM could enumerate any user by ID, bypassing the
+    // list scope. 404 (not 403) so we don't confirm the target's existence.
+    if (req.user.role === ROLES.ASAP_PM) {
+      const pmTeams = req.user.teams || [];
+      const targetTeams = userData.teams || [];
+      const shareTeam = pmTeams.length === 0
+        ? targetTeams.length === 0
+        : targetTeams.some(team => pmTeams.includes(team));
+      if (!shareTeam) {
+        throw new NotFoundError('User');
+      }
+    }
+
     res.json({ user: userData });
   } catch (error) {
     next(error);

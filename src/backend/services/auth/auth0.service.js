@@ -153,6 +153,35 @@ function maskEmail(email) {
   return email.replace(/^(.{1,2}).*(@.*)$/, '$1***$2');
 }
 
+// Standard OIDC claims that carry PII — masked in the debug view below.
+const PII_CLAIM_KEYS = new Set([
+  'name', 'given_name', 'family_name', 'middle_name', 'nickname',
+  'preferred_username', 'profile', 'picture', 'website', 'gender',
+  'birthdate', 'phone_number', 'address'
+]);
+
+/**
+ * Build a log-safe view of ID-token claims for debugging the Auth0 integration
+ * — e.g. discovering which custom/namespaced claim carries the user's role and
+ * what shape it has (string vs array vs object). Known PII claims are masked;
+ * every other key — including custom namespaced claims like
+ * `https://your-app/roles` — is shown in full so field names and structure are
+ * visible without leaking PII to the logs.
+ * @param {object} claims - verified ID-token payload
+ * @returns {object} redacted copy safe to log
+ */
+function redactClaims(claims) {
+  if (!claims || typeof claims !== 'object') return {};
+  const out = {};
+  for (const [key, value] of Object.entries(claims)) {
+    if (key === 'email') out[key] = maskEmail(value);
+    else if (key === 'sub') out[key] = typeof value === 'string' ? `${value.slice(0, 8)}***` : '[redacted]';
+    else if (PII_CLAIM_KEYS.has(key)) out[key] = '[redacted]';
+    else out[key] = value; // non-PII / custom claims (e.g. role) shown in full
+  }
+  return out;
+}
+
 /**
  * Verify and decode an Auth0 ID token using JWKS.
  *
@@ -188,7 +217,17 @@ async function verifyIdToken(idToken) {
     throw new AuthenticationError('Invalid ID token');
   }
 
-  logger.debug('Auth0 ID token payload', { claims: verified });
+  // Opt-in claim debugging. Set AUTH0_DEBUG_CLAIMS=true to log the ID-token
+  // claim names + values with PII masked — use this to discover which custom
+  // claim Auth0 sends the role in (e.g. a namespaced `https://app/roles`) and
+  // its shape. Never logs raw email/name/sub, so it is safe to enable
+  // temporarily in any environment. Defaults off.
+  if (process.env.AUTH0_DEBUG_CLAIMS === 'true') {
+    logger.info('Auth0 ID token claims (PII-redacted)', {
+      keys: Object.keys(verified),
+      claims: redactClaims(verified)
+    });
+  }
 
   return {
     sub: verified.sub,

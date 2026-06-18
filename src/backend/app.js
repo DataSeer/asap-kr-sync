@@ -13,6 +13,7 @@ const fs = require('fs');
 const routes = require('./routes');
 const errorMiddleware = require('./middleware/error.middleware');
 const { csrfProtect } = require('./middleware/csrf.middleware');
+const { apiLimiter } = require('./middleware/rate-limit.middleware');
 const logger = require('./utils/logger');
 
 const SPA_DIST_PATH = path.resolve(__dirname, '..', 'frontend', 'dist');
@@ -24,8 +25,33 @@ const app = express();
 // which is critical for per-IP rate limiters on /api/auth/* and /api/auth/auth0/*.
 app.set('trust proxy', 1);
 
-// Security middleware
-app.use(helmet());
+// Security middleware. Explicit CSP tuned for the Vite/Vue SPA this app serves:
+// scripts are bundled (self, no inline), Vue injects component styles inline
+// (style 'unsafe-inline'), images may be data:/blob: (base64 + generated
+// downloads), and the SPA only talks to its own /api origin. File downloads use
+// window.open() to S3 presigned URLs (top-level navigation, not governed here).
+// If you later embed S3 content in an <iframe>/<img> or add a CDN/Auth0 fetch,
+// extend frame-src/img-src/connect-src accordingly.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'blob:'],
+      fontSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'self'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"]
+    }
+  }
+}));
+
+// Defense in depth: helmet already removes this, but disable it explicitly so
+// the server tech isn't advertised even if helmet config changes.
+app.disable('x-powered-by');
 
 // CORS configuration
 app.use(cors({
@@ -58,6 +84,11 @@ app.use(morgan(morganFormat, {
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Baseline DoS protection on the whole API surface (200 req/min/IP from
+// conf/rate-limits.json). Auth/upload/LM endpoints add their own stricter,
+// per-user limiters on top. Tune the `api` limit if shared-NAT offices hit it.
+app.use('/api', apiLimiter);
 
 // CSRF protection (double-submit cookie pattern). Runs before routes so
 // every state-changing request to /api is checked. Login / refresh / Auth0
