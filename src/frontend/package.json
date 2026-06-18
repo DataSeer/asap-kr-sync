@@ -14,7 +14,7 @@
     "@headlessui/vue": "^1.7.17",
     "@heroicons/vue": "^2.1.1",
     "@vueuse/core": "^10.7.0",
-    "axios": "^1.15.2",
+    "axios": "^1.18.0",
     "papaparse": "^5.5.3",
     "pinia": "^2.1.7",
     "vue": "^3.4.0",
