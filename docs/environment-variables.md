@@ -52,6 +52,7 @@ Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=St
 | `AUTH0_CLIENT_SECRET` | Auth0 application client secret | — | If `AUTH0_ENABLED=true` |
 | `AUTH0_SECRET_ID` | AWS Secrets Manager secret ID. When set (production / staging EC2), the four `AUTH0_*` credentials above are loaded from Secrets Manager and override any `.env` values. | — | No |
 | `AUTH0_VERIFY_ON_REFRESH` | Re-check Auth0 user status (blocked/deleted) on every token refresh so disable actions propagate within ~1h (one access-token cycle since Phase 6). Adds 100-300 ms per refresh. | `true` | No |
+| `AUTH0_DEBUG_CLAIMS` | When `true`, logs verified Auth0 ID-token claim **names + values with PII masked** (email/name/sub/etc. redacted; custom/namespaced claims like a role claim shown in full). Use to discover which claim carries the role and its shape. Safe to enable temporarily in any env; keep off in normal operation. | `false` | No |
 
 ## AWS S3 Storage
 

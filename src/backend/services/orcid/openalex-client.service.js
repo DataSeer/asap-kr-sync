@@ -59,11 +59,16 @@ async function lookupByDoi(doi) {
       params.mailto = openalexConfig.mailto;
     }
 
+    // Encode the DOI: it is extracted from attacker-supplied PDF content and
+    // can contain '?', '#', '&', '/', which would otherwise inject extra
+    // path/query segments into the request URL. maxRedirects:0 prevents a
+    // hostile/compromised upstream response from redirecting the call elsewhere.
     const response = await axios.get(
-      `${openalexConfig.baseUrl}/works/doi:${doi}`,
+      `${openalexConfig.baseUrl}/works/doi:${encodeURIComponent(doi)}`,
       {
         params,
         timeout: openalexConfig.timeout,
+        maxRedirects: 0,
         headers: { 'Accept': 'application/json' }
       }
     );

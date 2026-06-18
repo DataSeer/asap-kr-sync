@@ -86,6 +86,14 @@ async function list(req, res, next) {
       }
     }
 
+    // Allowlist sort column/direction here. The pagination Joi schema also
+    // validates these, but it writes to req.validatedQuery while this handler
+    // reads req.query — so re-assert the allowlist to avoid ordering by an
+    // arbitrary/hidden column (and the error-based 500s that come with it).
+    const SORTABLE_COLUMNS = ['createdAt', 'updatedAt', 'title', 'status'];
+    const sortColumn = SORTABLE_COLUMNS.includes(req.query.sort) ? req.query.sort : 'createdAt';
+    const sortOrder = req.query.order === 'ASC' ? 'ASC' : 'DESC';
+
     const { count, rows } = await Submission.findAndCountAll({
       where: filter,
       include: [{
@@ -93,7 +101,7 @@ async function list(req, res, next) {
         as: 'user',
         attributes: ['id', 'name', 'email']
       }],
-      order: [[req.query.sort || 'createdAt', req.query.order || 'DESC']],
+      order: [[sortColumn, sortOrder]],
       limit,
       offset
     });

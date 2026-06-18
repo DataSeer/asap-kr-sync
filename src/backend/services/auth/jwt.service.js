@@ -31,7 +31,7 @@ function generateAccessToken(user) {
       role: user.role
     },
     JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
+    { expiresIn: JWT_EXPIRES_IN, algorithm: 'HS256' }
   );
 }
 
@@ -44,7 +44,7 @@ function generateRefreshToken(user) {
   return jwt.sign(
     { userId: user.id, type: 'refresh' },
     JWT_SECRET,
-    { expiresIn: JWT_REFRESH_EXPIRES_IN }
+    { expiresIn: JWT_REFRESH_EXPIRES_IN, algorithm: 'HS256' }
   );
 }
 
@@ -68,7 +68,9 @@ function generateTokenPair(user) {
  */
 function verifyAccessToken(token) {
   try {
-    return jwt.verify(token, JWT_SECRET);
+    // Pin HS256 to prevent algorithm-confusion attacks (never accept a token
+    // whose header declares a different alg than we sign with).
+    return jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       throw new AuthenticationError('Token expired');
@@ -84,7 +86,7 @@ function verifyAccessToken(token) {
  */
 function verifyRefreshToken(token) {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     if (decoded.type !== 'refresh') {
       throw new AuthenticationError('Invalid refresh token');
     }

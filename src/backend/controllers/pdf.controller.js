@@ -66,6 +66,22 @@ async function uploadSupplemental(req, res, next) {
       throw new ValidationError('No file uploaded');
     }
 
+    // Magic-byte check before the bytes ever reach LibreOffice (.doc/.docx are
+    // converted via libreoffice-convert). The multer filter only checks the
+    // file extension, so without this an attacker could rename any payload to
+    // .docx and feed it to the office parser. Allow real PDF, DOCX/ZIP, or
+    // legacy DOC (OLE2 compound-file) signatures only.
+    const buf = req.file.buffer;
+    const isPdf = buf.length >= 4 && buf.subarray(0, 4).toString('ascii') === '%PDF';
+    const isZip = buf.length >= 4
+      && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04;
+    const isOle = buf.length >= 8
+      && buf[0] === 0xd0 && buf[1] === 0xcf && buf[2] === 0x11 && buf[3] === 0xe0
+      && buf[4] === 0xa1 && buf[5] === 0xb1 && buf[6] === 0x1a && buf[7] === 0xe1;
+    if (!isPdf && !isZip && !isOle) {
+      throw new ValidationError('Uploaded file is not a valid PDF, DOC, or DOCX');
+    }
+
     const submission = req.submission;
     const result = await pdfService.uploadSupplemental(
       submission.id,
