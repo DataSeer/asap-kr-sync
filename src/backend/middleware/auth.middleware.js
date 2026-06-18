@@ -86,7 +86,9 @@ async function authenticate(req, res, next) {
  */
 async function tryLocalVerification(token) {
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Pin HS256 — this local verifier runs alongside the Auth0 RS256 verifier,
+    // so an unpinned alg is the classic algorithm-confusion setup.
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     const result = await fetchUserWithTeams({ id: decoded.userId });
     if (!result) {
       throw new AuthenticationError('User not found');
