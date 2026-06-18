@@ -174,6 +174,36 @@ Upload a KRT file (CSV or XLSX only — legacy `.xls`/`.ods` are not supported).
 ### `GET /api/submissions/:id/krt`
 Get KRT data (rows + validation errors).
 
+- **Returns**: `{ rows: KrtRow[], validationErrors, totalErrors, totalWarnings }`
+
+A **KRT row** (`KrtRow`) is the display shape produced by `KRTData.prototype.toKRTRow()`
+(`src/backend/models/KRTData.js`). The six visible columns use **uppercase display keys**;
+metadata fields use camelCase:
+
+```jsonc
+{
+  "id": "a1b2c3d4-...",            // UUID of the krt_data row
+  "RESOURCE TYPE": "Software/code",
+  "RESOURCE NAME": "Python",
+  "SOURCE": "https://python.org",
+  "IDENTIFIER": "RRID:SCR_008394",
+  "NEW/REUSE": "reuse",           // "new" | "reuse" | ""
+  "ADDITIONAL INFORMATION": "",   // free text; user-owned
+  "parsedIdentifiers": {},         // structured identifier components (JSONB)
+  "round": 1,
+  "originRowId": null,             // self-ref to the source row on round copies, else null
+  "addedByTool": false             // true iff inserted by an accepted AI add_row suggestion
+}
+```
+
+> The persisted DB columns (snake_case: `resource_type`, `new_reuse`, `additional_information`, …)
+> are documented in [database.md → `krt_data`](./database.md#krt_data). `toKRTRow()` is the mapping
+> from those columns to the uppercase API shape above; `addedByTool` is computed per request from the
+> change log (not a stored column).
+
+The response also includes `validationErrors` (an object keyed by row `id`, each value an array of
+`{ column, type, message, severity, suggestion }`), plus `totalErrors` and `totalWarnings` counts.
+
 ### `PATCH /api/submissions/:id/krt/:rowId`
 Update a KRT row cell.
 - **Body**: `{ column, value, source? }`
@@ -223,6 +253,102 @@ Re-trigger DAS extraction from the latest PDF.
 
 ### `GET /api/submissions/:id/suggestions`
 Get all pending suggestions (unified from all sources: PDF analysis, software detection, etc.).
+
+- **Returns**: `{ suggestions: Suggestion[] }`
+
+Suggestions are **not stored** — they are diff-computed at read time as the delta between the
+**Generated KRT** (the merged detector output, see
+[background-modules.md §2.3](./background-modules.md#23-how-module-outputs-become-suggestions)) and the
+user's current KRT, minus any rejected rows. IDs are **synthetic and deterministic**, derived from the
+resource's `dedupKey` (`identifier|resourceType|newReuse`), so the same resource always yields the same
+suggestion id across reads. Built in `src/backend/services/pdf-analysis/diff-suggestions.service.js`;
+the rejected view is rendered in `src/backend/services/suggestion/suggestion.service.js`.
+
+There are two pending shapes (`add_row`, `edit`) plus a `rejected` view of either.
+
+**`add_row`** — propose inserting a new resource row:
+
+```jsonc
+{
+  "id": "add:rrid:scr_008394|Software/code|reuse",  // "add:<dedupKey>"
+  "type": "add_row",
+  "action": "add_row",
+  "status": "pending",
+  "source": "pdf_analysis",
+  "title": "Python",
+  "description": "Add Software/code: Python",
+  "detail": "…manuscript excerpt / detector context…",  // for the details panel; may be null
+  "evidence": "…extracted text from detectedBy entries…", // legacy tooltip; may be null
+  "context": "…detector blurb…",   // UI-only hint, NOT persisted to the KRT
+  "confidence": 0.8,                // 0..1, max across contributing detectors
+  "existsInKRT": "false",
+  "matchedKrtRowId": null,
+  "data": {                          // the row that gets written on approve
+    "resourceType": "Software/code",
+    "resourceName": "Python",
+    "source": "https://python.org", // inferred from identifier when empty
+    "identifier": "RRID:SCR_008394",
+    "newReuse": "reuse",
+    "additionalInformation": ""      // ALWAYS blank — detector context is never persisted
+  },
+  "mergedFrom": [                    // provenance copied from the Generated KRT's detectedBy
+    { "source": "software_detection", "confidence": 0.8, "originalItem": { /* pre-dedup KrtEntry */ } }
+  ]
+}
+```
+
+**`edit`** — propose updating a single cell of an existing row. Only `resourceName`, `source`, and
+`identifier` can produce edits (`resourceType` and `newReuse` are part of the dedup key and immutable;
+`additionalInformation` is never edited):
+
+```jsonc
+{
+  "id": "edit:rrid:ab_2201407|Antibody|reuse:identifier",  // "edit:<dedupKey>:<column>"
+  "type": "edit",
+  "action": "edit",
+  "status": "pending",
+  "source": "pdf_analysis",
+  "title": "Update IDENTIFIER of Anti-TH",
+  "description": "IDENTIFIER: \"\" → \"RRID:AB_2201407\"",
+  "detail": "…detector context…",   // may be null
+  "context": "…detector blurb…",     // UI-only hint
+  "confidence": 0.8,
+  "existsInKRT": "update",
+  "matchedKrtRowId": "a1b2c3d4-...", // the krt_data row this edit targets
+  "data": {
+    "rowId": "a1b2c3d4-...",         // authoritative target row id
+    "column": "identifier",          // camelCase field key
+    "columnLabel": "IDENTIFIER",     // uppercase display label
+    "oldValue": "",
+    "newValue": "RRID:AB_2201407",
+    "resourceType": "Antibody",      // full resource context, for display
+    "resourceName": "Anti-TH",
+    "source": "https://example.com",
+    "identifier": "RRID:AB_2201407",
+    "newReuse": "reuse",
+    "additionalInformation": ""
+  },
+  "mergedFrom": [ { "source": "identifier_detection", "confidence": 0.8, "originalItem": { /* … */ } } ]
+}
+```
+
+**`rejected`** — a previously rejected suggestion, rendered from the `rejected_resources` audit table
+(see [database.md](./database.md#krt_data)). The audit fields are immutable, so this view stays stable
+even if the Generated KRT later changes:
+
+```jsonc
+{
+  "id": "add:rrid:scr_008394|Software/code|reuse",
+  "type": "add_row",                 // or "edit"
+  "status": "rejected",
+  "source": "pdf_analysis",
+  "title": "Python",
+  "description": "Add Software/code: Python",
+  "rejectionReason": null,            // user-provided reason, or null
+  "rejectedAt": "2026-06-18T10:30:00.000Z",
+  "data": { "resourceType": "Software/code", "resourceName": "Python", "identifier": "RRID:SCR_008394", "newReuse": "reuse" }
+}
+```
 
 ### `POST /api/submissions/:id/suggestions/approve`
 Approve a suggestion (applies the change to the KRT).
