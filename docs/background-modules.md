@@ -71,7 +71,60 @@ through three stages:
 A `KrtEntry` carries: `resourceType`, `resourceName`, `identifier`, `source`, `newReuse` (`new|reuse|''`),
 `origin` (detector label), `confidence` (0–1), `additionalInformation`, and a `detectorMeta` object for
 UI-only metadata (excerpt, relevance, version, etc.). The detector writes `{ items, meta }` to its job's
-`submission_jobs.result.data`.
+`submission_jobs.result.data`. The canonical shape is defined in `services/pdf-analysis/krt-entry.js`:
+
+```jsonc
+{
+  "resourceType": "Software/code",
+  "resourceName": "Python",
+  "identifier": "RRID:SCR_008394",
+  "source": "https://python.org",
+  "newReuse": "reuse",              // "new" | "reuse" | ""
+  "origin": "softcite+list",        // detector label
+  "confidence": 0.8,                // 0..1
+  "additionalInformation": "…context/snippet…",
+  "detectorMeta": {                  // UI-only; NOT persisted to krt_data
+    "relevance": "HIGH",            // HIGH | MEDIUM | LOW (Gemini/curated)
+    "text_excerpt": "…~200-char snippet…",
+    "context": "…Softcite sentence…",
+    "version": "3.10",
+    "creator": "Python Software Foundation",
+    "aliases": ["CPython"],
+    "matchedTypes": ["software"],   // identifier-scan
+    "position": 1234                 // char offset in source text
+  }
+}
+```
+
+After **`dedupeKrtItems`**, surviving entries also gain a `mergedFrom: [{ confidence, originalItem }]`
+array recording the pre-dedup contributors that collapsed into them.
+
+When `pdf_analysis` (§3.9) merges every detector's items into the **Generated KRT**, each row is
+re-keyed by `dedupKey` and carries a `detectedBy` provenance array (the cross-detector equivalent of
+`mergedFrom`). Note `sourceUrl` here vs. `source` on a `KrtEntry`:
+
+```jsonc
+{
+  "dedupKey": "rrid:scr_008394|Software/code|reuse",  // identifier|resourceType|newReuse
+  "resourceType": "Software/code",
+  "resourceName": "Python",         // best canonical name across contributors
+  "sourceUrl": "https://python.org", // inferred from identifier when absent
+  "identifier": "RRID:SCR_008394",
+  "newReuse": "reuse",
+  "additionalInformation": "…line-deduped, concatenated detector context…",
+  "confidence": 0.8,                // max across contributors
+  "detectedBy": [
+    { "source": "software_detection", "confidence": 0.8, "originalItem": { /* pre-dedup KrtEntry */ } }
+  ]
+}
+```
+
+> `dedupKey`, `detectedBy`/`mergedFrom`, `detectorMeta` and `confidence` are **transient** — they drive
+> suggestion generation and the curator UI but are stripped before a row is persisted to `krt_data`. The
+> persisted/display shapes are documented in
+> [api-reference.md → KRT Operations](./api-reference.md#krt-operations) and
+> [database.md → `krt_data`](./database.md#krt_data); the diff-computed suggestion shapes are in
+> [api-reference.md → Suggestions](./api-reference.md#suggestions).
 
 ### 2.2 Fail-soft: the On / Demo / Off + Done / Fail model
 

@@ -49,9 +49,13 @@ async function list(req, res, next) {
       }
     }
 
-    // Add optional userId filter (supports comma-separated values)
-    if (req.query.userId) {
-      const userIds = req.query.userId.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+    // Add optional userId filter (supports comma-separated values).
+    // User IDs are UUIDs — keep them as strings. parseInt would turn every
+    // UUID into NaN and silently drop the filter, returning all submissions.
+    // `!filter.userId` mirrors the team guard: never let a query param widen
+    // an author's role-scoped own-submissions restriction.
+    if (req.query.userId && !filter.userId) {
+      const userIds = req.query.userId.split(',').map(id => id.trim()).filter(Boolean);
       if (userIds.length === 1) {
         filter.userId = userIds[0];
       } else if (userIds.length > 1) {
