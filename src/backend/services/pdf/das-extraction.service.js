@@ -31,7 +31,17 @@ function hasPrompt() {
   return fs.existsSync(PROMPT_FILE);
 }
 
-function getPrompt() {
+/**
+ * Resolve the extraction prompt. An explicit `override` (non-empty string) wins
+ * — used by tuning/experiment scripts; otherwise the committed default file is
+ * read once and cached.
+ * @param {string} [override] - optional prompt text to use instead of the file
+ * @returns {string}
+ */
+function getPrompt(override) {
+  if (override != null && String(override).trim()) {
+    return String(override).trim();
+  }
   if (!_promptCache) {
     if (!hasPrompt()) {
       throw new Error(`Prompt file not found: ${PROMPT_FILE} — copy the .example file to enable DAS extraction`);
@@ -80,12 +90,14 @@ function parseGeminiResponse(text) {
  * markdown.
  *
  * @param {string} markdownText - Full markdown of the manuscript
+ * @param {{ prompt?: string }} [options] - `prompt` overrides the default
+ *   extraction prompt (defaults to the committed prompt file content).
  * @returns {Promise<null | { content, partialMatch, sectionFragmented, raw }>}
  *   null when the service is disabled / unconfigured.
  *   Otherwise the parsed Gemini response; `raw` is the full text Gemini
  *   returned (kept for forensics / saveRawResponse).
  */
-async function extractDAS(markdownText) {
+async function extractDAS(markdownText, { prompt } = {}) {
   if (!dasConfig.isConfigured()) {
     logger.warn('DAS Extraction not configured, skipping');
     return null;
@@ -96,8 +108,8 @@ async function extractDAS(markdownText) {
   }
 
   const ai = new GoogleGenAI({ apiKey: dasConfig.apiKey });
-  const prompt = getPrompt();
-  const fullPrompt = `${prompt}\n\nSection type: ${dasConfig.section}\n\nMANUSCRIPT:\n${markdownText}`;
+  const resolvedPrompt = getPrompt(prompt);
+  const fullPrompt = `${resolvedPrompt}\n\nSection type: ${dasConfig.section}\n\nMANUSCRIPT:\n${markdownText}`;
 
   try {
     const response = await ai.models.generateContent({
