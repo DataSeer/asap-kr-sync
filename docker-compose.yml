@@ -84,6 +84,30 @@ services:
     profiles:
       - localhost
 
+  # One-off script runner (e.g. detection prompt/example comparisons). Reuses
+  # the app image but additionally mounts ./tmp so scratch inputs/outputs
+  # persist to the host. Isolated under the `tools` profile with a `node`
+  # entrypoint so it NEVER starts as part of the dev (`--profile localhost`) or
+  # prod stack, and skips the DB-wait/migration entrypoint. Usage:
+  #   docker compose --profile tools run --rm app-tools scripts/<script>.js [args]
+  app-tools:
+    build: .
+    user: root
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./conf:/app/conf
+      - ./tmp:/app/tmp
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - NODE_ENV=development
+    entrypoint: ["node"]
+    profiles:
+      - tools
+
   # MarkItDown - Local PDF-to-Markdown conversion service
   markitdown:
     image: markitdown:latest

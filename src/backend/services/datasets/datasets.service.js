@@ -46,7 +46,17 @@ function hasConsolidationPrompt() {
   return fs.existsSync(CONSOLIDATION_PROMPT_FILE);
 }
 
-function getConsolidationPrompt() {
+/**
+ * Resolve the consolidation prompt. An explicit `override` (non-empty string)
+ * wins — used by tuning/experiment scripts; otherwise the committed default
+ * file is read once and cached.
+ * @param {string} [override] - optional prompt text to use instead of the file
+ * @returns {string}
+ */
+function getConsolidationPrompt(override) {
+  if (override != null && String(override).trim()) {
+    return String(override).trim();
+  }
   if (!_consolidationPromptCache) {
     if (!hasConsolidationPrompt()) {
       throw new Error(`Consolidation prompt file not found: ${CONSOLIDATION_PROMPT_FILE} — copy the .example file to enable datasets detection`);
@@ -197,9 +207,9 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText) {
+async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, promptOverride) {
   const ai = new GoogleGenAI({ apiKey: datasetsConfig.apiKey });
-  const systemPrompt = getConsolidationPrompt();
+  const systemPrompt = getConsolidationPrompt(promptOverride);
 
   const userPayload = {
     dataset_names: datasetNames,
@@ -353,8 +363,19 @@ function parseGeminiResponse(text) {
  * @param {string} markdownText
  * @returns {Promise<{ resources: object[], signalCount: number }>}
  */
-async function detectDatasets(markdownText) {
-  const extractions = await langextractClient.extractSignals(markdownText);
+/**
+ * @param {string} markdownText
+ * @param {{ prompt?: string, signalsPrompt?: string, signalsExamples?: string|object }} [options]
+ *   `prompt` overrides the Gemini consolidation prompt; `signalsPrompt` and
+ *   `signalsExamples` override the langextract signal-extraction prompt and its
+ *   few-shot examples JSON. All default to the committed file contents.
+ * @returns {Promise<{ resources: object[], signalCount: number }>}
+ */
+async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples } = {}) {
+  const extractions = await langextractClient.extractSignals(markdownText, {
+    prompt: signalsPrompt,
+    examples: signalsExamples
+  });
   const datasetNames = langextractClient.collectDatasetNames(extractions);
   const extractedRows = langextractClient.buildExtractedRows(extractions);
 
@@ -362,7 +383,7 @@ async function detectDatasets(markdownText) {
     return { resources: [], signalCount: extractions.length };
   }
 
-  const { resources } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText);
+  const { resources } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt);
   return { resources, signalCount: extractedRows.length };
 }
 

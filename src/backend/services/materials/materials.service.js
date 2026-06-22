@@ -38,7 +38,17 @@ function hasPrompt() {
   return fs.existsSync(PROMPT_FILE);
 }
 
-function getPrompt() {
+/**
+ * Resolve the detection prompt. An explicit `override` (non-empty string) wins
+ * — used by tuning/experiment scripts to run detection with a custom prompt;
+ * otherwise the committed default file is read once and cached.
+ * @param {string} [override] - optional prompt text to use instead of the file
+ * @returns {string}
+ */
+function getPrompt(override) {
+  if (override != null && String(override).trim()) {
+    return String(override).trim();
+  }
   if (!_promptCache) {
     if (!hasPrompt()) {
       throw new Error(`Prompt file not found: ${PROMPT_FILE} — copy the .example file and customize it to enable materials detection`);
@@ -149,9 +159,9 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForMaterials(pdfBuffer, fileName) {
+async function callGeminiForMaterials(pdfBuffer, fileName, promptOverride) {
   const ai = new GoogleGenAI({ apiKey: materialsConfig.apiKey });
-  const prompt = getPrompt();
+  const prompt = getPrompt(promptOverride);
 
   try {
     const response = await ai.models.generateContent({
@@ -215,10 +225,12 @@ function parseGeminiResponse(text, fileName) {
  * parsed resources array. No DB, no S3.
  * @param {Buffer} pdfBuffer
  * @param {string} fileName
+ * @param {{ prompt?: string }} [options] - `prompt` overrides the default
+ *   detection prompt (defaults to the committed prompt file content).
  * @returns {Promise<{ resources: object[] }>}
  */
-async function detectMaterials(pdfBuffer, fileName) {
-  const { resources } = await callGeminiForMaterials(pdfBuffer, fileName);
+async function detectMaterials(pdfBuffer, fileName, { prompt } = {}) {
+  const { resources } = await callGeminiForMaterials(pdfBuffer, fileName, prompt);
   return { resources };
 }
 

@@ -11,6 +11,8 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const { ExternalServiceError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
 
@@ -34,10 +36,39 @@ const TIMEOUT_MS = parseInt(process.env.DATASETS_LANGEXTRACT_TIMEOUT, 10) || 600
  * Extract dataset signals from markdown text using the Python langextract script.
  *
  * @param {string} markdownText - The full manuscript as markdown
+ * @param {{ prompt?: string, examples?: string|object }} [options]
+ *   `prompt` overrides the default signal-extraction prompt; `examples`
+ *   overrides the few-shot examples JSON (a string is written as-is, an
+ *   object/array is JSON-stringified). Both default to the committed files.
+ *   The Python script reads both from file paths, so any override is written
+ *   to a temp file for the duration of the call.
  * @returns {Promise<Array<object>>} Array of extraction objects with extraction_class, extracted_text, attributes
  */
-async function extractSignals(markdownText) {
+async function extractSignals(markdownText, { prompt, examples } = {}) {
   const startTime = Date.now();
+
+  // Resolve the prompt/examples paths: non-empty overrides are written to a
+  // shared temp dir (cleaned up in the finally below); otherwise use the
+  // committed defaults.
+  let promptPath = PROMPT_FILE;
+  let examplesPath = EXAMPLES_FILE;
+  let tmpDir = null;
+  const ensureTmpDir = () => {
+    if (!tmpDir) tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ds-signals-'));
+    return tmpDir;
+  };
+
+  if (prompt != null && String(prompt).trim()) {
+    promptPath = path.join(ensureTmpDir(), 'prompt.txt');
+    fs.writeFileSync(promptPath, String(prompt), 'utf-8');
+  }
+  if (examples != null) {
+    const examplesText = typeof examples === 'string' ? examples : JSON.stringify(examples);
+    if (examplesText.trim()) {
+      examplesPath = path.join(ensureTmpDir(), 'examples.json');
+      fs.writeFileSync(examplesPath, examplesText, 'utf-8');
+    }
+  }
 
   logger.info('Starting langextract signal extraction', {
     inputLength: markdownText.length,
@@ -45,13 +76,15 @@ async function extractSignals(markdownText) {
     maxWorkers: MAX_WORKERS,
     maxCharBuffer: MAX_CHAR_BUFFER,
     batchLength: BATCH_LENGTH,
-    extractionPasses: EXTRACTION_PASSES
+    extractionPasses: EXTRACTION_PASSES,
+    customPrompt: promptPath !== PROMPT_FILE,
+    customExamples: examplesPath !== EXAMPLES_FILE
   });
 
   const args = [
     SCRIPT_PATH,
-    '--prompt', PROMPT_FILE,
-    '--examples', EXAMPLES_FILE,
+    '--prompt', promptPath,
+    '--examples', examplesPath,
     '--model', GEMINI_MODEL,
     '--max-workers', String(MAX_WORKERS),
     '--batch-length', String(BATCH_LENGTH),
@@ -59,7 +92,8 @@ async function extractSignals(markdownText) {
     '--extraction-passes', String(EXTRACTION_PASSES)
   ];
 
-  return new Promise((resolve, reject) => {
+  try {
+    return await new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -138,7 +172,17 @@ async function extractSignals(markdownText) {
     // Write markdown to stdin
     child.stdin.write(markdownText);
     child.stdin.end();
-  });
+    });
+  } finally {
+    // Clean up the temp prompt file/dir if we wrote a custom prompt.
+    if (tmpDir) {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        logger.warn('Failed to remove temp signals prompt dir', { tmpDir, error: cleanupError.message });
+      }
+    }
+  }
 }
 
 /**

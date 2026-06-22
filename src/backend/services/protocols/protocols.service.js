@@ -43,7 +43,17 @@ function hasPrompt() {
   return fs.existsSync(PROMPT_FILE);
 }
 
-function getPrompt() {
+/**
+ * Resolve the detection prompt. An explicit `override` (non-empty string) wins
+ * — used by tuning/experiment scripts; otherwise the committed default file is
+ * read once and cached.
+ * @param {string} [override] - optional prompt text to use instead of the file
+ * @returns {string}
+ */
+function getPrompt(override) {
+  if (override != null && String(override).trim()) {
+    return String(override).trim();
+  }
   if (!_promptCache) {
     if (!hasPrompt()) {
       throw new Error(`Prompt file not found: ${PROMPT_FILE} — copy the .example file and customize it to enable protocols detection`);
@@ -161,9 +171,9 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForProtocols(markdownText) {
+async function callGeminiForProtocols(markdownText, promptOverride) {
   const ai = new GoogleGenAI({ apiKey: protocolsConfig.apiKey });
-  const prompt = getPrompt();
+  const prompt = getPrompt(promptOverride);
   const fullPrompt = prompt + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
 
   try {
@@ -235,10 +245,12 @@ function parseGeminiResponse(text) {
  * Step 1: hit Gemini on the markdown text and return the parsed resources
  * array. Pure-ish — no DB, no S3.
  * @param {string} markdownText
+ * @param {{ prompt?: string }} [options] - `prompt` overrides the default
+ *   detection prompt (defaults to the committed prompt file content).
  * @returns {Promise<{ resources: object[] }>}
  */
-async function detectProtocols(markdownText) {
-  const { resources } = await callGeminiForProtocols(markdownText);
+async function detectProtocols(markdownText, { prompt } = {}) {
+  const { resources } = await callGeminiForProtocols(markdownText, prompt);
   return { resources };
 }
 
