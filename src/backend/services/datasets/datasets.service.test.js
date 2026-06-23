@@ -8,7 +8,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildKrtItemsDatasets } = require('./datasets.service');
+const { buildKrtItemsDatasets, buildAuthorDatasetSeeds, splitKrtIdentifiers } = require('./datasets.service');
 
 test('buildKrtItemsDatasets: empty / non-array → []', () => {
   assert.deepEqual(buildKrtItemsDatasets([]), []);
@@ -79,4 +79,39 @@ test('buildKrtItemsDatasets: legacy demo shape (resource_type=Dataset, joined id
   assert.equal(items[0].resourceType, 'Dataset');
   assert.equal(items[0].identifier, 'GSE999');
   assert.equal(items[0].newReuse, 'reuse');
+});
+
+// ── Author KRT seeding (v3) ───────────────────────────────────────────────
+
+test('splitKrtIdentifiers: classifies accessions, DOIs, URLs', () => {
+  const out = splitKrtIdentifiers('GSE236732; https://zenodo.org/records/1 10.5281/zenodo.20213678 doi:10.1/abc');
+  assert.deepEqual(out.accessions, ['GSE236732']);
+  assert.deepEqual(out.urls, ['https://zenodo.org/records/1']);
+  assert.deepEqual(out.dois, ['10.5281/zenodo.20213678', '10.1/abc']);
+});
+
+test('splitKrtIdentifiers: bare prefix without a digit is not an accession; empty → empty', () => {
+  assert.deepEqual(splitKrtIdentifiers('PDB EGA'), { accessions: [], dois: [], urls: [] });
+  assert.deepEqual(splitKrtIdentifiers(''), { accessions: [], dois: [], urls: [] });
+  assert.deepEqual(splitKrtIdentifiers(null), { accessions: [], dois: [], urls: [] });
+});
+
+test('buildAuthorDatasetSeeds: maps KRT rows; reuse→REUSED; harvests URL from additional info; drops nameless', () => {
+  const seeds = buildAuthorDatasetSeeds([
+    { resourceName: 'RNAseq', source: 'GEO', identifier: 'GSE236732', newReuse: 'new', additionalInformation: 'raw reads' },
+    { resourceName: 'hg19', source: 'UCSC', identifier: '', newReuse: 'reuse', additionalInformation: 'see https://genome.ucsc.edu' },
+    { resourceName: '', source: 'x', identifier: 'y', newReuse: 'new', additionalInformation: '' }
+  ]);
+  assert.equal(seeds.length, 2);
+  assert.deepEqual(seeds[0], {
+    name: 'RNAseq', role: 'GENERATED', source: 'GEO',
+    accessions: ['GSE236732'], dois: [], urls: [], additional_info: 'raw reads'
+  });
+  assert.equal(seeds[1].role, 'REUSED');
+  assert.deepEqual(seeds[1].urls, ['https://genome.ucsc.edu']);
+});
+
+test('buildAuthorDatasetSeeds: empty / non-array → []', () => {
+  assert.deepEqual(buildAuthorDatasetSeeds([]), []);
+  assert.deepEqual(buildAuthorDatasetSeeds(null), []);
 });

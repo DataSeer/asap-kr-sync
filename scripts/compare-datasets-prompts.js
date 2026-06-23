@@ -39,13 +39,31 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const { convertToMarkdown } = require('../src/backend/services/pdf/pdf-markdown-client.service');
 const datasetsService = require('../src/backend/services/datasets/datasets.service');
 const { dedupeKrtItems } = require('../src/backend/services/pdf-analysis/dedupe-krt-items.service');
+const { loadReportDatasets, findReportFile } = require('./lib/report-datasets');
+const { loadAuthorKrtDatasets, findAuthorKrtFile } = require('./lib/author-krt');
 
-const VERSIONS = ['v1', 'v2'];
+// Args: positional [pdfDir] [resourcesDir] [outDir] [limit] [reportsDir], plus
+// an optional --versions=v3 flag (or COMPARE_VERSIONS env) to run a subset of
+// versions. The other versions' saved results/<version>/ folders are reused by
+// the workbook builder, so you can re-run just v3 without recomputing v1/v2.
+const positional = [];
+let versionsArg = null;
+for (const arg of process.argv.slice(2)) {
+  if (arg.startsWith('--versions=')) versionsArg = arg.slice('--versions='.length);
+  else positional.push(arg);
+}
 
-const pdfDir = path.resolve(process.argv[2] || 'src/frontend/public/demo-files');
-const resourcesDir = path.resolve(process.argv[3] || 'tmp/datasets-detection');
-const outDir = path.resolve(process.argv[4] || 'tmp/datasets-detection/results');
-const limit = parseInt(process.argv[5], 10) || 0;
+const VERSIONS = (versionsArg || process.env.COMPARE_VERSIONS || 'v1,v2,v3')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+// Versions whose consolidation is seeded from the author KRT (the author KRT
+// file when the demo provides one, otherwise the DS report).
+const SEEDED_VERSIONS = new Set(['v3']);
+
+const pdfDir = path.resolve(positional[0] || 'src/frontend/public/demo-files');
+const resourcesDir = path.resolve(positional[1] || 'tmp/datasets-detection');
+const outDir = path.resolve(positional[2] || 'tmp/datasets-detection/results');
+const limit = parseInt(positional[3], 10) || 0;
+const reportsDir = path.resolve(positional[4] || pdfDir); // reports (<id>-DS1.xlsx) live alongside the PDFs
 
 function loadResources(version) {
   const read = (file) => fs.readFileSync(path.join(resourcesDir, file), 'utf-8');
@@ -96,16 +114,45 @@ async function main() {
     try {
       const markdown = await getMarkdown(path.join(pdfDir, pdfFile), name, mdDir);
 
+      // Author-KRT seeds for seeded versions: prefer the author's own KRT file
+      // when the demo provides one; otherwise fall back to the DS report. Record
+      // which file was used so it lands in the v3 results.
+      let authorSeeds = [];
+      let seedSource = 'none';
+      let seedFile = '';
+      if (SEEDED_VERSIONS.size > 0) {
+        const authorRows = await loadAuthorKrtDatasets(reportsDir, name);
+        let seedRows;
+        if (authorRows !== null) {
+          seedSource = 'author-krt';
+          seedFile = path.basename(findAuthorKrtFile(reportsDir, name) || '');
+          seedRows = authorRows;
+        } else {
+          seedSource = 'ds-report';
+          seedFile = path.basename(findReportFile(reportsDir, name) || '');
+          seedRows = await loadReportDatasets(reportsDir, name);
+        }
+        authorSeeds = datasetsService.buildAuthorDatasetSeeds(seedRows);
+      }
+
       for (const version of VERSIONS) {
         try {
-          const { resources, signalCount } = await datasetsService.detectDatasets(markdown, resourcesByVersion[version]);
+          const opts = { ...resourcesByVersion[version] };
+          if (SEEDED_VERSIONS.has(version)) opts.authorDatasets = authorSeeds;
+          const { resources, signalCount } = await datasetsService.detectDatasets(markdown, opts);
           const krt = dedupeKrtItems(datasetsService.buildKrtItemsDatasets(resources), 'datasets-gemini');
-          fs.writeFileSync(
-            path.join(outDir, version, `${name}.json`),
-            JSON.stringify({ signalCount, resourceCount: resources.length, krtCount: krt.length, krt }, null, 2)
-          );
+          const result = { signalCount, resourceCount: resources.length, krtCount: krt.length, krt };
+          if (SEEDED_VERSIONS.has(version)) {
+            // Record the author-KRT seed provenance so the v3 results show which
+            // file (author KRT or DS report) the seeds came from.
+            result.seedSource = seedSource;
+            result.seedFile = seedFile;
+            result.seedCount = authorSeeds.length;
+          }
+          fs.writeFileSync(path.join(outDir, version, `${name}.json`), JSON.stringify(result, null, 2));
           row[version] = krt.length;
-          console.error(`  ${name} [${version}] -> ${krt.length} KRT items (${signalCount} signals)`);
+          const seedNote = SEEDED_VERSIONS.has(version) ? `, ${authorSeeds.length} seeds from ${seedSource} (${seedFile || 'none'})` : '';
+          console.error(`  ${name} [${version}] -> ${krt.length} KRT items (${signalCount} signals${seedNote})`);
         } catch (verErr) {
           row[version] = `ERROR: ${verErr.message}`;
           console.error(`  ${name} [${version}] FAILED: ${verErr.message}`);
