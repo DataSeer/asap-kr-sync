@@ -1,22 +1,30 @@
 #!/usr/bin/env node
 /**
- * Build an Excel workbook comparing the v1 vs v2 datasets-detection results
- * produced by scripts/compare-datasets-prompts.js.
+ * Build an Excel workbook comparing datasets-detection results (v1 vs v2)
+ * against the DataSeer reports, for manual review.
  *
- * Layout:
- *   - "Summary" tab: one row per document with v1/v2 counts and add/remove/
- *     change tallies.
- *   - One tab per document: the two KRTs side by side, aligned by resource
- *     name so matching resources sit on the same row. Colour coding:
- *       red    = only in v1 (removed in v2)
- *       green  = only in v2 (added in v2)
- *       yellow = present in both but a field changed
+ * Each document tab shows four blocks side by side:
+ *   GENERATED KRT v1 | GENERATED KRT v2 | KRT GENERATED FROM REPORT | DATASETS DATA FROM REPORT
+ *
+ * The first three are the same 5-column KRT shape (directly comparable). The
+ * fourth is the verbatim "Datasets" tab data from the report. Rows are anchored
+ * on the report datasets (in report order); each generated v1/v2 row is aligned
+ * onto its matching report dataset (by resource name / identifier). Generated
+ * rows that match no report dataset are listed below a divider. No diff
+ * colouring — the layout is raw so a curator compares by eye.
+ *
+ * The report data comes from each manuscript's DataSeer report
+ * (<id>-DS1.xlsx, fallback <id>.xlsx), "Datasets" tab. The KRT-from-report view
+ * maps:  Dataset Name -> resource name;  Re-Use -> new/reuse (true=reuse);
+ *        URL + DOI/Identifier -> identifier (the "warrant" columns merged);
+ *        Notes -> additional info.
  *
  * Usage:
- *   node scripts/build-comparison-xlsx.js [resultsDir] [outFile]
+ *   node scripts/build-comparison-xlsx.js [resultsDir] [outFile] [reportsDir]
  * Defaults:
- *   resultsDir  tmp/datasets-detection/results   (must contain v1/ and v2/)
- *   outFile     <resultsDir>/comparison.xlsx
+ *   resultsDir   tmp/datasets-detection/results        (with v1/ and v2/)
+ *   outFile      <resultsDir>/comparison.xlsx
+ *   reportsDir   src/frontend/public/demo-files         (holds <id>-DS1.xlsx)
  */
 
 const fs = require('fs');
@@ -25,82 +33,207 @@ const ExcelJS = require('exceljs');
 
 const resultsDir = path.resolve(process.argv[2] || 'tmp/datasets-detection/results');
 const outFile = path.resolve(process.argv[3] || path.join(resultsDir, 'comparison.xlsx'));
+const reportsDir = path.resolve(process.argv[4] || 'src/frontend/public/demo-files');
 
-const FIELDS = [
-  { key: 'resourceName', label: 'Resource Name', width: 42 },
-  { key: 'source', label: 'Source', width: 34 },
-  { key: 'identifier', label: 'Identifier', width: 28 },
-  { key: 'newReuse', label: 'New/Reuse', width: 11 },
-  { key: 'additionalInformation', label: 'Additional Info', width: 34 }
+// 5-column KRT shape used by the v1/v2/report-KRT blocks.
+const KRT_FIELDS = [
+  { label: 'Resource Name', width: 40, get: (i) => i.resourceName },
+  { label: 'Source', width: 22, get: (i) => i.source },
+  { label: 'Identifier', width: 30, get: (i) => i.identifier },
+  { label: 'New/Reuse', width: 11, get: (i) => i.newReuse },
+  { label: 'Additional Info', width: 30, get: (i) => i.additionalInformation }
 ];
 
-const FILL = {
-  removed: 'FFF8D7DA', // light red  — only in v1
-  added: 'FFD4EDDA', // light green — only in v2
-  changed: 'FFFFF3CD', // light yellow — field differs
-  v1Header: 'FFDCE6F1', // light blue
-  v2Header: 'FFE2EFDA', // light green
-  headerRow: 'FFF2F2F2'
-};
+// Verbatim "Datasets" tab columns for the raw report block.
+const RAW_FIELDS = [
+  { label: 'Dataset Name', width: 36, get: (r) => r.datasetName },
+  { label: 'Re-Use', width: 8, get: (r) => r.reUse },
+  { label: 'QC', width: 6, get: (r) => r.qc },
+  { label: 'Rep', width: 6, get: (r) => r.rep },
+  { label: 'Issue', width: 6, get: (r) => r.issue },
+  { label: 'Sentence from article text', width: 44, get: (r) => r.sentence },
+  { label: 'URL', width: 30, get: (r) => r.url },
+  { label: 'DOI/Identifier', width: 20, get: (r) => r.doi },
+  { label: 'Notes', width: 24, get: (r) => r.notes },
+  { label: 'Associated Figure', width: 16, get: (r) => r.associatedFigure },
+  { label: 'ReadMe', width: 8, get: (r) => r.readme },
+  { label: 'Datatype', width: 24, get: (r) => r.datatype }
+];
+
+// source: which aligned item feeds the block. raw: read item.raw instead.
+const BLOCKS = [
+  { id: 'v1', title: 'GENERATED KRT v1', fill: 'FFDCE6F1', source: 'v1', fields: KRT_FIELDS },
+  { id: 'v2', title: 'GENERATED KRT v2', fill: 'FFE2EFDA', source: 'v2', fields: KRT_FIELDS },
+  { id: 'reportKrt', title: 'KRT GENERATED FROM REPORT', fill: 'FFFFF2CC', source: 'report', fields: KRT_FIELDS },
+  { id: 'reportRaw', title: 'DATASETS DATA FROM REPORT', fill: 'FFFCE4D6', source: 'report', raw: true, fields: RAW_FIELDS }
+];
+
+const FILL = { headerRow: 'FFF2F2F2', divider: 'FFEDEDED' };
 
 function solid(argb) {
   return { type: 'pattern', pattern: 'solid', fgColor: { argb } };
 }
 
-function readKrt(version, name) {
-  const file = path.join(resultsDir, version, `${name}.json`);
-  if (!fs.existsSync(file)) return null;
+function cellText(v) {
+  if (v == null) return '';
+  if (typeof v === 'object') {
+    return String(
+      v.text || v.result || v.hyperlink ||
+      (Array.isArray(v.richText) ? v.richText.map((t) => t.text).join('') : '') || ''
+    );
+  }
+  return String(v);
+}
+
+function norm(s) {
+  return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function keyOf(item) {
+  if (!item) return '';
+  const name = norm(item.resourceName);
+  if (name) return name;
+  return norm(item.identifier);
+}
+
+function findReportFile(doc) {
+  for (const name of [`${doc}-DS1.xlsx`, `${doc}.xlsx`]) {
+    const p = path.join(reportsDir, name);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+// Extract dataset rows from a report's "Datasets" tab. The tab has repeated
+// action-required sections, each re-printing the column header; we re-read the
+// column map at each header and collect the numbered data rows under it.
+async function loadReportDatasets(doc) {
+  const file = findReportFile(doc);
+  if (!file) return [];
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(file);
+  const ws = wb.getWorksheet('Datasets');
+  if (!ws) return [];
+
+  const out = [];
+  const seen = new Set();
+  let map = null;
+  for (let r = 1; r <= ws.rowCount; r++) {
+    const get = (c) => (c > 0 ? cellText(ws.getCell(r, c).value).trim() : '');
+    const labels = [];
+    for (let c = 1; c <= ws.columnCount; c++) labels[c] = norm(ws.getCell(r, c).value && cellText(ws.getCell(r, c).value));
+
+    if (labels.some((v) => v === 'dataset name')) {
+      const find = (pred) => labels.findIndex(pred);
+      map = {
+        idx: find((v) => v === '#'),
+        name: find((v) => v === 'dataset name'),
+        reuse: find((v) => v === 're-use' || v === 'reuse'),
+        qc: find((v) => v === 'qc'),
+        rep: find((v) => v === 'rep'),
+        issue: find((v) => v === 'issue'),
+        sentence: find((v) => /sentence/.test(v)),
+        url: find((v) => v === 'url'),
+        doi: find((v) => /doi|identifier/.test(v)),
+        notes: find((v) => v === 'notes'),
+        assocFig: find((v) => /associated figure/.test(v)),
+        readme: find((v) => v === 'readme'),
+        datatype: find((v) => v === 'datatype')
+      };
+      continue;
+    }
+    if (!map) continue;
+
+    const idxVal = get(map.idx);
+    const name = get(map.name);
+    if (!/^\d+$/.test(idxVal) || !name) continue;
+    const k = norm(name);
+    if (seen.has(k)) continue;
+    seen.add(k);
+
+    const url = get(map.url);
+    const doi = get(map.doi);
+    const notes = get(map.notes);
+    const reUse = get(map.reuse);
+    out.push({
+      resourceType: 'Dataset',
+      resourceName: name,
+      source: '',
+      identifier: [url, doi].filter(Boolean).join('; '), // warrant columns merged
+      newReuse: /true|reuse|yes/i.test(reUse) ? 'reuse' : 'new',
+      additionalInformation: notes,
+      raw: {
+        datasetName: name,
+        reUse,
+        qc: get(map.qc),
+        rep: get(map.rep),
+        issue: get(map.issue),
+        sentence: get(map.sentence),
+        url,
+        doi,
+        notes,
+        associatedFigure: get(map.assocFig),
+        readme: get(map.readme),
+        datatype: get(map.datatype)
+      }
+    });
+  }
+  return out;
+}
+
+function readGenerated(version, doc) {
+  const file = path.join(resultsDir, version, `${doc}.json`);
+  if (!fs.existsSync(file)) return [];
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
     return Array.isArray(data.krt) ? data.krt : [];
   } catch {
-    return null;
+    return [];
   }
 }
 
-function keyOf(item) {
-  const name = String(item.resourceName || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  if (name) return name;
-  return String(item.identifier || '').toLowerCase().trim();
-}
-
-function val(item, key) {
-  if (!item) return '';
-  const v = item[key];
-  return v == null ? '' : String(v);
-}
-
-// Build the aligned rows for one document. Returns { rows, stats }.
-function alignDoc(v1Items, v2Items) {
+// Align v1/v2 onto the report datasets (report order); generated rows that
+// match no report dataset go into `extra`.
+function alignDoc(v1, v2, report) {
   const v1ByKey = new Map();
   const v2ByKey = new Map();
-  (v1Items || []).forEach((it) => v1ByKey.set(keyOf(it), it));
-  (v2Items || []).forEach((it) => v2ByKey.set(keyOf(it), it));
+  v1.forEach((it) => { const k = keyOf(it); if (k && !v1ByKey.has(k)) v1ByKey.set(k, it); });
+  v2.forEach((it) => { const k = keyOf(it); if (k && !v2ByKey.has(k)) v2ByKey.set(k, it); });
 
-  const keys = [...new Set([...v1ByKey.keys(), ...v2ByKey.keys()])].filter(Boolean).sort();
-  const stats = { v1: (v1Items || []).length, v2: (v2Items || []).length, added: 0, removed: 0, changed: 0, same: 0 };
-
-  const rows = keys.map((key) => {
-    const left = v1ByKey.get(key) || null;
-    const right = v2ByKey.get(key) || null;
-    let status;
-    const changedFields = new Set();
-    if (!left) { status = 'added'; stats.added++; }
-    else if (!right) { status = 'removed'; stats.removed++; }
-    else {
-      FIELDS.forEach((f) => { if (val(left, f.key) !== val(right, f.key)) changedFields.add(f.key); });
-      if (changedFields.size > 0) { status = 'changed'; stats.changed++; }
-      else { status = 'same'; stats.same++; }
-    }
-    return { left, right, status, changedFields };
+  const seen = new Set();
+  const anchored = report.map((rep) => {
+    const k = keyOf(rep);
+    seen.add(k);
+    return { v1: v1ByKey.get(k) || null, v2: v2ByKey.get(k) || null, report: rep };
   });
 
-  return { rows, stats };
+  const extra = [];
+  const pushed = new Set();
+  const addExtra = (list) => {
+    for (const it of list) {
+      const k = keyOf(it);
+      if (!k || seen.has(k) || pushed.has(k)) continue;
+      pushed.add(k);
+      extra.push({ v1: v1ByKey.get(k) || null, v2: v2ByKey.get(k) || null, report: null });
+    }
+  };
+  addExtra(v1);
+  addExtra(v2);
+
+  const stats = {
+    report: report.length,
+    v1: v1.length,
+    v2: v2.length,
+    v1Matched: anchored.filter((r) => r.v1).length,
+    v2Matched: anchored.filter((r) => r.v2).length,
+    v1Extra: extra.filter((r) => r.v1).length,
+    v2Extra: extra.filter((r) => r.v2).length
+  };
+  return { anchored, extra, stats };
 }
 
-// Excel sheet names: <=31 chars, no : \ / ? * [ ]. Dedupe collisions.
 function safeSheetName(name, used) {
-  let base = name.replace(/[:\\/?*[\]]/g, '-').slice(0, 31);
+  const base = name.replace(/[:\\/?*[\]]/g, '-').slice(0, 31);
   let candidate = base;
   let i = 2;
   while (used.has(candidate)) {
@@ -111,95 +244,101 @@ function safeSheetName(name, used) {
   return candidate;
 }
 
-function buildDocSheet(wb, docName, sheetName, v1Items, v2Items) {
-  const { rows, stats } = alignDoc(v1Items, v2Items);
+// Blocks have different widths; compute each block's starting column.
+function blockStartCol(blockIdx) {
+  let col = 1;
+  for (let i = 0; i < blockIdx; i++) col += BLOCKS[i].fields.length + 1; // +1 spacer
+  return col;
+}
+
+function itemForBlock(rowData, blk) {
+  const item = rowData[blk.source];
+  if (!item) return null;
+  return blk.raw ? (item.raw || null) : item;
+}
+
+function writeRow(ws, rowNum, rowData) {
+  BLOCKS.forEach((blk, b) => {
+    const start = blockStartCol(b);
+    const item = itemForBlock(rowData, blk);
+    blk.fields.forEach((field, c) => {
+      const cell = ws.getCell(rowNum, start + c);
+      cell.value = item ? (field.get(item) ?? '') : '';
+      cell.alignment = { wrapText: true, vertical: 'top' };
+    });
+  });
+}
+
+function buildDocSheet(wb, sheetName, v1, v2, report) {
+  const { anchored, extra, stats } = alignDoc(v1, v2, report);
   const ws = wb.addWorksheet(sheetName);
 
-  const nLeft = FIELDS.length;          // cols 1..5
-  const spacerCol = nLeft + 1;          // col 6
-  const rightStart = nLeft + 2;         // col 7
-
-  // Column widths
+  // Column widths across all blocks + spacers
   const cols = [];
-  FIELDS.forEach((f) => cols.push({ width: f.width }));
-  cols.push({ width: 3 }); // spacer
-  FIELDS.forEach((f) => cols.push({ width: f.width }));
+  BLOCKS.forEach((blk, b) => {
+    blk.fields.forEach((f) => cols.push({ width: f.width }));
+    if (b < BLOCKS.length - 1) cols.push({ width: 3 });
+  });
   ws.columns = cols;
 
-  // Title row (1): merged V1 / V2 banners with counts
-  ws.mergeCells(1, 1, 1, nLeft);
-  ws.mergeCells(1, rightStart, 1, rightStart + nLeft - 1);
-  const v1Title = ws.getCell(1, 1);
-  const v2Title = ws.getCell(1, rightStart);
-  v1Title.value = `V1 — ${(v1Items || []).length} resources`;
-  v2Title.value = `V2 — ${(v2Items || []).length} resources`;
-  v1Title.fill = solid(FILL.v1Header);
-  v2Title.fill = solid(FILL.v2Header);
-  [v1Title, v2Title].forEach((c) => { c.font = { bold: true, size: 12 }; c.alignment = { horizontal: 'center' }; });
-
-  // Header row (2)
-  FIELDS.forEach((f, i) => {
-    const l = ws.getCell(2, 1 + i);
-    const r = ws.getCell(2, rightStart + i);
-    l.value = f.label; r.value = f.label;
-    [l, r].forEach((c) => { c.font = { bold: true }; c.fill = solid(FILL.headerRow); c.alignment = { wrapText: true, vertical: 'top' }; });
+  // Row 1: banners with counts
+  BLOCKS.forEach((blk, b) => {
+    const start = blockStartCol(b);
+    ws.mergeCells(1, start, 1, start + blk.fields.length - 1);
+    const counts = { v1: stats.v1, v2: stats.v2, reportKrt: stats.report, reportRaw: stats.report }[blk.id];
+    const cell = ws.getCell(1, start);
+    cell.value = `${blk.title} — ${counts}`;
+    cell.fill = solid(blk.fill);
+    cell.font = { bold: true, size: 12 };
+    cell.alignment = { horizontal: 'center' };
   });
 
-  // Data rows (3+)
-  rows.forEach((row, idx) => {
-    const r = idx + 3;
-    FIELDS.forEach((f, i) => {
-      const lc = ws.getCell(r, 1 + i);
-      const rc = ws.getCell(r, rightStart + i);
-      lc.value = val(row.left, f.key);
-      rc.value = val(row.right, f.key);
-      lc.alignment = { wrapText: true, vertical: 'top' };
-      rc.alignment = { wrapText: true, vertical: 'top' };
-
-      if (row.status === 'removed') {
-        lc.fill = solid(FILL.removed);
-      } else if (row.status === 'added') {
-        rc.fill = solid(FILL.added);
-      } else if (row.status === 'changed' && row.changedFields.has(f.key)) {
-        lc.fill = solid(FILL.changed);
-        rc.fill = solid(FILL.changed);
-      }
+  // Row 2: per-block column headers
+  BLOCKS.forEach((blk, b) => {
+    const start = blockStartCol(b);
+    blk.fields.forEach((field, c) => {
+      const cell = ws.getCell(2, start + c);
+      cell.value = field.label;
+      cell.font = { bold: true };
+      cell.fill = solid(FILL.headerRow);
+      cell.alignment = { wrapText: true, vertical: 'top' };
     });
   });
 
-  // Freeze the title + header rows for scrolling.
-  ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 2 }];
-  ws.getColumn(spacerCol).border = undefined;
+  let r = 3;
+  anchored.forEach((row) => { writeRow(ws, r, row); r += 1; });
+
+  if (extra.length > 0) {
+    const lastCol = blockStartCol(BLOCKS.length - 1) + BLOCKS[BLOCKS.length - 1].fields.length - 1;
+    ws.mergeCells(r, 1, r, lastCol);
+    const dcell = ws.getCell(r, 1);
+    dcell.value = '— Generated, not in Reports —';
+    dcell.fill = solid(FILL.divider);
+    dcell.font = { italic: true, bold: true };
+    dcell.alignment = { horizontal: 'center' };
+    r += 1;
+    extra.forEach((row) => { writeRow(ws, r, row); r += 1; });
+  }
+
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
   return stats;
 }
 
 function fillSummarySheet(ws, perDoc) {
   ws.columns = [
     { header: 'Document', key: 'doc', width: 30 },
-    { header: 'V1 count', key: 'v1', width: 10 },
-    { header: 'V2 count', key: 'v2', width: 10 },
-    { header: 'Added (v2 only)', key: 'added', width: 15 },
-    { header: 'Removed (v1 only)', key: 'removed', width: 17 },
-    { header: 'Changed', key: 'changed', width: 10 },
-    { header: 'Unchanged', key: 'same', width: 11 }
+    { header: 'Report', key: 'report', width: 9 },
+    { header: 'V1', key: 'v1', width: 8 },
+    { header: 'V2', key: 'v2', width: 8 },
+    { header: 'V1 matched', key: 'v1Matched', width: 12 },
+    { header: 'V2 matched', key: 'v2Matched', width: 12 },
+    { header: 'V1 extra', key: 'v1Extra', width: 10 },
+    { header: 'V2 extra', key: 'v2Extra', width: 10 }
   ];
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).fill = solid(FILL.headerRow);
   perDoc.forEach((d) => ws.addRow({ doc: d.doc, ...d.stats }));
   ws.views = [{ state: 'frozen', ySplit: 1 }];
-
-  // Highlight rows that have any difference.
-  ws.eachRow((rowObj, rowNumber) => {
-    if (rowNumber === 1) return;
-    const added = rowObj.getCell('added').value || 0;
-    const removed = rowObj.getCell('removed').value || 0;
-    const changed = rowObj.getCell('changed').value || 0;
-    if (added + removed + changed > 0) {
-      ['added', 'removed', 'changed'].forEach((k) => {
-        if (rowObj.getCell(k).value) rowObj.getCell(k).fill = solid(FILL.changed);
-      });
-    }
-  });
 }
 
 async function main() {
@@ -224,22 +363,19 @@ async function main() {
 
   const wb = new ExcelJS.Workbook();
   const usedSheetNames = new Set(['Summary']);
+  const summaryWs = wb.addWorksheet('Summary');
   const perDoc = [];
 
-  // Create Summary first so it is the leftmost tab; populate it at the end.
-  const summaryWs = wb.addWorksheet('Summary');
-
   for (const doc of docNames) {
-    const v1Items = readKrt('v1', doc);
-    const v2Items = readKrt('v2', doc);
-    const sheetName = safeSheetName(doc, usedSheetNames);
-    const stats = buildDocSheet(wb, doc, sheetName, v1Items, v2Items);
+    const v1 = readGenerated('v1', doc);
+    const v2 = readGenerated('v2', doc);
+    const report = await loadReportDatasets(doc);
+    const stats = buildDocSheet(wb, safeSheetName(doc, usedSheetNames), v1, v2, report);
     perDoc.push({ doc, stats });
-    console.error(`  ${doc}: v1=${stats.v1} v2=${stats.v2} (+${stats.added} -${stats.removed} ~${stats.changed})`);
+    console.error(`  ${doc}: report=${stats.report} v1=${stats.v1}(${stats.v1Matched}✓/${stats.v1Extra}+) v2=${stats.v2}(${stats.v2Matched}✓/${stats.v2Extra}+)`);
   }
 
   fillSummarySheet(summaryWs, perDoc);
-
   await wb.xlsx.writeFile(outFile);
   console.error(`\nWrote ${outFile} (${docNames.length} document tabs + Summary)`);
 }
