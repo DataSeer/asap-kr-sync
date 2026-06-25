@@ -172,6 +172,12 @@ function registerJobCallbacks() {
     // any new matches surface.
     await refreshSuggestions()
   })
+  bg.onJobComplete('suggestion_generation', async () => {
+    // Terminal job: the LM comparison just (re)built the suggestion list —
+    // auto-refresh it so a module restart updates suggestions without a manual
+    // reload (request 2a).
+    await refreshSuggestions()
+  })
 }
 const latestFiles = computed(() => submissionStore.latestFiles)
 const pdfFile = computed(() => latestFiles.value?.pdf)

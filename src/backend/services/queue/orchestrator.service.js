@@ -66,10 +66,12 @@ const PIPELINE = [
     }
   },
   {
-    // LM comparison of author KRT vs Generated KRT → suggestions. Runs after
-    // the Generated KRT is consolidated; also re-triggerable on demand.
+    // LM comparison of author KRT vs Generated KRT → suggestions. Must start
+    // only after every other module has finished: PDF_ANALYSIS already gates on
+    // all the detectors, and ORCID_EXTRACTION is the one module it doesn't
+    // transitively cover, so depend on both. Also re-triggerable on demand.
     jobType: JOB_TYPES.SUGGESTION_GENERATION,
-    dependsOn: [JOB_TYPES.PDF_ANALYSIS]
+    dependsOn: [JOB_TYPES.PDF_ANALYSIS, JOB_TYPES.ORCID_EXTRACTION]
   }
 ];
 
