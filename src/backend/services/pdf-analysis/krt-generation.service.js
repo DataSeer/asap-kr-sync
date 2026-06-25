@@ -33,6 +33,27 @@ function candidateForPrompt(c, ref) {
   };
 }
 
+/** Unique detection-module sources behind a candidate. */
+function sourcesOf(c) {
+  return Array.isArray(c?.detectedBy)
+    ? [...new Set(c.detectedBy.map(d => d.source).filter(Boolean))]
+    : [];
+}
+
+/**
+ * Scrub internal candidate `ref` numbers out of an LM reason so the curator
+ * never sees "merged refs 0 and 4" — the refs are an implementation detail.
+ */
+function cleanReason(reason) {
+  if (!reason) return '';
+  return String(reason)
+    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')
+    .trim();
+}
+
 /** Union the detectedBy provenance of several candidates (deduped by source). */
 function unionDetectedBy(candidates) {
   const out = [];
@@ -84,7 +105,7 @@ function buildKrtFromLM(candidates, lmOutput) {
       dedupKey: computeDedupKey(base),
       detectedBy,
       confidence,
-      reason: r.reason || 'kept'
+      reason: cleanReason(r.reason) || 'kept'
     });
   }
 
@@ -93,14 +114,22 @@ function buildKrtFromLM(candidates, lmOutput) {
     const ref = Number(d.ref);
     if (Number.isInteger(ref) && ref >= 0 && ref < candidates.length) {
       used.add(ref);
-      dropped.push({ ref, reason: d.reason || 'dropped', resourceName: candidates[ref].resourceName || '' });
+      const c = candidates[ref];
+      dropped.push({
+        ref,
+        reason: cleanReason(d.reason) || 'dropped',
+        resourceName: c.resourceName || '',
+        resourceType: c.resourceType || '',
+        identifier: c.identifier || '',
+        sources: sourcesOf(c)
+      });
     }
   }
 
   // Safety net: keep any candidate the LM forgot to place.
   candidates.forEach((c, n) => {
     if (used.has(n)) return;
-    items.push({ ...c, reason: c.reason || 'kept' });
+    items.push({ ...c, reason: cleanReason(c.reason) || 'kept' });
   });
 
   return { items, dropped };

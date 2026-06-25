@@ -12,6 +12,7 @@ Your job is to consolidate the candidates into the final Generated KRT:
 
 1. **Never invent identifiers, accessions, DOIs, or URLs.** Only use values that appear in the referenced candidates.
 2. **Preserve provenance.** Every output resource must list the `refs` of all candidates it came from (so we can trace which modules detected it).
+   - **In the `reason` text, never mention the internal `ref` numbers.** Describe resources by name and by the detection modules involved (e.g. "merged duplicate detections of Fiji from software and identifier scans"), not "merged refs 0 and 4".
 3. **Merge conservatively.** Only merge when it's clearly the same resource (same identifier, or same name/repository). Different identifiers ⇒ different resources.
 4. **Drop sparingly.** Only drop a candidate that is clearly not a KRT resource. When unsure, keep it.
 5. Choose the most complete/canonical value for each field from the merged candidates.

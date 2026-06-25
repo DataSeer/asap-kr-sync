@@ -117,6 +117,20 @@ const modalLogs = ref([])
 const modalRawResponses = ref({})
 const modalJobType = ref(null)
 const modalExactMatchCount = ref(0)
+// PDF Analysis: candidates the LM dropped (not kept in the Generated KRT).
+const modalDropped = ref([])
+
+// Display-side scrub of any leftover internal "ref" numbers in a reason
+// (older results were generated before the backend started cleaning them).
+function cleanReason(reason) {
+  if (!reason) return ''
+  return String(reason)
+    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')
+    .trim()
+}
 
 /**
  * Get service status info for a job type
@@ -719,6 +733,7 @@ function openJobModal(job) {
   modalLogs.value = job.logs || []
   modalRawResponses.value = job.files || {}
   modalExactMatchCount.value = job.result?.counts?.exactMatch || 0
+  modalDropped.value = job.type === 'pdf_analysis' ? (job.result?.data?.meta?.dropped || []) : []
 
   // Populate result data based on job type
   if (job.type === 'das_extraction') {
@@ -838,7 +853,7 @@ const pdfAnalysisRows = computed(() => {
         sourceUrl: merged.sourceUrl || '',
         newReuse: (merged.newReuse || '').toLowerCase(),
         additionalInformation: merged.additionalInformation || '',
-        reason: merged.reason || '',
+        reason: cleanReason(merged.reason),
         isDuplicate: false,
         dedupKey: merged.dedupKey,
         groupIndex,
@@ -860,7 +875,7 @@ const pdfAnalysisRows = computed(() => {
         sourceUrl: d.source || d.url || d.suggestedURL || merged.sourceUrl || '',
         newReuse: String(d.newReuse || d.new_reuse || merged.newReuse || '').toLowerCase(),
         additionalInformation: d.additionalInformation || d.additional_information || merged.additionalInformation || '',
-        reason: merged.reason || '',
+        reason: cleanReason(merged.reason),
         isDuplicate,
         dedupKey: merged.dedupKey,
         groupIndex,
@@ -1524,7 +1539,7 @@ async function downloadMarkdownFile(fileId) {
                         </td>
                         <td class="text-xs text-gray-500">{{ row.additionalInformation || '—' }}</td>
                         <!-- LM consolidation reason — shown once per merged group -->
-                        <td class="text-xs text-gray-500">{{ row.isGroupStart ? (row.reason || '—') : '' }}</td>
+                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ row.isGroupStart ? (row.reason || '—') : '' }}</td>
                         <td>
                           <span
                             v-if="row.isDuplicate"
@@ -1540,6 +1555,40 @@ async function downloadMarkdownFile(fileId) {
                 </div>
                 <div v-else class="pdf-analysis-empty">
                   No detections were consolidated yet. Run the upstream detections first.
+                </div>
+
+                <!-- Dropped candidates: detections the LM did not keep in the Generated KRT -->
+                <div v-if="modalDropped.length" class="pdf-analysis-dropped">
+                  <h4 class="job-modal-section-title">
+                    Dropped candidates
+                    <span class="pdf-analysis-dropped-count">{{ modalDropped.length }}</span>
+                  </h4>
+                  <p class="pdf-analysis-dropped-hint">These detections were not kept in the Generated KRT — with the reason for each.</p>
+                  <div class="job-modal-table-wrapper">
+                    <table class="job-modal-table">
+                      <thead>
+                        <tr>
+                          <th>Detected by</th>
+                          <th>Resource Type</th>
+                          <th>Resource Name</th>
+                          <th>Identifier</th>
+                          <th>Reason dropped</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(d, i) in modalDropped" :key="i" class="pdf-analysis-dropped-row">
+                          <td>
+                            <span v-for="s in (d.sources || [])" :key="s" class="job-modal-source-badge source-enriched mr-1">{{ pdfAnalysisSourceLabel(s) }}</span>
+                            <span v-if="!d.sources || !d.sources.length">—</span>
+                          </td>
+                          <td class="text-xs">{{ d.resourceType || '—' }}</td>
+                          <td class="font-medium pdf-analysis-dropped-name">{{ d.resourceName || '—' }}</td>
+                          <td class="text-xs">{{ d.identifier || '—' }}</td>
+                          <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ cleanReason(d.reason) || '—' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
 
@@ -2282,6 +2331,42 @@ async function downloadMarkdownFile(fileId) {
   background: #f9fafb;
   border: 1px dashed #d1d5db;
   border-radius: 0.375rem;
+}
+
+/* Reason cells wrap and get room so sentence-length reasons stay readable. */
+.pdf-analysis-reason-cell {
+  white-space: normal;
+  min-width: 220px;
+  max-width: 360px;
+  line-height: 1.35;
+}
+
+/* Dropped candidates section */
+.pdf-analysis-dropped {
+  margin-top: 1rem;
+}
+.pdf-analysis-dropped-count {
+  display: inline-block;
+  margin-left: 0.375rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 9999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+.pdf-analysis-dropped-hint {
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin: 0.25rem 0 0.5rem;
+}
+.pdf-analysis-dropped-row td {
+  background: #fef2f2;
+}
+.pdf-analysis-dropped-name {
+  text-decoration: line-through;
+  text-decoration-color: #fca5a5;
+  color: #6b7280;
 }
 
 /* Inline badge marking a row as matched in the enrichment list */
