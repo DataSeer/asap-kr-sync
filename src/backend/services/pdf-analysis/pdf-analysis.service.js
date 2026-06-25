@@ -17,6 +17,7 @@ const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { mergeDetections } = require('./merge-detections.service');
+const { consolidateWithLM } = require('./krt-generation.service');
 const logger = require('../../utils/logger');
 
 /**
@@ -78,19 +79,33 @@ async function buildGeneratedKrt(submission, jobLogger) {
     totalItems: contributions.reduce((n, c) => n + c.items.length, 0)
   });
 
-  const generatedKrt = mergeDetections(contributions);
-  const multiSource = generatedKrt.filter(g => g.detectedBy.length > 1).length;
+  // Step a: regroup + coarse-dedup every detection's items (keeps detectedBy
+  // provenance per merged resource).
+  const candidates = mergeDetections(contributions);
+
+  // Step b: an LM consolidates the candidates into the final Generated KRT,
+  // attaching a `reason` per line (kept/merged/dropped). Falls back to the
+  // rule-based candidates when the LM isn't configured or errors.
+  const { items: generatedKrt, dropped, usedLM, rawResponse } = await consolidateWithLM(candidates, jobLogger);
+  if (rawResponse) {
+    await jobLogger?.saveRawResponse('krt-generation', rawResponse, { extension: '.md', mimeType: 'text/markdown' });
+  }
+  const multiSource = generatedKrt.filter(g => (g.detectedBy?.length || 0) > 1).length;
 
   jobLogger?.log('merge_done', 'Generated KRT built', {
+    candidateCount: candidates.length,
     resourceCount: generatedKrt.length,
-    multiSourceCount: multiSource
+    droppedCount: dropped.length,
+    multiSourceCount: multiSource,
+    usedLM
   });
 
   logger.info('PDF Analysis: Generated KRT built', {
     submissionId, round,
     contributorCount: contributions.length,
     resourceCount: generatedKrt.length,
-    multiSourceCount: multiSource
+    droppedCount: dropped.length,
+    usedLM
   });
 
   return {
@@ -99,6 +114,10 @@ async function buildGeneratedKrt(submission, jobLogger) {
       contributorCount: contributions.length,
       contributorSources: contributions.map(c => c.source),
       resourceCount: generatedKrt.length,
+      candidateCount: candidates.length,
+      droppedCount: dropped.length,
+      dropped,
+      usedLM,
       multiSourceCount: multiSource,
       totalMs: Date.now() - startTime
     }
