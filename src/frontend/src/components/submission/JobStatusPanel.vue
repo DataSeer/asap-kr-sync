@@ -857,6 +857,8 @@ const pdfAnalysisRows = computed(() => {
         isDuplicate: false,
         dedupKey: merged.dedupKey,
         groupIndex,
+        groupNumber: groupIndex + 1,
+        finalName: merged.resourceName || '',
         groupSize: 1,
         isGroupStart: true,
         isGroupEnd: true
@@ -879,6 +881,8 @@ const pdfAnalysisRows = computed(() => {
         isDuplicate,
         dedupKey: merged.dedupKey,
         groupIndex,
+        groupNumber: groupIndex + 1,
+        finalName: merged.resourceName || '',
         groupSize,
         isGroupStart: j === 0,
         isGroupEnd:   j === contributors.length - 1
@@ -888,6 +892,11 @@ const pdfAnalysisRows = computed(() => {
   }
   return rows
 })
+
+// How many KRT rows were merged from more than one detection module.
+const pdfAnalysisMergedGroups = computed(() =>
+  pdfAnalysisRows.value.filter(r => r.isGroupStart && r.groupSize > 1).length
+)
 
 /**
  * Trigger a browser download of a Blob with the given filename.
@@ -908,14 +917,19 @@ function downloadPdfAnalysisCsv() {
   const rows = pdfAnalysisRows.value
   if (!rows.length) return
   const csvData = rows.map(r => ({
+    // Rows that share "KRT Row" are the SAME final Generated KRT row — one line
+    // per detection module that found it. "Final KRT Name" is the canonical
+    // name that row carries; "Detected Name" is what each module produced.
+    'KRT Row': r.groupNumber,
+    'Detections in Row': r.groupSize,
     'Detection Source': r.source ? pdfAnalysisSourceLabel(r.source) : '',
     'Resource Type': r.resourceType,
-    'Resource Name': r.resourceName,
+    'Detected Name': r.resourceName,
+    'Final KRT Name': r.finalName,
     'Source': r.sourceUrl,
     'Identifier': r.identifier,
     'New/Reuse': r.newReuse,
     'Additional Information': r.additionalInformation,
-    'Has Duplicate': r.isDuplicate ? 'Yes' : 'No',
     'Dedup Key': r.dedupKey || ''
   }))
   const csv = Papa.unparse(csvData)
@@ -1467,11 +1481,12 @@ async function downloadMarkdownFile(fileId) {
               <div v-if="modalTableType === 'pdf_analysis_krt'" class="pdf-analysis-modal-section">
                 <div v-if="pdfAnalysisRows.length" class="pdf-analysis-summary">
                   <div>
-                    {{ pdfAnalysisRows.length }} item{{ pdfAnalysisRows.length !== 1 ? 's' : '' }} consolidated from
-                    {{ modalItems?.length || 0 }} unique resource{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
-                    <span v-if="pdfAnalysisRows.filter(r => r.isDuplicate).length > 0">
-                      ({{ pdfAnalysisRows.filter(r => r.isDuplicate).length }} flagged as duplicate)
-                    </span>
+                    <strong>{{ modalItems?.length || 0 }}</strong> KRT row{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
+                    consolidated from <strong>{{ pdfAnalysisRows.length }}</strong> detection{{ pdfAnalysisRows.length !== 1 ? 's' : '' }}
+                    <span v-if="pdfAnalysisMergedGroups > 0">— {{ pdfAnalysisMergedGroups }} merged from multiple modules</span>
+                  </div>
+                  <div class="pdf-analysis-summary-hint">
+                    Rows sharing a <strong>KRT&nbsp;#</strong> are the <em>same</em> KRT row — one line per detection module that found it.
                   </div>
                 </div>
                 <div v-if="pdfAnalysisRows.length" class="pdf-analysis-actions">
@@ -1492,15 +1507,15 @@ async function downloadMarkdownFile(fileId) {
                   <table class="job-modal-table">
                     <thead>
                       <tr>
+                        <th>KRT #</th>
                         <th>Detection</th>
                         <th>Resource Type</th>
-                        <th>Resource Name</th>
+                        <th>Detected Name</th>
                         <th>Source</th>
                         <th>Identifier</th>
                         <th>New/Reuse</th>
                         <th>Additional Information</th>
                         <th>Reason</th>
-                        <th></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1516,6 +1531,20 @@ async function downloadMarkdownFile(fileId) {
                             'pdf-analysis-group-merged': row.groupSize > 1 }
                         ]"
                       >
+                        <!-- KRT row number — shown once per group so a merged
+                             group reads as one block; merge label clarifies it. -->
+                        <td class="pdf-analysis-krtnum-cell">
+                          <template v-if="row.isGroupStart">
+                            <div class="pdf-analysis-krtnum">#{{ row.groupNumber }}</div>
+                            <div
+                              v-if="row.groupSize > 1"
+                              class="pdf-analysis-merge-label"
+                              :title="'Merged into one KRT row: ' + (row.finalName || '') + ' (dedup key: ' + (row.dedupKey || '?') + ')'"
+                            >
+                              {{ row.groupSize }} detections → 1 row
+                            </div>
+                          </template>
+                        </td>
                         <td>
                           <span v-if="row.source" class="job-modal-source-badge source-enriched">
                             {{ pdfAnalysisSourceLabel(row.source) }}
@@ -1523,12 +1552,7 @@ async function downloadMarkdownFile(fileId) {
                           <span v-else>—</span>
                         </td>
                         <td class="text-xs">{{ row.resourceType || '—' }}</td>
-                        <td class="font-medium">
-                          {{ row.resourceName || '—' }}
-                          <span v-if="row.isGroupStart && row.groupSize > 1" class="pdf-analysis-group-count" :title="`Merged from ${row.groupSize} detections`">
-                            ×{{ row.groupSize }}
-                          </span>
-                        </td>
+                        <td class="font-medium">{{ row.resourceName || '—' }}</td>
                         <td class="text-xs">{{ row.sourceUrl || '—' }}</td>
                         <td class="text-xs">{{ row.identifier || '—' }}</td>
                         <td>
@@ -1540,15 +1564,6 @@ async function downloadMarkdownFile(fileId) {
                         <td class="text-xs text-gray-500">{{ row.additionalInformation || '—' }}</td>
                         <!-- LM consolidation reason — shown once per merged group -->
                         <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ row.isGroupStart ? (row.reason || '—') : '' }}</td>
-                        <td>
-                          <span
-                            v-if="row.isDuplicate"
-                            class="pdf-analysis-duplicate-badge"
-                            :title="'Detected by multiple sources — merged into a single Generated KRT row (dedup key: ' + (row.dedupKey || '?') + ')'"
-                          >
-                            duplicate
-                          </span>
-                        </td>
                       </tr>
                     </tbody>
                   </table>
@@ -2249,6 +2264,33 @@ async function downloadMarkdownFile(fileId) {
   background: #f9fafb;
   border: 1px solid #e5e7eb;
   border-radius: 0.375rem;
+}
+.pdf-analysis-summary-hint {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+/* "KRT #" column — group identity, shown once per merged group. */
+.pdf-analysis-krtnum-cell {
+  white-space: nowrap;
+  vertical-align: top;
+}
+.pdf-analysis-krtnum {
+  font-weight: 700;
+  color: #4b5563;
+}
+.pdf-analysis-merge-label {
+  margin-top: 0.125rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #2563eb;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 9999px;
+  padding: 0.0625rem 0.375rem;
+  display: inline-block;
+  cursor: help;
 }
 
 .pdf-analysis-actions {
