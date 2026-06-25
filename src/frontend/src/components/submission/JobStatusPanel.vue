@@ -104,7 +104,8 @@ const ALL_JOB_TYPES = [
   { type: 'datasets_detection', label: 'Datasets Detection' },
   { type: 'protocols_detection', label: 'Protocols Detection' },
   { type: 'identifier_detection', label: 'Identifiers Detection' },
-  { type: 'pdf_analysis', label: 'PDF Analysis' }
+  { type: 'pdf_analysis', label: 'PDF Analysis' },
+  { type: 'suggestion_generation', label: 'AI Suggestions' }
 ]
 
 // Unified modal state
@@ -116,6 +117,20 @@ const modalLogs = ref([])
 const modalRawResponses = ref({})
 const modalJobType = ref(null)
 const modalExactMatchCount = ref(0)
+// PDF Analysis: candidates the LM dropped (not kept in the Generated KRT).
+const modalDropped = ref([])
+
+// Display-side scrub of any leftover internal "ref" numbers in a reason
+// (older results were generated before the backend started cleaning them).
+function cleanReason(reason) {
+  if (!reason) return ''
+  return String(reason)
+    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')
+    .trim()
+}
 
 /**
  * Get service status info for a job type
@@ -475,6 +490,23 @@ function getResultSummary(job) {
   return dataSummary
 }
 
+// Short detection-module labels for the AI Suggestions summary "Modules" column.
+const SOURCE_SHORT = {
+  software_detection: 'SW',
+  datasets_detection: 'DS',
+  materials_detection: 'MAT',
+  protocols_detection: 'PROT',
+  identifier_detection: 'ID',
+  pdf_analysis: 'PDF'
+}
+// Label a row in the AI Suggestions summary — handles both decision objects
+// ({action}) and raw suggestion objects ({type}).
+function suggestionDecisionLabel(item) {
+  const a = item.action || item.type
+  const map = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove', add_row: 'Add', edit: 'Update', delete_row: 'Remove' }
+  return map[a] || a || '—'
+}
+
 /**
  * Per-job-type data count summary. Pure function of the persisted result;
  * has no notion of source/outcome (those are layered on by getResultSummary).
@@ -535,6 +567,11 @@ function getDataSummary(job, r) {
       const high = r.counts?.highRelevance || 0
       if (total === 0) return 'No identifiers'
       return `${total} match${total > 1 ? 'es' : ''}${high > 0 ? `, ${high} high relevance` : ''}`
+    }
+    case 'suggestion_generation': {
+      const total = r.counts?.unique || r.counts?.total || 0
+      if (total === 0) return 'No suggestions'
+      return `${total} suggestion${total > 1 ? 's' : ''}`
     }
     default:
       return null
@@ -696,6 +733,7 @@ function openJobModal(job) {
   modalLogs.value = job.logs || []
   modalRawResponses.value = job.files || {}
   modalExactMatchCount.value = job.result?.counts?.exactMatch || 0
+  modalDropped.value = job.type === 'pdf_analysis' ? (job.result?.data?.meta?.dropped || []) : []
 
   // Populate result data based on job type
   if (job.type === 'das_extraction') {
@@ -740,6 +778,15 @@ function openJobModal(job) {
     modalContent.value = ''
     modalTableType.value = 'pdf_analysis_krt'
     const items = job.result?.data?.items || []
+    modalItems.value = items.length ? items : null
+  } else if (job.type === 'suggestion_generation') {
+    // The LM comparison's full decision log (add/update/remove/skip) + reasons.
+    // Falls back to the suggestion list for older results without decisions.
+    modalContent.value = ''
+    modalTableType.value = 'suggestions'
+    const items = job.result?.data?.decisions?.length
+      ? job.result.data.decisions
+      : (job.result?.data?.suggestions || [])
     modalItems.value = items.length ? items : null
   } else {
     modalItems.value = null
@@ -806,9 +853,12 @@ const pdfAnalysisRows = computed(() => {
         sourceUrl: merged.sourceUrl || '',
         newReuse: (merged.newReuse || '').toLowerCase(),
         additionalInformation: merged.additionalInformation || '',
+        reason: cleanReason(merged.reason),
         isDuplicate: false,
         dedupKey: merged.dedupKey,
         groupIndex,
+        groupNumber: groupIndex + 1,
+        finalName: merged.resourceName || '',
         groupSize: 1,
         isGroupStart: true,
         isGroupEnd: true
@@ -827,9 +877,12 @@ const pdfAnalysisRows = computed(() => {
         sourceUrl: d.source || d.url || d.suggestedURL || merged.sourceUrl || '',
         newReuse: String(d.newReuse || d.new_reuse || merged.newReuse || '').toLowerCase(),
         additionalInformation: d.additionalInformation || d.additional_information || merged.additionalInformation || '',
+        reason: cleanReason(merged.reason),
         isDuplicate,
         dedupKey: merged.dedupKey,
         groupIndex,
+        groupNumber: groupIndex + 1,
+        finalName: merged.resourceName || '',
         groupSize,
         isGroupStart: j === 0,
         isGroupEnd:   j === contributors.length - 1
@@ -839,6 +892,11 @@ const pdfAnalysisRows = computed(() => {
   }
   return rows
 })
+
+// How many KRT rows were merged from more than one detection module.
+const pdfAnalysisMergedGroups = computed(() =>
+  pdfAnalysisRows.value.filter(r => r.isGroupStart && r.groupSize > 1).length
+)
 
 /**
  * Trigger a browser download of a Blob with the given filename.
@@ -859,14 +917,19 @@ function downloadPdfAnalysisCsv() {
   const rows = pdfAnalysisRows.value
   if (!rows.length) return
   const csvData = rows.map(r => ({
+    // Rows that share "KRT Row" are the SAME final Generated KRT row — one line
+    // per detection module that found it. "Final KRT Name" is the canonical
+    // name that row carries; "Detected Name" is what each module produced.
+    'KRT Row': r.groupNumber,
+    'Detections in Row': r.groupSize,
     'Detection Source': r.source ? pdfAnalysisSourceLabel(r.source) : '',
     'Resource Type': r.resourceType,
-    'Resource Name': r.resourceName,
+    'Detected Name': r.resourceName,
+    'Final KRT Name': r.finalName,
     'Source': r.sourceUrl,
     'Identifier': r.identifier,
     'New/Reuse': r.newReuse,
     'Additional Information': r.additionalInformation,
-    'Has Duplicate': r.isDuplicate ? 'Yes' : 'No',
     'Dedup Key': r.dedupKey || ''
   }))
   const csv = Papa.unparse(csvData)
@@ -1418,11 +1481,12 @@ async function downloadMarkdownFile(fileId) {
               <div v-if="modalTableType === 'pdf_analysis_krt'" class="pdf-analysis-modal-section">
                 <div v-if="pdfAnalysisRows.length" class="pdf-analysis-summary">
                   <div>
-                    {{ pdfAnalysisRows.length }} item{{ pdfAnalysisRows.length !== 1 ? 's' : '' }} consolidated from
-                    {{ modalItems?.length || 0 }} unique resource{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
-                    <span v-if="pdfAnalysisRows.filter(r => r.isDuplicate).length > 0">
-                      ({{ pdfAnalysisRows.filter(r => r.isDuplicate).length }} flagged as duplicate)
-                    </span>
+                    <strong>{{ modalItems?.length || 0 }}</strong> KRT row{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
+                    consolidated from <strong>{{ pdfAnalysisRows.length }}</strong> detection{{ pdfAnalysisRows.length !== 1 ? 's' : '' }}
+                    <span v-if="pdfAnalysisMergedGroups > 0">— {{ pdfAnalysisMergedGroups }} merged from multiple modules</span>
+                  </div>
+                  <div class="pdf-analysis-summary-hint">
+                    Rows sharing a <strong>KRT&nbsp;#</strong> are the <em>same</em> KRT row — one line per detection module that found it.
                   </div>
                 </div>
                 <div v-if="pdfAnalysisRows.length" class="pdf-analysis-actions">
@@ -1443,14 +1507,15 @@ async function downloadMarkdownFile(fileId) {
                   <table class="job-modal-table">
                     <thead>
                       <tr>
+                        <th>KRT #</th>
                         <th>Detection</th>
                         <th>Resource Type</th>
-                        <th>Resource Name</th>
+                        <th>Detected Name</th>
                         <th>Source</th>
                         <th>Identifier</th>
                         <th>New/Reuse</th>
                         <th>Additional Information</th>
-                        <th></th>
+                        <th>Reason</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1466,6 +1531,20 @@ async function downloadMarkdownFile(fileId) {
                             'pdf-analysis-group-merged': row.groupSize > 1 }
                         ]"
                       >
+                        <!-- KRT row number — shown once per group so a merged
+                             group reads as one block; merge label clarifies it. -->
+                        <td class="pdf-analysis-krtnum-cell">
+                          <template v-if="row.isGroupStart">
+                            <div class="pdf-analysis-krtnum">#{{ row.groupNumber }}</div>
+                            <div
+                              v-if="row.groupSize > 1"
+                              class="pdf-analysis-merge-label"
+                              :title="'Merged into one KRT row: ' + (row.finalName || '') + ' (dedup key: ' + (row.dedupKey || '?') + ')'"
+                            >
+                              {{ row.groupSize }} detections → 1 row
+                            </div>
+                          </template>
+                        </td>
                         <td>
                           <span v-if="row.source" class="job-modal-source-badge source-enriched">
                             {{ pdfAnalysisSourceLabel(row.source) }}
@@ -1473,12 +1552,7 @@ async function downloadMarkdownFile(fileId) {
                           <span v-else>—</span>
                         </td>
                         <td class="text-xs">{{ row.resourceType || '—' }}</td>
-                        <td class="font-medium">
-                          {{ row.resourceName || '—' }}
-                          <span v-if="row.isGroupStart && row.groupSize > 1" class="pdf-analysis-group-count" :title="`Merged from ${row.groupSize} detections`">
-                            ×{{ row.groupSize }}
-                          </span>
-                        </td>
+                        <td class="font-medium">{{ row.resourceName || '—' }}</td>
                         <td class="text-xs">{{ row.sourceUrl || '—' }}</td>
                         <td class="text-xs">{{ row.identifier || '—' }}</td>
                         <td>
@@ -1488,21 +1562,48 @@ async function downloadMarkdownFile(fileId) {
                           <span v-else>—</span>
                         </td>
                         <td class="text-xs text-gray-500">{{ row.additionalInformation || '—' }}</td>
-                        <td>
-                          <span
-                            v-if="row.isDuplicate"
-                            class="pdf-analysis-duplicate-badge"
-                            :title="'Detected by multiple sources — merged into a single Generated KRT row (dedup key: ' + (row.dedupKey || '?') + ')'"
-                          >
-                            duplicate
-                          </span>
-                        </td>
+                        <!-- LM consolidation reason — shown once per merged group -->
+                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ row.isGroupStart ? (row.reason || '—') : '' }}</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
                 <div v-else class="pdf-analysis-empty">
                   No detections were consolidated yet. Run the upstream detections first.
+                </div>
+
+                <!-- Dropped candidates: detections the LM did not keep in the Generated KRT -->
+                <div v-if="modalDropped.length" class="pdf-analysis-dropped">
+                  <h4 class="job-modal-section-title">
+                    Dropped candidates
+                    <span class="pdf-analysis-dropped-count">{{ modalDropped.length }}</span>
+                  </h4>
+                  <p class="pdf-analysis-dropped-hint">These detections were not kept in the Generated KRT — with the reason for each.</p>
+                  <div class="job-modal-table-wrapper">
+                    <table class="job-modal-table">
+                      <thead>
+                        <tr>
+                          <th>Detected by</th>
+                          <th>Resource Type</th>
+                          <th>Resource Name</th>
+                          <th>Identifier</th>
+                          <th>Reason dropped</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(d, i) in modalDropped" :key="i" class="pdf-analysis-dropped-row">
+                          <td>
+                            <span v-for="s in (d.sources || [])" :key="s" class="job-modal-source-badge source-enriched mr-1">{{ pdfAnalysisSourceLabel(s) }}</span>
+                            <span v-if="!d.sources || !d.sources.length">—</span>
+                          </td>
+                          <td class="text-xs">{{ d.resourceType || '—' }}</td>
+                          <td class="font-medium pdf-analysis-dropped-name">{{ d.resourceName || '—' }}</td>
+                          <td class="text-xs">{{ d.identifier || '—' }}</td>
+                          <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ cleanReason(d.reason) || '—' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
 
@@ -1532,6 +1633,26 @@ async function downloadMarkdownFile(fileId) {
                       </span>
                       <span v-else>—</span>
                     </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <!-- AI Suggestions: every choice the module made + the reason for each -->
+              <table v-if="modalItems && modalItems.length && modalTableType === 'suggestions'" class="job-modal-table">
+                <thead>
+                  <tr>
+                    <th>Decision</th>
+                    <th>Resource</th>
+                    <th>Modules</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(item, i) in modalItems" :key="i">
+                    <td>{{ suggestionDecisionLabel(item) }}</td>
+                    <td>{{ item.resourceName || item.title || item.data?.resourceName || '—' }}</td>
+                    <td>{{ (item.sources && item.sources.length) ? item.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—' }}</td>
+                    <td>{{ item.reason || item.description || '—' }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -2144,6 +2265,33 @@ async function downloadMarkdownFile(fileId) {
   border: 1px solid #e5e7eb;
   border-radius: 0.375rem;
 }
+.pdf-analysis-summary-hint {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+/* "KRT #" column — group identity, shown once per merged group. */
+.pdf-analysis-krtnum-cell {
+  white-space: nowrap;
+  vertical-align: top;
+}
+.pdf-analysis-krtnum {
+  font-weight: 700;
+  color: #4b5563;
+}
+.pdf-analysis-merge-label {
+  margin-top: 0.125rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #2563eb;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 9999px;
+  padding: 0.0625rem 0.375rem;
+  display: inline-block;
+  cursor: help;
+}
 
 .pdf-analysis-actions {
   display: flex;
@@ -2225,6 +2373,42 @@ async function downloadMarkdownFile(fileId) {
   background: #f9fafb;
   border: 1px dashed #d1d5db;
   border-radius: 0.375rem;
+}
+
+/* Reason cells wrap and get room so sentence-length reasons stay readable. */
+.pdf-analysis-reason-cell {
+  white-space: normal;
+  min-width: 220px;
+  max-width: 360px;
+  line-height: 1.35;
+}
+
+/* Dropped candidates section */
+.pdf-analysis-dropped {
+  margin-top: 1rem;
+}
+.pdf-analysis-dropped-count {
+  display: inline-block;
+  margin-left: 0.375rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 9999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+.pdf-analysis-dropped-hint {
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin: 0.25rem 0 0.5rem;
+}
+.pdf-analysis-dropped-row td {
+  background: #fef2f2;
+}
+.pdf-analysis-dropped-name {
+  text-decoration: line-through;
+  text-decoration-color: #fca5a5;
+  color: #6b7280;
 }
 
 /* Inline badge marking a row as matched in the enrichment list */

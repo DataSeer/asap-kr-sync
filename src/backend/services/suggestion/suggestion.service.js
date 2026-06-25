@@ -1,46 +1,30 @@
 /**
- * Suggestion Service — DIFF-BASED
+ * Suggestion Service — LM-GENERATED, PERSISTED
  *
- * Suggestions are NOT stored. They're computed on every read as the diff
- * between three things:
+ * Suggestions are produced by the SUGGESTION_GENERATION job (an LM comparison
+ * of the author KRT vs the Generated KRT — see kr-comparison.service.js) and
+ * persisted on that job's result. This service reads that persisted list and
+ * applies the user's accept/reject decisions. It no longer recomputes a diff on
+ * every read, so editing the KRT does NOT silently change the suggestions —
+ * they only change when the job is (re)run via the Regenerate button.
  *
- *   1. The Generated KRT — produced by the pdf_analysis consolidator from
- *      every detection's items. Stored on `pdf_analysis.result.data.items`.
- *   2. The user's KRT      — `krt_data` rows.
- *   3. User decisions      — only rejections need persistent state, in the
- *                            `rejected_resources` table. Approvals are
- *                            captured implicitly via change_log when
- *                            applyAddRow/applyEdit are called.
+ * Decisions:
+ *   - reject  → audit row in `rejected_resources` (rejected ids are filtered
+ *               out of the pending list and re-surface only if regenerated).
+ *   - approve → applied to `krt_data` (add / edit / delete) with a change_log
+ *               entry (source='ai_suggestion').
  *
- * Suggestion IDs are synthetic and stable across re-runs:
- *   add:<dedup_key>           — a resource in Generated KRT not yet in user KRT
- *   edit:<dedup_key>:<column> — a column-level diff against an existing KRT row
+ * Suggestion ids (carried from kr-comparison.service):
+ *   add:<dedup_key>           edit:<dedup_key>:<column>           delete:<dedup_key>
  */
 
-const { Submission, KRTData, RejectedResource } = require('../../models');
+const { Submission, KRTData, RejectedResource, ChangeLog, ValidationResult, sequelize } = require('../../models');
 const { applyAddRow, applyEdit } = require('../pdf/pdf.service');
 const { NotFoundError } = require('../../utils/errors');
-const { getGeneratedKrt } = require('../pdf-analysis/pdf-analysis.service');
-const { computeSuggestions, parseSuggestionId, indexKrtForLookup } = require('../pdf-analysis/diff-suggestions.service');
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const { getPersistedSuggestions } = require('./kr-comparison.service');
 
 /**
- * Map a synthetic 'edit:...:<column>' field key to the GeneratedResource
- * field that supplies the proposed new value.
- */
-const COLUMN_TO_GENERATED_FIELD = {
-  resourceName:          'resourceName',
-  source:                'sourceUrl',
-  identifier:            'identifier',
-  additionalInformation: 'additionalInformation'
-};
-
-/**
- * Resolve the round to use for a /suggestions request. Falls back to the
- * submission's currentRound when not provided.
+ * Resolve the round to use. Falls back to the submission's currentRound.
  */
 async function resolveRound(submissionId, round) {
   if (round != null) return round;
@@ -49,70 +33,47 @@ async function resolveRound(submissionId, round) {
 }
 
 /**
- * Convert the rejected_resources rows for this submission/round into the two
- * inputs computeSuggestions expects, plus a list of suggestion-shaped
- * objects representing the rejected items themselves (for the Step 3
- * "Rejected suggestions" carousel).
+ * Load rejections: the set of rejected suggestion ids (to hide from pending),
+ * plus suggestion-shaped objects for the Step 3 "Rejected suggestions" carousel.
  */
 async function loadRejections(submissionId, round) {
   const rows = await RejectedResource.findAll({
     where: { submissionId, round },
     order: [['rejected_at', 'DESC']]
   });
-  const rejectedAdd = new Set();
-  const rejectedColumns = new Map();
+  const rejectedIds = new Set();
   const rejectedSuggestions = [];
   for (const r of rows) {
+    rejectedIds.add(r.suggestionId);
     rejectedSuggestions.push(rejectedRowToSuggestion(r));
-    if (r.suggestionId.startsWith('add:')) {
-      rejectedAdd.add(r.dedupKey);
-    } else if (r.suggestionId.startsWith('edit:') && r.columnName) {
-      if (!rejectedColumns.has(r.dedupKey)) rejectedColumns.set(r.dedupKey, new Set());
-      rejectedColumns.get(r.dedupKey).add(r.columnName);
-    }
   }
-  return { rejectedAdd, rejectedColumns, rejectedSuggestions };
+  return { rejectedIds, rejectedSuggestions };
 }
 
 /**
- * Render a stored rejection row in the suggestion shape that ReviewView and
- * the rest of the frontend already understands (status='rejected' + carousel
- * fields). The audit fields stored on rejected_resources are immutable so
- * this view stays stable even if the Generated KRT later changes.
+ * Render a stored rejection in the suggestion shape ReviewView understands.
  */
 function rejectedRowToSuggestion(r) {
   const isAdd = r.suggestionId.startsWith('add:');
   const isEdit = r.suggestionId.startsWith('edit:');
+  const isDelete = r.suggestionId.startsWith('delete:');
   const baseTitle = r.resourceName || r.identifier || r.resourceType || '(rejected resource)';
   return {
     id: r.suggestionId,
-    type: isAdd ? 'add_row' : (isEdit ? 'edit' : 'unknown'),
+    type: isAdd ? 'add_row' : (isEdit ? 'edit' : (isDelete ? 'delete_row' : 'unknown')),
     status: 'rejected',
-    source: 'pdf_analysis',
-    title: isEdit
-      ? `Update ${(r.columnName || '').toString()} of ${baseTitle}`
-      : baseTitle,
+    source: 'krt_comparison',
+    title: isEdit ? `Update ${(r.columnName || '').toString()} of ${baseTitle}` : baseTitle,
     description: isAdd
       ? `Add ${r.resourceType || ''}: ${baseTitle}`.trim()
       : (isEdit
           ? `${r.columnName}: → "${r.proposedValue ?? ''}"`
-          : 'Rejected suggestion'),
+          : (isDelete ? `Remove: ${baseTitle}` : 'Rejected suggestion')),
     rejectionReason: r.reason || null,
     rejectedAt: r.rejectedAt,
     data: isEdit
-      ? {
-          column: r.columnName,
-          newValue: r.proposedValue ?? '',
-          oldValue: '',          // not preserved in audit; ReviewView shows '(empty)'
-          resourceType: r.resourceType,
-          resourceName: r.resourceName
-        }
-      : {
-          resourceType: r.resourceType,
-          resourceName: r.resourceName,
-          identifier: r.identifier,
-          newReuse: r.newReuse
-        }
+      ? { column: r.columnName, newValue: r.proposedValue ?? '', oldValue: '', resourceType: r.resourceType, resourceName: r.resourceName }
+      : { resourceType: r.resourceType, resourceName: r.resourceName, identifier: r.identifier, newReuse: r.newReuse }
   };
 }
 
@@ -121,139 +82,112 @@ function rejectedRowToSuggestion(r) {
 // ---------------------------------------------------------------------------
 
 /**
- * Read-time suggestion list. Always reflects the current Generated KRT, the
- * current user KRT, and the current set of rejections — no stale state.
+ * Suggestion list = the persisted LM suggestions (minus the ones the user has
+ * rejected) + the rejected items (for the audit carousel).
  */
 async function getAllSuggestions(submissionId, round) {
   const r = await resolveRound(submissionId, round);
-
-  const [generatedKrt, krtRows, rejections] = await Promise.all([
-    getGeneratedKrt(submissionId, r),
-    KRTData.findAll({ where: { submissionId, round: r } }),
+  const [persisted, rejections] = await Promise.all([
+    getPersistedSuggestions(submissionId, r),
     loadRejections(submissionId, r)
   ]);
-
-  const pending = computeSuggestions(
-    generatedKrt,
-    krtRows,
-    rejections.rejectedAdd,
-    rejections.rejectedColumns
-  );
-  // Append rejected items (already in suggestion-shape with status='rejected')
-  // so the existing ReviewView carousel — which filters s.status === 'rejected'
-  // — keeps working without any frontend change.
+  const pending = persisted.filter(s => !rejections.rejectedIds.has(s.id));
   return { suggestions: [...pending, ...rejections.rejectedSuggestions] };
 }
 
+/** Find a persisted suggestion by id for the current round. */
+async function findSuggestion(submissionId, suggestionId) {
+  const r = await resolveRound(submissionId, null);
+  const persisted = await getPersistedSuggestions(submissionId, r);
+  const sug = persisted.find(s => s.id === suggestionId);
+  return { round: r, sug };
+}
+
 /**
- * Approve a synthetic-id suggestion. Re-resolves the suggestion against the
- * CURRENT Generated KRT (so a stale frontend doesn't apply outdated data),
- * then applies the change to krt_data via the existing apply-helpers. The
- * change_log entry written by those helpers (`source='ai_suggestion'`)
- * provides the audit trail — no extra status flip needed.
+ * Approve a persisted suggestion: apply it to krt_data. Add/edit reuse the
+ * existing apply-helpers; delete removes the row transactionally.
  */
 async function approveSuggestion(submissionId, suggestionId, userId, modifiedValue, overrides = null) {
-  const parsed = parseSuggestionId(suggestionId);
-  if (!parsed) throw new NotFoundError('Suggestion');
+  const { round: r, sug } = await findSuggestion(submissionId, suggestionId);
+  if (!sug) throw new NotFoundError('Suggestion');
 
-  const r = await resolveRound(submissionId, null);
-  const generatedKrt = await getGeneratedKrt(submissionId, r);
-  const resource = generatedKrt.find(g => g.dedupKey === parsed.dedupKey);
-  if (!resource) {
-    throw new NotFoundError('Suggestion (resource no longer in Generated KRT)');
-  }
-
-  if (parsed.kind === 'add') {
-    // Per-field overrides let the user change one or more cells of the
-    // proposed add_row before approving (most commonly the Resource Type).
-    // Falsy/empty values are ignored so an empty form field doesn't blank
-    // out the detector's value.
+  if (sug.type === 'add_row') {
     const ov = overrides || {};
     await applyAddRow(submissionId, {
-      resourceType:          ov.resourceType          || resource.resourceType,
-      resourceName:          ov.resourceName          || resource.resourceName,
-      source:                ov.source                || resource.sourceUrl,
-      identifier:            ov.identifier            || resource.identifier,
-      newReuse:              ov.newReuse              || resource.newReuse,
-      // Per ASAP: AI-driven inserts never populate ADDITIONAL INFORMATION.
-      // The detector context is held on `suggestion.context` (UI-only,
-      // hover-as-hint) and intentionally NOT written to the KRT cell.
-      // A user-supplied override still wins, so accept-with-modifications
-      // works the same way for this column as the others.
+      resourceType:          ov.resourceType          || sug.data.resourceType,
+      resourceName:          ov.resourceName          || sug.data.resourceName,
+      source:                ov.source                || sug.data.source,
+      identifier:            ov.identifier            || sug.data.identifier,
+      newReuse:              ov.newReuse              || sug.data.newReuse,
+      // AI-driven inserts never populate ADDITIONAL INFORMATION (unless the
+      // user typed an override).
       additionalInformation: ov.additionalInformation || ''
     }, userId, r);
-    return { description: resource.resourceName || resource.identifier, type: 'add_row' };
+    return { description: sug.data.resourceName || sug.data.identifier, type: 'add_row' };
   }
 
-  if (parsed.kind === 'edit') {
-    // Use the same alias-aware matcher computeSuggestions ran with — strict
-    // dedupKey-equality would miss rows that were paired via name- or token-
-    // alias matching when the suggestion was generated.
-    const krtRows = await KRTData.findAll({ where: { submissionId, round: r } });
-    const krtRow = indexKrtForLookup(krtRows).findMatch(resource);
-    if (!krtRow) {
-      throw new NotFoundError('Suggestion (matching KRT row not found)');
-    }
-
-    const sourceField = COLUMN_TO_GENERATED_FIELD[parsed.column];
-    const newValue = modifiedValue ?? (sourceField ? resource[sourceField] : '');
-
+  if (sug.type === 'edit') {
+    const newValue = modifiedValue ?? sug.data.newValue;
     await applyEdit(submissionId, {
-      rowId:    krtRow.id,
-      column:   parsed.column,
-      newValue
+      rowId: sug.data.rowId, column: sug.data.column,
+      newValue, oldValue: sug.data.oldValue, resourceName: sug.data.resourceName
     }, modifiedValue, userId, r);
-    return { description: resource.resourceName || resource.identifier, type: 'edit' };
+    return { description: sug.data.resourceName, type: 'edit' };
+  }
+
+  if (sug.type === 'delete_row') {
+    await applyDeleteRow(submissionId, sug.data.rowId, userId, r, sug.data.resourceName);
+    return { description: sug.data.resourceName, type: 'delete_row' };
   }
 
   throw new NotFoundError('Suggestion');
 }
 
+/** Delete a KRT row (accepted "remove" suggestion), transactionally + audited. */
+async function applyDeleteRow(submissionId, rowId, userId, round, resourceName) {
+  const row = await KRTData.findOne({ where: { submissionId, id: rowId, round } });
+  if (!row) throw new NotFoundError('KRT row');
+  await sequelize.transaction(async (t) => {
+    await ChangeLog.create({
+      submissionId, userId, action: 'delete_row', source: 'ai_suggestion', step: 2, round: round || 1,
+      rowId: row.id, description: `Deleted row: ${resourceName || row.resourceName || ''}`
+    }, { transaction: t });
+    await ValidationResult.destroy({ where: { submissionId, rowId: row.id }, transaction: t });
+    await row.destroy({ transaction: t });
+  });
+}
+
 /**
- * Reject a synthetic-id suggestion. Inserts an audit row into
- * rejected_resources (snapshot fields immutable). Idempotent on the
- * (submission_id, round, suggestion_id) unique key.
+ * Reject a persisted suggestion: insert an audit row into rejected_resources
+ * (idempotent on the unique key). The rejected id is then filtered out of the
+ * pending list until a regenerate brings a fresh one.
  */
 async function rejectSuggestion(submissionId, suggestionId, userId, reason) {
-  const parsed = parseSuggestionId(suggestionId);
-  if (!parsed) throw new NotFoundError('Suggestion');
-
-  const r = await resolveRound(submissionId, null);
-  const generatedKrt = await getGeneratedKrt(submissionId, r);
-  const resource = generatedKrt.find(g => g.dedupKey === parsed.dedupKey);
-  if (!resource) {
-    throw new NotFoundError('Suggestion (resource no longer in Generated KRT)');
-  }
+  const { round: r, sug } = await findSuggestion(submissionId, suggestionId);
+  if (!sug) throw new NotFoundError('Suggestion');
 
   const fields = {
-    submissionId,
-    round:        r,
-    suggestionId,
-    dedupKey:     parsed.dedupKey,
-    resourceType: resource.resourceType,
-    resourceName: resource.resourceName,
-    identifier:   resource.identifier,
-    newReuse:     resource.newReuse,
+    submissionId, round: r, suggestionId,
+    dedupKey:     sug.dedupKey,
+    resourceType: sug.data.resourceType,
+    resourceName: sug.data.resourceName,
+    identifier:   sug.data.identifier,
+    newReuse:     sug.data.newReuse,
     reason:       reason || null,
     rejectedBy:   userId
   };
-  if (parsed.kind === 'edit') {
-    fields.columnName = parsed.column;
-    const sourceField = COLUMN_TO_GENERATED_FIELD[parsed.column];
-    fields.proposedValue = sourceField ? resource[sourceField] : null;
+  if (sug.type === 'edit') {
+    fields.columnName = sug.data.column;
+    fields.proposedValue = sug.data.newValue;
   }
 
   try {
     await RejectedResource.create(fields);
   } catch (err) {
-    // Idempotent: clicking reject twice on the same suggestion is a no-op.
-    if (err?.name !== 'SequelizeUniqueConstraintError') throw err;
+    if (err?.name !== 'SequelizeUniqueConstraintError') throw err; // reject twice = no-op
   }
 
-  return {
-    description: resource.resourceName || resource.identifier,
-    type: parsed.kind === 'add' ? 'add_row' : 'edit'
-  };
+  return { description: sug.data.resourceName || sug.data.identifier, type: sug.type };
 }
 
 module.exports = {

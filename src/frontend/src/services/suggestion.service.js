@@ -18,6 +18,17 @@ export default {
   },
 
   /**
+   * Re-run the LM comparison job to (re)generate suggestions. Returns once the
+   * job is queued; poll suggestions / job status for the result.
+   * @param {string} submissionId
+   * @returns {Promise<{ message: string, jobId: string }>}
+   */
+  async regenerate(submissionId) {
+    const response = await api.post(`/submissions/${submissionId}/suggestions/regenerate`)
+    return response.data
+  },
+
+  /**
    * Approve a suggestion
    * @param {string} submissionId
    * @param {string} suggestionId

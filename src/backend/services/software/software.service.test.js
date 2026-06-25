@@ -8,7 +8,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildKrtItemsSoftware } = require('./software.service');
+const {
+  buildKrtItemsSoftware,
+  applySoftwarePolicy,
+  isInstrumentSoftware,
+  detectCodeLanguage
+} = require('./software.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 
 test('buildKrtItemsSoftware: empty / non-array → []', () => {
@@ -52,6 +57,56 @@ test('buildKrtItemsSoftware: missing confidence → default', () => {
 test('buildKrtItemsSoftware: falls back to `name` when normalizedName is missing', () => {
   const items = buildKrtItemsSoftware([{ name: 'GraphPad Prism' }]);
   assert.equal(items[0].resourceName, 'GraphPad Prism');
+});
+
+// ── Software policy (requests B1/B3/B4) ──────────────────────────────────────
+
+test('detectCodeLanguage: known languages → canonical label; others → null', () => {
+  assert.equal(detectCodeLanguage('r'), 'R');
+  assert.equal(detectCodeLanguage('MATLAB'), 'MATLAB');
+  assert.equal(detectCodeLanguage('python'), 'Python');
+  assert.equal(detectCodeLanguage('Fiji'), null);
+  assert.equal(detectCodeLanguage(''), null);
+});
+
+test('isInstrumentSoftware: flags acquisition software, not analysis tools', () => {
+  assert.equal(isInstrumentSoftware('ZEN'), true);
+  assert.equal(isInstrumentSoftware('NIS-Elements'), true);
+  assert.equal(isInstrumentSoftware('LAS X'), true);
+  assert.equal(isInstrumentSoftware('Fiji'), false);
+  assert.equal(isInstrumentSoftware('GraphPad Prism'), false);
+});
+
+test('applySoftwarePolicy: B1 software defaults to reuse', () => {
+  const out = applySoftwarePolicy(buildKrtItemsSoftware([{ name: 'Fiji' }]));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].resourceName, 'Fiji');
+  assert.equal(out[0].newReuse, 'reuse');
+});
+
+test('applySoftwarePolicy: B4 language → "<Lang> code" marked new', () => {
+  const out = applySoftwarePolicy(buildKrtItemsSoftware([
+    { name: 'MATLAB R2019b', normalizedName: 'MATLAB' }
+  ]));
+  assert.equal(out[0].resourceName, 'MATLAB code');
+  assert.equal(out[0].newReuse, 'new');
+  assert.equal(out[0].detectorMeta.codeLanguage, 'MATLAB');
+});
+
+test('applySoftwarePolicy: B3 instrument software is dropped', () => {
+  const out = applySoftwarePolicy(buildKrtItemsSoftware([
+    { name: 'ZEN', normalizedName: 'ZEN' },
+    { name: 'Fiji', normalizedName: 'Fiji' }
+  ]));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].resourceName, 'Fiji');
+});
+
+test('applySoftwarePolicy: preserves an explicit new/reuse value', () => {
+  const out = applySoftwarePolicy([
+    { resourceName: 'CustomTool', newReuse: 'new', detectorMeta: {} }
+  ]);
+  assert.equal(out[0].newReuse, 'new');
 });
 
 test('two Softcite mentions of MATLAB → 1 item with mergedFrom=2', () => {

@@ -33,6 +33,7 @@ const datasetsConfig = require('../../config/datasets-detection-api');
 const materialsConfig = require('../../config/materials-detection-api');
 const protocolsConfig = require('../../config/protocols-detection-api');
 const pdfAnalysisConfig = require('../../config/pdf-analysis-api');
+const krtComparisonConfig = require('../../config/krt-comparison-api');
 
 /**
  * Per-job-type config readers. Each entry returns the live (env-time) state
@@ -79,6 +80,12 @@ const SERVICE_CFG = {
   // permanently external-enabled so the config snapshot reads `state: 'on'`.
   identifier_detection: {
     isExternalEnabled: () => true,
+    isDemoEnabled: () => false
+  },
+  // LM comparison (author KRT vs Generated KRT) → suggestions. LM-only, so no
+  // demo path: when the comparison API isn't configured the module reads 'off'.
+  suggestion_generation: {
+    isExternalEnabled: () => krtComparisonConfig.isConfigured(),
     isDemoEnabled: () => false
   }
 };
@@ -680,6 +687,42 @@ async function initializeWorkers() {
       }
     },
     { concurrency: 2 }
+  );
+
+  // Suggestion generation: LM comparison of author KRT vs Generated KRT.
+  await jobQueue.registerHandler(
+    jobQueue.QUEUES.SUGGESTION_GENERATION,
+    async (data, pgBossJob) => {
+      const { processSuggestionGeneration } = require('../suggestion/kr-comparison.service');
+      const { submissionId, submissionJobId } = data;
+      const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
+      const { manuscriptId, round } = await loadSubmission(submissionId);
+      const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.SUGGESTION_GENERATION, pgBossJob);
+
+      try {
+        jobLogger?.log('start', 'Starting suggestion generation', { isFinalAttempt });
+        const result = await processSuggestionGeneration(submissionId, jobLogger, { isFinalAttempt });
+        const count = result.data?.suggestions?.length || 0;
+        jobLogger?.log('complete', `Generated ${count} suggestions`, { count });
+        await submissionJob?.markComplete({
+          status: { detected: count > 0 },
+          service: buildServiceSnapshot('suggestion_generation', result),
+          counts: { total: count, unique: count },
+          timing: { totalMs: result.meta?.totalMs || 0 }
+        });
+        await jobLogger?.flush();
+        await advancePipeline(submissionId, 'suggestion_generation', round);
+        return { success: true, submissionId, count };
+      } catch (error) {
+        jobLogger?.log('error', `Suggestion generation failed: ${error.message}`);
+        if (submissionJob) await submissionJob.markFailed(error.message);
+        await jobLogger?.flush();
+        if (isFinalAttempt) await advancePipeline(submissionId, 'suggestion_generation', round);
+        throw error;
+      }
+    },
+    { concurrency: 1 }
   );
 
   // Auth: cron-style cleanup of stale refresh tokens

@@ -25,7 +25,11 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
+const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
 const logger = require('../../utils/logger');
+
+// KRT resource-type group for lab materials (0=dataset, 1=software, 2=protocol, 3=lab_material).
+const MATERIAL_GROUP = 3;
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const PROMPT_FILE = path.join(PROMPTS_DIR, 'materials-detection.txt');
@@ -119,6 +123,18 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
+  // Materials detection is author-seeded only (request D): without author KRT
+  // material rows the prompt has nothing to ground on and tends to be noisy, so
+  // we skip the Gemini call entirely and return an empty result.
+  const authorMaterials = await loadAuthorSeeds(submissionId, round, MATERIAL_GROUP);
+  if (authorMaterials.length === 0) {
+    jobLogger?.log('materials_skipped', 'No author KRT materials — skipping materials detection');
+    return {
+      items: [],
+      meta: { totalCount: 0, uniqueCount: 0, highRelevanceCount: 0, skipped: true, reason: 'no_author_materials', totalMs: Date.now() - startTime }
+    };
+  }
+
   const pdfFile = await File.findOne({
     where: { submissionId, type: FILE_TYPES.PDF, round },
     order: [['version', 'DESC']]
@@ -130,10 +146,10 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   });
   const pdfBuffer = await s3Service.downloadFile(pdfFile.s3Key);
 
-  // ── Step 1: detect (Gemini)
-  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection');
+  // ── Step 1: detect (Gemini), seeded from the author's KRT materials
+  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection', { authorSeedCount: authorMaterials.length });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(pdfBuffer, pdfFile.fileName);
+  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(pdfBuffer, pdfFile.fileName, undefined, authorMaterials);
   const geminiMs = Date.now() - geminiStartTime;
   await jobLogger?.saveRawResponse('gemini-materials', rawResponse || rawItems);
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
@@ -159,9 +175,15 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForMaterials(pdfBuffer, fileName, promptOverride) {
+async function callGeminiForMaterials(pdfBuffer, fileName, promptOverride, authorMaterials = []) {
   const ai = new GoogleGenAI({ apiKey: materialsConfig.apiKey });
   const prompt = getPrompt(promptOverride);
+  // The prompt's Section 0 seeds from these. Omitted when empty so a custom
+  // prompt override can still be run article-only by callers/benchmarks.
+  const seedBlock = authorMaterials && authorMaterials.length > 0
+    ? '\n\n---\n\nAUTHOR-PROVIDED MATERIALS (KRT):\n\n' + JSON.stringify(authorMaterials, null, 2)
+    : '';
+  const fullPrompt = prompt + seedBlock;
 
   try {
     const response = await ai.models.generateContent({
@@ -170,7 +192,7 @@ async function callGeminiForMaterials(pdfBuffer, fileName, promptOverride) {
         {
           role: 'user',
           parts: [
-            { text: prompt },
+            { text: fullPrompt },
             { inlineData: { mimeType: 'application/pdf', data: pdfBuffer.toString('base64') } }
           ]
         }
@@ -225,12 +247,13 @@ function parseGeminiResponse(text, fileName) {
  * parsed resources array. No DB, no S3.
  * @param {Buffer} pdfBuffer
  * @param {string} fileName
- * @param {{ prompt?: string }} [options] - `prompt` overrides the default
- *   detection prompt (defaults to the committed prompt file content).
+ * @param {{ prompt?: string, authorMaterials?: object[] }} [options] - `prompt`
+ *   overrides the default detection prompt; `authorMaterials` seeds the prompt's
+ *   Section 0 with the author's KRT material rows (empty by default).
  * @returns {Promise<{ resources: object[] }>}
  */
-async function detectMaterials(pdfBuffer, fileName, { prompt } = {}) {
-  const { resources } = await callGeminiForMaterials(pdfBuffer, fileName, prompt);
+async function detectMaterials(pdfBuffer, fileName, { prompt, authorMaterials } = {}) {
+  const { resources } = await callGeminiForMaterials(pdfBuffer, fileName, prompt, authorMaterials || []);
   return { resources };
 }
 

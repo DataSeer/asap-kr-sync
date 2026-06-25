@@ -71,9 +71,9 @@ Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=St
 |----------|-------------|---------|----------|
 | `PYTHON_BIN` | Python 3 binary used by the MarkItDown converter and the langextract datasets-detection helper. Must have the `markitdown` and `langextract` packages installed. | `python3` | No |
 
-## PDF Analysis (in-app KRT consolidator)
+## PDF Analysis (Generated KRT — LM-primary, rule-based fallback)
 
-PDF Analysis is in-app since the `pdf_analysis` module landed — it merges every detection's items into the Generated KRT and has no external API call. The `*_API_*` entries below are vestigial (kept for compatibility with older `.env` files) and unused by the code.
+PDF Analysis regroups + coarse-dedups every detection's items (preserving per-resource `detectedBy` provenance), then asks an **LM (Google Gemini)** to consolidate those candidates into the final Generated KRT (merging near-duplicates, dropping non-resources, cleaning fields, attaching a `reason` per kept line). It is **LM-primary with a rule-based fallback** — when `KRT_GENERATION_ENABLED` is off or the LM errors, it falls back to the rule-based merge so the pipeline always yields a Generated KRT. The `PDF_ANALYSIS_API_*` entries below are vestigial (kept for compatibility with older `.env` files) and unused by the code; the LM call is configured separately (see [KRT Generation](#krt-generation-google-gemini--generated-krt) below).
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
@@ -81,6 +81,28 @@ PDF Analysis is in-app since the `pdf_analysis` module landed — it merges ever
 | `PDF_ANALYSIS_DEMO_DATA_ENABLED` | Demo data fallback | `false` | No |
 | `PDF_ANALYSIS_SUPPRESS_SUGGESTIONS` | Filter out AI suggestions by kind. Comma-separated `<action>[:<column>[:<state>]]` tokens — **action**: `add`/`edit`/`update`; **column**: `source`/`identifier`/`resourceName`; optional **state**: `empty`/`filled` (the user's current cell value). E.g. `update:source:filled` drops SOURCE edits only when the cell already has a value (no overwrite), still allowing an empty cell to be filled. A value **replaces** the default; use `none` to suppress nothing. The default blocks name-change suggestions and SOURCE overwrites on existing rows. | `update:resourceName,update:source:filled` | No |
 | `PDF_ANALYSIS_API_BASE_URL` / `PDF_ANALYSIS_API_KEY` / `PDF_ANALYSIS_API_TIMEOUT` | Vestigial — unused by code | — | No |
+
+## KRT Generation (Google Gemini — Generated KRT)
+
+The LM that consolidates the merged detection candidates into the final Generated KRT (PDF Analysis). When **off**, PDF Analysis uses the rule-based merge fallback (the merged candidates) instead.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `KRT_GENERATION_ENABLED` | Enable the LM consolidation step. When `false`, PDF Analysis uses the rule-based merge fallback. | `false` | No |
+| `KRT_GENERATION_GEMINI_API_KEY` | Google Gemini API key | — | If enabled |
+| `KRT_GENERATION_GEMINI_MODEL` | Gemini model name | `gemini-2.5-flash` | No |
+| `KRT_GENERATION_API_TIMEOUT` | Request timeout (ms) | `300000` | No |
+
+## KRT Comparison (Google Gemini — AI Suggestions)
+
+The LM that powers AI Suggestions (the `suggestion_generation` job): it compares the author KRT vs the Generated KRT and emits, for every generated resource, a decision (add / skip / update / remove) with a reason, plus author-side fixes. This module is **LM-only — there is no fallback**: without these variables configured, **no AI suggestions are produced**.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `KRT_COMPARISON_ENABLED` | Enable AI Suggestions (KRT comparison). When `false`, no suggestions are generated. | `false` | No |
+| `KRT_COMPARISON_GEMINI_API_KEY` | Google Gemini API key | — | If enabled |
+| `KRT_COMPARISON_GEMINI_MODEL` | Gemini model name | `gemini-2.5-flash` | No |
+| `KRT_COMPARISON_API_TIMEOUT` | Request timeout (ms) | `300000` | No |
 
 ## DAS Extraction (Google Gemini)
 

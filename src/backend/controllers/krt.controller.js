@@ -6,9 +6,15 @@ const krtService = require('../services/krt/krt.service');
 const parserService = require('../services/krt/parser.service');
 const validatorService = require('../services/krt/validator.service');
 const { KRTData, ValidationResult, ChangeLog, Submission, sequelize } = require('../models');
-const { NotFoundError, ValidationError } = require('../utils/errors');
+const { NotFoundError, ValidationError, AuthorizationError } = require('../utils/errors');
 const { statusToStep } = require('../utils/helpers');
+const { ROLES } = require('../config/constants');
 const logger = require('../utils/logger');
+
+// Roles allowed to see/edit the QC and Optional flags (request G1). Regular
+// ASAP users (author / asap_pm) never see or set them.
+const QC_OPTIONAL_ROLES = [ROLES.ADMIN, ROLES.DS_ANNOTATOR];
+const QC_OPTIONAL_FIELDS = new Set(['isQc', 'isOptional']);
 
 /**
  * Upload KRT file
@@ -91,7 +97,11 @@ async function getData(req, res, next) {
         type: error.errorType,
         message: error.errorMessage,
         severity: error.severity,
-        suggestion: error.suggestion
+        suggestion: error.suggestion,
+        // Machine-actionable fix (request E): the frontend offers one-click /
+        // bulk apply when a concrete canonical target is present.
+        suggestedValue: error.suggestedValue || null,
+        autoFixable: !!error.suggestedValue
       });
     });
 
@@ -138,12 +148,24 @@ async function updateRow(req, res, next) {
       'source': 'source',
       'identifier': 'identifier',
       'new_reuse': 'newReuse',
-      'additional_information': 'additionalInformation'
+      'additional_information': 'additionalInformation',
+      'is_qc': 'isQc',
+      'is_optional': 'isOptional'
     };
 
     const field = columnMap[column] || column;
+
+    // QC / Optional flags are role-gated (request G1) and boolean-typed.
+    let nextValue = value;
+    if (QC_OPTIONAL_FIELDS.has(field)) {
+      if (!QC_OPTIONAL_ROLES.includes(req.user?.role)) {
+        throw new AuthorizationError('Only administrators and DS annotators can set QC/Optional flags');
+      }
+      nextValue = value === true || value === 'true' || value === 1 || value === '1';
+    }
+
     const oldValue = krtRow[field];
-    krtRow[field] = value;
+    krtRow[field] = nextValue;
     await krtRow.save();
 
     // Log the change with source (defaults to 'manual' if not provided)
@@ -289,6 +311,83 @@ async function deleteRow(req, res, next) {
 }
 
 /**
+ * Merge several KRT rows into one (request G2).
+ * POST /api/submissions/:id/krt/merge
+ * Body: { rowIds: string[], merged: { resourceType, resourceName, source,
+ *         identifier, newReuse, additionalInformation, isQc?, isOptional? } }
+ *
+ * Transactional: creates the merged row and deletes the originals together so
+ * the table never ends up with a duplicate or a gap on partial failure.
+ */
+async function mergeRows(req, res, next) {
+  const t = await sequelize.transaction();
+  try {
+    const submissionId = req.params.id;
+    const round = req.submission.currentRound;
+    const { rowIds, merged } = req.body;
+
+    if (!Array.isArray(rowIds) || rowIds.length < 2) {
+      throw new ValidationError('Select at least two rows to merge');
+    }
+    if (!merged || typeof merged !== 'object') {
+      throw new ValidationError('Merged row values are required');
+    }
+
+    // Only operate on rows that genuinely belong to this submission/round.
+    const originals = await KRTData.findAll({
+      where: { id: rowIds, submissionId, round },
+      transaction: t
+    });
+    if (originals.length < 2) {
+      throw new ValidationError('Some selected rows could not be found for this submission');
+    }
+
+    // QC/Optional are role-gated (same rule as updateRow): ignore them unless
+    // the caller is an Administrator or DS Annotator.
+    const privileged = QC_OPTIONAL_ROLES.includes(req.user?.role);
+    const newRow = await KRTData.create({
+      submissionId,
+      round,
+      resourceType: merged.resourceType ?? null,
+      resourceName: merged.resourceName ?? null,
+      source: merged.source ?? null,
+      identifier: merged.identifier ?? null,
+      newReuse: merged.newReuse ?? null,
+      additionalInformation: merged.additionalInformation ?? null,
+      isQc: privileged ? !!merged.isQc : false,
+      isOptional: privileged ? !!merged.isOptional : false
+    }, { transaction: t });
+
+    const step = statusToStep(req.submission.status);
+    await ChangeLog.create({
+      submissionId, userId: req.userId, action: 'add_row', source: 'manual', step, round,
+      rowId: newRow.id, description: `Merged ${originals.length} rows into one`
+    }, { transaction: t });
+
+    const originalIds = originals.map(r => r.id);
+    await ValidationResult.destroy({ where: { submissionId, rowId: originalIds }, transaction: t });
+    for (const row of originals) {
+      await ChangeLog.create({
+        submissionId, userId: req.userId, action: 'delete_row', source: 'manual', step, round,
+        rowId: row.id, description: `Merged into ${newRow.id}: ${row.resourceName || ''}`
+      }, { transaction: t });
+    }
+    await KRTData.destroy({ where: { id: originalIds, submissionId, round }, transaction: t });
+
+    await t.commit();
+
+    // Validate the new row after commit (non-critical).
+    await validatorService.validateRow(newRow, submissionId, true, null, round);
+
+    logger.info('KRT rows merged', { submissionId, mergedCount: originals.length, newRowId: newRow.id, userId: req.userId });
+    res.status(201).json({ row: newRow.toKRTRow() });
+  } catch (error) {
+    await t.rollback();
+    next(error);
+  }
+}
+
+/**
  * Re-validate KRT
  * POST /api/submissions/:id/krt/validate
  */
@@ -334,6 +433,7 @@ module.exports = {
   updateRow,
   addRow,
   deleteRow,
+  mergeRows,
   validate,
   download
 };

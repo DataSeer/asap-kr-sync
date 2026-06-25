@@ -28,7 +28,11 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
+const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
 const logger = require('../../utils/logger');
+
+// KRT resource-type group for protocols (0=dataset, 1=software, 2=protocol, 3=lab_material).
+const PROTOCOL_GROUP = 2;
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const PROMPT_FILE = path.join(PROMPTS_DIR, 'protocols-detection.txt');
@@ -137,10 +141,18 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   const markdownText = mdBuffer.toString('utf-8');
   jobLogger?.log('download_markdown_done', 'Markdown downloaded', { markdownLength: markdownText.length });
 
+  // Seed from the author's KRT protocol rows (empty when there is no KRT —
+  // article-only, unchanged behaviour). The prompt's Section 0 treats these as
+  // authoritative base records so the LM enriches/adds instead of re-deriving.
+  const authorProtocols = await loadAuthorSeeds(submissionId, round, PROTOCOL_GROUP);
+  if (authorProtocols.length > 0) {
+    jobLogger?.log('author_krt_seeds', 'Loaded author KRT protocol seeds', { count: authorProtocols.length });
+  }
+
   // ── Step 1: detect (Gemini)
-  jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection');
+  jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection', { authorSeedCount: authorProtocols.length });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForProtocols(markdownText);
+  const { resources: rawItems, rawResponse } = await callGeminiForProtocols(markdownText, undefined, authorProtocols);
   const geminiMs = Date.now() - geminiStartTime;
 
   await jobLogger?.saveRawResponse('gemini-protocols-analysis', rawResponse || '', {
@@ -171,10 +183,16 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForProtocols(markdownText, promptOverride) {
+async function callGeminiForProtocols(markdownText, promptOverride, authorProtocols = []) {
   const ai = new GoogleGenAI({ apiKey: protocolsConfig.apiKey });
   const prompt = getPrompt(promptOverride);
-  const fullPrompt = prompt + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
+  // Author-provided protocols are injected before the article so the prompt's
+  // Section 0 can seed the output from them. Omitted entirely when empty so
+  // article-only runs are byte-for-byte unchanged.
+  const seedBlock = authorProtocols && authorProtocols.length > 0
+    ? '\n\n---\n\nAUTHOR-PROVIDED PROTOCOLS (KRT):\n\n' + JSON.stringify(authorProtocols, null, 2)
+    : '';
+  const fullPrompt = prompt + seedBlock + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
 
   try {
     const response = await ai.models.generateContent({
@@ -245,12 +263,13 @@ function parseGeminiResponse(text) {
  * Step 1: hit Gemini on the markdown text and return the parsed resources
  * array. Pure-ish — no DB, no S3.
  * @param {string} markdownText
- * @param {{ prompt?: string }} [options] - `prompt` overrides the default
- *   detection prompt (defaults to the committed prompt file content).
+ * @param {{ prompt?: string, authorProtocols?: object[] }} [options] - `prompt`
+ *   overrides the default detection prompt; `authorProtocols` seeds the prompt's
+ *   Section 0 with the author's KRT protocol rows (empty by default).
  * @returns {Promise<{ resources: object[] }>}
  */
-async function detectProtocols(markdownText, { prompt } = {}) {
-  const { resources } = await callGeminiForProtocols(markdownText, prompt);
+async function detectProtocols(markdownText, { prompt, authorProtocols } = {}) {
+  const { resources } = await callGeminiForProtocols(markdownText, prompt, authorProtocols || []);
   return { resources };
 }
 

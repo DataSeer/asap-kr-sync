@@ -174,11 +174,18 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
     };
   }
 
+  // Seed the consolidation from the author's KRT dataset rows (empty when the
+  // submission has no KRT — article-only, unchanged behaviour).
+  const authorDatasets = await loadAuthorDatasetSeeds(submissionId, round);
+  if (authorDatasets.length > 0) {
+    jobLogger?.log('author_krt_seeds', 'Loaded author KRT dataset seeds', { count: authorDatasets.length });
+  }
+
   jobLogger?.log('consolidate_start', 'Starting Gemini consolidation', {
-    datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length
+    datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length, authorSeedCount: authorDatasets.length
   });
   const consolidationStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText);
+  const { resources: rawItems, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, undefined, authorDatasets);
   const consolidationMs = Date.now() - consolidationStartTime;
 
   const cleanedConsolidation = stripMarkdownFences(rawResponse);
@@ -207,11 +214,15 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, promptOverride) {
+async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, promptOverride, authorDatasets = []) {
   const ai = new GoogleGenAI({ apiKey: datasetsConfig.apiKey });
   const systemPrompt = getConsolidationPrompt(promptOverride);
 
+  // `author_provided_datasets` is always present (empty when there is no author
+  // KRT). The v3 consolidation prompt seeds the output from it; older prompts
+  // (v1/v2) do not reference the key and simply ignore it.
   const userPayload = {
+    author_provided_datasets: authorDatasets,
     dataset_names: datasetNames,
     extracted_dataset_rows: extractedRows,
     full_article: markdownText
@@ -271,6 +282,87 @@ function joinIdentifiers(item) {
     unique.push(s);
   }
   return unique.join('; ');
+}
+
+const ACCESSION_PREFIX_RE = /^(PRJ|GSE|PXD|SRR|SRP|SRX|EGA|EGAS|EGAD|PDB|EMD|phs|GCA|GCF|E-|SAM)/i;
+
+/**
+ * Split a free-text KRT identifier cell into accessions / DOIs / URLs so an
+ * author seed matches the `author_provided_datasets` shape the consolidation
+ * prompt expects. Never invents identifiers — only classifies what is present.
+ * @param {string} text
+ * @returns {{ accessions: string[], dois: string[], urls: string[] }}
+ */
+function splitKrtIdentifiers(text) {
+  const accessions = [];
+  const dois = [];
+  const urls = [];
+  if (!text) return { accessions, dois, urls };
+
+  for (const token of String(text).split(/[\s;,]+/)) {
+    const t = token.trim().replace(/^[.,;]+|[.,;]+$/g, '');
+    if (!t) continue;
+    const low = t.toLowerCase();
+    if (low.startsWith('http://') || low.startsWith('https://') || low.startsWith('www.')) {
+      urls.push(t);
+    } else if (low.startsWith('10.') || low.includes('doi.org') || low.startsWith('doi:')) {
+      dois.push(t.replace(/^doi:/i, '').trim());
+    } else if (ACCESSION_PREFIX_RE.test(t) && /\d/.test(t)) {
+      // Require a digit so bare words like "PDB" or "EGA" are not treated as accessions.
+      accessions.push(t);
+    }
+  }
+  return { accessions, dois, urls };
+}
+
+/**
+ * Map the author's KRT dataset rows (already filtered to dataset-type rows) into
+ * the `author_provided_datasets` seed shape consumed by the v3 consolidation
+ * prompt. Trusts the curator's values; rows without a resource name are dropped.
+ * @param {object[]} krtRows - rows from krt_data ({ resourceName, source, identifier, newReuse, additionalInformation })
+ * @returns {object[]}
+ */
+function buildAuthorDatasetSeeds(krtRows) {
+  if (!Array.isArray(krtRows)) return [];
+  return krtRows
+    .map((row) => {
+      const name = (row.resourceName || '').trim();
+      if (!name) return null;
+      const ids = splitKrtIdentifiers(row.identifier);
+      // URLs sometimes live in the additional-information cell too.
+      const extraUrls = splitKrtIdentifiers(row.additionalInformation).urls;
+      const urls = [...new Set([...ids.urls, ...extraUrls])];
+      const reuse = String(row.newReuse || '').toLowerCase().startsWith('reuse');
+      return {
+        name,
+        role: reuse ? 'REUSED' : 'GENERATED',
+        source: row.source || '',
+        accessions: ids.accessions,
+        dois: ids.dois,
+        urls,
+        additional_info: row.additionalInformation || ''
+      };
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Load the author KRT dataset seeds for a submission/round: read krt_data and
+ * keep the rows the curator typed as a dataset (resource-type group 0). Returns
+ * an empty array when the submission has no KRT, so the consolidation runs
+ * article-only exactly as before.
+ * @param {string} submissionId
+ * @param {number} round
+ * @returns {Promise<object[]>}
+ */
+async function loadAuthorDatasetSeeds(submissionId, round) {
+  const { KRTData } = require('../../models');
+  const { getResourceTypeGroupOrder } = require('../../config/constants');
+  const rows = await KRTData.findAll({ where: { submissionId, round } });
+  if (rows.length === 0) return [];
+  const groupOrder = await getResourceTypeGroupOrder();
+  const datasetRows = rows.filter((row) => groupOrder[row.resourceType] === 0);
+  return buildAuthorDatasetSeeds(datasetRows);
 }
 
 /**
@@ -365,13 +457,15 @@ function parseGeminiResponse(text) {
  */
 /**
  * @param {string} markdownText
- * @param {{ prompt?: string, signalsPrompt?: string, signalsExamples?: string|object }} [options]
+ * @param {{ prompt?: string, signalsPrompt?: string, signalsExamples?: string|object, authorDatasets?: object[] }} [options]
  *   `prompt` overrides the Gemini consolidation prompt; `signalsPrompt` and
  *   `signalsExamples` override the langextract signal-extraction prompt and its
- *   few-shot examples JSON. All default to the committed file contents.
+ *   few-shot examples JSON (all default to the committed file contents).
+ *   `authorDatasets` seeds the consolidation with the author's KRT dataset rows
+ *   (empty by default — the v3 prompt uses them, older prompts ignore them).
  * @returns {Promise<{ resources: object[], signalCount: number }>}
  */
-async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples } = {}) {
+async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples, authorDatasets } = {}) {
   const extractions = await langextractClient.extractSignals(markdownText, {
     prompt: signalsPrompt,
     examples: signalsExamples
@@ -383,7 +477,7 @@ async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExam
     return { resources: [], signalCount: extractions.length };
   }
 
-  const { resources } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt);
+  const { resources } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt, authorDatasets || []);
   return { resources, signalCount: extractedRows.length };
 }
 
@@ -431,5 +525,7 @@ module.exports = {
   getDatasetMentions,
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectDatasets,
-  buildKrtItemsDatasets
+  buildKrtItemsDatasets,
+  buildAuthorDatasetSeeds,
+  splitKrtIdentifiers
 };

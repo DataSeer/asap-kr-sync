@@ -148,6 +148,12 @@ router.delete('/:id/krt/:rowId',
   krtController.deleteRow
 );
 
+// POST /api/submissions/:id/krt/merge - Merge several rows into one
+router.post('/:id/krt/merge',
+  canAccessSubmission,
+  krtController.mergeRows
+);
+
 // POST /api/submissions/:id/krt/validate - Re-validate KRT
 router.post('/:id/krt/validate',
   canAccessSubmission,
@@ -240,6 +246,12 @@ router.get('/:id/reports/:reportId/download',
 router.get('/:id/suggestions',
   canAccessSubmission,
   suggestionController.getSuggestions
+);
+
+// POST /api/submissions/:id/suggestions/regenerate - Re-run the LM comparison job
+router.post('/:id/suggestions/regenerate',
+  canAccessSubmission,
+  suggestionController.regenerateSuggestions
 );
 
 // POST /api/submissions/:id/suggestions/approve - Approve suggestion

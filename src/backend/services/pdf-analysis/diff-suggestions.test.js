@@ -55,6 +55,31 @@ test('Same dedup_key + different additional info → NO edit suggestion (column 
   assert.deepEqual(computeSuggestions(gen, krt), []);
 });
 
+test('B2: detector "Fiji" matches author "Fiji 2.9.0" (version stripped) → no add', () => {
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({ resourceName: 'Fiji', identifier: '', source: '' })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Software/code', resourceName: 'Fiji 2.9.0', source: '',
+    identifier: '', newReuse: 'new', additionalInformation: ''
+  }];
+  assert.deepEqual(computeSuggestions(gen, krt), []);
+});
+
+test('B2: RRID embedded in author name matches detector identifier → no add', () => {
+  const gen = mergeDetections([
+    { source: 'a', items: [itemAddRow({ resourceName: 'ImageJ', identifier: 'RRID:SCR_003070', source: '' })] }
+  ]);
+  const krt = [{
+    id: 'r1', resourceType: 'Software/code', resourceName: 'ImageJ (RRID:SCR_003070)', source: '',
+    identifier: '', newReuse: 'reuse', additionalInformation: ''
+  }];
+  // The duplicate must NOT produce an add_row; matching on the name-embedded RRID
+  // may still propose filling the empty identifier column (desirable).
+  const sugs = computeSuggestions(gen, krt);
+  assert.equal(sugs.filter(s => s.type === 'add_row').length, 0);
+});
+
 test('Rejected add → suggestion suppressed', () => {
   const gen = mergeDetections([
     { source: 'a', items: [itemAddRow({ resourceName: 'New Tool', identifier: 'id-1' })] }

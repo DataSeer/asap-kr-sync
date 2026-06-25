@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
+import { useAuthStore } from '@/stores/auth.store'
 import api from '@/services/api'
 import krtService from '@/services/krt.service'
 import suggestionService from '@/services/suggestion.service'
@@ -62,6 +63,18 @@ const emit = defineEmits([
 const krtStore = useKRTStore()
 const notificationStore = useNotificationStore()
 const resourceTypesStore = useResourceTypesStore()
+const authStore = useAuthStore()
+
+// QC/Optional flags are visible/editable only for Administrator & DS Annotator
+// (request G1). Regular ASAP users (author / asap_pm) never see them.
+const canSeeQcOptional = computed(() => ['admin', 'ds_annotator'].includes(authStore.userRole))
+async function onToggleQcFlag(rowId, field, checked) {
+  try {
+    await krtStore.updateCell(props.submissionId, rowId, field, checked)
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Failed to update flag')
+  }
+}
 
 const showAddRow = ref(false)
 const showDownloadMenu = ref(false)
@@ -90,6 +103,9 @@ const bulkResourceTypeValue = ref('')
 const showBulkEditCellsModal = ref(false)
 const bulkEditCellsColumn = ref('RESOURCE TYPE')
 const bulkEditCellsValue = ref('')
+// Merge (request G2)
+const showMergeModal = ref(false)
+const mergeChoices = ref({})
 const newRow = ref({
   resourceType: '',
   resourceName: '',
@@ -141,6 +157,43 @@ const columns = [
   { key: 'NEW/REUSE', field: 'new_reuse', label: 'New/Reuse' },
   { key: 'ADDITIONAL INFORMATION', field: 'additional_information', label: 'Additional Info' }
 ]
+
+// ── Resizable columns (drag the right edge of a header) ──────────────
+// Widths are remembered per browser so a curator who widens a column to
+// read long values keeps that width across visits.
+const COLUMN_WIDTHS_KEY = 'krtEditor.columnWidths'
+const columnWidths = ref(loadColumnWidths())
+function loadColumnWidths() {
+  try { return JSON.parse(localStorage.getItem(COLUMN_WIDTHS_KEY)) || {} } catch { return {} }
+}
+let _resize = null
+function startColumnResize(colKey, event) {
+  const th = event.target.closest('th')
+  _resize = { colKey, startX: event.clientX, startWidth: th ? th.offsetWidth : 140 }
+  document.addEventListener('mousemove', onColumnResizeMove)
+  document.addEventListener('mouseup', onColumnResizeEnd)
+}
+function onColumnResizeMove(event) {
+  if (!_resize) return
+  const width = Math.max(70, _resize.startWidth + (event.clientX - _resize.startX))
+  columnWidths.value = { ...columnWidths.value, [_resize.colKey]: width }
+}
+function onColumnResizeEnd() {
+  _resize = null
+  document.removeEventListener('mousemove', onColumnResizeMove)
+  document.removeEventListener('mouseup', onColumnResizeEnd)
+  try { localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(columnWidths.value)) } catch { /* ignore */ }
+}
+// Header <th> sizing: pin to the chosen width when set, else fall back to CSS.
+function columnStyle(colKey) {
+  const w = columnWidths.value[colKey]
+  return w ? { width: w + 'px', minWidth: w + 'px', maxWidth: w + 'px' } : {}
+}
+// Cell content clip boundary follows the column width (minus padding).
+function cellStyle(colKey) {
+  const w = columnWidths.value[colKey]
+  return w ? { maxWidth: (w - 20) + 'px' } : {}
+}
 
 // Tab definitions
 const tabGroups = [
@@ -938,6 +991,115 @@ const columnKeyToField = {
   'ADDITIONAL INFORMATION': 'additional_information'
 }
 
+// ── Inline "shortcut" dropdowns (request G3) ─────────────────────────
+// Edit RESOURCE TYPE / NEW/REUSE directly in the row without opening the
+// full cell-edit modal. Options match the bulk-edit modal's lists.
+const NEW_REUSE_OPTIONS = ['new', 'reuse']
+const INLINE_SHORTCUT_COLUMNS = new Set(['RESOURCE TYPE', 'NEW/REUSE'])
+function inlineShortcutOptions(colKey) {
+  if (colKey === 'RESOURCE TYPE') return resourceTypes.value
+  if (colKey === 'NEW/REUSE') return NEW_REUSE_OPTIONS
+  return []
+}
+async function onInlineShortcut(rowId, col, value) {
+  if (value === undefined || value === null || value === '') return
+  try {
+    await krtStore.updateCell(props.submissionId, rowId, col.field, value)
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Failed to update')
+  }
+}
+
+// ── Resource-type fixes grouped into bulk actions (request E) ────────
+// Group every auto-fixable RESOURCE TYPE validation error by its canonical
+// target so the curator can apply each group in one click (e.g. all
+// "Code"/"Software" rows → "Software/code"). Human stays in control.
+const resourceTypeFixGroups = computed(() => {
+  if (props.readonly) return []
+  const byTarget = new Map()
+  const errs = krtStore.validationErrors || {}
+  for (const [rowId, rowErrors] of Object.entries(errs)) {
+    for (const e of (rowErrors || [])) {
+      if (e.column !== 'RESOURCE TYPE' || !e.autoFixable || !e.suggestedValue) continue
+      if (!byTarget.has(e.suggestedValue)) byTarget.set(e.suggestedValue, new Set())
+      byTarget.get(e.suggestedValue).add(rowId)
+    }
+  }
+  return Array.from(byTarget.entries()).map(([suggestedValue, rowIdSet]) => ({
+    suggestedValue,
+    rowIds: Array.from(rowIdSet)
+  }))
+})
+const totalResourceTypeFixes = computed(() =>
+  resourceTypeFixGroups.value.reduce((n, g) => n + g.rowIds.length, 0))
+
+async function applyResourceTypeFix(group) {
+  bulkSubmitting.value = true
+  try {
+    const updates = group.rowIds.map(rowId => ({ rowId, column: 'resource_type', value: group.suggestedValue }))
+    await krtStore.batchUpdateCells(props.submissionId, updates) // re-validates internally
+    notificationStore.success(`Set ${updates.length} row${updates.length > 1 ? 's' : ''} to "${group.suggestedValue}"`)
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Fix failed')
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+async function applyAllResourceTypeFixes() {
+  for (const group of [...resourceTypeFixGroups.value]) {
+    await applyResourceTypeFix(group)
+  }
+}
+
+// ── Merge selected rows into one (request G2) ────────────────────────
+const selectedMergeRows = computed(() =>
+  Array.from(selectedRowIds.value).map(id => krtRows.value.find(r => r.id === id)).filter(Boolean))
+
+// Distinct candidate values for a column across the selected rows.
+function mergeOptions(colKey) {
+  return [...new Set(selectedMergeRows.value.map(r => (r[colKey] ?? '').toString()))]
+}
+
+function openMergeModal() {
+  if (selectedRowIds.value.size < 2) return
+  // Pre-select the first non-empty value for each column.
+  const choices = {}
+  for (const col of columns) {
+    const nonEmpty = mergeOptions(col.key).filter(v => v.trim() !== '')
+    choices[col.key] = nonEmpty.length ? nonEmpty[0] : ''
+  }
+  mergeChoices.value = choices
+  showMergeModal.value = true
+}
+
+async function confirmMerge() {
+  const ids = Array.from(selectedRowIds.value)
+  if (ids.length < 2) return
+  const c = mergeChoices.value
+  const merged = {
+    resourceType: c['RESOURCE TYPE'] || '',
+    resourceName: c['RESOURCE NAME'] || '',
+    source: c['SOURCE'] || '',
+    identifier: c['IDENTIFIER'] || '',
+    newReuse: c['NEW/REUSE'] || '',
+    additionalInformation: c['ADDITIONAL INFORMATION'] || '',
+    // Carry QC/Optional forward if any merged row had them (backend role-gates).
+    isQc: selectedMergeRows.value.some(r => r.isQc),
+    isOptional: selectedMergeRows.value.some(r => r.isOptional)
+  }
+  bulkSubmitting.value = true
+  try {
+    await krtStore.mergeRows(props.submissionId, ids, merged)
+    notificationStore.success(`Merged ${ids.length} rows into one`)
+    clearBulkSelection()
+    showMergeModal.value = false
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Merge failed')
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
 // Combined rows + add-row suggestions in correct sort order
 // Suggestions appear at the position they would occupy after being accepted
 const interleavedAddSuggestions = computed(() => {
@@ -1526,8 +1688,29 @@ defineExpose({
         </template>
         <template v-else>
           <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="openBulkEditCellsModal">Edit column…</button>
+          <button v-if="selectedRowIds.size >= 2" class="btn-bulk" :disabled="bulkSubmitting" @click="openMergeModal">Merge…</button>
         </template>
         <button class="btn-bulk btn-bulk-ghost" @click="clearBulkSelection">Clear</button>
+      </div>
+    </div>
+
+    <!-- E: grouped resource-type fixes (one-click bulk apply per canonical target) -->
+    <div v-if="!readonly && resourceTypeFixGroups.length" class="rt-fix-banner">
+      <span class="rt-fix-title">
+        {{ totalResourceTypeFixes }} resource-type {{ totalResourceTypeFixes > 1 ? 'errors' : 'error' }} can be auto-fixed:
+      </span>
+      <div class="rt-fix-groups">
+        <button
+          v-for="group in resourceTypeFixGroups"
+          :key="group.suggestedValue"
+          class="btn-bulk btn-bulk-primary"
+          :disabled="bulkSubmitting"
+          :title="`Set ${group.rowIds.length} row(s) to ${group.suggestedValue}`"
+          @click="applyResourceTypeFix(group)"
+        >
+          Set {{ group.rowIds.length }} → “{{ group.suggestedValue }}”
+        </button>
+        <button v-if="resourceTypeFixGroups.length > 1" class="btn-bulk" :disabled="bulkSubmitting" @click="applyAllResourceTypeFixes">Fix all</button>
       </div>
     </div>
 
@@ -1553,6 +1736,7 @@ defineExpose({
                 v-for="col in columns"
                 :key="col.key"
                 :class="['col-data', 'col-sortable', col.cssClass]"
+                :style="columnStyle(col.key)"
                 @click="toggleSort(col.key)"
               >
                 <span class="th-content">
@@ -1567,6 +1751,13 @@ defineExpose({
                     <path d="M8 4l3 4H5l3-4zM8 12l-3-4h6l-3 4z" />
                   </svg>
                 </span>
+                <!-- Drag to resize this column -->
+                <span
+                  class="col-resize-handle"
+                  title="Drag to resize"
+                  @mousedown.stop.prevent="startColumnResize(col.key, $event)"
+                  @click.stop
+                ></span>
               </th>
               <th v-if="!readonly" class="col-actions">Actions</th>
             </tr>
@@ -1849,12 +2040,25 @@ defineExpose({
                   :key="col.key"
                   :data-column-key="col.key"
                   :class="['col-data', col.cssClass, getCellClass(row.id, col.key), { 'has-cell-tooltip': hasCellIssue(row.id, col.key) || hasCellSuggestion(row.id, col.key) }]"
+                  :style="columnStyle(col.key)"
                   @click="startEdit(row, col, rowIndex)"
                   @mouseenter="handleCellMouseEnter(row.id, col.key)"
                   @mouseleave="handleCellMouseLeave"
                 >
-                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': col.key === 'IDENTIFIER' && !row[col.key] && !readonly }]" :title="row[col.key] || ''">
-                    <span class="cell-text-content">
+                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': col.key === 'IDENTIFIER' && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || ''">
+                    <!-- G3: inline shortcut dropdown for RESOURCE TYPE / NEW/REUSE -->
+                    <select
+                      v-if="!readonly && INLINE_SHORTCUT_COLUMNS.has(col.key)"
+                      class="cell-shortcut-select"
+                      :value="row[col.key] || ''"
+                      title="Quick change"
+                      @click.stop
+                      @change="onInlineShortcut(row.id, col, $event.target.value)"
+                    >
+                      <option value="" disabled>—</option>
+                      <option v-for="opt in inlineShortcutOptions(col.key)" :key="opt" :value="opt">{{ opt }}</option>
+                    </select>
+                    <span v-else class="cell-text-content">
                       {{ row[col.key] }}
                     </span>
                     <!-- Quick identifier shortcut buttons for empty IDENTIFIER cells -->
@@ -1959,6 +2163,17 @@ defineExpose({
 
                 <!-- Actions -->
                 <td v-if="!readonly" class="col-actions">
+                  <!-- G1: QC / Optional flags — only Admin & DS Annotator see these -->
+                  <span v-if="canSeeQcOptional" class="qc-flags" @click.stop>
+                    <label class="qc-flag" title="Mark as QC dataset">
+                      <input type="checkbox" :checked="!!row.isQc" @change="onToggleQcFlag(row.id, 'is_qc', $event.target.checked)" />
+                      QC
+                    </label>
+                    <label class="qc-flag" title="Mark as Optional">
+                      <input type="checkbox" :checked="!!row.isOptional" @change="onToggleQcFlag(row.id, 'is_optional', $event.target.checked)" />
+                      Opt
+                    </label>
+                  </span>
                   <!-- Delete suggestion highlighted -->
                   <div v-if="hasDeleteSuggestion(row.id)" class="delete-suggestion-actions">
                     <button
@@ -2249,6 +2464,31 @@ defineExpose({
             <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="showBulkEditCellsModal = false">Cancel</button>
             <button :disabled="!bulkEditCellsValue || bulkSubmitting" class="px-3 py-1.5 text-sm font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50" @click="applyBulkEditCells">
               {{ bulkSubmitting ? 'Applying…' : 'Apply to selected' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Bulk: Merge selected rows into one (request G2) -->
+    <Teleport to="body">
+      <div v-if="showMergeModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showMergeModal = false">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-5 max-h-[85vh] overflow-y-auto">
+          <h3 class="text-sm font-semibold text-gray-900 mb-1">Merge {{ selectedRowIds.size }} rows into one</h3>
+          <p class="text-sm text-gray-500 mb-3">Pick the value to keep for each column. The selected rows are replaced by a single merged row.</p>
+          <div v-for="col in columns" :key="col.key" class="mb-3">
+            <label class="text-xs font-medium text-gray-600">{{ col.label }}</label>
+            <div class="mt-1 space-y-1">
+              <label v-for="(opt, i) in mergeOptions(col.key)" :key="i" class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="radio" :name="'merge-' + col.key" :value="opt" v-model="mergeChoices[col.key]" />
+                <span class="truncate" :class="{ 'text-gray-400 italic': opt === '' }">{{ opt === '' ? '(empty)' : opt }}</span>
+              </label>
+            </div>
+          </div>
+          <div class="flex justify-end gap-2 mt-4">
+            <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="showMergeModal = false">Cancel</button>
+            <button :disabled="bulkSubmitting" class="px-3 py-1.5 text-sm font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50" @click="confirmMerge">
+              {{ bulkSubmitting ? 'Merging…' : 'Merge rows' }}
             </button>
           </div>
         </div>
@@ -2569,6 +2809,22 @@ th {
   text-transform: uppercase;
   border-bottom: 1px solid #e5e7eb;
   white-space: nowrap;
+  position: relative;
+}
+
+/* Column resize handle — sits on the right edge of each data header. */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 2;
+}
+.col-resize-handle:hover {
+  background: #c7d2fe;
 }
 
 td {
@@ -2903,6 +3159,26 @@ tr:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* G3: inline "shortcut" dropdown for RESOURCE TYPE / NEW/REUSE cells */
+.cell-shortcut-select {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  padding: 1px 2px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.cell-shortcut-select:hover,
+.cell-shortcut-select:focus {
+  border-color: #d1d5db;
+  background: #fff;
+  outline: none;
 }
 
 .cell-display.editable {
@@ -3460,6 +3736,40 @@ tr.highlight-flash td {
   top: 0.5rem;
   z-index: 10;
 }
+/* E: resource-type auto-fix banner */
+.rt-fix-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 0.875rem;
+  margin-bottom: 0.5rem;
+  background: #fefce8;
+  border: 1px solid #fde68a;
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+}
+.rt-fix-title { font-weight: 600; color: #854d0e; }
+.rt-fix-groups { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+
+/* G1: QC / Optional role-gated flags in the actions cell */
+.qc-flags {
+  display: inline-flex;
+  gap: 0.5rem;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+.qc-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #6b7280;
+  cursor: pointer;
+  user-select: none;
+}
+.qc-flag input { cursor: pointer; }
 .bulk-action-count {
   font-weight: 600;
   color: #1e40af;

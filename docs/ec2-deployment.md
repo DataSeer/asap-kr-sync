@@ -183,9 +183,11 @@ AWS_SECRET_ACCESS_KEY=your_secret_key
 S3_BUCKET_NAME=asap-kr-sync
 S3_BUCKET_PREFIX=prod/
 
-# PDF Analysis is the in-app consolidator since v1.0 — no external API
-# call. The PDF_ANALYSIS_API_* vars below are vestigial; the .env.example
-# keeps them only so existing .env files don't error.
+# PDF Analysis consolidates every detection into the Generated KRT. It uses
+# an LM (Gemini, KRT_GENERATION_* vars) to do the final consolidation, with a
+# rule-based merge fallback when the LM is not configured. The legacy
+# PDF_ANALYSIS_API_* vars below are vestigial; the .env.example keeps them
+# only so existing .env files don't error.
 PDF_ANALYSIS_ENABLED=true
 
 # Logging
