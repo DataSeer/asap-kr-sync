@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
+import { useAuthStore } from '@/stores/auth.store'
 import api from '@/services/api'
 import krtService from '@/services/krt.service'
 import suggestionService from '@/services/suggestion.service'
@@ -62,6 +63,18 @@ const emit = defineEmits([
 const krtStore = useKRTStore()
 const notificationStore = useNotificationStore()
 const resourceTypesStore = useResourceTypesStore()
+const authStore = useAuthStore()
+
+// QC/Optional flags are visible/editable only for Administrator & DS Annotator
+// (request G1). Regular ASAP users (author / asap_pm) never see them.
+const canSeeQcOptional = computed(() => ['admin', 'ds_annotator'].includes(authStore.userRole))
+async function onToggleQcFlag(rowId, field, checked) {
+  try {
+    await krtStore.updateCell(props.submissionId, rowId, field, checked)
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Failed to update flag')
+  }
+}
 
 const showAddRow = ref(false)
 const showDownloadMenu = ref(false)
@@ -2051,6 +2064,17 @@ defineExpose({
 
                 <!-- Actions -->
                 <td v-if="!readonly" class="col-actions">
+                  <!-- G1: QC / Optional flags — only Admin & DS Annotator see these -->
+                  <span v-if="canSeeQcOptional" class="qc-flags" @click.stop>
+                    <label class="qc-flag" title="Mark as QC dataset">
+                      <input type="checkbox" :checked="!!row.isQc" @change="onToggleQcFlag(row.id, 'is_qc', $event.target.checked)" />
+                      QC
+                    </label>
+                    <label class="qc-flag" title="Mark as Optional">
+                      <input type="checkbox" :checked="!!row.isOptional" @change="onToggleQcFlag(row.id, 'is_optional', $event.target.checked)" />
+                      Opt
+                    </label>
+                  </span>
                   <!-- Delete suggestion highlighted -->
                   <div v-if="hasDeleteSuggestion(row.id)" class="delete-suggestion-actions">
                     <button
@@ -3587,6 +3611,25 @@ tr.highlight-flash td {
 }
 .rt-fix-title { font-weight: 600; color: #854d0e; }
 .rt-fix-groups { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+
+/* G1: QC / Optional role-gated flags in the actions cell */
+.qc-flags {
+  display: inline-flex;
+  gap: 0.5rem;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+.qc-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #6b7280;
+  cursor: pointer;
+  user-select: none;
+}
+.qc-flag input { cursor: pointer; }
 .bulk-action-count {
   font-weight: 600;
   color: #1e40af;
