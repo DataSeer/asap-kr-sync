@@ -957,6 +957,47 @@ async function onInlineShortcut(rowId, col, value) {
   }
 }
 
+// ── Resource-type fixes grouped into bulk actions (request E) ────────
+// Group every auto-fixable RESOURCE TYPE validation error by its canonical
+// target so the curator can apply each group in one click (e.g. all
+// "Code"/"Software" rows → "Software/code"). Human stays in control.
+const resourceTypeFixGroups = computed(() => {
+  if (props.readonly) return []
+  const byTarget = new Map()
+  const errs = krtStore.validationErrors || {}
+  for (const [rowId, rowErrors] of Object.entries(errs)) {
+    for (const e of (rowErrors || [])) {
+      if (e.column !== 'RESOURCE TYPE' || !e.autoFixable || !e.suggestedValue) continue
+      if (!byTarget.has(e.suggestedValue)) byTarget.set(e.suggestedValue, new Set())
+      byTarget.get(e.suggestedValue).add(rowId)
+    }
+  }
+  return Array.from(byTarget.entries()).map(([suggestedValue, rowIdSet]) => ({
+    suggestedValue,
+    rowIds: Array.from(rowIdSet)
+  }))
+})
+const totalResourceTypeFixes = computed(() =>
+  resourceTypeFixGroups.value.reduce((n, g) => n + g.rowIds.length, 0))
+
+async function applyResourceTypeFix(group) {
+  bulkSubmitting.value = true
+  try {
+    const updates = group.rowIds.map(rowId => ({ rowId, column: 'resource_type', value: group.suggestedValue }))
+    await krtStore.batchUpdateCells(props.submissionId, updates) // re-validates internally
+    notificationStore.success(`Set ${updates.length} row${updates.length > 1 ? 's' : ''} to "${group.suggestedValue}"`)
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Fix failed')
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+async function applyAllResourceTypeFixes() {
+  for (const group of [...resourceTypeFixGroups.value]) {
+    await applyResourceTypeFix(group)
+  }
+}
+
 // Combined rows + add-row suggestions in correct sort order
 // Suggestions appear at the position they would occupy after being accepted
 const interleavedAddSuggestions = computed(() => {
@@ -1547,6 +1588,26 @@ defineExpose({
           <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="openBulkEditCellsModal">Edit column…</button>
         </template>
         <button class="btn-bulk btn-bulk-ghost" @click="clearBulkSelection">Clear</button>
+      </div>
+    </div>
+
+    <!-- E: grouped resource-type fixes (one-click bulk apply per canonical target) -->
+    <div v-if="!readonly && resourceTypeFixGroups.length" class="rt-fix-banner">
+      <span class="rt-fix-title">
+        {{ totalResourceTypeFixes }} resource-type {{ totalResourceTypeFixes > 1 ? 'errors' : 'error' }} can be auto-fixed:
+      </span>
+      <div class="rt-fix-groups">
+        <button
+          v-for="group in resourceTypeFixGroups"
+          :key="group.suggestedValue"
+          class="btn-bulk btn-bulk-primary"
+          :disabled="bulkSubmitting"
+          :title="`Set ${group.rowIds.length} row(s) to ${group.suggestedValue}`"
+          @click="applyResourceTypeFix(group)"
+        >
+          Set {{ group.rowIds.length }} → “{{ group.suggestedValue }}”
+        </button>
+        <button v-if="resourceTypeFixGroups.length > 1" class="btn-bulk" :disabled="bulkSubmitting" @click="applyAllResourceTypeFixes">Fix all</button>
       </div>
     </div>
 
@@ -3511,6 +3572,21 @@ tr.highlight-flash td {
   top: 0.5rem;
   z-index: 10;
 }
+/* E: resource-type auto-fix banner */
+.rt-fix-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 0.875rem;
+  margin-bottom: 0.5rem;
+  background: #fefce8;
+  border: 1px solid #fde68a;
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+}
+.rt-fix-title { font-weight: 600; color: #854d0e; }
+.rt-fix-groups { display: flex; flex-wrap: wrap; gap: 0.375rem; }
 .bulk-action-count {
   font-weight: 600;
   color: #1e40af;

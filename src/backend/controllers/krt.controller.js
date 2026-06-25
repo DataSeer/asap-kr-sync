@@ -97,7 +97,11 @@ async function getData(req, res, next) {
         type: error.errorType,
         message: error.errorMessage,
         severity: error.severity,
-        suggestion: error.suggestion
+        suggestion: error.suggestion,
+        // Machine-actionable fix (request E): the frontend offers one-click /
+        // bulk apply when a concrete canonical target is present.
+        suggestedValue: error.suggestedValue || null,
+        autoFixable: !!error.suggestedValue
       });
     });
 
