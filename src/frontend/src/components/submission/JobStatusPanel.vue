@@ -838,6 +838,7 @@ const pdfAnalysisRows = computed(() => {
         sourceUrl: merged.sourceUrl || '',
         newReuse: (merged.newReuse || '').toLowerCase(),
         additionalInformation: merged.additionalInformation || '',
+        reason: merged.reason || '',
         isDuplicate: false,
         dedupKey: merged.dedupKey,
         groupIndex,
@@ -859,6 +860,7 @@ const pdfAnalysisRows = computed(() => {
         sourceUrl: d.source || d.url || d.suggestedURL || merged.sourceUrl || '',
         newReuse: String(d.newReuse || d.new_reuse || merged.newReuse || '').toLowerCase(),
         additionalInformation: d.additionalInformation || d.additional_information || merged.additionalInformation || '',
+        reason: merged.reason || '',
         isDuplicate,
         dedupKey: merged.dedupKey,
         groupIndex,
@@ -1482,6 +1484,7 @@ async function downloadMarkdownFile(fileId) {
                         <th>Identifier</th>
                         <th>New/Reuse</th>
                         <th>Additional Information</th>
+                        <th>Reason</th>
                         <th></th>
                       </tr>
                     </thead>
@@ -1520,6 +1523,8 @@ async function downloadMarkdownFile(fileId) {
                           <span v-else>—</span>
                         </td>
                         <td class="text-xs text-gray-500">{{ row.additionalInformation || '—' }}</td>
+                        <!-- LM consolidation reason — shown once per merged group -->
+                        <td class="text-xs text-gray-500">{{ row.isGroupStart ? (row.reason || '—') : '' }}</td>
                         <td>
                           <span
                             v-if="row.isDuplicate"
