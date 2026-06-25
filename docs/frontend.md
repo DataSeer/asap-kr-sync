@@ -123,7 +123,7 @@ Manages KRT table data, cell editing, validation, and AI suggestions.
 
 **Key computed:** `getRowErrors(rowId)`, `getRowSuggestions(rowId)`, `getCellSuggestion(rowId, column)`, `addRowSuggestions`, `deleteRowSuggestions`
 
-**Key actions:** `fetchKRT()`, `uploadKRT()`, `updateCell()`, `batchUpdateCells()`, `addRow()`, `deleteRow()`, `validate()`, `fetchAiSuggestions()`, `updateSuggestionStatus()`
+**Key actions:** `fetchKRT()`, `uploadKRT()`, `updateCell()`, `batchUpdateCells()`, `addRow()`, `deleteRow()`, `mergeRows()`, `validate()`, `fetchAiSuggestions()`, `updateSuggestionStatus()`, `regenerateSuggestions()`
 
 **Change sources:** `manual`, `ai_suggestion`, `krt_validation`
 
@@ -187,11 +187,11 @@ All API calls go through service modules in `src/frontend/src/services/`. Each s
 |---------|------------|
 | `auth.service.js` | `login`, `register`, `logout`, `refreshToken`, `getCurrentUser`, `auth0PasswordLogin` |
 | `submission.service.js` | `list`, `getById`, `create`, `update`, `delete`, `getChanges`, `hide`, `unhide`, `listHidden`, `getFilterOptions`, `uploadSupplemental`, `processNewVersion` |
-| `krt.service.js` | `getData`, `upload` (2 min timeout), `updateRow`, `addRow`, `deleteRow`, `validate`, `download` |
+| `krt.service.js` | `getData`, `upload` (2 min timeout), `updateRow`, `addRow`, `deleteRow`, `mergeRows`, `validate`, `download` |
 | `pdf.service.js` | `upload` (2 min timeout), `getAnalysisStatus`, `getFindings`, `triggerAnalysis`, `extractDAS` |
 | `markdown.service.js` | `triggerConvert` |
 | `job.service.js` | `getJobs`, `runAllProcesses`, `advanceJob`, `getJobResponseUrl` |
-| `suggestion.service.js` | `getSuggestions`, `approveSuggestion`, `rejectSuggestion` |
+| `suggestion.service.js` | `getSuggestions`, `approveSuggestion`, `rejectSuggestion`, `regenerateSuggestions` |
 | `orcid.service.js` | `getAuthors`, `triggerExtraction` |
 | `datasets.service.js` | `getMentions`, `triggerDetection` |
 | `software.service.js` | `getMentions`, `triggerDetection` |
@@ -220,7 +220,12 @@ A handful of admin views (notably `UsersView.vue`) call the `api` instance direc
 
 ### KRT Editor
 
-- **KRTEditor** — main table editor with inline cell editing, validation error display, and AI suggestion indicators
+- **KRTEditor** — main table editor with inline cell editing, validation error display, and AI suggestion indicators. Also provides:
+  - **QC / Optional flags** — boolean per-row flags, shown and editable **only** for Administrator and DS Annotator roles (regular users never see them).
+  - **Merge rows** — select ≥2 rows, then a modal to pick each column's value, committing a transactional bulk-delete + create one merged row (`POST /api/submissions/:id/krt/merge`).
+  - **Inline shortcut dropdowns** — quick-pick dropdowns for Resource Type and New/Reuse directly in each row.
+  - **One-click bulk fixes** — resource-type validation errors carrying a `suggestedValue` are grouped into bulk fixes (e.g. "Set 4 → Software/code").
+  - **Resizable columns** — drag a header edge to resize; the width is remembered per browser.
 - **KRTCellEditModal** — modal for editing cells with longer content
 
 ### Submission Workflow

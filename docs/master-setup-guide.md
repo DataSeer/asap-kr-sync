@@ -43,7 +43,7 @@ flowchart LR
 | **Node.js backend + Vue frontend** | One Docker image (Express API that also serves the built SPA) | ✅ |
 | **PostgreSQL 15+** | Primary database **and** the pg-boss job queue (same DB) | ✅ |
 | **AWS S3** (or MinIO locally) | File storage (uploads, generated artifacts) | ✅ |
-| **Google Gemini API key(s)** | LLM for DAS / datasets / protocols / materials detection | ⬜ (per module) |
+| **Google Gemini API key(s)** | LLM for DAS / datasets / protocols / materials detection, Generated-KRT consolidation (KRT generation), and AI suggestions (KRT comparison) | ⬜ (per module) |
 | **LangExtract (Python)** | Pass-1 signal extraction for datasets detection | ⬜ (datasets only) |
 | **Softcite service** | Software-mention detection (external HTTP service) | ⬜ (software only) |
 | **GROBID service** | Author/ORCID extraction from the PDF header | ⬜ (ORCID only) |
@@ -179,16 +179,19 @@ And one of two **outcome states** after a run:
 | **PDF→Markdown** | `PDF_MARKDOWN_` | Converts the (merged) PDF to Markdown **once**, reused by the text detectors. `PDF_MARKDOWN_PROVIDER=modal` → remote **Docling** (set `..._MODAL_API_URL/_KEY`); fallback is local **MarkItDown** (Python subprocess via `PYTHON_BIN`). | — |
 | **DAS Extraction** | `DAS_EXTRACTION_` | **Google Gemini** (`gemini-2.5-flash`) reads the Markdown and copies the requested section verbatim. Section chosen by `DAS_EXTRACTION_SECTION` (das, funding, consent, ethics, author_contributions, acknowledgements, coi, keywords). | `prompts/das-extraction.txt` |
 | **Datasets Detection** | `DATASETS_DETECTION_` | **Two passes:** (1) **LangExtract** (Python) extracts grounded candidate mentions with source spans; (2) **Gemini** consolidates/dedupes/scores them. Tunables: `..._LANGEXTRACT_MAX_WORKERS/_MAX_CHAR_BUFFER/_EXTRACTION_PASSES/_BATCH_LENGTH/_TIMEOUT`. | Pass 1: `prompts/datasets-signals-extraction.txt` + `prompts/datasets-signals-examples.json`; Pass 2: `prompts/datasets-consolidation.txt` |
-| **Materials Detection** | `MATERIALS_DETECTION_` | **Google Gemini** reads the PDF directly (so it can interpret reagent tables). ⚠️ **Currently disabled** — its prompt file is intentionally absent (output quality too low to ship), so the external path never runs; see [external-apis.md](./external-apis.md#google-gemini-api-materials-detection). | `prompts/materials-detection.txt` *(absent by design)* |
-| **Protocols Detection** | `PROTOCOLS_DETECTION_` | **Google Gemini** reads the Markdown; a post-filter reclassifies purely computational "protocols" as software. | `prompts/protocols-detection.txt` |
+| **Materials Detection** | `MATERIALS_DETECTION_` | **Google Gemini**, **author-seeded** on the author's KRT material rows (minimal). **Skips extraction entirely when the author provided no materials.** | `prompts/materials-detection.txt` |
+| **Protocols Detection** | `PROTOCOLS_DETECTION_` | **Google Gemini** reads the Markdown; **seeded with the author's protocol rows as "Section 0"**; a post-filter reclassifies purely computational "protocols" as software. | `prompts/protocols-detection.txt` |
 | **Software Detection** | `SOFTCITE_API_` / `SOFTWARE_DETECTION_DEMO_DATA_ENABLED` | **Softcite** external HTTP service (a domain-trained NER model — **not** an LLM, no prompt, no token cost). Point `SOFTCITE_API_BASE_URL` at your Softcite instance. | — |
 | **ORCID / Authors** | `GROBID_API_` / `OPENALEX_` / `ORCID_API_` / `ORCID_EXTRACTION_DEMO_DATA_ENABLED` | Chain: **GROBID** (parses PDF header) → **OpenAlex** (verifies ORCIDs by DOI; free, set `OPENALEX_MAILTO`) → **ORCID public API** (fallback). Writes to `submission.authors`, **not** the KRT. | — |
 | **Identifier Detection** | `IDENTIFIER_DETECTION_` | **Local** scan of the Markdown against the curated `enrichment_list_entries` — no external call, no prompt. Recovers known RRIDs/DOIs/accessions the other detectors miss. Flags: `IDENTIFIER_DETECTION_ENABLED` (default on), `IDENTIFIER_DETECTION_CUT_AT_REFERENCES` (default on — truncate at the bibliography; set `false` for combined manuscript+supplemental PDFs). | uses the enrichment lists (§6.5) |
-| **PDF Analysis** | `PDF_ANALYSIS_ENABLED` | **In-app consolidator** (no external call). Merges every detector's items into the **Generated KRT**, alias-aware, and **auto-detects SOURCE from the identifier** when none was supplied (allowlist-only — GitHub/Zenodo/GEO/etc.; DOI/accession outranks URL; ambiguous → left blank). | — |
+| **PDF Analysis** | `PDF_ANALYSIS_ENABLED` + `KRT_GENERATION_` | **Generated KRT builder.** Rule-based merge (alias-aware; **auto-detects SOURCE from the identifier** — allowlist-only, DOI/accession outranks URL, ambiguous → blank), then an **LM (Gemini)** consolidates the candidates. **LM-primary with a rule-based fallback:** when `KRT_GENERATION_ENABLED` is off or the LM errors, the merged candidates are the Generated KRT. | `prompts/pdf-analysis-krt.txt` |
+| **AI Suggestions** | `KRT_COMPARISON_` | **Google Gemini** compares the author KRT vs the Generated KRT and emits per-resource decisions (add/skip/update/remove) with reasons. **LM-only — no fallback** (without it, no suggestions). Runs **last** (depends on PDF Analysis). | `prompts/krt-comparison.txt` |
 
-> So: **Gemini** powers DAS, datasets (pass 2), materials, protocols. **LangExtract** is datasets pass 1 only.
-> **Softcite/GROBID/OpenAlex/ORCID** are non-LLM HTTP services. **Identifier detection & PDF analysis are
-> fully local.** To enable a Gemini module you set `<MODULE>_ENABLED=true` **and** its `..._GEMINI_API_KEY`.
+> So: **Gemini** powers DAS, datasets (pass 2), materials, protocols, the Generated-KRT consolidation
+> (KRT generation), and AI suggestions (KRT comparison). **LangExtract** is datasets pass 1 only.
+> **Softcite/GROBID/OpenAlex/ORCID** are non-LLM HTTP services. **Identifier detection** is fully local, and
+> **PDF analysis** falls back to a local rule-based merge when its LM is off. To enable a Gemini module you set
+> `<MODULE>_ENABLED=true` **and** its `..._GEMINI_API_KEY`.
 
 ### 4.5 Module pipeline order
 
@@ -205,20 +208,26 @@ flowchart LR
     MDC --> DS["Datasets<br/>(LangExtract → Gemini)"]
     MDC --> PR["Protocols<br/>(Gemini)"]
     MDC --> ID["Identifier scan<br/>(local)"]
-    SW --> PA["PDF Analysis<br/>(consolidator)"]
+    SW --> PA["PDF Analysis<br/>(merge → LM consolidate)"]
     MAT --> PA
     DAS --> PA
     DS --> PA
     PR --> PA
     ID --> PA
+    PA --> SG["AI Suggestions<br/>(Gemini — KRT comparison)"]
+    OR --> SG
+    SG --> SUG(["persisted suggestions"])
     PA --> GK(["Generated KRT"])
     OR --> AU(["submission.authors"])
 ```
 
 - Independent modules (software, ORCID, materials, markdown) start immediately.
 - The text detectors (DAS, datasets, protocols, identifier) wait for **Markdown Convert**.
-- **PDF Analysis** waits for all detectors, then consolidates. It auto-advances only if a DAS was detected;
-  otherwise it parks in `pending_input` for the curator to supply the statement.
+- **PDF Analysis** waits for all detectors, then builds the Generated KRT (rule-based merge → LM consolidation).
+  It auto-advances only if a DAS was detected; otherwise it parks in `pending_input` for the curator to supply
+  the statement.
+- **AI Suggestions** runs **last** — it depends on PDF Analysis (which already gates on every KRT detector). It is
+  LM-only, so with no LM configured no suggestions are produced.
 
 ---
 
@@ -460,7 +469,8 @@ review suggestions → export the report. With all external modules off, demo da
 | App boots but UI unreachable on `:5173` | In-container Vite binds container-localhost. Use the backend origin (`:APP_PORT`) which serves the SPA, or set `server.host:true`. |
 | `address already in use 0.0.0.0:5432` | A host Postgres already owns 5432. Stop it, or remap the container port. |
 | A detection module always returns empty | It's **Off** or **Demo** without demo data for that manuscript, or `_ENABLED=true` but the API key/endpoint is wrong. Check the job's status pill + logs. |
-| Materials detection never produces results | Expected — it's intentionally disabled (prompt removed; quality too low). |
+| Materials detection never produces results | Expected when the author KRT has **no material rows** — the module is author-seeded and skips extraction in that case. Otherwise check it's **On** and the Gemini key is set. |
+| AI Suggestions panel is empty | AI Suggestions is **LM-only** — set `KRT_COMPARISON_ENABLED=true` and `KRT_COMPARISON_GEMINI_API_KEY`. With no LM configured, no suggestions are produced. Use **Regenerate suggestions** after editing the KRT. |
 | No `debug` lines despite `LOG_LEVEL=debug` | The running prod image's env-file may not set it (the `docker run` doesn't pass `LOG_LEVEL`); set it in `/opt/asap-kr-sync-prod/.env` and restart. |
 | No `logs/app.log` file in prod | `NODE_ENV` isn't `production` in the env-file (file transport is prod-only). |
 | CORS / cookie auth failing | `FRONTEND_URL` / `API_BASE_URL` don't match the real origins. |

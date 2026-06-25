@@ -110,6 +110,8 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 | `new_reuse` | STRING | "New" or "Reuse" |
 | `additional_information` | TEXT | Free text |
 | `parsed_identifiers` | JSONB | Structured identifiers extracted from text |
+| `is_qc` | BOOLEAN | QC flag (default `false`). Visible/editable only to Administrator and DS Annotator roles. |
+| `is_optional` | BOOLEAN | Optional flag (default `false`). Visible/editable only to Administrator and DS Annotator roles. |
 | `modified_in_step` | INTEGER | Which step last modified this row |
 | `round` | INTEGER | Submission round |
 | `origin_row_id` | UUID (FK) | Self-reference for round copies |
@@ -126,6 +128,7 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 | `error_message` | STRING | Human-readable message |
 | `severity` | STRING | `error`, `warning`, `info` |
 | `suggestion` | STRING | Suggested fix |
+| `suggested_value` | VARCHAR | Machine-actionable suggested value (nullable). Lets the editor group resource-type errors into one-click bulk fixes (e.g. "Set 4 → Software/code"). |
 | `round` | INTEGER | |
 
 #### `submission_jobs`
@@ -134,7 +137,7 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 |--------|------|-------|
 | `id` | UUID (PK) | |
 | `submission_id` | UUID (FK) | Cascades on delete |
-| `job_type` | VARCHAR(50) | `das_extraction`, `pdf_analysis`, `markdown_convert`, `software_detection`, `orcid_extraction`, `datasets_detection`, `materials_detection`, `protocols_detection`, `identifier_detection`, `report_generation`. No DB-level CHECK — values come from the application's `JOB_TYPES` constant. |
+| `job_type` | VARCHAR(50) | `das_extraction`, `pdf_analysis`, `markdown_convert`, `software_detection`, `orcid_extraction`, `datasets_detection`, `materials_detection`, `protocols_detection`, `identifier_detection`, `suggestion_generation`, `report_generation`. No DB-level CHECK — values come from the application's `JOB_TYPES` constant. |
 | `status` | ENUM | `waiting`, `pending_input`, `queued`, `processing`, `complete`, `failed` (default `queued`) |
 | `pg_boss_job_id` | VARCHAR(100) | pg-boss job reference |
 | `reference_id` | UUID | Optional link to a related record |

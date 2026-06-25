@@ -13,7 +13,7 @@
 ## 1. The module roster
 
 Each background process is a `submission_jobs` row of a given `job_type` (`config/constants.js` → `JOB_TYPES`),
-run by a worker in `services/queue/workers.js`. Nine modules participate in the analysis pipeline (a tenth,
+run by a worker in `services/queue/workers.js`. Ten modules participate in the analysis pipeline (an eleventh,
 `report_generation`, is ad-hoc — see [submission-workflow.md](./submission-workflow.md)).
 
 | Module (`job_type`) | What it finds | Engine | Depends on | Feeds |
@@ -22,11 +22,12 @@ run by a worker in `services/queue/workers.js`. Nine modules participate in the 
 | `das_extraction` | Data Availability Statement | Google Gemini | `markdown_convert` | the PDF-Analysis gate |
 | `software_detection` | Software / code | Softcite (NER, not an LLM) | — | PDF Analysis |
 | `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` | PDF Analysis |
-| `materials_detection` | Lab materials / reagents | Google Gemini *(disabled — see §3.5)* | — | PDF Analysis |
+| `materials_detection` | Lab materials / reagents | Google Gemini *(author-seeded; see §3.5)* | — | PDF Analysis |
 | `protocols_detection` | Protocols | Google Gemini | `markdown_convert` | PDF Analysis |
 | `identifier_detection` | Known RRIDs / DOIs / accessions | **Local** scan of curated lists | `markdown_convert` | PDF Analysis |
 | `orcid_extraction` | Authors + ORCIDs | GROBID → OpenAlex → ORCID API | — | `submission.authors` (not the KRT) |
-| `pdf_analysis` | The consolidated Generated KRT | **In-app** consolidator (no external call) | all detectors above | the suggestions diff |
+| `pdf_analysis` | The consolidated Generated KRT | Rule-based merge → **LM (Gemini)** consolidation, rule-based fallback | all detectors above | Suggestion Generation |
+| `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
 
 Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)):
 
@@ -40,13 +41,15 @@ flowchart LR
     MDC --> DS["datasets_detection<br/>(LangExtract → Gemini)"]
     MDC --> PR["protocols_detection<br/>(Gemini)"]
     MDC --> ID["identifier_detection<br/>(local)"]
-    SW --> PA["pdf_analysis<br/>(consolidator)"]
+    SW --> PA["pdf_analysis<br/>(rule-merge → LM consolidate)"]
     MAT --> PA
     DAS --> PA
     DS --> PA
     PR --> PA
     ID --> PA
-    PA --> GK(["Generated KRT → suggestions"])
+    PA --> SG["suggestion_generation<br/>(LM — AI Suggestions)"]
+    SG --> SUG(["persisted suggestions"])
+    PA --> GK(["Generated KRT"])
     OR --> AU(["submission.authors"])
 ```
 
@@ -123,7 +126,7 @@ re-keyed by `dedupKey` and carries a `detectedBy` provenance array (the cross-de
 > suggestion generation and the curator UI but are stripped before a row is persisted to `krt_data`. The
 > persisted/display shapes are documented in
 > [api-reference.md → KRT Operations](./api-reference.md#krt-operations) and
-> [database.md → `krt_data`](./database.md#krt_data); the diff-computed suggestion shapes are in
+> [database.md → `krt_data`](./database.md#krt_data); the suggestion shapes are in
 > [api-reference.md → Suggestions](./api-reference.md#suggestions).
 
 ### 2.2 Fail-soft: the On / Demo / Off + Done / Fail model
@@ -152,10 +155,17 @@ failReason, externalError }`. This means a misconfigured or down external servic
 
 ### 2.3 How module outputs become suggestions
 
-`pdf_analysis` (§3.9) merges every detector's `result.data.items` into one **Generated KRT**. At read time, the
-`/suggestions` endpoint diffs that Generated KRT against the user's KRT (minus rejected rows) to produce the
-accept/reject suggestions the curator sees in Step 3. ORCID output is the exception — it writes to
-`submission.authors`, not the KRT.
+`pdf_analysis` (§3.9) produces the **Generated KRT** from every detector's `result.data.items`. A dedicated
+**`suggestion_generation`** module (§3.10) then runs an LM (Gemini) comparison of the author KRT vs the
+Generated KRT and emits, for every generated resource, a decision (add / skip / update / remove) with a reason
+— these are the accept/reject suggestions the curator sees. The suggestions are **persisted on that job's
+result**, not diff-computed at read time, so editing the KRT does not silently change them; they change only
+when the job is re-run. ORCID output writes to `submission.authors`, not the KRT, and is not an input to the
+comparison.
+
+> **No more on-read diff.** AI Suggestions are no longer an algorithmic diff computed by the `/suggestions`
+> endpoint. The old `diff-suggestions.service.js` is retired in production (kept in the repo); read/approve/reject
+> now operate on the persisted list (see §3.10).
 
 ### 2.4 Enrichment lists
 
@@ -209,7 +219,10 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Engine:** **Softcite** — a purpose-built academic NER service (**not** an LLM; deterministic, no token cost,
   no prompt). Returns mentions with offsets and per-mention confidence.
 - **Depends on:** nothing (immediate). **Input:** the PDF (Softcite multipart field `input`).
-- **How it works:** Softcite mentions → `KrtEntry[]` (resourceType `Software/code`) → deduped.
+- **How it works:** Softcite mentions → `KrtEntry[]` (resourceType `Software/code`) → deduped. A
+  **post-processing** pass then: defaults software to **Reuse**; turns code (programming languages) into
+  "`<Lang> code`" marked **New**; **excludes** instrument/acquisition software; and **de-duplicates against the
+  author KRT ignoring version numbers / RRIDs** in the name.
 - **Config:** `SOFTCITE_API_ENABLED`, `SOFTCITE_API_BASE_URL`, `SOFTCITE_API_TIMEOUT`,
   `SOFTWARE_DETECTION_DEMO_DATA_ENABLED`.
 - **Demo:** `getDemoSoftwareMentions(manuscriptId)`.
@@ -234,33 +247,39 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Key files:** `services/datasets/datasets.service.js`, `services/datasets/langextract-client.service.js`,
   `python/datasets/extract-signals.py`, `config/datasets-detection-api.js`.
 
-### 3.5 `materials_detection` — Lab materials *(currently disabled)*
+### 3.5 `materials_detection` — Lab materials *(author-seeded, minimal)*
 
-> ⚠️ **Intentionally disabled** — the module's output quality is too low to ship, so its prompt file
-> (`data/prompts/materials-detection.txt`) is absent. `hasPrompt()` returns false, the external path never runs,
-> and the module returns empty (or demo data). See [external-apis.md](./external-apis.md#google-gemini-api-materials-detection).
-
-- **Purpose (when enabled):** detect antibodies, cell lines, reagents and other lab materials.
-- **Engine:** **Google Gemini**, reading the **PDF directly** (inline base64) so it can interpret reagent tables
-  that Markdown conversion would mangle.
+- **Purpose:** detect antibodies, cell lines, reagents and other lab materials — grounded on the author's KRT.
+- **Engine:** **Google Gemini**, driven by a materials-detection prompt **seeded with the author's KRT material
+  rows** (via the shared `services/krt/author-krt-seeds.service.js`). The detector is intentionally minimal: it
+  **SKIPS extraction entirely when the author provided no materials** (no author material rows → no Gemini call).
 - **Depends on:** nothing (immediate). **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
 - **Config:** `MATERIALS_DETECTION_ENABLED`, `MATERIALS_DETECTION_GEMINI_API_KEY/_MODEL`,
-  `MATERIALS_DETECTION_API_TIMEOUT`, `MATERIALS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:** *(absent by design)*.
+  `MATERIALS_DETECTION_API_TIMEOUT`, `MATERIALS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
+  `data/prompts/materials-detection.txt`.
 - **Demo:** `getDemoLabMaterialMentions(manuscriptId)`.
-- **Key files:** `services/materials/materials.service.js`, `config/materials-detection-api.js`.
+- **Key files:** `services/materials/materials.service.js`, `services/krt/author-krt-seeds.service.js`,
+  `config/materials-detection-api.js`.
 
 ### 3.6 `protocols_detection` — Protocols
 
 - **Purpose:** detect experimental protocol mentions.
 - **Engine:** **Google Gemini** over the Markdown, with a **post-filter** that reclassifies purely computational
   / in-silico "protocols" as software (`isInSilicoProtocol`) — encoding an ASAP domain rule in code. Parses
-  defensively (fenced-code stripping, markdown-escape repair).
+  defensively (fenced-code stripping, markdown-escape repair). The prompt is **seeded with the author's protocol
+  rows as "Section 0"** (via the shared `services/krt/author-krt-seeds.service.js`). Recent prompt fixes: don't
+  pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations;
+  exclude analyses; and improve new/reuse classification.
 - **Depends on:** `markdown_convert`. **Output:** `KrtEntry[]` (Protocol).
 - **Config:** `PROTOCOLS_DETECTION_ENABLED`, `PROTOCOLS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `PROTOCOLS_DETECTION_API_TIMEOUT`, `PROTOCOLS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
   `data/prompts/protocols-detection.txt`.
 - **Demo:** `getDemoProtocolMentions(manuscriptId)`.
-- **Key files:** `services/protocols/protocols.service.js`, `config/protocols-detection-api.js`.
+- **Key files:** `services/protocols/protocols.service.js`, `services/krt/author-krt-seeds.service.js`,
+  `config/protocols-detection-api.js`.
+
+> **Author-KRT seeding (shared).** Software (§3.3), Protocols (§3.6) and Lab Materials (§3.5) all reuse the
+> shared `services/krt/author-krt-seeds.service.js` helper to ground the LM on the author's existing KRT rows.
 
 ### 3.7 `identifier_detection` — Known-identifier scan *(local; enabled by default)*
 
@@ -292,29 +311,56 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   fall back to the **ORCID public API** (capped, unique-match only). Confidence is set by agreement
   (`grobid+openalex` = high, single source = medium).
 - **Depends on:** nothing (immediate). **Output:** written to **`submission.authors`** (`{ items, meta }`) — it is
-  **not** a KRT contributor and not a PDF-Analysis dependency.
+  **not** a KRT contributor, not a PDF-Analysis dependency, and not an input to Suggestion Generation (§3.10).
 - **Config:** `GROBID_API_ENABLED/_BASE_URL/_TIMEOUT`, `OPENALEX_MAILTO/_API_TIMEOUT/_API_ENABLED` (OpenAlex is
   free, no key), `ORCID_API_ENABLED/_TIMEOUT`, `ORCID_EXTRACTION_DEMO_DATA_ENABLED` (default off; no demo data yet).
 - **Key files:** `services/orcid/orcid.service.js`, `grobid-client.service.js`, `openalex-client.service.js`,
   `orcid-api-client.service.js`, `config/{grobid,openalex,orcid}-api.js`.
 
-### 3.9 `pdf_analysis` — Consolidator (the Generated KRT)
+### 3.9 `pdf_analysis` — The Generated KRT (LM-primary, rule-based fallback)
 
-- **Purpose:** merge every detector's items into one **Generated KRT** — the app's best-guess complete resource
-  table. **No external call** (the `PDF_ANALYSIS_API_*` env vars are vestigial).
+- **Purpose:** turn every detector's items into one **Generated KRT** — the app's best-guess complete resource
+  table — in two stages: **(a)** a rule-based `mergeDetections` regroups + coarse-dedups all detections'
+  items (preserving per-resource `detectedBy` provenance), then **(b)** an **LM (Google Gemini)** consolidates
+  those candidates into the final Generated KRT — merging near-duplicates, dropping non-resources, cleaning
+  fields, attaching a `reason` to each **kept** line and recording **dropped** candidates with reasons.
+- **LM-primary with a rule-based fallback:** when `KRT_GENERATION_ENABLED` is off or the LM errors, the merged
+  candidates (stage a) become the Generated KRT, so the pipeline **always** yields one.
 - **Depends on:** `das_extraction`, `software_detection`, `datasets_detection`, `materials_detection`,
   `protocols_detection`, `identifier_detection`. **Gate:** auto-advances only if a DAS was detected (else
   `pending_input`).
-- **How it works (`merge-detections.service.js`):** greedy, **alias-aware** merge keyed on (resourceType + newReuse)
-  with identifier-token / opaque-id / normalized-name matching; a per-resource union of aliases enables 3-way
-  transitive merges; `SOURCE_PRECEDENCE` lets the targeted detectors win display fields over the broad identifier
-  scan. When a merged resource has **no** source, it **infers one from the identifier** (allowlist-only —
-  GitHub/Zenodo/GEO/etc.; a DOI/accession outranks a URL; ambiguous → blank). The Generated KRT is persisted to
+- **How stage (a) works (`merge-detections.service.js`):** greedy, **alias-aware** merge keyed on (resourceType +
+  newReuse) with identifier-token / opaque-id / normalized-name matching; a per-resource union of aliases enables
+  3-way transitive merges; `SOURCE_PRECEDENCE` lets the targeted detectors win display fields over the broad
+  identifier scan. When a merged resource has **no** source, it **infers one from the identifier** (allowlist-only
+  — GitHub/Zenodo/GEO/etc.; a DOI/accession outranks a URL; ambiguous → blank). The Generated KRT is persisted to
   `pdf_analysis.result.data.items` and uploaded to S3 as `generated-krt.json`.
-- **Output:** consumed at read time by `diff-suggestions.service.js` to produce accept/reject suggestions.
-- **Config:** `PDF_ANALYSIS_ENABLED` (in-process gate only).
+- **Output:** consumed by the **Suggestion Generation** module (§3.10) to produce AI Suggestions.
+- **Config:** `PDF_ANALYSIS_ENABLED` (in-process gate); the LM step: `KRT_GENERATION_ENABLED`,
+  `KRT_GENERATION_GEMINI_API_KEY/_MODEL`, `KRT_GENERATION_API_TIMEOUT`. **Prompt:** `data/prompts/pdf-analysis-krt.txt`.
 - **Key files:** `services/pdf-analysis/pdf-analysis.service.js`, `merge-detections.service.js`,
-  `identifier-normalize.service.js`, `dedupe-krt-items.service.js`, `diff-suggestions.service.js`, `krt-entry.js`.
+  `krt-generation.service.js`, `identifier-normalize.service.js`, `dedupe-krt-items.service.js`, `krt-entry.js`,
+  `config/krt-generation-api.js`.
+
+### 3.10 `suggestion_generation` — AI Suggestions (KRT Comparison)
+
+- **Purpose:** compare the **author KRT** against the **Generated KRT** and emit, for **every** generated
+  resource, a decision — **add / skip / update / remove** — each with a `reason`, plus author-side fixes. Author
+  data is prioritized, the actionable list is kept manageable, and `remove` suggestions are **rare** (clear
+  mistakes only).
+- **Engine:** **Google Gemini** — **LM-only, no fallback.** With no LM configured (`KRT_COMPARISON_ENABLED` off
+  or no key), **no suggestions are produced**.
+- **Depends on:** `pdf_analysis` (which already gates on every KRT detector). It runs **last** in the pipeline.
+- **Persistence:** suggestions are **persisted on the job result** — not recomputed on every read — so editing
+  the KRT does not silently change them. They change only when the job is **re-run** (the "Regenerate
+  suggestions" button → `POST /api/submissions/:id/suggestions/regenerate`, or any module restart cascading
+  through). `read`/`approve`/`reject` operate on this persisted list; **accepting a `remove` deletes the KRT row**.
+- **Origins:** each suggestion carries the **real contributing detection module(s)**
+  (software/datasets/materials/protocols/identifier) as origin badges — no longer a flat `krt_comparison` tag.
+- **Config:** `KRT_COMPARISON_ENABLED`, `KRT_COMPARISON_GEMINI_API_KEY/_MODEL`, `KRT_COMPARISON_API_TIMEOUT`.
+  **Prompt:** `data/prompts/krt-comparison.txt`.
+- **Key files:** `services/suggestion/kr-comparison.service.js`, `config/krt-comparison-api.js`. *(The retired
+  `services/pdf-analysis/diff-suggestions.service.js` remains in the repo but is no longer used in production.)*
 
 ---
 
@@ -337,6 +383,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 |------|-------|
 | Shared | `services/demo-fallback.service.js` (On/Demo/Off + Done/Fail), `services/pdf-analysis/krt-entry.js` (KrtEntry shape), `services/demo-data.service.js` (demo getters) |
 | Orchestration | `services/queue/orchestrator.service.js` (PIPELINE), `services/queue/workers.js`, `services/queue/job-queue.service.js` — see [background-jobs.md](./background-jobs.md) |
-| Detectors | `services/{software,datasets,materials,protocols}/`, `services/identifier-detection/`, `services/orcid/`, `services/pdf/` (markdown + DAS) |
-| Consolidation | `services/pdf-analysis/{pdf-analysis,merge-detections,identifier-normalize,dedupe-krt-items,diff-suggestions}.service.js` |
-| Config | `config/*-api.js`, `data/prompts/*.txt` (+ `.json`), `enrichment_list_entries` (DB) |
+| Detectors | `services/{software,datasets,materials,protocols}/`, `services/identifier-detection/`, `services/orcid/`, `services/pdf/` (markdown + DAS), `services/krt/author-krt-seeds.service.js` (shared author-KRT seeding) |
+| Consolidation | `services/pdf-analysis/{pdf-analysis,merge-detections,krt-generation,identifier-normalize,dedupe-krt-items}.service.js` (`diff-suggestions.service.js` retired but kept) |
+| Suggestions | `services/suggestion/kr-comparison.service.js` (the LM-only AI Suggestions / `suggestion_generation` module) |
+| Config | `config/*-api.js` (incl. `krt-generation-api.js`, `krt-comparison-api.js`), `data/prompts/*.txt` (+ `.json`; incl. `pdf-analysis-krt.txt`, `krt-comparison.txt`), `enrichment_list_entries` (DB) |

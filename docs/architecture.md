@@ -41,17 +41,17 @@ asap-kr-sync/
 │   │   │   ├── auth/              # Authentication (JWT, Auth0, refresh-token rotation)
 │   │   │   ├── datasets/          # Datasets detection (langextract + Google Gemini)
 │   │   │   ├── identifier-detection/  # Curated-list identifier scanner (DOIs, RRIDs, accessions, catalogs)
-│   │   │   ├── krt/               # KRT parsing, validation, identifiers
+│   │   │   ├── krt/               # KRT parsing, validation, identifiers, author-KRT seeding (shared by software/protocols/materials)
 │   │   │   ├── materials/         # Materials detection (Google Gemini)
 │   │   │   ├── orcid/             # ORCID extraction (GROBID, OpenAlex, ORCID API)
 │   │   │   ├── pdf/               # PDF processing, DAS extraction, markdown convert
-│   │   │   ├── pdf-analysis/      # In-app KRT consolidator (merges every detection into the Generated KRT)
-│   │   │   ├── protocols/         # Protocols detection (Google Gemini)
+│   │   │   ├── pdf-analysis/      # Generated KRT builder — rule-based merge then LM (Gemini) consolidation, rule-based fallback
+│   │   │   ├── protocols/         # Protocols detection (Google Gemini, author-KRT seeded)
 │   │   │   ├── queue/             # Job queue (pg-boss), orchestrator, workers
 │   │   │   ├── reports/           # Excel report generation
 │   │   │   ├── software/          # Software detection (Softcite)
 │   │   │   ├── storage/           # S3 file operations
-│   │   │   ├── suggestion/        # Diff-based suggestion API (Generated KRT vs current KRT)
+│   │   │   ├── suggestion/        # AI Suggestions — LM (Gemini) author-KRT vs Generated-KRT comparison (suggestion_generation job)
 │   │   │   ├── enrichment-list.service.js  # Single shared service backing the four curated lists
 │   │   │   └── config.service.js  # Dynamic config (teams, resource types, validation rules) from DB
 │   │   └── utils/                 # Shared utilities (logger, errors, helpers, validators)
@@ -154,7 +154,7 @@ Each step has a corresponding status, view, and set of operations. Users can nav
 
 ## Background Job Pipeline
 
-PDF upload triggers parallel background jobs via pg-boss. PDF Analysis is the in-app consolidator that waits on every detection job (gated by whether DAS was detected):
+PDF upload triggers parallel background jobs via pg-boss. PDF Analysis builds the Generated KRT (rule-based merge then LM consolidation) once every detection job is terminal (gated by whether DAS was detected); Suggestion Generation then runs last to produce the AI Suggestions:
 
 ```mermaid
 graph TD
@@ -172,6 +172,8 @@ graph TD
     MAT --> PA
     PROT --> PA
     ID --> PA
+    PA --> SG[Suggestion Generation]
+    ORCID --> SG
 
     style PDF fill:#3b82f6,color:#fff
     style DAS fill:#f59e0b,color:#fff
@@ -183,9 +185,10 @@ graph TD
     style PROT fill:#f97316,color:#fff
     style ID fill:#a855f7,color:#fff
     style PA fill:#ef4444,color:#fff
+    style SG fill:#db2777,color:#fff
 ```
 
-ORCID Extraction is intentionally **not** a contributor to PDF Analysis — its output lives on `submission.authors`, not in the Generated KRT. PDF Analysis auto-advances when DAS was detected; if DAS extraction fails, the job parks at `pending_input` until the user supplies a DAS manually and clicks Advance.
+ORCID Extraction is intentionally **not** a contributor to PDF Analysis — its output lives on `submission.authors`, not in the Generated KRT. PDF Analysis auto-advances when DAS was detected; if DAS extraction fails, the job parks at `pending_input` until the user supplies a DAS manually and clicks Advance. **Suggestion Generation** (the AI Suggestions / KRT comparison) runs last, depending on PDF Analysis (which already gates on every KRT detector); it is LM-only, so with no LM configured no suggestions are produced.
 
 See [Background Jobs](./background-jobs.md) for details.
 
