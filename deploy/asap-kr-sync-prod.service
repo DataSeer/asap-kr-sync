@@ -17,7 +17,7 @@ ExecStart=/usr/bin/docker run --rm --name asap-kr-sync-prod \
   -e AWS_REGION=us-east-1 \
   -e AUTH0_SECRET_ID=asap-kr-sync/prod/auth0 \
   -v /opt/asap-kr-sync-prod/credentials:/app/credentials:ro \
-  -v /opt/asap-kr-sync-prod/backend/data:/app/src/backend/data:ro \
+  -v /opt/asap-kr-sync-prod/src/backend/data/demo-findings:/app/src/backend/data/demo-findings:ro \
   -v /opt/asap-kr-sync-prod/src/frontend/public/demo-files:/app/src/frontend/public/demo-files:ro \
   -v /opt/asap-kr-sync-prod/logs:/app/logs \
   -p 127.0.0.1:3001:3000 \
