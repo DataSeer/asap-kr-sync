@@ -33,6 +33,7 @@ const datasetsConfig = require('../../config/datasets-detection-api');
 const materialsConfig = require('../../config/materials-detection-api');
 const protocolsConfig = require('../../config/protocols-detection-api');
 const pdfAnalysisConfig = require('../../config/pdf-analysis-api');
+const krtComparisonConfig = require('../../config/krt-comparison-api');
 
 /**
  * Per-job-type config readers. Each entry returns the live (env-time) state
@@ -79,6 +80,12 @@ const SERVICE_CFG = {
   // permanently external-enabled so the config snapshot reads `state: 'on'`.
   identifier_detection: {
     isExternalEnabled: () => true,
+    isDemoEnabled: () => false
+  },
+  // LM comparison (author KRT vs Generated KRT) → suggestions. LM-only, so no
+  // demo path: when the comparison API isn't configured the module reads 'off'.
+  suggestion_generation: {
+    isExternalEnabled: () => krtComparisonConfig.isConfigured(),
     isDemoEnabled: () => false
   }
 };
@@ -700,6 +707,7 @@ async function initializeWorkers() {
         jobLogger?.log('complete', `Generated ${count} suggestions`, { count });
         await submissionJob?.markComplete({
           status: { detected: count > 0 },
+          service: buildServiceSnapshot('suggestion_generation', result),
           counts: { total: count, unique: count },
           timing: { totalMs: result.meta?.totalMs || 0 }
         });

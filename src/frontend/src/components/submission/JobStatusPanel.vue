@@ -104,7 +104,8 @@ const ALL_JOB_TYPES = [
   { type: 'datasets_detection', label: 'Datasets Detection' },
   { type: 'protocols_detection', label: 'Protocols Detection' },
   { type: 'identifier_detection', label: 'Identifiers Detection' },
-  { type: 'pdf_analysis', label: 'PDF Analysis' }
+  { type: 'pdf_analysis', label: 'PDF Analysis' },
+  { type: 'suggestion_generation', label: 'AI Suggestions' }
 ]
 
 // Unified modal state
@@ -536,6 +537,11 @@ function getDataSummary(job, r) {
       if (total === 0) return 'No identifiers'
       return `${total} match${total > 1 ? 'es' : ''}${high > 0 ? `, ${high} high relevance` : ''}`
     }
+    case 'suggestion_generation': {
+      const total = r.counts?.unique || r.counts?.total || 0
+      if (total === 0) return 'No suggestions'
+      return `${total} suggestion${total > 1 ? 's' : ''}`
+    }
     default:
       return null
   }
@@ -740,6 +746,12 @@ function openJobModal(job) {
     modalContent.value = ''
     modalTableType.value = 'pdf_analysis_krt'
     const items = job.result?.data?.items || []
+    modalItems.value = items.length ? items : null
+  } else if (job.type === 'suggestion_generation') {
+    // The LM comparison's choices + reasons (add/update/remove).
+    modalContent.value = ''
+    modalTableType.value = 'suggestions'
+    const items = job.result?.data?.suggestions || []
     modalItems.value = items.length ? items : null
   } else {
     modalItems.value = null
@@ -1532,6 +1544,26 @@ async function downloadMarkdownFile(fileId) {
                       </span>
                       <span v-else>—</span>
                     </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <!-- AI Suggestions: the choices the LM made + the reason for each -->
+              <table v-if="modalItems && modalItems.length && modalTableType === 'suggestions'" class="job-modal-table">
+                <thead>
+                  <tr>
+                    <th>Action</th>
+                    <th>Resource</th>
+                    <th>Change</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(item, i) in modalItems" :key="i">
+                    <td>{{ item.type === 'add_row' ? 'Add' : item.type === 'edit' ? 'Update' : item.type === 'delete_row' ? 'Remove' : item.type }}</td>
+                    <td>{{ item.title || item.data?.resourceName || '—' }}</td>
+                    <td>{{ item.description || '—' }}</td>
+                    <td>{{ item.reason || '—' }}</td>
                   </tr>
                 </tbody>
               </table>

@@ -220,7 +220,7 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
   // suggestions (no algorithmic fallback, by design).
   if (!krtComparisonConfig.isConfigured() || !hasPrompt()) {
     jobLogger?.log('suggestions_skipped', 'KRT comparison LM not configured — no suggestions generated');
-    return { data: { suggestions: [] }, meta: { skipped: true, reason: 'lm_not_configured', totalMs: Date.now() - startTime } };
+    return { data: { suggestions: [] }, status: 'done', source: null, meta: { skipped: true, reason: 'lm_not_configured', totalMs: Date.now() - startTime } };
   }
 
   const [authorRows, generatedKrt] = await Promise.all([
@@ -241,6 +241,8 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
 
   return {
     data: { suggestions },
+    status: 'done',
+    source: 'external',
     meta: {
       authorCount: authorRows.length,
       generatedCount: generatedKrt.length,
