@@ -59,67 +59,88 @@ function authorRowForPrompt(row) {
   };
 }
 
-/** Shape a Generated KRT item for the prompt payload. */
-function generatedRowForPrompt(g) {
+/** Unique detection-module sources behind a Generated KRT item. */
+function sourcesOf(g) {
+  return Array.isArray(g?.detectedBy)
+    ? [...new Set(g.detectedBy.map(d => d.source).filter(Boolean))]
+    : [];
+}
+function primarySource(g) {
+  return sourcesOf(g)[0] || null;
+}
+
+/** Shape a Generated KRT item for the prompt payload (ref + provenance). */
+function generatedRowForPrompt(g, ref) {
   return {
+    ref,
     resourceType: g.resourceType || '',
     resourceName: g.resourceName || '',
     source: g.sourceUrl || g.source || '',
     identifier: g.identifier || '',
-    newReuse: g.newReuse || ''
+    newReuse: g.newReuse || '',
+    sources: sourcesOf(g)
   };
 }
 
 /**
- * Map the LM's raw {action, ...} suggestions into the canonical suggestion
- * objects the frontend + approve/reject paths consume. Pure function.
- *
- * - add    → { id: 'add:<dedupKey>',          type: 'add_row',    data: {…fields} }
- * - update → { id: 'edit:<dedupKey>:<col>',   type: 'edit',       data: { rowId, column, oldValue, newValue } }  (one per changed column)
- * - remove → { id: 'delete:<dedupKey>',       type: 'delete_row', data: { rowId }, reason }
+ * Map the LM's per-resource decisions into (a) canonical suggestion objects the
+ * frontend + approve/reject paths consume, carrying the real detection-module
+ * origin via `mergedFrom` (request 2b), and (b) the full decision list (incl.
+ * skips) with reasons for the module summary (request 2c). Pure function.
  *
  * @param {object[]} authorRows - KRTData rows (need id + current values)
- * @param {object[]} lmSuggestions - raw LM output
- * @returns {object[]} canonical suggestions
+ * @param {object[]} generatedKrt - Generated KRT items (carry dedupKey + detectedBy)
+ * @param {object[]} lmDecisions - raw LM decisions [{ action, generatedRef?, authorRowId?, changes?, reason }]
+ * @returns {{ suggestions: object[], decisions: object[] }}
  */
-function buildSuggestionsFromLM(authorRows, lmSuggestions) {
-  if (!Array.isArray(lmSuggestions)) return [];
+function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
+  if (!Array.isArray(lmDecisions)) return { suggestions: [], decisions: [] };
   const byId = new Map((authorRows || []).map(r => [r.id, r]));
-  const out = [];
+  const gen = Array.isArray(generatedKrt) ? generatedKrt : [];
+  const genAt = (ref) => (Number.isInteger(ref) && ref >= 0 && ref < gen.length) ? gen[ref] : null;
+  const suggestions = [];
+  const decisions = [];
   const seen = new Set();
 
-  for (const s of lmSuggestions) {
-    const action = String(s?.action || '').toLowerCase();
+  for (const d of lmDecisions) {
+    const action = String(d?.action || '').toLowerCase();
+    const g = genAt(d.generatedRef);
+
+    if (action === 'skip') {
+      decisions.push({ action: 'skip', resourceName: g?.resourceName || '', reason: d.reason || '', sources: sourcesOf(g) });
+      continue;
+    }
 
     if (action === 'add') {
-      const name = (s.resourceName || '').trim();
-      if (!name && !(s.identifier || '').trim()) continue;
-      const dedupKey = computeDedupKey({
-        resourceType: s.resourceType, newReuse: s.newReuse,
-        identifier: s.identifier, resourceName: s.resourceName
-      });
+      if (!g) continue;
+      const dedupKey = g.dedupKey || computeDedupKey(g);
       const id = `add:${dedupKey}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      out.push({
-        id, type: 'add_row', action: 'add_row', status: 'pending', source: 'krt_comparison',
-        title: name || s.identifier || '(unnamed resource)',
-        description: `Add ${s.resourceType || ''}: ${name || s.identifier}`.trim(),
-        dedupKey, confidence: 0.8, existsInKRT: 'false', matchedKrtRowId: null,
+      suggestions.push({
+        id, type: 'add_row', action: 'add_row', status: 'pending',
+        source: primarySource(g) || 'krt_comparison',
+        title: g.resourceName || g.identifier || '(unnamed resource)',
+        description: `Add ${g.resourceType || ''}: ${g.resourceName || g.identifier}`.trim(),
+        reason: d.reason || null,
+        dedupKey, confidence: g.confidence || 0.8, existsInKRT: 'false', matchedKrtRowId: null,
+        mergedFrom: g.detectedBy || [], // 2b: real detection-module origin
         data: {
-          resourceType: s.resourceType || '', resourceName: name,
-          source: s.source || '', identifier: s.identifier || '',
-          newReuse: s.newReuse || '', additionalInformation: ''
+          resourceType: g.resourceType || '', resourceName: g.resourceName || '',
+          source: g.sourceUrl || '', identifier: g.identifier || '',
+          newReuse: g.newReuse || '', additionalInformation: ''
         }
       });
+      decisions.push({ action: 'add', resourceName: g.resourceName || '', reason: d.reason || '', sources: sourcesOf(g) });
       continue;
     }
 
     if (action === 'update') {
-      const row = byId.get(s.authorRowId);
-      if (!row) continue; // unknown row id → ignore (LM hallucination guard)
+      const row = byId.get(d.authorRowId);
+      if (!row) continue; // unknown row id → ignore (hallucination guard)
       const dedupKey = computeDedupKey(row);
-      const changes = (s.changes && typeof s.changes === 'object') ? s.changes : {};
+      const changes = (d.changes && typeof d.changes === 'object') ? d.changes : {};
+      let any = false;
       for (const column of UPDATABLE_COLUMNS) {
         if (!(column in changes)) continue;
         const newValue = changes[column];
@@ -129,40 +150,46 @@ function buildSuggestionsFromLM(authorRows, lmSuggestions) {
         const id = `edit:${dedupKey}:${column}`;
         if (seen.has(id)) continue;
         seen.add(id);
-        out.push({
-          id, type: 'edit', action: 'edit', status: 'pending', source: 'krt_comparison',
+        suggestions.push({
+          id, type: 'edit', action: 'edit', status: 'pending',
+          source: primarySource(g) || 'krt_comparison',
           title: `Update ${COLUMN_LABEL[column]} of ${row.resourceName || row.identifier || ''}`.trim(),
           description: `${COLUMN_LABEL[column]}: "${oldValue || '(empty)'}" → "${newValue}"`,
+          reason: d.reason || null,
           dedupKey, confidence: 0.8, existsInKRT: 'update', matchedKrtRowId: row.id,
+          mergedFrom: g?.detectedBy || [], // 2b: origin of the filling value
           data: {
             rowId: row.id, column, columnLabel: COLUMN_LABEL[column],
             oldValue, newValue: String(newValue),
             resourceType: row.resourceType, resourceName: row.resourceName
           }
         });
+        any = true;
       }
+      if (any) decisions.push({ action: 'update', resourceName: row.resourceName || '', reason: d.reason || '', sources: sourcesOf(g) });
       continue;
     }
 
     if (action === 'remove') {
-      const row = byId.get(s.authorRowId);
+      const row = byId.get(d.authorRowId);
       if (!row) continue;
       const dedupKey = computeDedupKey(row);
       const id = `delete:${dedupKey}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      out.push({
+      suggestions.push({
         id, type: 'delete_row', action: 'delete_row', status: 'pending', source: 'krt_comparison',
         title: row.resourceName || row.identifier || '(resource)',
-        description: s.reason || 'Remove likely-mistaken row',
-        reason: s.reason || null,
+        description: d.reason || 'Remove likely-mistaken row',
+        reason: d.reason || null,
         dedupKey, confidence: 0.7, existsInKRT: 'delete', matchedKrtRowId: row.id,
         data: { rowId: row.id, resourceType: row.resourceType, resourceName: row.resourceName, newReuse: row.newReuse, identifier: row.identifier }
       });
+      decisions.push({ action: 'remove', resourceName: row.resourceName || '', reason: d.reason || '', sources: [] });
       continue;
     }
   }
-  return out;
+  return { suggestions, decisions };
 }
 
 function extractJsonBlock(text) {
@@ -177,7 +204,7 @@ function extractJsonBlock(text) {
 function parseLMResponse(text) {
   try {
     const parsed = JSON.parse(extractJsonBlock(text));
-    const list = parsed.suggestions || parsed;
+    const list = parsed.decisions || parsed;
     return Array.isArray(list) ? list : [];
   } catch (err) {
     logger.error('Failed to parse KRT comparison JSON', { error: err.message });
@@ -190,7 +217,7 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
   const prompt = getPrompt(promptOverride);
   const payload = {
     author_krt: authorRows.map(authorRowForPrompt),
-    generated_krt: generatedKrt.map(generatedRowForPrompt)
+    generated_krt: generatedKrt.map((g, i) => generatedRowForPrompt(g, i))
   };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
 
@@ -200,7 +227,7 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
       contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
     });
     const text = response.text || '';
-    return { lmSuggestions: parseLMResponse(text), rawResponse: text };
+    return { lmDecisions: parseLMResponse(text), rawResponse: text };
   } catch (error) {
     logger.error('Gemini API call failed for KRT comparison', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
@@ -231,21 +258,22 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
   jobLogger?.log('comparison_start', 'Comparing author KRT vs Generated KRT', {
     authorCount: authorRows.length, generatedCount: generatedKrt.length
   });
-  const { lmSuggestions, rawResponse } = await callGeminiForComparison(authorRows, generatedKrt);
-  await jobLogger?.saveRawResponse('krt-comparison', rawResponse || lmSuggestions);
+  const { lmDecisions, rawResponse } = await callGeminiForComparison(authorRows, generatedKrt);
+  await jobLogger?.saveRawResponse('krt-comparison', rawResponse || lmDecisions);
 
-  const suggestions = buildSuggestionsFromLM(authorRows, lmSuggestions);
+  const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions);
   jobLogger?.log('comparison_done', 'Suggestions generated', {
-    rawCount: lmSuggestions.length, suggestionCount: suggestions.length
+    decisionCount: decisions.length, suggestionCount: suggestions.length
   });
 
   return {
-    data: { suggestions },
+    data: { suggestions, decisions },
     status: 'done',
     source: 'external',
     meta: {
       authorCount: authorRows.length,
       generatedCount: generatedKrt.length,
+      decisionCount: decisions.length,
       suggestionCount: suggestions.length,
       totalMs: Date.now() - startTime,
       model: krtComparisonConfig.model

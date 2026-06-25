@@ -476,6 +476,23 @@ function getResultSummary(job) {
   return dataSummary
 }
 
+// Short detection-module labels for the AI Suggestions summary "Modules" column.
+const SOURCE_SHORT = {
+  software_detection: 'SW',
+  datasets_detection: 'DS',
+  materials_detection: 'MAT',
+  protocols_detection: 'PROT',
+  identifier_detection: 'ID',
+  pdf_analysis: 'PDF'
+}
+// Label a row in the AI Suggestions summary — handles both decision objects
+// ({action}) and raw suggestion objects ({type}).
+function suggestionDecisionLabel(item) {
+  const a = item.action || item.type
+  const map = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove', add_row: 'Add', edit: 'Update', delete_row: 'Remove' }
+  return map[a] || a || '—'
+}
+
 /**
  * Per-job-type data count summary. Pure function of the persisted result;
  * has no notion of source/outcome (those are layered on by getResultSummary).
@@ -748,10 +765,13 @@ function openJobModal(job) {
     const items = job.result?.data?.items || []
     modalItems.value = items.length ? items : null
   } else if (job.type === 'suggestion_generation') {
-    // The LM comparison's choices + reasons (add/update/remove).
+    // The LM comparison's full decision log (add/update/remove/skip) + reasons.
+    // Falls back to the suggestion list for older results without decisions.
     modalContent.value = ''
     modalTableType.value = 'suggestions'
-    const items = job.result?.data?.suggestions || []
+    const items = job.result?.data?.decisions?.length
+      ? job.result.data.decisions
+      : (job.result?.data?.suggestions || [])
     modalItems.value = items.length ? items : null
   } else {
     modalItems.value = null
@@ -1548,22 +1568,22 @@ async function downloadMarkdownFile(fileId) {
                 </tbody>
               </table>
 
-              <!-- AI Suggestions: the choices the LM made + the reason for each -->
+              <!-- AI Suggestions: every choice the module made + the reason for each -->
               <table v-if="modalItems && modalItems.length && modalTableType === 'suggestions'" class="job-modal-table">
                 <thead>
                   <tr>
-                    <th>Action</th>
+                    <th>Decision</th>
                     <th>Resource</th>
-                    <th>Change</th>
+                    <th>Modules</th>
                     <th>Reason</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="(item, i) in modalItems" :key="i">
-                    <td>{{ item.type === 'add_row' ? 'Add' : item.type === 'edit' ? 'Update' : item.type === 'delete_row' ? 'Remove' : item.type }}</td>
-                    <td>{{ item.title || item.data?.resourceName || '—' }}</td>
-                    <td>{{ item.description || '—' }}</td>
-                    <td>{{ item.reason || '—' }}</td>
+                    <td>{{ suggestionDecisionLabel(item) }}</td>
+                    <td>{{ item.resourceName || item.title || item.data?.resourceName || '—' }}</td>
+                    <td>{{ (item.sources && item.sources.length) ? item.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—' }}</td>
+                    <td>{{ item.reason || item.description || '—' }}</td>
                   </tr>
                 </tbody>
               </table>
