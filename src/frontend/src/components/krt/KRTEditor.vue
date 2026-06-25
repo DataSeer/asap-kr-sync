@@ -158,6 +158,43 @@ const columns = [
   { key: 'ADDITIONAL INFORMATION', field: 'additional_information', label: 'Additional Info' }
 ]
 
+// ── Resizable columns (drag the right edge of a header) ──────────────
+// Widths are remembered per browser so a curator who widens a column to
+// read long values keeps that width across visits.
+const COLUMN_WIDTHS_KEY = 'krtEditor.columnWidths'
+const columnWidths = ref(loadColumnWidths())
+function loadColumnWidths() {
+  try { return JSON.parse(localStorage.getItem(COLUMN_WIDTHS_KEY)) || {} } catch { return {} }
+}
+let _resize = null
+function startColumnResize(colKey, event) {
+  const th = event.target.closest('th')
+  _resize = { colKey, startX: event.clientX, startWidth: th ? th.offsetWidth : 140 }
+  document.addEventListener('mousemove', onColumnResizeMove)
+  document.addEventListener('mouseup', onColumnResizeEnd)
+}
+function onColumnResizeMove(event) {
+  if (!_resize) return
+  const width = Math.max(70, _resize.startWidth + (event.clientX - _resize.startX))
+  columnWidths.value = { ...columnWidths.value, [_resize.colKey]: width }
+}
+function onColumnResizeEnd() {
+  _resize = null
+  document.removeEventListener('mousemove', onColumnResizeMove)
+  document.removeEventListener('mouseup', onColumnResizeEnd)
+  try { localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(columnWidths.value)) } catch { /* ignore */ }
+}
+// Header <th> sizing: pin to the chosen width when set, else fall back to CSS.
+function columnStyle(colKey) {
+  const w = columnWidths.value[colKey]
+  return w ? { width: w + 'px', minWidth: w + 'px', maxWidth: w + 'px' } : {}
+}
+// Cell content clip boundary follows the column width (minus padding).
+function cellStyle(colKey) {
+  const w = columnWidths.value[colKey]
+  return w ? { maxWidth: (w - 20) + 'px' } : {}
+}
+
 // Tab definitions
 const tabGroups = [
   { key: 'all', label: 'All' },
@@ -1699,6 +1736,7 @@ defineExpose({
                 v-for="col in columns"
                 :key="col.key"
                 :class="['col-data', 'col-sortable', col.cssClass]"
+                :style="columnStyle(col.key)"
                 @click="toggleSort(col.key)"
               >
                 <span class="th-content">
@@ -1713,6 +1751,13 @@ defineExpose({
                     <path d="M8 4l3 4H5l3-4zM8 12l-3-4h6l-3 4z" />
                   </svg>
                 </span>
+                <!-- Drag to resize this column -->
+                <span
+                  class="col-resize-handle"
+                  title="Drag to resize"
+                  @mousedown.stop.prevent="startColumnResize(col.key, $event)"
+                  @click.stop
+                ></span>
               </th>
               <th v-if="!readonly" class="col-actions">Actions</th>
             </tr>
@@ -1995,11 +2040,12 @@ defineExpose({
                   :key="col.key"
                   :data-column-key="col.key"
                   :class="['col-data', col.cssClass, getCellClass(row.id, col.key), { 'has-cell-tooltip': hasCellIssue(row.id, col.key) || hasCellSuggestion(row.id, col.key) }]"
+                  :style="columnStyle(col.key)"
                   @click="startEdit(row, col, rowIndex)"
                   @mouseenter="handleCellMouseEnter(row.id, col.key)"
                   @mouseleave="handleCellMouseLeave"
                 >
-                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': col.key === 'IDENTIFIER' && !row[col.key] && !readonly }]" :title="row[col.key] || ''">
+                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': col.key === 'IDENTIFIER' && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || ''">
                     <!-- G3: inline shortcut dropdown for RESOURCE TYPE / NEW/REUSE -->
                     <select
                       v-if="!readonly && INLINE_SHORTCUT_COLUMNS.has(col.key)"
@@ -2763,6 +2809,22 @@ th {
   text-transform: uppercase;
   border-bottom: 1px solid #e5e7eb;
   white-space: nowrap;
+  position: relative;
+}
+
+/* Column resize handle — sits on the right edge of each data header. */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 2;
+}
+.col-resize-handle:hover {
+  background: #c7d2fe;
 }
 
 td {
