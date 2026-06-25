@@ -938,6 +938,25 @@ const columnKeyToField = {
   'ADDITIONAL INFORMATION': 'additional_information'
 }
 
+// ── Inline "shortcut" dropdowns (request G3) ─────────────────────────
+// Edit RESOURCE TYPE / NEW/REUSE directly in the row without opening the
+// full cell-edit modal. Options match the bulk-edit modal's lists.
+const NEW_REUSE_OPTIONS = ['new', 'reuse']
+const INLINE_SHORTCUT_COLUMNS = new Set(['RESOURCE TYPE', 'NEW/REUSE'])
+function inlineShortcutOptions(colKey) {
+  if (colKey === 'RESOURCE TYPE') return resourceTypes.value
+  if (colKey === 'NEW/REUSE') return NEW_REUSE_OPTIONS
+  return []
+}
+async function onInlineShortcut(rowId, col, value) {
+  if (value === undefined || value === null || value === '') return
+  try {
+    await krtStore.updateCell(props.submissionId, rowId, col.field, value)
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Failed to update')
+  }
+}
+
 // Combined rows + add-row suggestions in correct sort order
 // Suggestions appear at the position they would occupy after being accepted
 const interleavedAddSuggestions = computed(() => {
@@ -1854,7 +1873,19 @@ defineExpose({
                   @mouseleave="handleCellMouseLeave"
                 >
                   <div :class="['cell-display', { editable: !readonly, 'has-quick-action': col.key === 'IDENTIFIER' && !row[col.key] && !readonly }]" :title="row[col.key] || ''">
-                    <span class="cell-text-content">
+                    <!-- G3: inline shortcut dropdown for RESOURCE TYPE / NEW/REUSE -->
+                    <select
+                      v-if="!readonly && INLINE_SHORTCUT_COLUMNS.has(col.key)"
+                      class="cell-shortcut-select"
+                      :value="row[col.key] || ''"
+                      title="Quick change"
+                      @click.stop
+                      @change="onInlineShortcut(row.id, col, $event.target.value)"
+                    >
+                      <option value="" disabled>—</option>
+                      <option v-for="opt in inlineShortcutOptions(col.key)" :key="opt" :value="opt">{{ opt }}</option>
+                    </select>
+                    <span v-else class="cell-text-content">
                       {{ row[col.key] }}
                     </span>
                     <!-- Quick identifier shortcut buttons for empty IDENTIFIER cells -->
@@ -2903,6 +2934,26 @@ tr:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* G3: inline "shortcut" dropdown for RESOURCE TYPE / NEW/REUSE cells */
+.cell-shortcut-select {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  padding: 1px 2px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.cell-shortcut-select:hover,
+.cell-shortcut-select:focus {
+  border-color: #d1d5db;
+  background: #fff;
+  outline: none;
 }
 
 .cell-display.editable {
