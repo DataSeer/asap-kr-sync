@@ -311,6 +311,83 @@ async function deleteRow(req, res, next) {
 }
 
 /**
+ * Merge several KRT rows into one (request G2).
+ * POST /api/submissions/:id/krt/merge
+ * Body: { rowIds: string[], merged: { resourceType, resourceName, source,
+ *         identifier, newReuse, additionalInformation, isQc?, isOptional? } }
+ *
+ * Transactional: creates the merged row and deletes the originals together so
+ * the table never ends up with a duplicate or a gap on partial failure.
+ */
+async function mergeRows(req, res, next) {
+  const t = await sequelize.transaction();
+  try {
+    const submissionId = req.params.id;
+    const round = req.submission.currentRound;
+    const { rowIds, merged } = req.body;
+
+    if (!Array.isArray(rowIds) || rowIds.length < 2) {
+      throw new ValidationError('Select at least two rows to merge');
+    }
+    if (!merged || typeof merged !== 'object') {
+      throw new ValidationError('Merged row values are required');
+    }
+
+    // Only operate on rows that genuinely belong to this submission/round.
+    const originals = await KRTData.findAll({
+      where: { id: rowIds, submissionId, round },
+      transaction: t
+    });
+    if (originals.length < 2) {
+      throw new ValidationError('Some selected rows could not be found for this submission');
+    }
+
+    // QC/Optional are role-gated (same rule as updateRow): ignore them unless
+    // the caller is an Administrator or DS Annotator.
+    const privileged = QC_OPTIONAL_ROLES.includes(req.user?.role);
+    const newRow = await KRTData.create({
+      submissionId,
+      round,
+      resourceType: merged.resourceType ?? null,
+      resourceName: merged.resourceName ?? null,
+      source: merged.source ?? null,
+      identifier: merged.identifier ?? null,
+      newReuse: merged.newReuse ?? null,
+      additionalInformation: merged.additionalInformation ?? null,
+      isQc: privileged ? !!merged.isQc : false,
+      isOptional: privileged ? !!merged.isOptional : false
+    }, { transaction: t });
+
+    const step = statusToStep(req.submission.status);
+    await ChangeLog.create({
+      submissionId, userId: req.userId, action: 'add_row', source: 'manual', step, round,
+      rowId: newRow.id, description: `Merged ${originals.length} rows into one`
+    }, { transaction: t });
+
+    const originalIds = originals.map(r => r.id);
+    await ValidationResult.destroy({ where: { submissionId, rowId: originalIds }, transaction: t });
+    for (const row of originals) {
+      await ChangeLog.create({
+        submissionId, userId: req.userId, action: 'delete_row', source: 'manual', step, round,
+        rowId: row.id, description: `Merged into ${newRow.id}: ${row.resourceName || ''}`
+      }, { transaction: t });
+    }
+    await KRTData.destroy({ where: { id: originalIds, submissionId, round }, transaction: t });
+
+    await t.commit();
+
+    // Validate the new row after commit (non-critical).
+    await validatorService.validateRow(newRow, submissionId, true, null, round);
+
+    logger.info('KRT rows merged', { submissionId, mergedCount: originals.length, newRowId: newRow.id, userId: req.userId });
+    res.status(201).json({ row: newRow.toKRTRow() });
+  } catch (error) {
+    await t.rollback();
+    next(error);
+  }
+}
+
+/**
  * Re-validate KRT
  * POST /api/submissions/:id/krt/validate
  */
@@ -356,6 +433,7 @@ module.exports = {
   updateRow,
   addRow,
   deleteRow,
+  mergeRows,
   validate,
   download
 };

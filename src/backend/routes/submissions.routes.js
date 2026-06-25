@@ -148,6 +148,12 @@ router.delete('/:id/krt/:rowId',
   krtController.deleteRow
 );
 
+// POST /api/submissions/:id/krt/merge - Merge several rows into one
+router.post('/:id/krt/merge',
+  canAccessSubmission,
+  krtController.mergeRows
+);
+
 // POST /api/submissions/:id/krt/validate - Re-validate KRT
 router.post('/:id/krt/validate',
   canAccessSubmission,

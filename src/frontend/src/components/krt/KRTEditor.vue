@@ -103,6 +103,9 @@ const bulkResourceTypeValue = ref('')
 const showBulkEditCellsModal = ref(false)
 const bulkEditCellsColumn = ref('RESOURCE TYPE')
 const bulkEditCellsValue = ref('')
+// Merge (request G2)
+const showMergeModal = ref(false)
+const mergeChoices = ref({})
 const newRow = ref({
   resourceType: '',
   resourceName: '',
@@ -1011,6 +1014,55 @@ async function applyAllResourceTypeFixes() {
   }
 }
 
+// ── Merge selected rows into one (request G2) ────────────────────────
+const selectedMergeRows = computed(() =>
+  Array.from(selectedRowIds.value).map(id => krtRows.value.find(r => r.id === id)).filter(Boolean))
+
+// Distinct candidate values for a column across the selected rows.
+function mergeOptions(colKey) {
+  return [...new Set(selectedMergeRows.value.map(r => (r[colKey] ?? '').toString()))]
+}
+
+function openMergeModal() {
+  if (selectedRowIds.value.size < 2) return
+  // Pre-select the first non-empty value for each column.
+  const choices = {}
+  for (const col of columns) {
+    const nonEmpty = mergeOptions(col.key).filter(v => v.trim() !== '')
+    choices[col.key] = nonEmpty.length ? nonEmpty[0] : ''
+  }
+  mergeChoices.value = choices
+  showMergeModal.value = true
+}
+
+async function confirmMerge() {
+  const ids = Array.from(selectedRowIds.value)
+  if (ids.length < 2) return
+  const c = mergeChoices.value
+  const merged = {
+    resourceType: c['RESOURCE TYPE'] || '',
+    resourceName: c['RESOURCE NAME'] || '',
+    source: c['SOURCE'] || '',
+    identifier: c['IDENTIFIER'] || '',
+    newReuse: c['NEW/REUSE'] || '',
+    additionalInformation: c['ADDITIONAL INFORMATION'] || '',
+    // Carry QC/Optional forward if any merged row had them (backend role-gates).
+    isQc: selectedMergeRows.value.some(r => r.isQc),
+    isOptional: selectedMergeRows.value.some(r => r.isOptional)
+  }
+  bulkSubmitting.value = true
+  try {
+    await krtStore.mergeRows(props.submissionId, ids, merged)
+    notificationStore.success(`Merged ${ids.length} rows into one`)
+    clearBulkSelection()
+    showMergeModal.value = false
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Merge failed')
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
 // Combined rows + add-row suggestions in correct sort order
 // Suggestions appear at the position they would occupy after being accepted
 const interleavedAddSuggestions = computed(() => {
@@ -1599,6 +1651,7 @@ defineExpose({
         </template>
         <template v-else>
           <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="openBulkEditCellsModal">Edit column…</button>
+          <button v-if="selectedRowIds.size >= 2" class="btn-bulk" :disabled="bulkSubmitting" @click="openMergeModal">Merge…</button>
         </template>
         <button class="btn-bulk btn-bulk-ghost" @click="clearBulkSelection">Clear</button>
       </div>
@@ -2365,6 +2418,31 @@ defineExpose({
             <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="showBulkEditCellsModal = false">Cancel</button>
             <button :disabled="!bulkEditCellsValue || bulkSubmitting" class="px-3 py-1.5 text-sm font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50" @click="applyBulkEditCells">
               {{ bulkSubmitting ? 'Applying…' : 'Apply to selected' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Bulk: Merge selected rows into one (request G2) -->
+    <Teleport to="body">
+      <div v-if="showMergeModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showMergeModal = false">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-5 max-h-[85vh] overflow-y-auto">
+          <h3 class="text-sm font-semibold text-gray-900 mb-1">Merge {{ selectedRowIds.size }} rows into one</h3>
+          <p class="text-sm text-gray-500 mb-3">Pick the value to keep for each column. The selected rows are replaced by a single merged row.</p>
+          <div v-for="col in columns" :key="col.key" class="mb-3">
+            <label class="text-xs font-medium text-gray-600">{{ col.label }}</label>
+            <div class="mt-1 space-y-1">
+              <label v-for="(opt, i) in mergeOptions(col.key)" :key="i" class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="radio" :name="'merge-' + col.key" :value="opt" v-model="mergeChoices[col.key]" />
+                <span class="truncate" :class="{ 'text-gray-400 italic': opt === '' }">{{ opt === '' ? '(empty)' : opt }}</span>
+              </label>
+            </div>
+          </div>
+          <div class="flex justify-end gap-2 mt-4">
+            <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="showMergeModal = false">Cancel</button>
+            <button :disabled="bulkSubmitting" class="px-3 py-1.5 text-sm font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50" @click="confirmMerge">
+              {{ bulkSubmitting ? 'Merging…' : 'Merge rows' }}
             </button>
           </div>
         </div>

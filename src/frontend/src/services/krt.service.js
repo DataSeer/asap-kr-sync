@@ -75,6 +75,18 @@ export default {
   },
 
   /**
+   * Merge several rows into one (transactional on the backend).
+   * @param {string} submissionId - The submission ID
+   * @param {string[]} rowIds - The row UUIDs to merge
+   * @param {Object} merged - The merged row values
+   * @returns {Promise<Object>} - The created merged row
+   */
+  async mergeRows(submissionId, rowIds, merged) {
+    const response = await api.post(`/submissions/${submissionId}/krt/merge`, { rowIds, merged })
+    return response.data
+  },
+
+  /**
    * Validate the KRT data
    * @param {string} submissionId - The submission ID
    * @returns {Promise<Object>} - Validation results with errors/warnings
