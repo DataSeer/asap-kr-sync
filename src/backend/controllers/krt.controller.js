@@ -6,9 +6,15 @@ const krtService = require('../services/krt/krt.service');
 const parserService = require('../services/krt/parser.service');
 const validatorService = require('../services/krt/validator.service');
 const { KRTData, ValidationResult, ChangeLog, Submission, sequelize } = require('../models');
-const { NotFoundError, ValidationError } = require('../utils/errors');
+const { NotFoundError, ValidationError, AuthorizationError } = require('../utils/errors');
 const { statusToStep } = require('../utils/helpers');
+const { ROLES } = require('../config/constants');
 const logger = require('../utils/logger');
+
+// Roles allowed to see/edit the QC and Optional flags (request G1). Regular
+// ASAP users (author / asap_pm) never see or set them.
+const QC_OPTIONAL_ROLES = [ROLES.ADMIN, ROLES.DS_ANNOTATOR];
+const QC_OPTIONAL_FIELDS = new Set(['isQc', 'isOptional']);
 
 /**
  * Upload KRT file
@@ -138,12 +144,24 @@ async function updateRow(req, res, next) {
       'source': 'source',
       'identifier': 'identifier',
       'new_reuse': 'newReuse',
-      'additional_information': 'additionalInformation'
+      'additional_information': 'additionalInformation',
+      'is_qc': 'isQc',
+      'is_optional': 'isOptional'
     };
 
     const field = columnMap[column] || column;
+
+    // QC / Optional flags are role-gated (request G1) and boolean-typed.
+    let nextValue = value;
+    if (QC_OPTIONAL_FIELDS.has(field)) {
+      if (!QC_OPTIONAL_ROLES.includes(req.user?.role)) {
+        throw new AuthorizationError('Only administrators and DS annotators can set QC/Optional flags');
+      }
+      nextValue = value === true || value === 'true' || value === 1 || value === '1';
+    }
+
     const oldValue = krtRow[field];
-    krtRow[field] = value;
+    krtRow[field] = nextValue;
     await krtRow.save();
 
     // Log the change with source (defaults to 'manual' if not provided)
