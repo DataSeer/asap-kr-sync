@@ -64,6 +64,12 @@ const PIPELINE = [
       // Auto-advance only if DAS was actually extracted (existing gate)
       return dasJob?.result?.status?.detected === true;
     }
+  },
+  {
+    // LM comparison of author KRT vs Generated KRT → suggestions. Runs after
+    // the Generated KRT is consolidated; also re-triggerable on demand.
+    jobType: JOB_TYPES.SUGGESTION_GENERATION,
+    dependsOn: [JOB_TYPES.PDF_ANALYSIS]
   }
 ];
 
@@ -79,7 +85,8 @@ const JOB_TYPE_TO_QUEUE = {
   [JOB_TYPES.DATASETS_DETECTION]: jobQueue.QUEUES.DATASETS_DETECTION,
   [JOB_TYPES.MATERIALS_DETECTION]: jobQueue.QUEUES.MATERIALS_DETECTION,
   [JOB_TYPES.PROTOCOLS_DETECTION]: jobQueue.QUEUES.PROTOCOLS_DETECTION,
-  [JOB_TYPES.IDENTIFIER_DETECTION]: jobQueue.QUEUES.IDENTIFIER_DETECTION
+  [JOB_TYPES.IDENTIFIER_DETECTION]: jobQueue.QUEUES.IDENTIFIER_DETECTION,
+  [JOB_TYPES.SUGGESTION_GENERATION]: jobQueue.QUEUES.SUGGESTION_GENERATION
 };
 
 /**

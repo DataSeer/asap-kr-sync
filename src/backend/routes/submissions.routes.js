@@ -248,6 +248,12 @@ router.get('/:id/suggestions',
   suggestionController.getSuggestions
 );
 
+// POST /api/submissions/:id/suggestions/regenerate - Re-run the LM comparison job
+router.post('/:id/suggestions/regenerate',
+  canAccessSubmission,
+  suggestionController.regenerateSuggestions
+);
+
 // POST /api/submissions/:id/suggestions/approve - Approve suggestion
 router.post('/:id/suggestions/approve',
   canAccessSubmission,

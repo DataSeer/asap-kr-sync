@@ -102,7 +102,10 @@ module.exports = {
     MARKDOWN_CONVERT: 'markdown_convert',
     MATERIALS_DETECTION: 'materials_detection',
     PROTOCOLS_DETECTION: 'protocols_detection',
-    IDENTIFIER_DETECTION: 'identifier_detection'
+    IDENTIFIER_DETECTION: 'identifier_detection',
+    // LM-based comparison of the author KRT vs the Generated KRT that produces
+    // the add/update/remove suggestions (runs after PDF_ANALYSIS; re-triggerable).
+    SUGGESTION_GENERATION: 'suggestion_generation'
   },
 
   // Job statuses (matches SubmissionJob ENUM)
