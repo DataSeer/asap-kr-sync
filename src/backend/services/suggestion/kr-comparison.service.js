@@ -82,6 +82,38 @@ function generatedRowForPrompt(g, ref) {
   };
 }
 
+// KRT-row display shape attached to each decision so the UI can render the
+// actual row (its columns) instead of a bare id/name.
+function generatedRowDisplay(g) {
+  if (!g) return null;
+  return {
+    resourceType: g.resourceType || '', resourceName: g.resourceName || '',
+    source: g.sourceUrl || '', identifier: g.identifier || '', newReuse: g.newReuse || ''
+  };
+}
+function authorRowDisplay(row) {
+  return {
+    resourceType: row.resourceType || '', resourceName: row.resourceName || '',
+    source: row.source || '', identifier: row.identifier || '', newReuse: row.newReuse || ''
+  };
+}
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+/**
+ * Strip raw KRT-row ids out of an LM reason — the affected row is now shown
+ * directly in the UI, so "(row a3d12…)" / "row a3d12…" is just noise.
+ */
+function cleanReason(reason) {
+  if (!reason) return '';
+  return String(reason)
+    .replace(/\(\s*(?:row\s+)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*\)/gi, '')
+    .replace(/\brow\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'the matching author row')
+    .replace(UUID_RE, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .trim();
+}
+
 /**
  * Map the LM's per-resource decisions into (a) canonical suggestion objects the
  * frontend + approve/reject paths consume, carrying the real detection-module
@@ -107,7 +139,10 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
     const g = genAt(d.generatedRef);
 
     if (action === 'skip') {
-      decisions.push({ action: 'skip', resourceName: g?.resourceName || '', reason: d.reason || '', sources: sourcesOf(g) });
+      decisions.push({
+        action: 'skip', resourceName: g?.resourceName || '', reason: cleanReason(d.reason),
+        sources: sourcesOf(g), row: generatedRowDisplay(g)
+      });
       continue;
     }
 
@@ -122,7 +157,7 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
         source: primarySource(g) || 'krt_comparison',
         title: g.resourceName || g.identifier || '(unnamed resource)',
         description: `Add ${g.resourceType || ''}: ${g.resourceName || g.identifier}`.trim(),
-        reason: d.reason || null,
+        reason: cleanReason(d.reason) || null,
         dedupKey, confidence: g.confidence || 0.8, existsInKRT: 'false', matchedKrtRowId: null,
         mergedFrom: g.detectedBy || [], // 2b: real detection-module origin
         data: {
@@ -131,7 +166,10 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
           newReuse: g.newReuse || '', additionalInformation: ''
         }
       });
-      decisions.push({ action: 'add', resourceName: g.resourceName || '', reason: d.reason || '', sources: sourcesOf(g) });
+      decisions.push({
+        action: 'add', resourceName: g.resourceName || '', reason: cleanReason(d.reason),
+        sources: sourcesOf(g), row: generatedRowDisplay(g)
+      });
       continue;
     }
 
@@ -140,7 +178,7 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
       if (!row) continue; // unknown row id → ignore (hallucination guard)
       const dedupKey = computeDedupKey(row);
       const changes = (d.changes && typeof d.changes === 'object') ? d.changes : {};
-      let any = false;
+      const changeMap = {}; // column → { old, new } for the decision diff view
       for (const column of UPDATABLE_COLUMNS) {
         if (!(column in changes)) continue;
         const newValue = changes[column];
@@ -150,12 +188,13 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
         const id = `edit:${dedupKey}:${column}`;
         if (seen.has(id)) continue;
         seen.add(id);
+        changeMap[column] = { old: oldValue, new: String(newValue) };
         suggestions.push({
           id, type: 'edit', action: 'edit', status: 'pending',
           source: primarySource(g) || 'krt_comparison',
           title: `Update ${COLUMN_LABEL[column]} of ${row.resourceName || row.identifier || ''}`.trim(),
           description: `${COLUMN_LABEL[column]}: "${oldValue || '(empty)'}" → "${newValue}"`,
-          reason: d.reason || null,
+          reason: cleanReason(d.reason) || null,
           dedupKey, confidence: 0.8, existsInKRT: 'update', matchedKrtRowId: row.id,
           mergedFrom: g?.detectedBy || [], // 2b: origin of the filling value
           data: {
@@ -164,9 +203,13 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
             resourceType: row.resourceType, resourceName: row.resourceName
           }
         });
-        any = true;
       }
-      if (any) decisions.push({ action: 'update', resourceName: row.resourceName || '', reason: d.reason || '', sources: sourcesOf(g) });
+      if (Object.keys(changeMap).length > 0) {
+        decisions.push({
+          action: 'update', resourceName: row.resourceName || '', reason: cleanReason(d.reason),
+          sources: sourcesOf(g), row: authorRowDisplay(row), changes: changeMap
+        });
+      }
       continue;
     }
 
@@ -180,12 +223,15 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
       suggestions.push({
         id, type: 'delete_row', action: 'delete_row', status: 'pending', source: 'krt_comparison',
         title: row.resourceName || row.identifier || '(resource)',
-        description: d.reason || 'Remove likely-mistaken row',
-        reason: d.reason || null,
+        description: cleanReason(d.reason) || 'Remove likely-mistaken row',
+        reason: cleanReason(d.reason) || null,
         dedupKey, confidence: 0.7, existsInKRT: 'delete', matchedKrtRowId: row.id,
         data: { rowId: row.id, resourceType: row.resourceType, resourceName: row.resourceName, newReuse: row.newReuse, identifier: row.identifier }
       });
-      decisions.push({ action: 'remove', resourceName: row.resourceName || '', reason: d.reason || '', sources: [] });
+      decisions.push({
+        action: 'remove', resourceName: row.resourceName || '', reason: cleanReason(d.reason),
+        sources: [], row: authorRowDisplay(row)
+      });
       continue;
     }
   }

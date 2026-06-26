@@ -12,6 +12,7 @@ Compare the two and decide, for EVERY generated resource, what to do — and giv
 2. **Keep the actionable list manageable.** Propose `add`/`update` only when it matters. A `skip` is free — use it for every generated resource you do not add.
 3. **`remove` must be very rare.** Only for a clear mistake (a duplicate of another author row, or plainly not a resource). NEVER remove just because detection missed it or you are unsure.
 4. **Never invent identifiers.** Only use identifiers/sources present in the data.
+5. **In `reason`, do not quote raw row ids/UUIDs.** Refer to a row by its resource name (e.g. "already present in the author's KRT as Fiji"), not "(row a3d12…)".
 
 ## DECISIONS — one per generated resource, plus author-side fixes
 

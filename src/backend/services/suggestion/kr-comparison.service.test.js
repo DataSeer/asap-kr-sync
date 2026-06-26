@@ -29,6 +29,9 @@ test('add → add_row suggestion carrying detection-module origin (mergedFrom)',
   assert.equal(decisions.length, 1);
   assert.equal(decisions[0].action, 'add');
   assert.equal(decisions[0].reason, 'not present in author KRT');
+  // decision now carries the full row for the modal to render
+  assert.equal(decisions[0].row.resourceName, 'RNA-seq');
+  assert.equal(decisions[0].row.identifier, 'GSE1');
 });
 
 test('skip → no suggestion, but a decision with reason for the summary (2c)', () => {
@@ -42,8 +45,8 @@ test('skip → no suggestion, but a decision with reason for the summary (2c)', 
   assert.equal(decisions[0].reason, 'already in author KRT (row r2)');
 });
 
-test('update → edit per filled column; origin carried from generatedRef', () => {
-  const { suggestions } = buildSuggestionsFromLM(authorRows, generatedKrt, [
+test('update → edit per filled column; decision carries row + per-column diff', () => {
+  const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, [
     { action: 'update', authorRowId: 'r2', generatedRef: 1, changes: { identifier: 'RRID:SCR_1' }, reason: 'author row missing RRID' }
   ]);
   assert.equal(suggestions.length, 1);
@@ -51,6 +54,17 @@ test('update → edit per filled column; origin carried from generatedRef', () =
   assert.equal(suggestions[0].data.column, 'identifier');
   assert.equal(suggestions[0].data.newValue, 'RRID:SCR_1');
   assert.equal(suggestions[0].mergedFrom[0].source, 'identifier_detection');
+  // decision diff view: the author row + old→new per changed column
+  assert.equal(decisions[0].row.resourceName, 'Fiji');
+  assert.deepEqual(decisions[0].changes.identifier, { old: '', new: 'RRID:SCR_1' });
+});
+
+test('reason: raw row UUIDs are stripped for display', () => {
+  const { decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, [
+    { action: 'skip', generatedRef: 1, reason: 'already present in the author’s KRT (row a3d12b3a-07c5-4e1c-a00a-a58ae7efcbc7). More specific entry.' }
+  ]);
+  assert.ok(!/[0-9a-f]{8}-[0-9a-f]{4}/i.test(decisions[0].reason), `UUID leaked: "${decisions[0].reason}"`);
+  assert.ok(!/\(\s*\)/.test(decisions[0].reason), 'empty parens left behind');
 });
 
 test('update with unknown authorRowId is ignored', () => {

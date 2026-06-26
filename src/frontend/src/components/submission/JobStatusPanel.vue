@@ -507,6 +507,24 @@ function suggestionDecisionLabel(item) {
   return map[a] || a || '—'
 }
 
+// The KRT columns shown for each AI-suggestion decision (the concerned row).
+const SUGGESTION_ROW_COLUMNS = [
+  { key: 'resourceType', label: 'Resource Type' },
+  { key: 'resourceName', label: 'Resource Name' },
+  { key: 'source', label: 'Source' },
+  { key: 'identifier', label: 'Identifier' },
+  { key: 'newReuse', label: 'New/Reuse' }
+]
+// Value for one column of a decision's row. Prefers the structured `row`
+// (new shape); falls back to the resource name / raw suggestion data for
+// older results so the table still renders.
+function suggestionCellValue(item, key) {
+  if (item.row && item.row[key] != null && item.row[key] !== '') return item.row[key]
+  if (key === 'resourceName') return item.resourceName || item.title || item.data?.resourceName || ''
+  if (item.data && item.data[key] != null) return item.data[key]
+  return ''
+}
+
 /**
  * Per-job-type data count summary. Pure function of the persisted result;
  * has no notion of source/outcome (those are layered on by getResultSummary).
@@ -1637,22 +1655,31 @@ async function downloadMarkdownFile(fileId) {
                 </tbody>
               </table>
 
-              <!-- AI Suggestions: every choice the module made + the reason for each -->
+              <!-- AI Suggestions: every choice the module made, shown as the
+                   concerned KRT row (with a red/green diff for updates) + the
+                   decision and reason. -->
               <table v-if="modalItems && modalItems.length && modalTableType === 'suggestions'" class="job-modal-table">
                 <thead>
                   <tr>
                     <th>Decision</th>
-                    <th>Resource</th>
+                    <th v-for="c in SUGGESTION_ROW_COLUMNS" :key="c.key">{{ c.label }}</th>
                     <th>Modules</th>
                     <th>Reason</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(item, i) in modalItems" :key="i">
-                    <td>{{ suggestionDecisionLabel(item) }}</td>
-                    <td>{{ item.resourceName || item.title || item.data?.resourceName || '—' }}</td>
-                    <td>{{ (item.sources && item.sources.length) ? item.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—' }}</td>
-                    <td>{{ item.reason || item.description || '—' }}</td>
+                  <tr v-for="(item, i) in modalItems" :key="i" :class="'suggestion-decision-' + (item.action || item.type)">
+                    <td><span class="suggestion-decision-badge" :class="'sdb-' + suggestionDecisionLabel(item).toLowerCase()">{{ suggestionDecisionLabel(item) }}</span></td>
+                    <td v-for="c in SUGGESTION_ROW_COLUMNS" :key="c.key" class="text-xs">
+                      <template v-if="item.changes && item.changes[c.key]">
+                        <span class="diff-old">{{ item.changes[c.key].old || '(empty)' }}</span>
+                        <span class="diff-arrow">→</span>
+                        <span class="diff-new">{{ item.changes[c.key].new }}</span>
+                      </template>
+                      <template v-else>{{ suggestionCellValue(item, c.key) || '—' }}</template>
+                    </td>
+                    <td class="text-xs">{{ (item.sources && item.sources.length) ? item.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—' }}</td>
+                    <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ item.reason || item.description || '—' }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -2270,6 +2297,36 @@ async function downloadMarkdownFile(fileId) {
   font-size: 0.75rem;
   color: #6b7280;
 }
+
+/* AI Suggestions modal: decision badges + update diff (old → new). */
+.suggestion-decision-badge {
+  display: inline-block;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 9999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  background: #f3f4f6;
+  color: #4b5563;
+}
+.sdb-add    { background: #dcfce7; color: #166534; }
+.sdb-update { background: #dbeafe; color: #1e40af; }
+.sdb-remove { background: #fee2e2; color: #b91c1c; }
+.sdb-skip   { background: #f3f4f6; color: #6b7280; }
+.diff-old {
+  color: #b91c1c;
+  background: #fef2f2;
+  text-decoration: line-through;
+  padding: 0 0.2rem;
+  border-radius: 3px;
+}
+.diff-new {
+  color: #166534;
+  background: #f0fdf4;
+  padding: 0 0.2rem;
+  border-radius: 3px;
+}
+.diff-arrow { color: #9ca3af; margin: 0 0.25rem; }
+tr.suggestion-decision-update td { background: #f8fafc; }
 
 /* "KRT #" column — group identity, shown once per merged group. */
 .pdf-analysis-krtnum-cell {
