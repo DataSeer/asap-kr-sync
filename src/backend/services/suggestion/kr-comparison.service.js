@@ -139,9 +139,13 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
     const g = genAt(d.generatedRef);
 
     if (action === 'skip') {
+      const skippedAuthor = byId.get(d.authorRowId);
       decisions.push({
-        action: 'skip', resourceName: g?.resourceName || '', reason: cleanReason(d.reason),
-        sources: sourcesOf(g), row: generatedRowDisplay(g)
+        action: 'skip',
+        resourceName: skippedAuthor?.resourceName || g?.resourceName || '',
+        reason: cleanReason(d.reason), sources: sourcesOf(g),
+        authorRow: skippedAuthor ? authorRowDisplay(skippedAuthor) : null,
+        generatedRow: generatedRowDisplay(g)
       });
       continue;
     }
@@ -168,7 +172,7 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
       });
       decisions.push({
         action: 'add', resourceName: g.resourceName || '', reason: cleanReason(d.reason),
-        sources: sourcesOf(g), row: generatedRowDisplay(g)
+        sources: sourcesOf(g), authorRow: null, generatedRow: generatedRowDisplay(g)
       });
       continue;
     }
@@ -207,7 +211,8 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
       if (Object.keys(changeMap).length > 0) {
         decisions.push({
           action: 'update', resourceName: row.resourceName || '', reason: cleanReason(d.reason),
-          sources: sourcesOf(g), row: authorRowDisplay(row), changes: changeMap
+          sources: sourcesOf(g),
+          authorRow: authorRowDisplay(row), generatedRow: generatedRowDisplay(g), changes: changeMap
         });
       }
       continue;
@@ -230,7 +235,7 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
       });
       decisions.push({
         action: 'remove', resourceName: row.resourceName || '', reason: cleanReason(d.reason),
-        sources: [], row: authorRowDisplay(row)
+        sources: [], authorRow: authorRowDisplay(row), generatedRow: null
       });
       continue;
     }

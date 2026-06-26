@@ -18,7 +18,8 @@ Compare the two and decide, for EVERY generated resource, what to do — and giv
 
 For EVERY generated `ref`, output exactly one of:
 - `{ "action": "add",  "generatedRef": <ref>, "reason": "why this is a new resource worth adding" }`
-- `{ "action": "skip", "generatedRef": <ref>, "reason": "why not added — e.g. already in author KRT (row <id>), not relevant, duplicate" }`
+- `{ "action": "skip", "generatedRef": <ref>, "authorRowId": "<id of the author row this duplicates, if it is already in the KRT>", "reason": "why not added — e.g. already in the author KRT, not relevant, duplicate" }`
+  (Include `authorRowId` whenever the skip is because the resource is already in the author KRT, so the matching author row can be shown.)
 
 Plus, optionally:
 - `{ "action": "update", "authorRowId": "<id>", "generatedRef": <ref>, "changes": { "identifier": "..." }, "reason": "author row is missing this value" }`

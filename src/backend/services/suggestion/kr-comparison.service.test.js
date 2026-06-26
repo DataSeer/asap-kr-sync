@@ -29,20 +29,20 @@ test('add → add_row suggestion carrying detection-module origin (mergedFrom)',
   assert.equal(decisions.length, 1);
   assert.equal(decisions[0].action, 'add');
   assert.equal(decisions[0].reason, 'not present in author KRT');
-  // decision now carries the full row for the modal to render
-  assert.equal(decisions[0].row.resourceName, 'RNA-seq');
-  assert.equal(decisions[0].row.identifier, 'GSE1');
+  // add carries the generated row (no author item exists)
+  assert.equal(decisions[0].generatedRow.resourceName, 'RNA-seq');
+  assert.equal(decisions[0].generatedRow.identifier, 'GSE1');
+  assert.equal(decisions[0].authorRow, null);
 });
 
-test('skip → no suggestion, but a decision with reason for the summary (2c)', () => {
+test('skip → decision carries the matched author row (by authorRowId)', () => {
   const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, [
-    { action: 'skip', generatedRef: 1, reason: 'already in author KRT (row r2)' }
+    { action: 'skip', generatedRef: 1, authorRowId: 'r2', reason: 'already in the author KRT' }
   ]);
   assert.equal(suggestions.length, 0);
-  assert.equal(decisions.length, 1);
   assert.equal(decisions[0].action, 'skip');
-  assert.equal(decisions[0].resourceName, 'Fiji');
-  assert.equal(decisions[0].reason, 'already in author KRT (row r2)');
+  assert.equal(decisions[0].authorRow.resourceName, 'Fiji'); // author item shown, not generated
+  assert.equal(decisions[0].generatedRow.resourceName, 'Fiji');
 });
 
 test('update → edit per filled column; decision carries row + per-column diff', () => {
@@ -54,8 +54,9 @@ test('update → edit per filled column; decision carries row + per-column diff'
   assert.equal(suggestions[0].data.column, 'identifier');
   assert.equal(suggestions[0].data.newValue, 'RRID:SCR_1');
   assert.equal(suggestions[0].mergedFrom[0].source, 'identifier_detection');
-  // decision diff view: the author row + old→new per changed column
-  assert.equal(decisions[0].row.resourceName, 'Fiji');
+  // decision diff view: author row + generated row + old→new per changed column
+  assert.equal(decisions[0].authorRow.resourceName, 'Fiji');
+  assert.equal(decisions[0].generatedRow.identifier, 'RRID:SCR_1');
   assert.deepEqual(decisions[0].changes.identifier, { old: '', new: 'RRID:SCR_1' });
 });
 

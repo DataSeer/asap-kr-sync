@@ -531,6 +531,37 @@ function suggestionCellValue(item, key) {
   return ''
 }
 
+// Expand each AI-suggestion decision into the KRT row(s) to display:
+//  - the matched Author KRT row (skip / update / remove) is always shown,
+//  - the Generated row is also shown for add / update (with the diff),
+// so a curator sees the concerned author entry — and, for changes, both sides.
+const suggestionDisplayRows = computed(() => {
+  if (modalTableType.value !== 'suggestions') return []
+  const items = modalItems.value || []
+  const out = []
+  items.forEach((d, gi) => {
+    const action = d.action || d.type
+    const isUpdate = action === 'update' || action === 'edit'
+    const isAdd = action === 'add' || action === 'add_row'
+    const entities = []
+    if (d.authorRow) entities.push({ role: 'Author', side: 'author', cells: d.authorRow })
+    if (d.generatedRow && (isAdd || isUpdate)) entities.push({ role: 'Generated', side: 'generated', cells: d.generatedRow })
+    // skip/old data with no author match → show whatever single row we have
+    if (entities.length === 0 && d.generatedRow) entities.push({ role: 'Generated', side: 'generated', cells: d.generatedRow })
+    if (entities.length === 0) {
+      const cells = d.row || { resourceName: d.resourceName || d.title || (d.data && d.data.resourceName) || '' }
+      entities.push({ role: '', side: 'author', cells })
+    }
+    entities.forEach((e, ei) => {
+      out.push({
+        decision: d, role: e.role, side: e.side, cells: e.cells, changes: d.changes || null,
+        groupIndex: gi, isGroupStart: ei === 0
+      })
+    })
+  })
+  return out
+})
+
 /**
  * Per-job-type data count summary. Pure function of the persisted result;
  * has no notion of source/outcome (those are layered on by getResultSummary).
@@ -1664,11 +1695,12 @@ async function downloadMarkdownFile(fileId) {
               <!-- AI Suggestions: every choice the module made, shown as the
                    concerned KRT row (with a red/green diff for updates) + the
                    decision and reason. -->
-              <table v-if="modalItems && modalItems.length && modalTableType === 'suggestions'" class="job-modal-table">
+              <table v-if="suggestionDisplayRows.length && modalTableType === 'suggestions'" class="job-modal-table">
                 <thead>
                   <tr>
                     <th>Decision</th>
                     <th class="suggestion-reason-col">Reason</th>
+                    <th>Item</th>
                     <th
                       v-for="c in SUGGESTION_ROW_COLUMNS"
                       :key="c.key"
@@ -1678,23 +1710,28 @@ async function downloadMarkdownFile(fileId) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(item, i) in modalItems" :key="i" :class="'suggestion-decision-' + (item.action || item.type)">
-                    <td><span class="suggestion-decision-badge" :class="'sdb-' + suggestionDecisionLabel(item).toLowerCase()">{{ suggestionDecisionLabel(item) }}</span></td>
-                    <td class="text-xs text-gray-500 suggestion-reason-cell">{{ cleanReason(item.reason || item.description) || '—' }}</td>
+                  <tr
+                    v-for="(r, i) in suggestionDisplayRows"
+                    :key="i"
+                    :class="[ r.groupIndex % 2 === 0 ? 'sugg-group-even' : 'sugg-group-odd', { 'sugg-group-start': r.isGroupStart } ]"
+                  >
+                    <!-- Decision / Reason / Modules: shown once per decision group -->
+                    <td>
+                      <span v-if="r.isGroupStart" class="suggestion-decision-badge" :class="'sdb-' + suggestionDecisionLabel(r.decision).toLowerCase()">{{ suggestionDecisionLabel(r.decision) }}</span>
+                    </td>
+                    <td class="text-xs text-gray-500 suggestion-reason-cell">{{ r.isGroupStart ? (cleanReason(r.decision.reason || r.decision.description) || '—') : '' }}</td>
+                    <td class="text-xs">
+                      <span v-if="r.role" class="sugg-role" :class="'sugg-role-' + r.side">{{ r.role }}</span>
+                    </td>
                     <td
                       v-for="c in SUGGESTION_ROW_COLUMNS"
                       :key="c.key"
                       class="text-xs"
                       :class="{ 'suggestion-name-cell': c.key === 'resourceName' }"
                     >
-                      <template v-if="item.changes && item.changes[c.key]">
-                        <span class="diff-old">{{ item.changes[c.key].old || '(empty)' }}</span>
-                        <span class="diff-arrow">→</span>
-                        <span class="diff-new">{{ item.changes[c.key].new }}</span>
-                      </template>
-                      <template v-else>{{ suggestionCellValue(item, c.key) || '—' }}</template>
+                      <span :class="(r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'diff-old' : 'diff-new') : ''">{{ (r.cells && r.cells[c.key]) || '—' }}</span>
                     </td>
-                    <td class="text-xs">{{ (item.sources && item.sources.length) ? item.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—' }}</td>
+                    <td class="text-xs">{{ r.isGroupStart ? ((r.decision.sources && r.decision.sources.length) ? r.decision.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—') : '' }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -2327,21 +2364,24 @@ async function downloadMarkdownFile(fileId) {
 .sdb-update { background: #dbeafe; color: #1e40af; }
 .sdb-remove { background: #fee2e2; color: #b91c1c; }
 .sdb-skip   { background: #f3f4f6; color: #6b7280; }
-.diff-old {
-  color: #b91c1c;
-  background: #fef2f2;
-  text-decoration: line-through;
-  padding: 0 0.2rem;
-  border-radius: 3px;
+/* Diff cells: author side = old (red), generated side = new (green). */
+.diff-old { color: #b91c1c; background: #fef2f2; padding: 0 0.2rem; border-radius: 3px; font-weight: 600; }
+.diff-new { color: #166534; background: #f0fdf4; padding: 0 0.2rem; border-radius: 3px; font-weight: 600; }
+
+/* Each decision is a group of 1-2 rows (Author / Generated). */
+.sugg-group-even td { background: #ffffff; }
+.sugg-group-odd td  { background: #fafafa; }
+.sugg-group-start td { border-top: 2px solid #e5e7eb; }
+.sugg-role {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 4px;
+  white-space: nowrap;
 }
-.diff-new {
-  color: #166534;
-  background: #f0fdf4;
-  padding: 0 0.2rem;
-  border-radius: 3px;
-}
-.diff-arrow { color: #9ca3af; margin: 0 0.25rem; }
-tr.suggestion-decision-update td { background: #f8fafc; }
+.sugg-role-author    { background: #eef2ff; color: #3730a3; }
+.sugg-role-generated { background: #ecfeff; color: #155e75; }
 
 /* AI Suggestions column sizing: roomy Reason, compact Resource Name. */
 .suggestion-reason-col, .suggestion-reason-cell {
