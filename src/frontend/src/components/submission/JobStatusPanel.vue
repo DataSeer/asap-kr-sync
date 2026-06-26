@@ -120,12 +120,18 @@ const modalExactMatchCount = ref(0)
 // PDF Analysis: candidates the LM dropped (not kept in the Generated KRT).
 const modalDropped = ref([])
 
-// Display-side scrub of any leftover internal "ref" numbers in a reason
-// (older results were generated before the backend started cleaning them).
+// Display-side scrub of internal references that leak into LM reasons —
+// candidate "ref" numbers (PDF Analysis) and raw KRT row UUIDs (AI Suggestions).
+// Applied at render time so already-saved results read cleanly too.
 function cleanReason(reason) {
   if (!reason) return ''
   return String(reason)
+    // internal candidate refs ("refs 0 and 4")
     .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, '')
+    // raw KRT row UUIDs: "(row a3d12…)" → drop; "row a3d12…" → friendly text; bare → drop
+    .replace(/\(\s*(?:row\s+)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*\)/gi, '')
+    .replace(/\brow\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'the matching author row')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '')
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+([.,;:])/g, '$1')
     .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')
@@ -1662,15 +1668,25 @@ async function downloadMarkdownFile(fileId) {
                 <thead>
                   <tr>
                     <th>Decision</th>
-                    <th v-for="c in SUGGESTION_ROW_COLUMNS" :key="c.key">{{ c.label }}</th>
+                    <th class="suggestion-reason-col">Reason</th>
+                    <th
+                      v-for="c in SUGGESTION_ROW_COLUMNS"
+                      :key="c.key"
+                      :class="{ 'suggestion-name-col': c.key === 'resourceName' }"
+                    >{{ c.label }}</th>
                     <th>Modules</th>
-                    <th>Reason</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="(item, i) in modalItems" :key="i" :class="'suggestion-decision-' + (item.action || item.type)">
                     <td><span class="suggestion-decision-badge" :class="'sdb-' + suggestionDecisionLabel(item).toLowerCase()">{{ suggestionDecisionLabel(item) }}</span></td>
-                    <td v-for="c in SUGGESTION_ROW_COLUMNS" :key="c.key" class="text-xs">
+                    <td class="text-xs text-gray-500 suggestion-reason-cell">{{ cleanReason(item.reason || item.description) || '—' }}</td>
+                    <td
+                      v-for="c in SUGGESTION_ROW_COLUMNS"
+                      :key="c.key"
+                      class="text-xs"
+                      :class="{ 'suggestion-name-cell': c.key === 'resourceName' }"
+                    >
                       <template v-if="item.changes && item.changes[c.key]">
                         <span class="diff-old">{{ item.changes[c.key].old || '(empty)' }}</span>
                         <span class="diff-arrow">→</span>
@@ -1679,7 +1695,6 @@ async function downloadMarkdownFile(fileId) {
                       <template v-else>{{ suggestionCellValue(item, c.key) || '—' }}</template>
                     </td>
                     <td class="text-xs">{{ (item.sources && item.sources.length) ? item.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—' }}</td>
-                    <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ item.reason || item.description || '—' }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -2327,6 +2342,19 @@ async function downloadMarkdownFile(fileId) {
 }
 .diff-arrow { color: #9ca3af; margin: 0 0.25rem; }
 tr.suggestion-decision-update td { background: #f8fafc; }
+
+/* AI Suggestions column sizing: roomy Reason, compact Resource Name. */
+.suggestion-reason-col, .suggestion-reason-cell {
+  min-width: 320px;
+  max-width: 460px;
+  white-space: normal;
+  line-height: 1.35;
+}
+.suggestion-name-col, .suggestion-name-cell {
+  max-width: 150px;
+  white-space: normal;
+  word-break: break-word;
+}
 
 /* "KRT #" column — group identity, shown once per merged group. */
 .pdf-analysis-krtnum-cell {
