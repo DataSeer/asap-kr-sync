@@ -36,7 +36,7 @@
  *                     (modules: software, datasets, protocols, materials, identifier)
  *   --concurrency N   process N documents in parallel (default 2)
  *   --random          pass B removes a random subset of ANY line (not just detectable)
- *   --remove-frac F   fraction of eligible lines to remove in pass B (default 0.3, min 1 line)
+ *   --remove-frac F   fraction to remove per resource type in pass B (default 0.5, min 1 per type)
  *   --seed N          RNG seed for deterministic removal (default 42)
  *   --skip-modified   only run pass A
  *   --markdown-only   only convert + cache each PDF's markdown (pre-warm), then exit
@@ -87,7 +87,7 @@ const DOC_DIR = path.join(ROOT, 'documents');
 const OUT_DIR = path.resolve(getArg('--out', path.join(ROOT, 'results')));
 const ONLY_DOCS = (getArg('--doc', '') || '').split(',').map(s => s.trim()).filter(Boolean);
 const RANDOM_MODE = has('--random');
-const REMOVE_FRAC = Math.max(0, Math.min(1, parseFloat(getArg('--remove-frac', '0.3')) || 0.3));
+const REMOVE_FRAC = Math.max(0, Math.min(1, parseFloat(getArg('--remove-frac', '0.5')) || 0.5));
 const SKIP_MODIFIED = has('--skip-modified');
 const PLAN_ONLY = has('--plan');
 const MARKDOWN_ONLY = has('--markdown-only');
@@ -337,9 +337,23 @@ function chooseRemovals(authorRows, summaryRows) {
     // "clearly detectable": shared in text or supplemental, and not optional.
     eligible = annotated.filter(a => a.summary && (a.summary.sharedText || a.summary.sharedSupp) && !a.summary.optional);
   }
-  const shuffled = [...eligible].sort(() => rand() - 0.5);
-  const n = Math.max(eligible.length ? 1 : 0, Math.round(eligible.length * REMOVE_FRAC));
-  return shuffled.slice(0, n);
+
+  // Stratify by resource type so the modified KRT loses some of EACH data type,
+  // not just whatever a single global shuffle happened to land on. Within each
+  // type we drop a REMOVE_FRAC share, at least one row.
+  const byType = new Map();
+  for (const a of eligible) {
+    const type = a.row.resourceType || '(none)';
+    if (!byType.has(type)) byType.set(type, []);
+    byType.get(type).push(a);
+  }
+  const removed = [];
+  for (const group of byType.values()) {
+    const shuffled = [...group].sort(() => rand() - 0.5);
+    const n = Math.max(1, Math.round(group.length * REMOVE_FRAC));
+    removed.push(...shuffled.slice(0, n));
+  }
+  return removed;
 }
 
 // ── xlsx writers ────────────────────────────────────────────────────────────
