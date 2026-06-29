@@ -15,6 +15,7 @@ const datasetsConfig = require('../config/datasets-detection-api');
 const materialsConfig = require('../config/materials-detection-api');
 const protocolsConfig = require('../config/protocols-detection-api');
 const markdownConfig = require('../config/pdf-markdown-api');
+const krtComparisonConfig = require('../config/krt-comparison-api');
 
 const router = express.Router();
 
@@ -112,6 +113,11 @@ router.get('/services', (req, res) => {
       protocols_detection: entry(
         protocolsConfig.isConfigured(),
         process.env.PROTOCOLS_DETECTION_DEMO_DATA_ENABLED !== 'false'
+      ),
+      // LM-only (no demo path): on when the KRT comparison API is configured.
+      suggestion_generation: entry(
+        krtComparisonConfig.isConfigured(),
+        false
       )
     }
   });
