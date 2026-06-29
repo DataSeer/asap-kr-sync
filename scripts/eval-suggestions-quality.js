@@ -324,12 +324,7 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
 // ── Removal selection for pass B ────────────────────────────────────────────
 /** Choose which author lines to remove, returning the removed rows (with their summary flags). */
 function chooseRemovals(authorRows, summaryRows) {
-  const summaryFor = (row) => {
-    const nn = normalizeName(row.resourceName);
-    return summaryRows.find(s => normalizeName(s.name) === nn)
-        || summaryRows.find(s => nn && normalizeName(s.name).includes(nn) || (nn && nn.includes(normalizeName(s.name)))) || null;
-  };
-  const annotated = authorRows.map(r => ({ row: r, summary: summaryFor(r) }));
+  const annotated = authorRows.map(r => ({ row: r, summary: summaryFor(r.resourceName, summaryRows) }));
   let eligible;
   if (RANDOM_MODE) {
     eligible = annotated;
@@ -420,27 +415,58 @@ function authorSheetRows(keptRows, removedRows = []) {
   return out;
 }
 
-// Diff summary: Author KRT vs Generated KRT, with the AI decision per line.
+// Match a KRT line to its summary.csv row by name (same fuzzy join used to pick
+// removals): exact normalized-name first, then containment either way.
+function summaryFor(name, summaryRows) {
+  const nn = normalizeName(name);
+  if (!nn) return null;
+  return (summaryRows || []).find(s => normalizeName(s.name) === nn)
+    || (summaryRows || []).find(s => { const sn = normalizeName(s.name); return sn && (sn.includes(nn) || nn.includes(sn)); })
+    || null;
+}
+// Reference signals from summary.csv: was the resource mentioned somewhere a
+// detector could have seen it (text / supplemental), i.e. did detection even
+// have a chance? Used mainly to read "Author only (not generated)" misses.
+function summarySignals(name, summaryRows) {
+  const s = summaryFor(name, summaryRows);
+  if (!s) return { inText: '—', inSupp: '—', optional: '—', detectable: 'not in summary.csv' };
+  const inText = s.sharedText || s.onlyText;
+  const inSupp = s.sharedSupp || s.onlySupp;
+  const yn = (b) => (b ? 'yes' : 'no');
+  const detectable = inText ? 'Yes — in text'
+    : inSupp ? 'Yes — supplemental only'
+    : 'No — KRT only';
+  return { inText: yn(inText), inSupp: yn(inSupp), optional: yn(s.optional), detectable };
+}
+
+// Diff summary: Author KRT vs Generated KRT, with the AI decision per line and
+// the summary.csv "was it mentioned in the text/supplemental?" reference signal.
 const SUMMARY_COLS = [
   { header: 'Status', key: 'status', width: 28 }, { header: 'Resource Type', key: 'type', width: 24 },
   { header: 'Resource Name', key: 'name', width: 40 }, { header: 'Identifier', key: 'identifier', width: 26 },
-  { header: 'Modules', key: 'modules', width: 14 }, { header: 'AI Note', key: 'note', width: 30 }
+  { header: 'Modules', key: 'modules', width: 14 }, { header: 'AI Note', key: 'note', width: 30 },
+  { header: 'In Text (ref)', key: 'inText', width: 12 }, { header: 'In Suppl. (ref)', key: 'inSupp', width: 13 },
+  { header: 'Optional (ref)', key: 'optional', width: 12 }, { header: 'Detectable? (ref)', key: 'detectable', width: 22 }
 ];
 function aiNote(genLine, decisions) {
   const d = decisionForGenerated(genLine, decisions);
   if (!d) return '—';
   return ({ add: 'Suggested (add)', skip: 'Skipped (already in author KRT)', update: 'Suggested (update)' })[d.action] || d.action;
 }
-function buildSummary(generatedKrt, authorRows, decisions) {
+function buildSummary(generatedKrt, authorRows, decisions, summaryRows) {
   const rows = generatedKrt.map(g => ({
     status: genInAuthor(g, authorRows, decisions) ? 'In both (Author + Generated)' : 'Generated only (novel)',
     type: g.resourceType, name: g.resourceName, identifier: g.identifier || '',
-    modules: modulesOf(g), note: aiNote(g, decisions)
+    modules: modulesOf(g), note: aiNote(g, decisions), ...summarySignals(g.resourceName, summaryRows)
   }));
-  // The other side of the diff: author lines detection did NOT align to.
+  // The other side of the diff: author lines detection did NOT align to. The
+  // reference signal tells whether each miss was even detectable from the text.
   for (const a of authorRows) {
     if (!authorCovered(a, generatedKrt, decisions)) {
-      rows.push({ status: 'Author only (not generated)', type: a.resourceType, name: a.resourceName, identifier: a.identifier || '', modules: '', note: '' });
+      rows.push({
+        status: 'Author only (not generated)', type: a.resourceType, name: a.resourceName,
+        identifier: a.identifier || '', modules: '', note: '', ...summarySignals(a.resourceName, summaryRows)
+      });
     }
   }
   return rows;
@@ -522,8 +548,8 @@ async function processDoc(doc, summaryAll) {
   if (passB) addSheet(wb, 'Modified - Generated KRT', GEN_COLS, generatedRows(passB.generatedKrt, modifiedRows, passB.decisions));
   addSheet(wb, 'Original - AI Suggestions', SUG_COLS, decisionRows(passA.decisions));
   if (passB) addSheet(wb, 'Modified - AI Suggestions', SUG_COLS, decisionRows(passB.decisions));
-  addSheet(wb, 'Original - Summary', SUMMARY_COLS, buildSummary(passA.generatedKrt, authorRows, passA.decisions));
-  if (passB) addSheet(wb, 'Modified - Summary', SUMMARY_COLS, buildSummary(passB.generatedKrt, modifiedRows, passB.decisions));
+  addSheet(wb, 'Original - Summary', SUMMARY_COLS, buildSummary(passA.generatedKrt, authorRows, passA.decisions, summaryRows));
+  if (passB) addSheet(wb, 'Modified - Summary', SUMMARY_COLS, buildSummary(passB.generatedKrt, modifiedRows, passB.decisions, summaryRows));
   if (errors.length) addSheet(wb, 'Errors', [{ header: 'Module error', key: 'e', width: 100 }], errors.map(e => ({ e })));
 
   // Recall data — kept for the GLOBAL summary (_summary.xlsx), no longer a per-doc sheet.
