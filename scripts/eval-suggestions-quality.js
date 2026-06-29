@@ -39,8 +39,13 @@
  *   --remove-frac F   fraction of eligible lines to remove in pass B (default 0.3, min 1 line)
  *   --seed N          RNG seed for deterministic removal (default 42)
  *   --skip-modified   only run pass A
+ *   --markdown-only   only convert + cache each PDF's markdown (pre-warm), then exit
+ *   --refresh-markdown re-convert markdown even if a cached .md exists
  *   --plan            offline: discover + parse + show the removal plan, NO pipeline/API calls
  *   --help
+ *
+ * Markdown is cached on disk at <dir>/markdown/<id>.md after the first run, so
+ * later runs (different module flags / removal seeds) reuse it and skip Docling.
  */
 
 const fs = require('fs');
@@ -85,6 +90,9 @@ const RANDOM_MODE = has('--random');
 const REMOVE_FRAC = Math.max(0, Math.min(1, parseFloat(getArg('--remove-frac', '0.3')) || 0.3));
 const SKIP_MODIFIED = has('--skip-modified');
 const PLAN_ONLY = has('--plan');
+const MARKDOWN_ONLY = has('--markdown-only');
+const REFRESH_MARKDOWN = has('--refresh-markdown');
+const MD_DIR = path.join(ROOT, 'markdown');
 const CONCURRENCY = Math.max(1, parseInt(getArg('--concurrency', '2'), 10) || 2);
 
 // Detection-module include/skip (instead of toggling .env). Modules not enabled
@@ -348,8 +356,38 @@ async function runPool(items, size, worker) {
   return results;
 }
 
+// Markdown, cached on disk at <dir>/markdown/<id>.md. Converted once (Docling),
+// then reused on every later run unless --refresh-markdown is given.
+async function getMarkdown(doc, errors, pdfBuffer = null) {
+  const cachePath = path.join(MD_DIR, `${doc.id}.md`);
+  if (!REFRESH_MARKDOWN && fs.existsSync(cachePath)) {
+    return { markdown: fs.readFileSync(cachePath, 'utf-8'), cached: true };
+  }
+  const markdown = await safe('markdown', async () => {
+    const buf = pdfBuffer || fs.readFileSync(doc.pdf);
+    return await convertToMarkdown(buf, path.basename(doc.pdf));
+  }, errors);
+  if (markdown && String(markdown).trim()) {
+    fs.mkdirSync(MD_DIR, { recursive: true });
+    fs.writeFileSync(cachePath, markdown);
+  }
+  return { markdown, cached: false };
+}
+
 // ── Per-document run ────────────────────────────────────────────────────────
 async function processDoc(doc, summaryAll) {
+  // --markdown-only: just (re)generate + cache the markdown, then stop. No KRT needed.
+  if (MARKDOWN_ONLY) {
+    const errs = [];
+    const { markdown, cached } = await getMarkdown(doc, errs);
+    if (markdown && String(markdown).trim()) {
+      console.log(`  ${doc.id}: markdown ${cached ? 'already cached' : 'converted + cached'} (${markdown.length} chars)`);
+      return { id: doc.id, markdownOnly: true };
+    }
+    console.log(`  ! ${doc.id}: markdown failed — ${errs.join('; ')}`);
+    return null;
+  }
+
   const summaryRows = summaryAll.filter(s => s.key === doc.key);
   const authorRows = await parseKrtFile(doc.krtFile);
   if (!authorRows.length) { console.log(`  ! ${doc.id}: KRT parsed to 0 rows — skipping`); return null; }
@@ -368,8 +406,9 @@ async function processDoc(doc, summaryAll) {
 
   const errors = [];
   const pdfBuffer = fs.readFileSync(doc.pdf);
-  const markdown = await safe('markdown', async () => await convertToMarkdown(pdfBuffer, path.basename(doc.pdf)), errors);
+  const { markdown, cached } = await getMarkdown(doc, errors, pdfBuffer);
   if (!markdown || !String(markdown).trim()) { console.log(`  ! ${doc.id}: markdown conversion failed — skipping (${errors.join('; ')})`); return null; }
+  if (cached) console.log(`  ${doc.id}: using cached markdown`);
   const seedIndependent = await detectSeedIndependent(pdfBuffer, markdown, path.basename(doc.pdf), errors);
 
   const passA = await runPass(pdfBuffer, markdown, path.basename(doc.pdf), authorRows, seedIndependent, errors);
@@ -431,9 +470,9 @@ function discoverDocuments() {
     const id = pdf.replace(/\.pdf$/i, '');
     if (ONLY_DOCS.length && !ONLY_DOCS.includes(id)) continue;
     const krtFile = [`${id}.xlsx`, `${id}.csv`].map(n => path.join(DOC_DIR, n)).find(p => fs.existsSync(p));
-    if (!krtFile) { console.log(`  - ${id}: no KRT file — skipping`); continue; }
+    if (!krtFile && !MARKDOWN_ONLY) { console.log(`  - ${id}: no KRT file — skipping`); continue; }
     const key = docIdToKey(id);
-    docs.push({ id, pdf: path.join(DOC_DIR, pdf), krtFile, key });
+    docs.push({ id, pdf: path.join(DOC_DIR, pdf), krtFile: krtFile || null, key });
   }
   return docs;
 }
@@ -445,16 +484,18 @@ function discoverDocuments() {
   const docs = discoverDocuments();
   const enabledMods = ALL_MODULES.filter(moduleEnabled);
   const effConcurrency = PLAN_ONLY ? 1 : CONCURRENCY;
-  console.log(`Processing ${docs.length} document(s) [mode: ${RANDOM_MODE ? 'random removal' : 'detectable removal'}` +
-    `, modules: ${enabledMods.join(',') || 'none'}, concurrency: ${effConcurrency}${PLAN_ONLY ? ', PLAN ONLY' : ''}]\n`);
+  const modeLabel = MARKDOWN_ONLY ? 'MARKDOWN ONLY (pre-warm cache)' : (PLAN_ONLY ? 'PLAN ONLY' : (RANDOM_MODE ? 'random removal' : 'detectable removal'));
+  console.log(`Processing ${docs.length} document(s) [mode: ${modeLabel}` +
+    `${MARKDOWN_ONLY ? '' : `, modules: ${enabledMods.join(',') || 'none'}`}, concurrency: ${effConcurrency}]\n`);
 
   const settled = await runPool(docs, effConcurrency, async (doc) => {
-    if (!doc.key) console.log(`  ! ${doc.id}: could not derive summary key`);
+    if (!doc.key && !MARKDOWN_ONLY) console.log(`  ! ${doc.id}: could not derive summary key`);
     try { return await processDoc(doc, summaryAll); }
     catch (e) { console.error(`  ! ${doc.id}: ${e.message}`); return null; }
   });
   const results = settled.filter(Boolean);
 
+  if (MARKDOWN_ONLY) { console.log(`\nDone — ${results.length} markdown file(s) cached in ${MD_DIR}`); return; }
   if (PLAN_ONLY || !results.length) { console.log('\nDone (plan).'); return; }
 
   // Global summary workbook
