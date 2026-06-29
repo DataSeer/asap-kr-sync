@@ -31,6 +31,10 @@
  *   --dir DIR         input root (default: tmp/suggestions-quality)
  *   --out DIR         output dir (default: <dir>/results)
  *   --doc ID          only this document id (repeatable via comma)
+ *   --modules a,b     only run these detection modules
+ *   --skip-modules x  run all detection modules except these
+ *                     (modules: software, datasets, protocols, materials, identifier)
+ *   --concurrency N   process N documents in parallel (default 2)
  *   --random          pass B removes a random subset of ANY line (not just detectable)
  *   --remove-frac F   fraction of eligible lines to remove in pass B (default 0.3, min 1 line)
  *   --seed N          RNG seed for deterministic removal (default 42)
@@ -81,6 +85,14 @@ const RANDOM_MODE = has('--random');
 const REMOVE_FRAC = Math.max(0, Math.min(1, parseFloat(getArg('--remove-frac', '0.3')) || 0.3));
 const SKIP_MODIFIED = has('--skip-modified');
 const PLAN_ONLY = has('--plan');
+const CONCURRENCY = Math.max(1, parseInt(getArg('--concurrency', '2'), 10) || 2);
+
+// Detection-module include/skip (instead of toggling .env). Modules not enabled
+// here are simply not run (their items are empty), regardless of .env config.
+const ALL_MODULES = ['software', 'datasets', 'protocols', 'materials', 'identifier'];
+const onlyModules = (getArg('--modules', '') || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const skipModules = (getArg('--skip-modules', '') || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const moduleEnabled = (m) => (onlyModules.length ? onlyModules.includes(m) : true) && !skipModules.includes(m);
 let _rng = (parseInt(getArg('--seed', '42'), 10) || 42) >>> 0;
 const rand = () => { _rng = (_rng * 1664525 + 1013904223) >>> 0; return _rng / 0x100000000; }; // deterministic LCG
 
@@ -148,6 +160,9 @@ function parseSummary(file) {
     sharedKrt: bool(r['Objects Shared in KRT']),
     sharedText: bool(r['Objects Shared in Text']),
     sharedSupp: bool(r['Objects Shared in Supplemental Table']),
+    onlyKrt: bool(r['Objects Only Mentioned in KRT (Not Shared)']),
+    onlyText: bool(r['Objects Only Mentioned in Text (Not Shared)']),
+    onlySupp: bool(r['Objects Only Mentioned in Supplemental Table (Not Shared)']),
     optional: bool(r['Object is Optional'])
   })).filter(r => r.key && r.name);
 }
@@ -185,12 +200,12 @@ function lineMatches(a, b) {
 const presentIn = (line, items) => (items || []).some(it => lineMatches(line, it));
 
 // ── Detection (seed-independent: software + identifier — same for both passes) ──
-let _idxLoaded = null;
-async function loadIdIndex() {
-  if (_idxLoaded) return _idxLoaded;
-  if (!fs.existsSync(IDENTIFIERS_DIR)) return null;
-  _idxLoaded = await knownIdentifierIndex.loadIndex({ provider: createCsvProvider(IDENTIFIERS_DIR) });
-  return _idxLoaded;
+let _idxPromise = null; // cache the promise so parallel docs share one load
+function loadIdIndex() {
+  if (_idxPromise) return _idxPromise;
+  if (!fs.existsSync(IDENTIFIERS_DIR)) return Promise.resolve(null);
+  _idxPromise = knownIdentifierIndex.loadIndex({ provider: createCsvProvider(IDENTIFIERS_DIR) });
+  return _idxPromise;
 }
 
 async function safe(label, fn, errors) {
@@ -199,11 +214,11 @@ async function safe(label, fn, errors) {
 }
 
 async function detectSeedIndependent(pdfBuffer, markdown, fileName, errors) {
-  const software = await safe('software', async () => {
+  const software = !moduleEnabled('software') ? [] : await safe('software', async () => {
     const { resources } = await softwareService.detectSoftware(pdfBuffer, fileName);
     return dedupeKrtItems(softwareService.applySoftwarePolicy(softwareService.buildKrtItemsSoftware(resources)), 'software');
   }, errors);
-  const identifier = await safe('identifier', async () => {
+  const identifier = !moduleEnabled('identifier') ? [] : await safe('identifier', async () => {
     const index = await loadIdIndex();
     if (!index) return [];
     const { matches } = identifierService.detectIdentifiers(markdown, index);
@@ -220,16 +235,16 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
   const protocolSeeds = buildAuthorSeeds(byGroup('protocol'));
   const materialSeeds = buildAuthorSeeds(byGroup('material'));
 
-  const datasets = await safe('datasets', async () => {
+  const datasets = !moduleEnabled('datasets') ? [] : await safe('datasets', async () => {
     const { resources } = await datasetsService.detectDatasets(markdown, { authorDatasets: datasetSeeds });
     return dedupeKrtItems(datasetsService.buildKrtItemsDatasets(resources), 'datasets');
   }, errors);
-  const protocols = await safe('protocols', async () => {
+  const protocols = !moduleEnabled('protocols') ? [] : await safe('protocols', async () => {
     const { resources } = await protocolsService.detectProtocols(markdown, { authorProtocols: protocolSeeds });
     return dedupeKrtItems(protocolsService.buildKrtItemsProtocols(resources), 'protocols');
   }, errors);
   // Materials is author-seeded only — skipped when the author listed none (same as the app).
-  const materials = materialSeeds.length === 0 ? [] : await safe('materials', async () => {
+  const materials = (!moduleEnabled('materials') || materialSeeds.length === 0) ? [] : await safe('materials', async () => {
     const { resources } = await materialsService.detectMaterials(pdfBuffer, fileName, { authorMaterials: materialSeeds });
     return dedupeKrtItems(materialsService.buildKrtItemsMaterials(resources), 'materials');
   }, errors);
@@ -324,6 +339,15 @@ const SUG_COLS = [
   { header: 'Modules', key: 'modules', width: 14 }, { header: 'Reason', key: 'reason', width: 60 }
 ];
 
+// Run `worker` over `items` with at most `size` in flight; preserves order.
+async function runPool(items, size, worker) {
+  const results = new Array(items.length);
+  let idx = 0;
+  const lane = async () => { while (idx < items.length) { const i = idx++; results[i] = await worker(items[i], i); } };
+  await Promise.all(Array.from({ length: Math.min(size, Math.max(1, items.length)) }, lane));
+  return results;
+}
+
 // ── Per-document run ────────────────────────────────────────────────────────
 async function processDoc(doc, summaryAll) {
   const summaryRows = summaryAll.filter(s => s.key === doc.key);
@@ -367,15 +391,18 @@ async function processDoc(doc, summaryAll) {
       return {
         type: r.row.resourceType, name: r.row.resourceName, identifier: r.row.identifier,
         sharedKrt: r.summary?.sharedKrt ?? '', sharedText: r.summary?.sharedText ?? '', sharedSupp: r.summary?.sharedSupp ?? '',
+        onlyKrt: r.summary?.onlyKrt ?? '', onlyText: r.summary?.onlyText ?? '', onlySupp: r.summary?.onlySupp ?? '',
         optional: r.summary?.optional ?? '', reDetected: reDetected ? 'yes' : 'NO', reSuggested: reSuggested ? 'yes' : 'NO'
       };
     });
     addSheet(wb, 'B - Removed lines (recall)', [
       { header: 'Resource Type', key: 'type', width: 24 }, { header: 'Resource Name', key: 'name', width: 40 },
-      { header: 'Identifier', key: 'identifier', width: 24 }, { header: 'Shared KRT', key: 'sharedKrt', width: 10 },
-      { header: 'Shared Text', key: 'sharedText', width: 10 }, { header: 'Shared Supp', key: 'sharedSupp', width: 10 },
-      { header: 'Optional', key: 'optional', width: 9 }, { header: 'Re-detected (Generated KRT)', key: 'reDetected', width: 22 },
-      { header: 'Re-suggested (add)', key: 'reSuggested', width: 18 }
+      { header: 'Identifier', key: 'identifier', width: 24 },
+      { header: 'Shared in KRT', key: 'sharedKrt', width: 12 }, { header: 'Shared in Text', key: 'sharedText', width: 12 },
+      { header: 'Shared in Supp', key: 'sharedSupp', width: 12 }, { header: 'Only in KRT', key: 'onlyKrt', width: 11 },
+      { header: 'Only in Text', key: 'onlyText', width: 11 }, { header: 'Only in Supp', key: 'onlySupp', width: 11 },
+      { header: 'Optional', key: 'optional', width: 9 },
+      { header: 'Re-detected (Generated KRT)', key: 'reDetected', width: 22 }, { header: 'Re-suggested (add)', key: 'reSuggested', width: 18 }
     ], removedReport);
   }
   if (errors.length) addSheet(wb, 'Errors', [{ header: 'Module error', key: 'e', width: 100 }], errors.map(e => ({ e })));
@@ -416,14 +443,17 @@ function discoverDocuments() {
   const summaryAll = parseSummary(path.join(ROOT, 'summary.csv'));
   console.log(`summary.csv: ${summaryAll.length} object rows across ${new Set(summaryAll.map(s => s.key)).size} documents`);
   const docs = discoverDocuments();
-  console.log(`Processing ${docs.length} document(s) [mode: ${RANDOM_MODE ? 'random removal' : 'detectable removal'}${PLAN_ONLY ? ', PLAN ONLY' : ''}]\n`);
+  const enabledMods = ALL_MODULES.filter(moduleEnabled);
+  const effConcurrency = PLAN_ONLY ? 1 : CONCURRENCY;
+  console.log(`Processing ${docs.length} document(s) [mode: ${RANDOM_MODE ? 'random removal' : 'detectable removal'}` +
+    `, modules: ${enabledMods.join(',') || 'none'}, concurrency: ${effConcurrency}${PLAN_ONLY ? ', PLAN ONLY' : ''}]\n`);
 
-  const results = [];
-  for (const doc of docs) {
+  const settled = await runPool(docs, effConcurrency, async (doc) => {
     if (!doc.key) console.log(`  ! ${doc.id}: could not derive summary key`);
-    try { const r = await processDoc(doc, summaryAll); if (r) results.push(r); }
-    catch (e) { console.error(`  ! ${doc.id}: ${e.message}`); }
-  }
+    try { return await processDoc(doc, summaryAll); }
+    catch (e) { console.error(`  ! ${doc.id}: ${e.message}`); return null; }
+  });
+  const results = settled.filter(Boolean);
 
   if (PLAN_ONLY || !results.length) { console.log('\nDone (plan).'); return; }
 
