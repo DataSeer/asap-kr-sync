@@ -254,17 +254,22 @@ async function safe(label, fn, errors) {
 }
 
 async function detectSeedIndependent(pdfBuffer, markdown, fileName, errors) {
-  const software = !moduleEnabled('software') ? [] : await safe('software', async () => {
-    const { resources } = await softwareService.detectSoftware(pdfBuffer, fileName);
-    return dedupeKrtItems(softwareService.applySoftwarePolicy(softwareService.buildKrtItemsSoftware(resources)), 'software');
-  }, errors);
-  const identifier = !moduleEnabled('identifier') ? [] : await safe('identifier', async () => {
-    const index = await loadIdIndex();
-    if (!index) return [];
-    const { matches } = identifierService.detectIdentifiers(markdown, index);
-    const krt = identifierService.buildKrtItemsIdentifier(matches, markdown);
-    return dedupeKrtItems(identifierService.enrichIdentifiers(krt).enriched, 'identifier');
-  }, errors);
+  // Mirror the app: detection modules fan out concurrently (here the two
+  // KRT-independent ones; the seed-dependent ones run per pass). Each is
+  // isolated by safe(), so one module failing never sinks the others.
+  const [software, identifier] = await Promise.all([
+    !moduleEnabled('software') ? Promise.resolve([]) : safe('software', async () => {
+      const { resources } = await softwareService.detectSoftware(pdfBuffer, fileName);
+      return dedupeKrtItems(softwareService.applySoftwarePolicy(softwareService.buildKrtItemsSoftware(resources)), 'software');
+    }, errors),
+    !moduleEnabled('identifier') ? Promise.resolve([]) : safe('identifier', async () => {
+      const index = await loadIdIndex();
+      if (!index) return [];
+      const { matches } = identifierService.detectIdentifiers(markdown, index);
+      const krt = identifierService.buildKrtItemsIdentifier(matches, markdown);
+      return dedupeKrtItems(identifierService.enrichIdentifiers(krt).enriched, 'identifier');
+    }, errors)
+  ]);
   return { software, identifier };
 }
 
@@ -275,19 +280,23 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
   const protocolSeeds = buildAuthorSeeds(byGroup('protocol'));
   const materialSeeds = buildAuthorSeeds(byGroup('material'));
 
-  const datasets = !moduleEnabled('datasets') ? [] : await safe('datasets', async () => {
-    const { resources } = await datasetsService.detectDatasets(markdown, { authorDatasets: datasetSeeds });
-    return dedupeKrtItems(datasetsService.buildKrtItemsDatasets(resources), 'datasets');
-  }, errors);
-  const protocols = !moduleEnabled('protocols') ? [] : await safe('protocols', async () => {
-    const { resources } = await protocolsService.detectProtocols(markdown, { authorProtocols: protocolSeeds });
-    return dedupeKrtItems(protocolsService.buildKrtItemsProtocols(resources), 'protocols');
-  }, errors);
-  // Materials is author-seeded only — skipped when the author listed none (same as the app).
-  const materials = (!moduleEnabled('materials') || materialSeeds.length === 0) ? [] : await safe('materials', async () => {
-    const { resources } = await materialsService.detectMaterials(pdfBuffer, fileName, { authorMaterials: materialSeeds });
-    return dedupeKrtItems(materialsService.buildKrtItemsMaterials(resources), 'materials');
-  }, errors);
+  // Seed-dependent detectors fan out concurrently, exactly as the app runs them
+  // as independent parallel jobs; merge + LM consolidation below is the barrier.
+  const [datasets, protocols, materials] = await Promise.all([
+    !moduleEnabled('datasets') ? Promise.resolve([]) : safe('datasets', async () => {
+      const { resources } = await datasetsService.detectDatasets(markdown, { authorDatasets: datasetSeeds });
+      return dedupeKrtItems(datasetsService.buildKrtItemsDatasets(resources), 'datasets');
+    }, errors),
+    !moduleEnabled('protocols') ? Promise.resolve([]) : safe('protocols', async () => {
+      const { resources } = await protocolsService.detectProtocols(markdown, { authorProtocols: protocolSeeds });
+      return dedupeKrtItems(protocolsService.buildKrtItemsProtocols(resources), 'protocols');
+    }, errors),
+    // Materials is author-seeded only — skipped when the author listed none (same as the app).
+    (!moduleEnabled('materials') || materialSeeds.length === 0) ? Promise.resolve([]) : safe('materials', async () => {
+      const { resources } = await materialsService.detectMaterials(pdfBuffer, fileName, { authorMaterials: materialSeeds });
+      return dedupeKrtItems(materialsService.buildKrtItemsMaterials(resources), 'materials');
+    }, errors)
+  ]);
 
   const contributions = [
     { source: 'software_detection', items: seedIndependent.software },
