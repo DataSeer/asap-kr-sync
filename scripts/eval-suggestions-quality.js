@@ -176,10 +176,11 @@ function parseSummary(file) {
 }
 
 // ── ID mapping: documents and summary use different id schemes ──────────────
-// doc:     CS1-000301-014-org-G-1        → key 000301|14|G
-//          GP2-000GP2-017-org-G-1        → key 000GP2|17|G
-// summary: ASAP-000301-014-0000CS-G-DS1  → key 000301|14|G
-//          ASAP-000GP2-0017-G            → key 000GP2|17|G
+// (illustrative placeholders — real ids come from the gitignored input folder)
+// doc:     XX1-000000-001-org-G-1        → key 000000|1|G
+//          YY2-000YY2-002-org-G-1        → key 000YY2|2|G
+// summary: ASAP-000000-001-0000XX-G-DS1  → key 000000|1|G
+//          ASAP-000YY2-0002-G            → key 000YY2|2|G
 // Join on project code + submission number (leading zeros normalized) + org letter.
 function docIdToKey(docId) {
   const m = String(docId).match(/^[A-Za-z0-9]+-([A-Za-z0-9]+)-(\d+)-org-([A-Za-z])/);
