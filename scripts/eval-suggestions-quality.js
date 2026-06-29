@@ -199,13 +199,45 @@ function authorGroup(resourceType) {
   return 'material';
 }
 
-// ── Matching: is a line present in a set of KRT-ish items? ──────────────────
-function lineMatches(a, b) {
-  if (a.identifier && b.identifier && identifiersMatch(a.identifier, b.identifier)) return true;
+// ── Aligning Generated ↔ Author KRT lines ──────────────────────────────────
+// Two signals only, in priority order, per the curator's instruction:
+//   1. The AI's own decision — a skip/update decision links a generated line to
+//      an author row (the model judged them the same resource); an add means the
+//      model judged it novel.
+//   2. Identifier-token match (DOI / RRID / accession).
+// We deliberately do NOT fuzzy-match resource names across the two KRTs (author
+// "FIJI v2.17.0" vs generated "Fiji" would never line up, and unrelated rows can
+// collide). Exact name is used ONLY to re-link a line to its OWN decision row,
+// where both sides come from the same source so the string is identical.
+
+// Cross-KRT identifier match.
+const identifierMatch = (a, b) => !!(a.identifier && b.identifier && identifiersMatch(a.identifier, b.identifier));
+// Same-source link (a line ↔ its own decision row): identifier or exact name.
+function sameLine(a, b) {
+  if (identifierMatch(a, b)) return true;
   const na = normalizeName(a.resourceName), nb = normalizeName(b.resourceName);
   return !!na && na === nb;
 }
-const presentIn = (line, items) => (items || []).some(it => lineMatches(line, it));
+// The AI decision that concerns a given generated line, if any.
+const decisionForGenerated = (genLine, decisions) =>
+  (decisions || []).find(d => d.generatedRow && sameLine(genLine, d.generatedRow)) || null;
+
+// Is a generated line aligned to an author row? Primary: the AI decision
+// (skip/update = aligned, add = novel). Fallback: identifier match.
+function genInAuthor(genLine, authorRows, decisions) {
+  const d = decisionForGenerated(genLine, decisions);
+  if (d && d.action === 'add') return false;
+  if (d && (d.action === 'skip' || d.action === 'update')) return true;
+  return (authorRows || []).some(a => identifierMatch(genLine, a));
+}
+// Is an author row covered — aligned by an AI skip/update decision, or matched by
+// identifier to some generated line?
+function authorCovered(authorLine, generatedKrt, decisions) {
+  const aligned = (decisions || []).some(d =>
+    (d.action === 'skip' || d.action === 'update') && d.authorRow && sameLine(authorLine, d.authorRow));
+  if (aligned) return true;
+  return (generatedKrt || []).some(g => identifierMatch(authorLine, g));
+}
 
 // ── Detection (seed-independent: software + identifier — same for both passes) ──
 let _idxPromise = null; // cache the promise so parallel docs share one load
@@ -312,11 +344,11 @@ function addSheet(wb, name, columns, rows) {
 const modulesOf = (item) => [...new Set((item.detectedBy || []).map(d => d.source).filter(Boolean))]
   .map(s => ({ software_detection: 'SW', datasets_detection: 'DS', materials_detection: 'MAT', protocols_detection: 'PROT', identifier_detection: 'ID' }[s] || s)).join(', ');
 
-function generatedRows(generatedKrt, authorRows) {
+function generatedRows(generatedKrt, authorRows, decisions) {
   return generatedKrt.map((g, i) => ({
     '#': i + 1, type: g.resourceType, name: g.resourceName, source: g.sourceUrl || '',
     identifier: g.identifier || '', newReuse: g.newReuse || '', modules: modulesOf(g),
-    inAuthorKrt: presentIn(g, authorRows) ? 'yes' : 'NO (novel)', reason: g.reason || ''
+    inAuthorKrt: genInAuthor(g, authorRows, decisions) ? 'yes' : 'NO (novel)', reason: g.reason || ''
   }));
 }
 function decisionRows(decisions) {
@@ -372,19 +404,19 @@ const SUMMARY_COLS = [
   { header: 'Modules', key: 'modules', width: 14 }, { header: 'AI Note', key: 'note', width: 30 }
 ];
 function aiNote(genLine, decisions) {
-  const d = decisions.find(dec => dec.generatedRow && lineMatches(genLine, dec.generatedRow));
+  const d = decisionForGenerated(genLine, decisions);
   if (!d) return '—';
   return ({ add: 'Suggested (add)', skip: 'Skipped (already in author KRT)', update: 'Suggested (update)' })[d.action] || d.action;
 }
 function buildSummary(generatedKrt, authorRows, decisions) {
   const rows = generatedKrt.map(g => ({
-    status: presentIn(g, authorRows) ? 'In both (Author + Generated)' : 'Generated only (novel)',
+    status: genInAuthor(g, authorRows, decisions) ? 'In both (Author + Generated)' : 'Generated only (novel)',
     type: g.resourceType, name: g.resourceName, identifier: g.identifier || '',
     modules: modulesOf(g), note: aiNote(g, decisions)
   }));
-  // The other side of the diff: author lines detection did NOT generate.
+  // The other side of the diff: author lines detection did NOT align to.
   for (const a of authorRows) {
-    if (!presentIn(a, generatedKrt)) {
+    if (!authorCovered(a, generatedKrt, decisions)) {
       rows.push({ status: 'Author only (not generated)', type: a.resourceType, name: a.resourceName, identifier: a.identifier || '', modules: '', note: '' });
     }
   }
@@ -463,8 +495,8 @@ async function processDoc(doc, summaryAll) {
   const wb = new ExcelJS.Workbook();
   addSheet(wb, 'Original - Author KRT', AUTHOR_COLS, authorSheetRows(authorRows));
   if (passB) addSheet(wb, 'Modified - Author KRT', AUTHOR_COLS, authorSheetRows(modifiedRows, removed.map(r => r.row)));
-  addSheet(wb, 'Original - Generated KRT', GEN_COLS, generatedRows(passA.generatedKrt, authorRows));
-  if (passB) addSheet(wb, 'Modified - Generated KRT', GEN_COLS, generatedRows(passB.generatedKrt, modifiedRows));
+  addSheet(wb, 'Original - Generated KRT', GEN_COLS, generatedRows(passA.generatedKrt, authorRows, passA.decisions));
+  if (passB) addSheet(wb, 'Modified - Generated KRT', GEN_COLS, generatedRows(passB.generatedKrt, modifiedRows, passB.decisions));
   addSheet(wb, 'Original - AI Suggestions', SUG_COLS, decisionRows(passA.decisions));
   if (passB) addSheet(wb, 'Modified - AI Suggestions', SUG_COLS, decisionRows(passB.decisions));
   addSheet(wb, 'Original - Summary', SUMMARY_COLS, buildSummary(passA.generatedKrt, authorRows, passA.decisions));
@@ -474,10 +506,12 @@ async function processDoc(doc, summaryAll) {
   // Recall data — kept for the GLOBAL summary (_summary.xlsx), no longer a per-doc sheet.
   let removedReport = [];
   if (passB) {
-    const addSugs = passB.suggestions.filter(s => s.type === 'add_row');
+    // Recall signals, per the same rule: did the AI re-suggest adding it (its own
+    // decision), or does it match a generated line by identifier?
+    const addDecisions = passB.decisions.filter(d => d.action === 'add' && d.generatedRow);
     removedReport = removed.map(r => {
-      const reDetected = presentIn(r.row, passB.generatedKrt);
-      const reSuggested = addSugs.some(s => lineMatches(r.row, { resourceName: s.data?.resourceName, identifier: s.data?.identifier }));
+      const reSuggested = addDecisions.some(d => sameLine(r.row, d.generatedRow));
+      const reDetected = reSuggested || passB.generatedKrt.some(g => identifierMatch(r.row, g));
       return {
         type: r.row.resourceType, name: r.row.resourceName, identifier: r.row.identifier,
         sharedKrt: r.summary?.sharedKrt ?? '', sharedText: r.summary?.sharedText ?? '', sharedSupp: r.summary?.sharedSupp ?? '',
@@ -493,7 +527,7 @@ async function processDoc(doc, summaryAll) {
   return {
     id: doc.id, krtRows: authorRows.length,
     genA: passA.generatedKrt.length, addA: passA.suggestions.filter(s => s.type === 'add_row').length,
-    novelA: passA.generatedKrt.filter(g => !presentIn(g, authorRows)).length,
+    novelA: passA.generatedKrt.filter(g => !genInAuthor(g, authorRows, passA.decisions)).length,
     removed: removed.length,
     reDetected: removedReport.filter(r => r.reDetected === 'yes').length,
     reSuggested: removedReport.filter(r => r.reSuggested === 'yes').length,
