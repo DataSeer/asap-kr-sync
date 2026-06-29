@@ -542,14 +542,16 @@ async function processDoc(doc, summaryAll) {
   // Build per-document workbook — sheets in the requested order
   // (Modified sheets only when pass B ran).
   const wb = new ExcelJS.Workbook();
-  addSheet(wb, 'Original - Author KRT', AUTHOR_COLS, authorSheetRows(authorRows));
-  if (passB) addSheet(wb, 'Modified - Author KRT', AUTHOR_COLS, authorSheetRows(modifiedRows, removed.map(r => r.row)));
-  addSheet(wb, 'Original - Generated KRT', GEN_COLS, generatedRows(passA.generatedKrt, authorRows, passA.decisions));
-  if (passB) addSheet(wb, 'Modified - Generated KRT', GEN_COLS, generatedRows(passB.generatedKrt, modifiedRows, passB.decisions));
-  addSheet(wb, 'Original - AI Suggestions', SUG_COLS, decisionRows(passA.decisions));
-  if (passB) addSheet(wb, 'Modified - AI Suggestions', SUG_COLS, decisionRows(passB.decisions));
   addSheet(wb, 'Original - Summary', SUMMARY_COLS, buildSummary(passA.generatedKrt, authorRows, passA.decisions, summaryRows));
-  if (passB) addSheet(wb, 'Modified - Summary', SUMMARY_COLS, buildSummary(passB.generatedKrt, modifiedRows, passB.decisions, summaryRows));
+  addSheet(wb, 'Original - AI Suggestions', SUG_COLS, decisionRows(passA.decisions));
+  addSheet(wb, 'Original - Author KRT', AUTHOR_COLS, authorSheetRows(authorRows));
+  addSheet(wb, 'Original - Generated KRT', GEN_COLS, generatedRows(passA.generatedKrt, authorRows, passA.decisions));
+  if (passB) {
+    addSheet(wb, 'Modified - Summary', SUMMARY_COLS, buildSummary(passB.generatedKrt, modifiedRows, passB.decisions, summaryRows));
+    addSheet(wb, 'Modified - AI Suggestions', SUG_COLS, decisionRows(passB.decisions));
+    addSheet(wb, 'Modified - Author KRT', AUTHOR_COLS, authorSheetRows(modifiedRows, removed.map(r => r.row)));
+    addSheet(wb, 'Modified - Generated KRT', GEN_COLS, generatedRows(passB.generatedKrt, modifiedRows, passB.decisions));
+  }
   if (errors.length) addSheet(wb, 'Errors', [{ header: 'Module error', key: 'e', width: 100 }], errors.map(e => ({ e })));
 
   // Recall data — kept for the GLOBAL summary (_summary.xlsx), no longer a per-doc sheet.
