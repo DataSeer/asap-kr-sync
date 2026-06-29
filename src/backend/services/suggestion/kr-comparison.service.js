@@ -286,6 +286,20 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
 }
 
 /**
+ * Compare an author KRT against a Generated KRT directly (no DB) — the LM call
+ * plus the decision→suggestion mapping. Used by offline tooling/benchmarks that
+ * already hold both row sets in memory.
+ * @param {object[]} authorRows - author KRT rows (need id + values)
+ * @param {object[]} generatedKrt - Generated KRT items (dedupKey + detectedBy)
+ * @returns {Promise<{ suggestions: object[], decisions: object[], rawResponse: string }>}
+ */
+async function compareKrts(authorRows, generatedKrt) {
+  const { lmDecisions, rawResponse } = await callGeminiForComparison(authorRows, generatedKrt);
+  const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions);
+  return { suggestions, decisions, rawResponse };
+}
+
+/**
  * Generate suggestions for a submission/round (LM-only). Returns the helper
  * result shape persisted on the SubmissionJob: { data: { suggestions }, meta }.
  */
@@ -381,6 +395,7 @@ module.exports = {
   processSuggestionGeneration,
   generateSuggestions,
   getPersistedSuggestions,
+  compareKrts,
   // Pure helpers (exported for tests)
   buildSuggestionsFromLM
 };
