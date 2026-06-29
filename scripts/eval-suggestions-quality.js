@@ -481,6 +481,39 @@ function discoverDocuments() {
     { header: 'Detect recall', key: 'dr', width: 13 }, { header: 'Suggest recall', key: 'sr', width: 13 }
   ], Object.values(byType).map(v => ({ ...v, dr: v.removed ? (v.reDetected / v.removed).toFixed(2) : '', sr: v.removed ? (v.reSuggested / v.removed).toFixed(2) : '' })));
 
+  // Recall by sharing / mention flag (a removed line can carry several flags,
+  // so these subsets overlap — each row is recall CONDITIONED on that flag).
+  const FLAGS = [
+    { key: 'sharedKrt', label: 'Shared in KRT' },
+    { key: 'sharedText', label: 'Shared in Text' },
+    { key: 'sharedSupp', label: 'Shared in Supplemental' },
+    { key: 'onlyKrt', label: 'Only Mentioned in KRT' },
+    { key: 'onlyText', label: 'Only Mentioned in Text' },
+    { key: 'onlySupp', label: 'Only Mentioned in Supplemental' },
+    { key: 'optional', label: 'Optional' }
+  ];
+  const byFlag = FLAGS.map(f => {
+    const subset = allRemoved.filter(r => r[f.key] === true);
+    const det = subset.filter(r => r.reDetected === 'yes').length;
+    const sug = subset.filter(r => r.reSuggested === 'yes').length;
+    return {
+      flag: f.label, removed: subset.length, reDetected: det, reSuggested: sug,
+      dr: subset.length ? (det / subset.length).toFixed(2) : '', sr: subset.length ? (sug / subset.length).toFixed(2) : ''
+    };
+  });
+  // Lines with NO summary match (all flags blank) — surfaced so they aren't invisible.
+  const noFlag = allRemoved.filter(r => !FLAGS.some(f => r[f.key] === true));
+  if (noFlag.length) {
+    const det = noFlag.filter(r => r.reDetected === 'yes').length, sug = noFlag.filter(r => r.reSuggested === 'yes').length;
+    byFlag.push({ flag: '(no summary match)', removed: noFlag.length, reDetected: det, reSuggested: sug,
+      dr: (det / noFlag.length).toFixed(2), sr: (sug / noFlag.length).toFixed(2) });
+  }
+  addSheet(wb, 'Recall by sharing', [
+    { header: 'Sharing / mention flag', key: 'flag', width: 32 }, { header: 'Removed (with flag)', key: 'removed', width: 18 },
+    { header: 'Re-detected', key: 'reDetected', width: 12 }, { header: 'Re-suggested', key: 'reSuggested', width: 12 },
+    { header: 'Detect recall', key: 'dr', width: 13 }, { header: 'Suggest recall', key: 'sr', width: 13 }
+  ], byFlag);
+
   fs.mkdirSync(OUT_DIR, { recursive: true });
   await wb.xlsx.writeFile(path.join(OUT_DIR, '_summary.xlsx'));
 
