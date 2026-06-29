@@ -347,6 +347,50 @@ const SUG_COLS = [
   { header: 'Modules', key: 'modules', width: 14 }, { header: 'Reason', key: 'reason', width: 60 }
 ];
 
+// Author KRT sheet (the input). For the modified pass, the removed lines are
+// appended at the end tagged 'REMOVED'.
+const AUTHOR_COLS = [
+  { header: '#', key: '#', width: 5 }, { header: 'Resource Type', key: 'type', width: 24 },
+  { header: 'Resource Name', key: 'name', width: 40 }, { header: 'Source', key: 'source', width: 18 },
+  { header: 'Identifier', key: 'identifier', width: 26 }, { header: 'New/Reuse', key: 'newReuse', width: 10 },
+  { header: 'Additional Info', key: 'additionalInformation', width: 30 }, { header: 'Tag', key: 'tag', width: 11 }
+];
+function authorSheetRows(keptRows, removedRows = []) {
+  const mk = (r, tag) => ({
+    type: r.resourceType || '', name: r.resourceName || '', source: r.source || '',
+    identifier: r.identifier || '', newReuse: r.newReuse || '', additionalInformation: r.additionalInformation || '', tag
+  });
+  const out = [...keptRows.map(r => mk(r, '')), ...removedRows.map(r => mk(r, 'REMOVED'))];
+  out.forEach((o, i) => { o['#'] = i + 1; });
+  return out;
+}
+
+// Diff summary: Author KRT vs Generated KRT, with the AI decision per line.
+const SUMMARY_COLS = [
+  { header: 'Status', key: 'status', width: 28 }, { header: 'Resource Type', key: 'type', width: 24 },
+  { header: 'Resource Name', key: 'name', width: 40 }, { header: 'Identifier', key: 'identifier', width: 26 },
+  { header: 'Modules', key: 'modules', width: 14 }, { header: 'AI Note', key: 'note', width: 30 }
+];
+function aiNote(genLine, decisions) {
+  const d = decisions.find(dec => dec.generatedRow && lineMatches(genLine, dec.generatedRow));
+  if (!d) return '—';
+  return ({ add: 'Suggested (add)', skip: 'Skipped (already in author KRT)', update: 'Suggested (update)' })[d.action] || d.action;
+}
+function buildSummary(generatedKrt, authorRows, decisions) {
+  const rows = generatedKrt.map(g => ({
+    status: presentIn(g, authorRows) ? 'In both (Author + Generated)' : 'Generated only (novel)',
+    type: g.resourceType, name: g.resourceName, identifier: g.identifier || '',
+    modules: modulesOf(g), note: aiNote(g, decisions)
+  }));
+  // The other side of the diff: author lines detection did NOT generate.
+  for (const a of authorRows) {
+    if (!presentIn(a, generatedKrt)) {
+      rows.push({ status: 'Author only (not generated)', type: a.resourceType, name: a.resourceName, identifier: a.identifier || '', modules: '', note: '' });
+    }
+  }
+  return rows;
+}
+
 // Run `worker` over `items` with at most `size` in flight; preserves order.
 async function runPool(items, size, worker) {
   const results = new Array(items.length);
@@ -414,15 +458,22 @@ async function processDoc(doc, summaryAll) {
   const passA = await runPass(pdfBuffer, markdown, path.basename(doc.pdf), authorRows, seedIndependent, errors);
   const passB = SKIP_MODIFIED ? null : await runPass(pdfBuffer, markdown, path.basename(doc.pdf), modifiedRows, seedIndependent, errors);
 
-  // Build per-document workbook
+  // Build per-document workbook — sheets in the requested order
+  // (Modified sheets only when pass B ran).
   const wb = new ExcelJS.Workbook();
-  addSheet(wb, 'A - Generated KRT', GEN_COLS, generatedRows(passA.generatedKrt, authorRows));
-  addSheet(wb, 'A - Suggestions', SUG_COLS, decisionRows(passA.decisions));
+  addSheet(wb, 'Original - Author KRT', AUTHOR_COLS, authorSheetRows(authorRows));
+  if (passB) addSheet(wb, 'Modified - Author KRT', AUTHOR_COLS, authorSheetRows(modifiedRows, removed.map(r => r.row)));
+  addSheet(wb, 'Original - Generated KRT', GEN_COLS, generatedRows(passA.generatedKrt, authorRows));
+  if (passB) addSheet(wb, 'Modified - Generated KRT', GEN_COLS, generatedRows(passB.generatedKrt, modifiedRows));
+  addSheet(wb, 'Original - AI Suggestions', SUG_COLS, decisionRows(passA.decisions));
+  if (passB) addSheet(wb, 'Modified - AI Suggestions', SUG_COLS, decisionRows(passB.decisions));
+  addSheet(wb, 'Original - Summary', SUMMARY_COLS, buildSummary(passA.generatedKrt, authorRows, passA.decisions));
+  if (passB) addSheet(wb, 'Modified - Summary', SUMMARY_COLS, buildSummary(passB.generatedKrt, modifiedRows, passB.decisions));
+  if (errors.length) addSheet(wb, 'Errors', [{ header: 'Module error', key: 'e', width: 100 }], errors.map(e => ({ e })));
 
+  // Recall data — kept for the GLOBAL summary (_summary.xlsx), no longer a per-doc sheet.
   let removedReport = [];
   if (passB) {
-    addSheet(wb, 'B - Generated KRT', GEN_COLS, generatedRows(passB.generatedKrt, modifiedRows));
-    addSheet(wb, 'B - Suggestions', SUG_COLS, decisionRows(passB.decisions));
     const addSugs = passB.suggestions.filter(s => s.type === 'add_row');
     removedReport = removed.map(r => {
       const reDetected = presentIn(r.row, passB.generatedKrt);
@@ -434,17 +485,7 @@ async function processDoc(doc, summaryAll) {
         optional: r.summary?.optional ?? '', reDetected: reDetected ? 'yes' : 'NO', reSuggested: reSuggested ? 'yes' : 'NO'
       };
     });
-    addSheet(wb, 'B - Removed lines (recall)', [
-      { header: 'Resource Type', key: 'type', width: 24 }, { header: 'Resource Name', key: 'name', width: 40 },
-      { header: 'Identifier', key: 'identifier', width: 24 },
-      { header: 'Shared in KRT', key: 'sharedKrt', width: 12 }, { header: 'Shared in Text', key: 'sharedText', width: 12 },
-      { header: 'Shared in Supp', key: 'sharedSupp', width: 12 }, { header: 'Only in KRT', key: 'onlyKrt', width: 11 },
-      { header: 'Only in Text', key: 'onlyText', width: 11 }, { header: 'Only in Supp', key: 'onlySupp', width: 11 },
-      { header: 'Optional', key: 'optional', width: 9 },
-      { header: 'Re-detected (Generated KRT)', key: 'reDetected', width: 22 }, { header: 'Re-suggested (add)', key: 'reSuggested', width: 18 }
-    ], removedReport);
   }
-  if (errors.length) addSheet(wb, 'Errors', [{ header: 'Module error', key: 'e', width: 100 }], errors.map(e => ({ e })));
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
   await wb.xlsx.writeFile(path.join(OUT_DIR, `${doc.id}.xlsx`));
