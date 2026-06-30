@@ -62,6 +62,7 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 // ── Pipeline imports (same code the app runs) ───────────────────────────────
 const { convertToMarkdown } = require('../src/backend/services/pdf/pdf-markdown-client.service');
+const markdownFilter = require('../src/backend/services/pdf/markdown-filter.service');
 const softwareService = require('../src/backend/services/software/software.service');
 const datasetsService = require('../src/backend/services/datasets/datasets.service');
 const protocolsService = require('../src/backend/services/protocols/protocols.service');
@@ -556,18 +557,24 @@ async function runPool(items, size, worker) {
 // then reused on every later run unless --refresh-markdown is given.
 async function getMarkdown(doc, errors, pdfBuffer = null) {
   const cachePath = path.join(MD_DIR, `${doc.id}.md`);
+  let raw, cached;
   if (!REFRESH_MARKDOWN && fs.existsSync(cachePath)) {
-    return { markdown: fs.readFileSync(cachePath, 'utf-8'), cached: true };
+    raw = fs.readFileSync(cachePath, 'utf-8'); cached = true;
+  } else {
+    raw = await safe('markdown', async () => {
+      const buf = pdfBuffer || fs.readFileSync(doc.pdf);
+      return await convertToMarkdown(buf, path.basename(doc.pdf));
+    }, errors, null);
+    if (raw && String(raw).trim()) {
+      fs.mkdirSync(MD_DIR, { recursive: true });
+      fs.writeFileSync(cachePath, raw); // cache RAW so the filter A/B can toggle without re-converting
+    }
+    cached = false;
   }
-  const markdown = await safe('markdown', async () => {
-    const buf = pdfBuffer || fs.readFileSync(doc.pdf);
-    return await convertToMarkdown(buf, path.basename(doc.pdf));
-  }, errors);
-  if (markdown && String(markdown).trim()) {
-    fs.mkdirSync(MD_DIR, { recursive: true });
-    fs.writeFileSync(cachePath, markdown);
-  }
-  return { markdown, cached: false };
+  // Apply the markdown filter at read time (gated by env), matching the app.
+  const { markdown, applied, stats } = markdownFilter.applyFilter(raw || '');
+  if (applied) console.log(`  ${doc.id}: markdown-filter ${stats.charsBefore}→${stats.charsAfter} chars (-${stats.charsDropped})`);
+  return { markdown: raw ? markdown : raw, cached };
 }
 
 // ── Per-document run ────────────────────────────────────────────────────────

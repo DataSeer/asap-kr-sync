@@ -10,6 +10,7 @@
 const { Submission, File, SubmissionJob } = require('../../models');
 const s3Service = require('../storage/s3.service');
 const pdfMarkdownClient = require('./pdf-markdown-client.service');
+const markdownFilter = require('./markdown-filter.service');
 const markdownConfig = require('../../config/pdf-markdown-api');
 const demoDataService = require('../demo-data.service');
 const jobQueue = require('../queue/job-queue.service');
@@ -78,9 +79,17 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
 
   jobLogger?.log('convert_start', `Converting via ${markdownConfig.provider}`, { provider: markdownConfig.provider });
   const convertStartTime = Date.now();
-  const markdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile.fileName);
+  const rawMarkdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile.fileName);
   const convertMs = Date.now() - convertStartTime;
-  jobLogger?.log('convert_done', 'Conversion complete', { markdownLength: markdown.length, durationMs: convertMs });
+  jobLogger?.log('convert_done', 'Conversion complete', { markdownLength: rawMarkdown.length, durationMs: convertMs });
+
+  // Optional post-conversion filter: drop numeric data-matrix blocks from
+  // oversized markdown (gated by config; pass-through otherwise). The stored
+  // markdown is what every downstream text detector reads.
+  const { markdown, applied: filtered, stats: filterStats } = markdownFilter.applyFilter(rawMarkdown);
+  if (filtered) {
+    jobLogger?.log('markdown_filtered', 'Dropped numeric data blocks from markdown', filterStats);
+  }
 
   const mdFileName = pdfFile.fileName.replace(/\.pdf$/i, '.md');
   const mdFile = await uploadMarkdownAsFile(submission, markdown, mdFileName);
@@ -92,6 +101,9 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
     meta: {
       provider: markdownConfig.provider,
       markdownLength: markdown.length,
+      rawMarkdownLength: rawMarkdown.length,
+      filtered,
+      filterStats: filtered ? filterStats : null,
       convertMs,
       totalMs: Date.now() - startTime,
       fileId: mdFile.id
