@@ -42,10 +42,15 @@
  *   --markdown-only   only convert + cache each PDF's markdown (pre-warm), then exit
  *   --refresh-markdown re-convert markdown even if a cached .md exists
  *   --plan            offline: discover + parse + show the removal plan, NO pipeline/API calls
+ *   --no-trace        skip the per-document traces/ folder (raw LM responses + stage JSON)
  *   --help
  *
  * Markdown is cached on disk at <dir>/markdown/<id>.md after the first run, so
  * later runs (different module flags / removal seeds) reuse it and skip Docling.
+ *
+ * Per-document trace (on by default) is written to <out>/traces/<id>/ — inputs,
+ * each detection module's items, merged candidates, the LM consolidation and the
+ * LM comparison decisions, plus every stage's raw LM response as a .txt file.
  */
 
 const fs = require('fs');
@@ -94,6 +99,9 @@ const MARKDOWN_ONLY = has('--markdown-only');
 const REFRESH_MARKDOWN = has('--refresh-markdown');
 const MD_DIR = path.join(ROOT, 'markdown');
 const CONCURRENCY = Math.max(1, parseInt(getArg('--concurrency', '2'), 10) || 2);
+// Per-document trace (raw LM responses + every pipeline stage as JSON). On by
+// default so runs are auditable; disable with --no-trace for lighter output.
+const TRACE = !has('--no-trace');
 
 // Detection-module include/skip (instead of toggling .env). Modules not enabled
 // here are simply not run (their items are empty), regardless of .env config.
@@ -249,9 +257,9 @@ function loadIdIndex() {
   return _idxPromise;
 }
 
-async function safe(label, fn, errors) {
+async function safe(label, fn, errors, fallback = []) {
   try { return await fn(); }
-  catch (e) { errors.push(`${label}: ${e.message}`); return []; }
+  catch (e) { errors.push(`${label}: ${e.message}`); return fallback; }
 }
 
 async function detectSeedIndependent(pdfBuffer, markdown, fileName, errors) {
@@ -283,21 +291,25 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
 
   // Seed-dependent detectors fan out concurrently, exactly as the app runs them
   // as independent parallel jobs; merge + LM consolidation below is the barrier.
-  const [datasets, protocols, materials] = await Promise.all([
-    !moduleEnabled('datasets') ? Promise.resolve([]) : safe('datasets', async () => {
-      const { resources } = await datasetsService.detectDatasets(markdown, { authorDatasets: datasetSeeds });
-      return dedupeKrtItems(datasetsService.buildKrtItemsDatasets(resources), 'datasets');
-    }, errors),
-    !moduleEnabled('protocols') ? Promise.resolve([]) : safe('protocols', async () => {
-      const { resources } = await protocolsService.detectProtocols(markdown, { authorProtocols: protocolSeeds });
-      return dedupeKrtItems(protocolsService.buildKrtItemsProtocols(resources), 'protocols');
-    }, errors),
+  // Each returns { items, raw } so the trace keeps both the parsed KRT items and
+  // the raw LM response. safe() falls back to that shape on error.
+  const NONE = { items: [], raw: null };
+  const [dsR, prR, maR] = await Promise.all([
+    !moduleEnabled('datasets') ? Promise.resolve(NONE) : safe('datasets', async () => {
+      const r = await datasetsService.detectDatasets(markdown, { authorDatasets: datasetSeeds });
+      return { items: dedupeKrtItems(datasetsService.buildKrtItemsDatasets(r.resources), 'datasets'), raw: r.rawResponse || null };
+    }, errors, NONE),
+    !moduleEnabled('protocols') ? Promise.resolve(NONE) : safe('protocols', async () => {
+      const r = await protocolsService.detectProtocols(markdown, { authorProtocols: protocolSeeds });
+      return { items: dedupeKrtItems(protocolsService.buildKrtItemsProtocols(r.resources), 'protocols'), raw: r.rawResponse || null };
+    }, errors, NONE),
     // Materials is author-seeded only — skipped when the author listed none (same as the app).
-    (!moduleEnabled('materials') || materialSeeds.length === 0) ? Promise.resolve([]) : safe('materials', async () => {
-      const { resources } = await materialsService.detectMaterials(pdfBuffer, fileName, { authorMaterials: materialSeeds });
-      return dedupeKrtItems(materialsService.buildKrtItemsMaterials(resources), 'materials');
-    }, errors)
+    (!moduleEnabled('materials') || materialSeeds.length === 0) ? Promise.resolve(NONE) : safe('materials', async () => {
+      const r = await materialsService.detectMaterials(pdfBuffer, fileName, { authorMaterials: materialSeeds });
+      return { items: dedupeKrtItems(materialsService.buildKrtItemsMaterials(r.resources), 'materials'), raw: r.rawResponse || null };
+    }, errors, NONE)
   ]);
+  const datasets = dsR.items, protocols = prR.items, materials = maR.items;
 
   const contributions = [
     { source: 'software_detection', items: seedIndependent.software },
@@ -308,18 +320,45 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
   ].filter(c => c.items && c.items.length);
 
   const candidates = mergeDetections(contributions);
+
   let generatedKrt = candidates;
-  try { generatedKrt = (await consolidateWithLM(candidates)).items || candidates; }
+  let consolidation = { items: candidates, dropped: [], usedLM: false, rawResponse: null };
+  try { consolidation = await consolidateWithLM(candidates); generatedKrt = consolidation.items || candidates; }
   catch (e) { errors.push(`krt-generation: ${e.message}`); }
 
-  let suggestions = [], decisions = [];
+  let suggestions = [], decisions = [], comparisonRaw = null;
   await safe('comparison', async () => {
     const res = await compareKrts(authorRows, generatedKrt);
-    suggestions = res.suggestions; decisions = res.decisions;
+    suggestions = res.suggestions; decisions = res.decisions; comparisonRaw = res.rawResponse || null;
     return [];
   }, errors);
 
-  return { generatedKrt, suggestions, decisions };
+  // Full trace of this pass: every module's items, the merged candidates, the LM
+  // consolidation (+ what it dropped) and the LM comparison decisions, plus each
+  // stage's raw LM response (written to .txt files by writeTrace).
+  const trace = {
+    seeds: { datasets: datasetSeeds, protocols: protocolSeeds, materials: materialSeeds },
+    modules: {
+      software:   { enabled: moduleEnabled('software'),   count: seedIndependent.software.length,   items: seedIndependent.software },
+      identifier: { enabled: moduleEnabled('identifier'), count: seedIndependent.identifier.length, items: seedIndependent.identifier },
+      datasets:   { enabled: moduleEnabled('datasets'),   count: datasets.length,  items: datasets },
+      protocols:  { enabled: moduleEnabled('protocols'),  count: protocols.length, items: protocols },
+      materials:  { enabled: moduleEnabled('materials'),  count: materials.length, items: materials }
+    },
+    merge: { count: candidates.length, candidates },
+    consolidation: {
+      usedLM: consolidation.usedLM, keptCount: generatedKrt.length,
+      droppedCount: (consolidation.dropped || []).length, dropped: consolidation.dropped || [], items: generatedKrt
+    },
+    comparison: { decisionCount: decisions.length, suggestionCount: suggestions.length, decisions, suggestions },
+    raw: {
+      datasets: dsR.raw, protocols: prR.raw, materials: maR.raw,
+      'krt-generation': consolidation.rawResponse || null,
+      'kr-comparison': comparisonRaw
+    }
+  };
+
+  return { generatedKrt, suggestions, decisions, trace };
 }
 
 // ── Removal selection for pass B ────────────────────────────────────────────
@@ -350,6 +389,37 @@ function chooseRemovals(authorRows, summaryRows) {
     removed.push(...shuffled.slice(0, n));
   }
   return removed;
+}
+
+// ── Trace writers (full audit trail of inputs, module results, LM responses) ──
+// Layout:  <out>/traces/<docId>/
+//   inputs.json                     author KRT (A), removed rows, modified KRT (B)
+//   original.trace.json             pass A: seeds, per-module items, merged
+//   modified.trace.json             pass B   candidates, consolidation, decisions
+//   original.raw/<stage>.txt        raw LM response per stage (datasets, protocols,
+//   modified.raw/<stage>.txt        materials, krt-generation, kr-comparison)
+function traceDir(docId) { return path.join(OUT_DIR, 'traces', docId); }
+
+function writeInputs(docId, authorRows, modifiedRows, removed) {
+  const base = traceDir(docId);
+  fs.mkdirSync(base, { recursive: true });
+  fs.writeFileSync(path.join(base, 'inputs.json'), JSON.stringify({
+    authorKrt: authorRows,
+    removedForModified: removed.map(r => ({ row: r.row, summary: r.summary })),
+    modifiedKrt: modifiedRows
+  }, null, 2));
+}
+
+function writeTrace(docId, passName, trace) {
+  const base = traceDir(docId);
+  const rawDir = path.join(base, `${passName}.raw`);
+  fs.mkdirSync(rawDir, { recursive: true });
+  const { raw, ...structured } = trace;
+  fs.writeFileSync(path.join(base, `${passName}.trace.json`), JSON.stringify(structured, null, 2));
+  for (const [stage, text] of Object.entries(raw || {})) {
+    if (text == null) continue;
+    fs.writeFileSync(path.join(rawDir, `${stage}.txt`), typeof text === 'string' ? text : JSON.stringify(text, null, 2));
+  }
 }
 
 // ── xlsx writers ────────────────────────────────────────────────────────────
@@ -540,6 +610,13 @@ async function processDoc(doc, summaryAll) {
   const passA = await runPass(pdfBuffer, markdown, path.basename(doc.pdf), authorRows, seedIndependent, errors);
   const passB = SKIP_MODIFIED ? null : await runPass(pdfBuffer, markdown, path.basename(doc.pdf), modifiedRows, seedIndependent, errors);
 
+  // Full audit trail: inputs + every module/LM stage for both passes.
+  if (TRACE) {
+    writeInputs(doc.id, authorRows, modifiedRows, removed);
+    writeTrace(doc.id, 'original', passA.trace);
+    if (passB) writeTrace(doc.id, 'modified', passB.trace);
+  }
+
   // Build per-document workbook — sheets in the requested order
   // (Modified sheets only when pass B ran).
   const wb = new ExcelJS.Workbook();
@@ -613,7 +690,8 @@ function discoverDocuments() {
   const effConcurrency = PLAN_ONLY ? 1 : CONCURRENCY;
   const modeLabel = MARKDOWN_ONLY ? 'MARKDOWN ONLY (pre-warm cache)' : (PLAN_ONLY ? 'PLAN ONLY' : (RANDOM_MODE ? 'random removal' : 'detectable removal'));
   console.log(`Processing ${docs.length} document(s) [mode: ${modeLabel}` +
-    `${MARKDOWN_ONLY ? '' : `, modules: ${enabledMods.join(',') || 'none'}`}, concurrency: ${effConcurrency}]\n`);
+    `${MARKDOWN_ONLY ? '' : `, modules: ${enabledMods.join(',') || 'none'}`}, concurrency: ${effConcurrency}` +
+    `${(MARKDOWN_ONLY || PLAN_ONLY) ? '' : `, trace: ${TRACE ? 'on' : 'off'}`}]\n`);
 
   const settled = await runPool(docs, effConcurrency, async (doc) => {
     if (!doc.key && !MARKDOWN_ONLY) console.log(`  ! ${doc.id}: could not derive summary key`);

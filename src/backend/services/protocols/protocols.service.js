@@ -269,8 +269,8 @@ function parseGeminiResponse(text) {
  * @returns {Promise<{ resources: object[] }>}
  */
 async function detectProtocols(markdownText, { prompt, authorProtocols } = {}) {
-  const { resources } = await callGeminiForProtocols(markdownText, prompt, authorProtocols || []);
-  return { resources };
+  const { resources, rawResponse } = await callGeminiForProtocols(markdownText, prompt, authorProtocols || []);
+  return { resources, rawResponse };
 }
 
 /**

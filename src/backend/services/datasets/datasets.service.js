@@ -477,8 +477,8 @@ async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExam
     return { resources: [], signalCount: extractions.length };
   }
 
-  const { resources } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt, authorDatasets || []);
-  return { resources, signalCount: extractedRows.length };
+  const { resources, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt, authorDatasets || []);
+  return { resources, signalCount: extractedRows.length, rawResponse };
 }
 
 /**

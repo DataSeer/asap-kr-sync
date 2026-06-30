@@ -253,8 +253,8 @@ function parseGeminiResponse(text, fileName) {
  * @returns {Promise<{ resources: object[] }>}
  */
 async function detectMaterials(pdfBuffer, fileName, { prompt, authorMaterials } = {}) {
-  const { resources } = await callGeminiForMaterials(pdfBuffer, fileName, prompt, authorMaterials || []);
-  return { resources };
+  const { resources, rawResponse } = await callGeminiForMaterials(pdfBuffer, fileName, prompt, authorMaterials || []);
+  return { resources, rawResponse };
 }
 
 /**
