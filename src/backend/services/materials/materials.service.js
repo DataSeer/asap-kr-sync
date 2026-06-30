@@ -27,6 +27,7 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
+const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 
 // KRT resource-type group for lab materials (0=dataset, 1=software, 2=protocol, 3=lab_material).
@@ -223,6 +224,7 @@ function parseGeminiResponse(text) {
   if (jsonStr.startsWith('```')) {
     jsonStr = jsonStr.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
   }
+  jsonStr = sanitizeJsonEscapes(jsonStr);
 
   try {
     const parsed = JSON.parse(jsonStr);

@@ -29,6 +29,7 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
+const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 
 // KRT resource-type group for protocols (0=dataset, 1=software, 2=protocol, 3=lab_material).
@@ -246,7 +247,7 @@ function stripMarkdownEscapes(jsonStr) {
 }
 
 function parseGeminiResponse(text) {
-  const jsonStr = stripMarkdownEscapes(extractJsonBlock(text));
+  const jsonStr = sanitizeJsonEscapes(stripMarkdownEscapes(extractJsonBlock(text)));
 
   try {
     const parsed = JSON.parse(jsonStr);

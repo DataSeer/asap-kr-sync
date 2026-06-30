@@ -33,6 +33,7 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
+const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
@@ -433,7 +434,7 @@ function transformConsolidatedItem(item) {
 }
 
 function parseGeminiResponse(text) {
-  const jsonStr = stripMarkdownFences(text);
+  const jsonStr = sanitizeJsonEscapes(stripMarkdownFences(text));
 
   try {
     const parsed = JSON.parse(jsonStr);
