@@ -81,7 +81,6 @@ function filterMarkdown(markdown, { langRatio = 0.30 } = {}) {
       } else {
         stats.tablesDropped++;
         stats.linesDropped += table.length;
-        stats.charsDropped += text.length;
       }
       i = j;
       continue;
@@ -92,13 +91,15 @@ function filterMarkdown(markdown, { langRatio = 0.30 } = {}) {
       out.push(line);
     } else {
       stats.linesDropped++;
-      stats.charsDropped += line.length;
     }
     i++;
   }
 
   const result = out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '');
   stats.charsAfter = result.length;
+  // True net reduction (includes the newline separators and blank-line collapsing
+  // removed alongside the dropped blocks), so charsBefore - charsAfter === charsDropped.
+  stats.charsDropped = stats.charsBefore - stats.charsAfter;
   return { markdown: result, stats };
 }
 
