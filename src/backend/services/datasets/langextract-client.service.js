@@ -128,12 +128,18 @@ async function extractSignals(markdownText, { prompt, examples } = {}) {
       }
 
       if (code !== 0) {
+        // The Python script prints "Error: ..." then exits — that line is at the
+        // END of stderr, past the benign absl alignment warnings at the top. Log
+        // the actual error line (and the stderr tail) instead of the truncated head.
+        const errLines = stderr.match(/Error:[^\n]*/g);
+        const reason = errLines ? errLines[errLines.length - 1] : stderr.slice(-500).trim();
         logger.error('langextract script failed', {
           exitCode: code,
-          stderr: stderr.substring(0, 1000),
+          reason,
+          stderrTail: stderr.length > 1500 ? '…' + stderr.slice(-1500) : stderr,
           durationMs
         });
-        return reject(new ExternalServiceError('langextract', `Script failed (exit ${code}): ${stderr.substring(0, 500)}`));
+        return reject(new ExternalServiceError('langextract', `Script failed (exit ${code}): ${reason}`));
       }
 
       // Parse JSON output
