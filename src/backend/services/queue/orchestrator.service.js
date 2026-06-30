@@ -40,7 +40,7 @@ const PIPELINE = [
   { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [] },
   { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [] },
   { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
-  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [] },
+  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
   { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
   // Identifier detection scans the post-conversion markdown against the
   // curated enrichment list. Cross-category — produces software/materials/

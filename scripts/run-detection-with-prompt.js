@@ -11,8 +11,7 @@
  *   node scripts/run-detection-with-prompt.js <type> <inputFile> [promptFile] [signalsPromptFile] [signalsExamplesFile]
  *
  *   type          das | protocols | datasets | materials
- *   inputFile     manuscript markdown (.md/.txt) for das/protocols/datasets;
- *                 a PDF for materials
+ *   inputFile     manuscript markdown (.md/.txt) for das/protocols/datasets/materials
  *   promptFile    path to the custom prompt text (the primary override)
  *   signalsPromptFile     datasets only, optional — overrides the langextract
  *                         signal-extraction prompt
@@ -80,8 +79,8 @@ async function main() {
       break;
     }
     case 'materials': {
-      const pdfBuffer = fs.readFileSync(inputPath);
-      result = await materialsService.detectMaterials(pdfBuffer, path.basename(inputPath), { prompt });
+      const markdown = fs.readFileSync(inputPath, 'utf-8');
+      result = await materialsService.detectMaterials(markdown, { prompt });
       break;
     }
     default:

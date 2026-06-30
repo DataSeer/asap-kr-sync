@@ -7,7 +7,7 @@ This detector runs ONLY when the authors have already provided lab-material rows
 The input includes a block "AUTHOR-PROVIDED MATERIALS (KRT)": material rows from the authors' KRT. Each entry has `name`, `role` (GENERATED/REUSED), `source`, `accessions`, `dois`, `urls`, and `additional_info`.
 
 1. **SEED FIRST.** Emit one output row for every author-provided material. Never drop one. Seed its fields directly: canonical_name ← `name`; newReuse ← `role` (GENERATED→"new", REUSED→"reuse", default "reuse"); source ← `source` (the supplier/vendor/repository); identifier ← the entry's identifiers (catalog number, RRID, Addgene #, DOI, URL). Trust the author's values and never fabricate identifiers.
-2. **ENRICH FROM THE PDF.** For each seeded material, look it up in the manuscript and fill only MISSING fields — supplier/source, catalog number, RRID, or clone — when they are explicitly stated. On any conflict, keep the author's value.
+2. **ENRICH FROM THE ARTICLE.** For each seeded material, look it up in the manuscript markdown and fill only MISSING fields — supplier/source, catalog number, RRID, or clone — when they are explicitly stated. On any conflict, keep the author's value.
 3. **ADD SPARINGLY.** You MAY add a material the authors omitted ONLY when it is unambiguously a KRT lab material AND clearly evidenced in the text (an explicit supplier + catalog/RRID, or an Addgene/repository identifier). When in doubt, do NOT add it.
 
 ## RESOURCE TYPES

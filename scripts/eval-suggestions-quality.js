@@ -305,7 +305,7 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
     }, errors, NONE),
     // Materials is author-seeded only — skipped when the author listed none (same as the app).
     (!moduleEnabled('materials') || materialSeeds.length === 0) ? Promise.resolve(NONE) : safe('materials', async () => {
-      const r = await materialsService.detectMaterials(pdfBuffer, fileName, { authorMaterials: materialSeeds });
+      const r = await materialsService.detectMaterials(markdown, { authorMaterials: materialSeeds });
       return { items: dedupeKrtItems(materialsService.buildKrtItemsMaterials(r.resources), 'materials'), raw: r.rawResponse || null };
     }, errors, NONE)
   ]);
