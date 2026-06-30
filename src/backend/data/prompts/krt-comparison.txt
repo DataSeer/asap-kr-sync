@@ -13,11 +13,13 @@ Compare the two and decide, for EVERY generated resource, what to do — and giv
 3. **`remove` must be very rare.** Only for a clear mistake (a duplicate of another author row, or plainly not a resource). NEVER remove just because detection missed it or you are unsure.
 4. **Never invent identifiers.** Only use identifiers/sources present in the data.
 5. **In `reason`, do not quote raw row ids/UUIDs.** Refer to a row by its resource name (e.g. "already present in the author's KRT as Fiji"), not "(row a3d12…)".
+6. **Only add datasets you are sure of.** Do NOT `add` a generated **Dataset** that has no identifier — i.e. no repository accession (GEO/SRA/ArrayExpress/PRIDE/ProteomeXchange/dbGaP/EGA/MassIVE/PDB/…), no DOI to a data repository (Zenodo/Figshare/Dryad), and no download URL. An identifier-less "dataset" is almost always an assay readout, measurement, or biological sample — not a shareable artifact — so `skip` it rather than spam the curator with a non-actionable suggestion. This stricter bar is for **Datasets only**: software, protocols, and lab materials may still be added without an identifier when clearly evidenced.
 
 ## DECISIONS — one per generated resource, plus author-side fixes
 
 For EVERY generated `ref`, output exactly one of:
 - `{ "action": "add",  "generatedRef": <ref>, "reason": "why this is a new resource worth adding" }`
+  (For a **Dataset**, only `add` when it carries an identifier — see principle 6; otherwise `skip` it.)
 - `{ "action": "skip", "generatedRef": <ref>, "authorRowId": "<id of the author row this duplicates, if it is already in the KRT>", "reason": "why not added — e.g. already in the author KRT, not relevant, duplicate" }`
   (Include `authorRowId` whenever the skip is because the resource is already in the author KRT, so the matching author row can be shown.)
 

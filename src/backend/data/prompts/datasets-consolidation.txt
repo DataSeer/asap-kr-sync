@@ -246,6 +246,24 @@ If unsure:
 
 ---
 
+#### 0. NO DEPOSITION IDENTIFIER → NOT A NEW DATASET (HARD GATE)
+
+For any dataset you would CREATE (i.e. NOT an author KRT seed from Section 0), a real deposition identifier is REQUIRED. Create the record ONLY if the data explicitly provides one of:
+* a repository accession (e.g. GEO GSE/GSM, SRA SRR/SRP, ArrayExpress E-MTAB, PRIDE/ProteomeXchange PXD, dbGaP phs, EGA, MassIVE, BioStudies, PDB, …), OR
+* a DOI that resolves to a DATA repository (e.g. Zenodo, Figshare, Dryad), OR
+* an explicit download URL to the data.
+
+If none of these is present, DO NOT create the record. A bare mention of "… data" is not enough.
+
+Experimental outputs and lab measurements are NOT datasets just because the manuscript reports producing them. NEVER create a dataset for:
+* assay readouts / measurements — e.g. "BCA assay data", "enzyme assay data", "fluorophore/fluorescence measurements", "qPCR / mtDNA quantification", "immunoblot data", "immunoprecipitation data", "catalytic activity data"
+* biological samples or specimens — e.g. "peripheral blood samples", "patient samples"
+* generic "… data" / "… profiling data" / "clinical and genetic data" mentions with no accession, DOI, or URL
+
+This gate does NOT apply to author KRT seeds (Section 0): keep every author dataset even if its identifier is missing or pending. It applies ONLY to datasets you would newly create.
+
+---
+
 #### 1. SOFTWARE / METHODS
 
 * tools
