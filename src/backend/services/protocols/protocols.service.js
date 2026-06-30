@@ -197,8 +197,20 @@ async function callGeminiForProtocols(markdownText, promptOverride, authorProtoc
   try {
     const response = await ai.models.generateContent({
       model: protocolsConfig.model,
-      contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
+      contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
+      // Force complete, valid JSON and give the full token budget to output:
+      // gemini-2.5-flash thinks by default, and on long protocol lists (with
+      // long text_excerpts) that thinking ate the budget and truncated the JSON.
+      config: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: 32768,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
     });
+
+    if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+      logger.warn('Gemini response truncated (protocols) — output hit maxOutputTokens');
+    }
 
     const text = response.text;
     if (!text) {

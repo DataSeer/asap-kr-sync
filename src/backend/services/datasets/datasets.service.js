@@ -233,8 +233,20 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
   try {
     const response = await ai.models.generateContent({
       model: datasetsConfig.model,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }]
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      // Force complete, valid JSON and give the full token budget to output:
+      // gemini-2.5-flash thinks by default, and on long consolidations that
+      // thinking ate the budget and truncated the JSON mid-object.
+      config: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: 32768,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
     });
+
+    if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+      logger.warn('Gemini response truncated (datasets consolidation) — output hit maxOutputTokens');
+    }
 
     const text = response.text;
     if (!text) {

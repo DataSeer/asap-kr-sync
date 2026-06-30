@@ -196,8 +196,20 @@ async function callGeminiForMaterials(pdfBuffer, fileName, promptOverride, autho
             { inlineData: { mimeType: 'application/pdf', data: pdfBuffer.toString('base64') } }
           ]
         }
-      ]
+      ],
+      // Force complete, valid JSON and give the full token budget to output:
+      // gemini-2.5-flash thinks by default, and on long material lists that
+      // thinking ate the budget and truncated the JSON mid-object.
+      config: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: 32768,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
     });
+
+    if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+      logger.warn('Gemini response truncated (materials) — output hit maxOutputTokens', { fileName });
+    }
 
     const text = response.text;
     if (!text) {
