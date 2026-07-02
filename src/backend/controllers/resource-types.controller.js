@@ -2,11 +2,12 @@
  * Resource Types Controller
  */
 
-const { ResourceType } = require('../models');
+const { ResourceType, sequelize } = require('../models');
 const { NotFoundError, ConflictError, ValidationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
 const { invalidateConfigCache } = require('../config/constants');
 const logger = require('../utils/logger');
+const { escapeCsvField, stripCsvFormulaGuard } = require('../utils/csv');
 
 /**
  * List all resource types
@@ -238,20 +239,27 @@ async function importEntries(req, res, next) {
       throw new ValidationError(`${invalid.length} entries are missing a name`);
     }
 
+    // stripCsvFormulaGuard reverses the formula-injection prefix our own CSV
+    // export adds, so export -> re-import round-trips values unchanged.
     const records = entries.map((e, i) => ({
-      name: e.name.trim(),
+      name: stripCsvFormulaGuard(e.name.trim()),
       type: e.type || 'lab_material',
-      description: e.description || null,
+      description: stripCsvFormulaGuard(e.description) || null,
       sortOrder: e.sortOrder ?? i,
       active: e.active !== false && e.active !== 'false'
     }));
 
-    let deletedCount = 0;
-    if (mode === 'replace') {
-      deletedCount = await ResourceType.destroy({ where: {}, truncate: true });
-    }
-
-    const created = await ResourceType.bulkCreate(records);
+    // Replace mode truncates the whole table before inserting — the two steps
+    // must commit or roll back together, or a failed bulkCreate leaves the
+    // resource-type list empty.
+    const { deletedCount, created } = await sequelize.transaction(async (t) => {
+      let deleted = 0;
+      if (mode === 'replace') {
+        deleted = await ResourceType.destroy({ where: {}, truncate: true, transaction: t });
+      }
+      const rows = await ResourceType.bulkCreate(records, { transaction: t });
+      return { deletedCount: deleted, created: rows };
+    });
 
     // Invalidate cache
     invalidateConfigCache();
@@ -271,18 +279,6 @@ async function importEntries(req, res, next) {
   } catch (error) {
     next(error);
   }
-}
-
-/**
- * Escape a value for CSV output
- */
-function escapeCsvField(val) {
-  if (val == null) return '';
-  const str = String(val);
-  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-    return '"' + str.replace(/"/g, '""') + '"';
-  }
-  return str;
 }
 
 module.exports = {

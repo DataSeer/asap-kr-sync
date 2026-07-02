@@ -616,8 +616,10 @@ async function processNewVersion(req, res, next) {
           transaction: t
         });
 
-        for (const row of previousRows) {
-          await KRTData.create({
+        // Single bulkCreate instead of per-row inserts — large KRTs held the
+        // transaction open for dozens of sequential round-trips.
+        await KRTData.bulkCreate(
+          previousRows.map(row => ({
             submissionId: submission.id,
             resourceType: row.resourceType,
             resourceName: row.resourceName,
@@ -628,8 +630,9 @@ async function processNewVersion(req, res, next) {
             parsedIdentifiers: row.parsedIdentifiers,
             round: newRound,
             originRowId: row.id
-          }, { transaction: t });
-        }
+          })),
+          { transaction: t }
+        );
 
         // Copy the latest KRT file record to the new round
         const latestKrtFile = await File.findOne({

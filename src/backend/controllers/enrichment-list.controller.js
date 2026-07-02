@@ -9,6 +9,7 @@
 const { EnrichmentListEntry, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const logger = require('../utils/logger');
+const { escapeCsvField, stripCsvFormulaGuard } = require('../utils/csv');
 
 const CSV_HEADERS = ['resourceType', 'resourceName', 'source', 'identifier', 'newReuse', 'additionalInformation', 'suggestedEntity', 'tokens'];
 
@@ -344,8 +345,9 @@ async function importEntries(req, res, next) {
 
     // Postgres rejects NUL bytes (\u0000) in TEXT and JSONB (SQLSTATE 22P05).
     // Some source CSVs contain stray NULs from upstream encoding issues; strip them
-    // from every string we hand to the DB.
-    const stripNul = (v) => (typeof v === 'string' ? v.replace(/\u0000/g, '') : v);
+    // from every string we hand to the DB. Also remove the formula guard our own
+    // CSV export prefixes onto dangerous cells, so export -> re-import round-trips.
+    const stripNul = (v) => (typeof v === 'string' ? stripCsvFormulaGuard(v.replace(/\u0000/g, '')) : v);
 
     const records = entries.map(e => ({
       category,
@@ -436,15 +438,6 @@ async function exportCsv(req, res, next) {
   } catch (error) {
     next(error);
   }
-}
-
-function escapeCsvField(val) {
-  if (val == null) return '';
-  const str = String(val);
-  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-    return '"' + str.replace(/"/g, '""') + '"';
-  }
-  return str;
 }
 
 module.exports = { list, listAll, getCounts, getAllCounts, getById, create, update, remove, importEntries, exportCsv };

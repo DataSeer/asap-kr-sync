@@ -89,6 +89,13 @@ async function tryLocalVerification(token) {
     // Pin HS256 — this local verifier runs alongside the Auth0 RS256 verifier,
     // so an unpinned alg is the classic algorithm-confusion setup.
     const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+    // Reject non-access token classes (e.g. a refresh token in the session
+    // cookie — same secret/alg, so only this claim tells them apart). A
+    // missing `type` is tolerated for access tokens issued before the claim
+    // existed; they age out within one 15-minute expiry window.
+    if (decoded.type !== undefined && decoded.type !== 'access') {
+      return null;
+    }
     const result = await fetchUserWithTeams({ id: decoded.userId });
     if (!result) {
       throw new AuthenticationError('User not found');
