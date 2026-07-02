@@ -566,13 +566,13 @@ const RESIZE_MENTIONS_COLS = [
 const RESIZE_PDF_COLS = [
   { key: 'krtNum', label: 'KRT #', width: 70 },
   { key: 'detection', label: 'Detection', width: 110 },
+  { key: 'reason', label: 'Reason', width: 240 },
   { key: 'resourceType', label: 'Resource Type', width: 120 },
   { key: 'resourceName', label: 'Detected Name', width: 220 },
   { key: 'source', label: 'Source', width: 150 },
   { key: 'identifier', label: 'Identifier', width: 150 },
   { key: 'newReuse', label: 'New/Reuse', width: 90 },
-  { key: 'additionalInformation', label: 'Additional Information', width: 200 },
-  { key: 'reason', label: 'Reason', width: 240 }
+  { key: 'additionalInformation', label: 'Additional Information', width: 200 }
 ]
 const RESIZE_DROPPED_COLS = [
   { key: 'detectedBy', label: 'Detected by', width: 130 },
@@ -1967,6 +1967,8 @@ async function downloadMarkdownFile(fileId) {
                           </span>
                           <span v-else>—</span>
                         </td>
+                        <!-- LM consolidation reason — shown once per merged group -->
+                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell"><HighlightText v-if="row.isGroupStart" :text="row.reason" :query="modalSearch" /></td>
                         <td class="text-xs"><HighlightText :text="row.resourceType" :query="modalSearch" /></td>
                         <td class="font-medium"><HighlightText :text="row.resourceName" :query="modalSearch" /></td>
                         <td class="text-xs"><HighlightText :text="row.sourceUrl" :query="modalSearch" /></td>
@@ -1978,8 +1980,6 @@ async function downloadMarkdownFile(fileId) {
                           <span v-else>—</span>
                         </td>
                         <td class="text-xs text-gray-500"><HighlightText :text="row.additionalInformation" :query="modalSearch" /></td>
-                        <!-- LM consolidation reason — shown once per merged group -->
-                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell"><HighlightText v-if="row.isGroupStart" :text="row.reason" :query="modalSearch" /></td>
                       </tr>
                     </tbody>
                   </table>
