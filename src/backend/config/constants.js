@@ -4,8 +4,28 @@
 
 const path = require('path');
 
-// Load rate limits from conf/ directory (kept as static)
-const rateLimits = require('../../../conf/rate-limits.json');
+// Load rate limits from conf/ directory (defaults), overridable per bucket
+// via env so ops can tune limits without a redeploy:
+//   RATE_LIMIT_<BUCKET>_MAX / RATE_LIMIT_<BUCKET>_WINDOW_MS
+// where <BUCKET> is the upper-cased key: API, AUTH, REFRESH, UPLOAD, LMAPI.
+// Invalid (non-numeric/non-positive) values fall back to the conf default.
+const rateLimitDefaults = require('../../../conf/rate-limits.json');
+
+function envOverride(name, fallback) {
+  const parsed = parseInt(process.env[name], 10);
+  return parsed > 0 ? parsed : fallback;
+}
+
+const rateLimits = Object.fromEntries(
+  Object.entries(rateLimitDefaults).map(([bucket, cfg]) => {
+    const key = bucket.toUpperCase();
+    return [bucket, {
+      ...cfg,
+      max: envOverride(`RATE_LIMIT_${key}_MAX`, cfg.max),
+      windowMs: envOverride(`RATE_LIMIT_${key}_WINDOW_MS`, cfg.windowMs)
+    }];
+  })
+);
 
 // Lazy-load config service to avoid circular dependencies
 // (config.service.js -> models -> User.js -> constants.js)
