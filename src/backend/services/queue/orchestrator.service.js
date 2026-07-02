@@ -75,21 +75,9 @@ const PIPELINE = [
   }
 ];
 
-/**
- * Map jobType to the queue name used by pg-boss
- */
-const JOB_TYPE_TO_QUEUE = {
-  [JOB_TYPES.PDF_ANALYSIS]:       jobQueue.QUEUES.PDF_ANALYSIS,
-  [JOB_TYPES.DAS_EXTRACTION]:     jobQueue.QUEUES.DAS_EXTRACTION,
-  [JOB_TYPES.SOFTWARE_DETECTION]: jobQueue.QUEUES.SOFTWARE_DETECTION,
-  [JOB_TYPES.ORCID_EXTRACTION]:  jobQueue.QUEUES.ORCID_EXTRACTION,
-  [JOB_TYPES.MARKDOWN_CONVERT]:   jobQueue.QUEUES.MARKDOWN_CONVERT,
-  [JOB_TYPES.DATASETS_DETECTION]: jobQueue.QUEUES.DATASETS_DETECTION,
-  [JOB_TYPES.MATERIALS_DETECTION]: jobQueue.QUEUES.MATERIALS_DETECTION,
-  [JOB_TYPES.PROTOCOLS_DETECTION]: jobQueue.QUEUES.PROTOCOLS_DETECTION,
-  [JOB_TYPES.IDENTIFIER_DETECTION]: jobQueue.QUEUES.IDENTIFIER_DETECTION,
-  [JOB_TYPES.SUGGESTION_GENERATION]: jobQueue.QUEUES.SUGGESTION_GENERATION
-};
+// Map jobType to the queue name used by pg-boss — shared, derived map so it
+// can't drift from JOB_TYPES/QUEUES (a hand-written copy here went stale).
+const { JOB_TYPE_TO_QUEUE } = jobQueue;
 
 /**
  * Run all pipeline processes for a submission.
