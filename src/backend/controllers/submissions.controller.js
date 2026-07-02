@@ -182,32 +182,39 @@ async function create(req, res, next) {
       status: 'step_krt'
     });
 
+    // uploadAndProcess runs its own internal transaction; it can't join an
+    // outer one (it re-reads the submission row on a separate connection), so
+    // creation is compensated rather than transactional: any failure after
+    // Submission.create destroys the submission, and the FK cascades remove
+    // whatever children (files, KRT rows, change logs) were committed. The
+    // S3 object is intentionally left behind — uploadAndProcess documents
+    // orphaned keys as harmless and cleaned up by lifecycle rules.
     try {
       await krtService.uploadAndProcess(submission.id, req.file, req.userId, 1);
-    } catch (krtErr) {
+
+      // Log the creation
+      await ChangeLog.create({
+        submissionId: submission.id,
+        userId: req.userId,
+        action: 'upload',
+        step: 1,
+        round: 1,
+        description: 'Submission created with Key Resources Table'
+      });
+    } catch (creationErr) {
       // Roll back the submission so the user can retry cleanly. We catch
       // and log the destroy failure separately — losing the cleanup is
-      // worse than the original KRT error, so don't mask it.
+      // worse than the original error, so don't mask it.
       try {
         await Submission.destroy({ where: { id: submission.id } });
       } catch (cleanupErr) {
-        logger.error('Failed to clean up submission after KRT persistence error', {
+        logger.error('Failed to clean up submission after creation error', {
           submissionId: submission.id,
           cleanupError: cleanupErr.message
         });
       }
-      throw krtErr;
+      throw creationErr;
     }
-
-    // Log the creation
-    await ChangeLog.create({
-      submissionId: submission.id,
-      userId: req.userId,
-      action: 'upload',
-      step: 1,
-      round: 1,
-      description: 'Submission created with Key Resources Table'
-    });
 
     logger.info('Submission created with KRT', {
       submissionId: submission.id,

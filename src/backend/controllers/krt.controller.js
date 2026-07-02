@@ -170,22 +170,26 @@ async function updateRow(req, res, next) {
       nextValue = value === true || value === 'true' || value === 1 || value === '1';
     }
 
+    // The cell write and its audit-log entry commit together — an edit must
+    // never persist without its ChangeLog record (or vice versa).
     const oldValue = krtRow[field];
     krtRow[field] = nextValue;
-    await krtRow.save();
+    await sequelize.transaction(async (t) => {
+      await krtRow.save({ transaction: t });
 
-    // Log the change with source (defaults to 'manual' if not provided)
-    await ChangeLog.create({
-      submissionId: req.params.id,
-      userId: req.userId,
-      action: 'edit',
-      source: source || 'manual',
-      step: statusToStep(req.submission.status),
-      round,
-      rowId: krtRow.id,
-      columnName: column,
-      oldValue,
-      newValue: value
+      // Log the change with source (defaults to 'manual' if not provided)
+      await ChangeLog.create({
+        submissionId: req.params.id,
+        userId: req.userId,
+        action: 'edit',
+        source: source || 'manual',
+        step: statusToStep(req.submission.status),
+        round,
+        rowId: krtRow.id,
+        columnName: column,
+        oldValue,
+        newValue: value
+      }, { transaction: t });
     });
 
     // Re-validate the row
@@ -214,27 +218,32 @@ async function addRow(req, res, next) {
     const { changeSource } = req.body; // Source for change log (separate from KRT source field)
     const round = req.submission.currentRound;
 
-    const newRow = await KRTData.create({
-      submissionId: req.params.id,
-      resourceType: rowData.resourceType,
-      resourceName: rowData.resourceName,
-      source: rowData.source,
-      identifier: rowData.identifier,
-      newReuse: rowData.newReuse,
-      additionalInformation: rowData.additionalInformation,
-      round
-    });
+    // Row insert and audit-log entry commit together.
+    const newRow = await sequelize.transaction(async (t) => {
+      const created = await KRTData.create({
+        submissionId: req.params.id,
+        resourceType: rowData.resourceType,
+        resourceName: rowData.resourceName,
+        source: rowData.source,
+        identifier: rowData.identifier,
+        newReuse: rowData.newReuse,
+        additionalInformation: rowData.additionalInformation,
+        round
+      }, { transaction: t });
 
-    // Log the change with source (defaults to 'manual' if not provided)
-    await ChangeLog.create({
-      submissionId: req.params.id,
-      userId: req.userId,
-      action: 'add_row',
-      source: changeSource || 'manual',
-      step: statusToStep(req.submission.status),
-      round,
-      rowId: newRow.id,
-      description: 'New row added'
+      // Log the change with source (defaults to 'manual' if not provided)
+      await ChangeLog.create({
+        submissionId: req.params.id,
+        userId: req.userId,
+        action: 'add_row',
+        source: changeSource || 'manual',
+        step: statusToStep(req.submission.status),
+        round,
+        rowId: created.id,
+        description: 'New row added'
+      }, { transaction: t });
+
+      return created;
     });
 
     // Validate the new row (non-critical, can fail independently)
@@ -274,35 +283,40 @@ async function deleteRow(req, res, next) {
       throw new NotFoundError('KRT row');
     }
 
-    // Log the deletion before removing (with source)
-    await ChangeLog.create({
-      submissionId: req.params.id,
-      userId: req.userId,
-      action: 'delete_row',
-      source: source || 'manual',
-      step: statusToStep(req.submission.status),
-      round,
-      rowId: krtRow.id,
-      description: `Deleted row: ${krtRow.resourceName}`,
-      metadata: {
-        resourceType: krtRow.resourceType,
-        resourceName: krtRow.resourceName,
-        source: krtRow.source,
-        identifier: krtRow.identifier,
-        newReuse: krtRow.newReuse,
-        additionalInformation: krtRow.additionalInformation
-      }
-    });
-
-    // Clear validation results for this row
-    await ValidationResult.destroy({
-      where: {
+    // Audit-log entry, validation cleanup, and the row deletion commit
+    // together — the old sequence wrote the "deleted" ChangeLog entry first,
+    // so a failed destroy left a false audit record.
+    await sequelize.transaction(async (t) => {
+      await ChangeLog.create({
         submissionId: req.params.id,
-        rowId: krtRow.id
-      }
-    });
+        userId: req.userId,
+        action: 'delete_row',
+        source: source || 'manual',
+        step: statusToStep(req.submission.status),
+        round,
+        rowId: krtRow.id,
+        description: `Deleted row: ${krtRow.resourceName}`,
+        metadata: {
+          resourceType: krtRow.resourceType,
+          resourceName: krtRow.resourceName,
+          source: krtRow.source,
+          identifier: krtRow.identifier,
+          newReuse: krtRow.newReuse,
+          additionalInformation: krtRow.additionalInformation
+        }
+      }, { transaction: t });
 
-    await krtRow.destroy();
+      // Clear validation results for this row
+      await ValidationResult.destroy({
+        where: {
+          submissionId: req.params.id,
+          rowId: krtRow.id
+        },
+        transaction: t
+      });
+
+      await krtRow.destroy({ transaction: t });
+    });
 
     logger.info('KRT row deleted', {
       submissionId: req.params.id,
