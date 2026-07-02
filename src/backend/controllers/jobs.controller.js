@@ -61,6 +61,11 @@ async function getJobs(req, res, next) {
           id: job.id,
           jobType: job.jobType,
           status: job.status,
+          // Explains a `waiting` status the dependency graph can't: the step
+          // is gated on submission state (e.g. KRT not yet validated).
+          waitingReason: job.status === 'waiting' && orchestrator.isGateBlocked(job.jobType, req.submission)
+            ? 'krt_validation'
+            : null,
           referenceId: job.referenceId,
           result: safeResult,
           errorMessage: job.errorMessage,

@@ -315,6 +315,7 @@ async function update(req, res, next) {
     }
     if (notes !== undefined) submission.notes = notes;
 
+    let statusChanged = false;
     if (status) {
       // Allow staying in the same status (no-op)
       if (status !== submission.status) {
@@ -328,10 +329,28 @@ async function update(req, res, next) {
           });
         }
         submission.status = status;
+        statusChanged = true;
       }
     }
 
     await submission.save();
+
+    // Pipeline steps can gate on submission state (e.g. the seeded detectors
+    // wait for the KRT step to be validated), so a status change may unblock
+    // waiting jobs. Failure here is non-fatal: the periodic reconciler
+    // re-drives gated jobs within one sweep interval.
+    if (statusChanged) {
+      try {
+        const orchestrator = require('../services/queue/orchestrator.service');
+        await orchestrator.reconcileSubmission(submission.id, submission.currentRound, req.userId);
+      } catch (advanceErr) {
+        logger.error('Failed to re-drive pipeline after status change', {
+          submissionId: submission.id,
+          status: submission.status,
+          error: advanceErr.message
+        });
+      }
+    }
 
     logger.info('Submission updated', { submissionId: submission.id, userId: req.userId });
 

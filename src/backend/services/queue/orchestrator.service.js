@@ -22,7 +22,7 @@ const RECONCILE_GRACE_MS = 5 * 60 * 1000; // 5 minutes
 /**
  * Pipeline definition — single source of truth for process ordering.
  *
- * Each entry: { jobType, dependsOn: [...jobTypes], canAutoAdvance? }
+ * Each entry: { jobType, dependsOn: [...jobTypes], canAutoAdvance?, gate? }
  * Jobs with no dependencies start immediately.
  * Jobs with dependencies start when ALL dependencies reach a terminal state.
  *
@@ -30,7 +30,25 @@ const RECONCILE_GRACE_MS = 5 * 60 * 1000; // 5 minutes
  *   - Returns true → job is enqueued automatically.
  *   - Returns false → job is set to 'pending_input' (needs manual advance).
  *   - Omitted → always auto-advances.
+ *
+ * gate: optional name of a submission-state condition (see GATES). Unlike
+ * canAutoAdvance (which parks the job as pending_input for a manual decision),
+ * an unsatisfied gate keeps the job in `waiting`: it advances automatically
+ * when the submission state changes (status-change handler and the periodic
+ * reconciler both re-drive the pipeline).
  */
+
+/**
+ * Submission-state gates, by name. Each receives the Submission (id, status)
+ * and returns whether the gated step may start.
+ */
+const GATES = {
+  // The author KRT feeds the seeded detectors (datasets/materials/protocols
+  // load author rows as LM seeds), so those must not run until the author has
+  // finished curating the KRT — i.e. the submission has moved past the KRT
+  // step. draft/step_krt = still curating.
+  krt_curated: (submission) => !['draft', 'step_krt'].includes(submission.status)
+};
 const PIPELINE = [
   // DAS extraction now reads the converted markdown (Gemini-based, replaces
   // the Modal Llama fine-tune that ate the PDF directly), so it depends on
@@ -39,9 +57,13 @@ const PIPELINE = [
   { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [] },
   { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [] },
   { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [] },
-  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
-  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
-  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
+  // The three seeded detectors read the author KRT (seeds for the LM prompt),
+  // so they additionally gate on the author having validated the KRT step.
+  // Software/ORCID/DAS/identifier detection don't consume author KRT data and
+  // keep starting as early as their job dependencies allow.
+  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
+  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
+  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
   // Identifier detection scans the post-conversion markdown against the
   // curated enrichment list. Cross-category — produces software/materials/
   // datasets/protocols items in one pass and lets pdf-analysis consolidate.
@@ -147,8 +169,13 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
   const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
   const jobsByType = new Map(allJobs.map(j => [j.jobType, j]));
 
+  // Submission state is needed to evaluate step gates
+  const submission = await Submission.findByPk(submissionId, {
+    attributes: ['id', 'status']
+  });
+
   for (const step of dependentSteps) {
-    await tryAdvanceStep(step, jobsByType, submissionId, round, userId, completedJobType);
+    await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, completedJobType);
   }
 }
 
@@ -160,7 +187,7 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
  *
  * @returns {Promise<boolean>} true if the job was enqueued
  */
-async function tryAdvanceStep(step, jobsByType, submissionId, round, userId, triggeredBy) {
+async function tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, triggeredBy) {
   const job = jobsByType.get(step.jobType);
   if (!job || job.status !== 'waiting') return false;
 
@@ -171,6 +198,18 @@ async function tryAdvanceStep(step, jobsByType, submissionId, round, userId, tri
   });
 
   if (!allDependenciesDone) return false;
+
+  // Submission-state gate: unsatisfied → stay `waiting` (NOT pending_input);
+  // the status-change handler / reconciler re-drives once the state changes.
+  // Debug level: the reconciler sweep re-checks gated jobs every interval and
+  // an info log per sweep per job would be pure noise.
+  if (step.gate && GATES[step.gate] && submission && !GATES[step.gate](submission)) {
+    logger.debug('Pipeline step gated, staying in waiting', {
+      submissionId, jobType: step.jobType, gate: step.gate,
+      submissionStatus: submission.status, triggeredBy
+    });
+    return false;
+  }
 
   // Check if this step has a conditional gate
   if (step.canAutoAdvance && !step.canAutoAdvance(jobsByType)) {
@@ -210,14 +249,18 @@ async function tryAdvanceStep(step, jobsByType, submissionId, round, userId, tri
  *
  * @returns {Promise<number>} number of jobs enqueued
  */
-async function reconcileSubmission(submissionId, round, userId) {
+async function reconcileSubmission(submissionId, round, userId, submission = null) {
   const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
   const jobsByType = new Map(allJobs.map(j => [j.jobType, j]));
+
+  const sub = submission || await Submission.findByPk(submissionId, {
+    attributes: ['id', 'status']
+  });
 
   let advanced = 0;
   for (const step of PIPELINE) {
     const didAdvance = await tryAdvanceStep(
-      step, jobsByType, submissionId, round, userId, 'reconciler'
+      step, jobsByType, sub, submissionId, round, userId, 'reconciler'
     );
     if (didAdvance) advanced++;
   }
@@ -249,12 +292,12 @@ async function reconcileStuckJobs({ graceMs = RECONCILE_GRACE_MS } = {}) {
   let advancedTotal = 0;
   for (const { submissionId, round } of stuck) {
     const submission = await Submission.findByPk(submissionId, {
-      attributes: ['id', 'userId']
+      attributes: ['id', 'userId', 'status']
     });
     if (!submission) continue;
 
     try {
-      advancedTotal += await reconcileSubmission(submissionId, round, submission.userId);
+      advancedTotal += await reconcileSubmission(submissionId, round, submission.userId, submission);
     } catch (err) {
       logger.error('Pipeline reconciler failed for submission', {
         submissionId, round, error: err.message
@@ -435,6 +478,20 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
   });
 }
 
+/**
+ * Whether a job type is currently blocked by its submission-state gate.
+ * Used by the jobs API to explain WHY a job is `waiting` (the frontend shows
+ * "waiting for KRT validation" instead of a generic dependency message).
+ * @param {string} jobType
+ * @param {object} submission - needs `status`
+ * @returns {boolean}
+ */
+function isGateBlocked(jobType, submission) {
+  const step = PIPELINE.find(s => s.jobType === jobType);
+  if (!step || !step.gate || !GATES[step.gate]) return false;
+  return !GATES[step.gate](submission);
+}
+
 module.exports = {
   PIPELINE,
   runAllProcesses,
@@ -443,5 +500,6 @@ module.exports = {
   reconcileStuckJobs,
   advanceJob,
   cascadeRestart,
-  computeDownstreamSet
+  computeDownstreamSet,
+  isGateBlocked
 };
