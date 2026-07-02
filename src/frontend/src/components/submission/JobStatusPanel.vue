@@ -133,6 +133,9 @@ const modalTypeFilter = ref('all')
 // Tab-group filter for the consolidated views (Generated KRT, AI
 // suggestions) — same tabs as the KRT editor.
 const modalTabFilter = ref('all')
+// Multi-select decision filter for the AI-suggestions table (toggle chips).
+// Empty set = no filter (all decisions shown).
+const modalDecisionFilter = ref(new Set())
 const MODAL_TAB_GROUPS = [
   { key: 'all', label: 'All' },
   { key: 'Datasets', label: 'Datasets' },
@@ -566,6 +569,9 @@ const suggestionDisplayRows = computed(() => {
   if (modalTabFilter.value !== 'all') {
     items = items.filter(d => resourceTypesStore.getTabGroup(suggestionDecisionType(d)) === modalTabFilter.value)
   }
+  if (modalDecisionFilter.value.size) {
+    items = items.filter(d => modalDecisionFilter.value.has(suggestionDecisionLabel(d)))
+  }
   const q = modalSearch.value.trim().toLowerCase()
   if (q) {
     items = items.filter(d => {
@@ -897,6 +903,7 @@ function openJobModal(job) {
   modalSearch.value = ''
   modalTypeFilter.value = 'all'
   modalTabFilter.value = 'all'
+  modalDecisionFilter.value = new Set()
 
   showModal.value = true
 }
@@ -914,6 +921,7 @@ function closeModal() {
   modalSearch.value = ''
   modalTypeFilter.value = 'all'
   modalTabFilter.value = 'all'
+  modalDecisionFilter.value = new Set()
 }
 
 // ── PDF Analysis modal: pre-merge KRT view ─────────────────────────
@@ -968,6 +976,29 @@ const modalTypeOptions = computed(() => {
   const types = (modalItems.value || []).map(it => it.resourceType || it.resource_type || (modalTableType.value === 'software' ? 'Software/code' : ''))
   return [...new Set(types.filter(Boolean))].sort(compareTypes)
 })
+
+// Decisions present in the suggestions table, with counts, in a fixed
+// Add/Update/Remove/Skip order — the options for the decision filter chips.
+const modalDecisionOptions = computed(() => {
+  if (modalTableType.value !== 'suggestions') return []
+  const counts = new Map()
+  for (const d of (modalItems.value || [])) {
+    const label = suggestionDecisionLabel(d)
+    counts.set(label, (counts.get(label) || 0) + 1)
+  }
+  const ORDER = ['Add', 'Update', 'Remove', 'Skip']
+  const rank = (l) => { const i = ORDER.indexOf(l); return i === -1 ? ORDER.length : i }
+  return [...counts.entries()]
+    .sort((a, b) => rank(a[0]) - rank(b[0]))
+    .map(([label, count]) => ({ label, count }))
+})
+
+function toggleDecisionFilter(label) {
+  const next = new Set(modalDecisionFilter.value)
+  if (next.has(label)) next.delete(label)
+  else next.add(label)
+  modalDecisionFilter.value = next
+}
 
 // Per-tab row counts for the consolidated views (groups for the Generated
 // KRT, decisions for AI suggestions) — mirrors the KRT editor's tab badges.
@@ -1666,6 +1697,22 @@ async function downloadMarkdownFile(fileId) {
                   <option value="all">All resource types</option>
                   <option v-for="t in modalTypeOptions" :key="t" :value="t">{{ t }}</option>
                 </select>
+                <!-- Decision filter: toggle chips, multi-select. No chip
+                     active = every decision shown; dimmed = filtered out. -->
+                <div v-if="modalTableType === 'suggestions' && modalDecisionOptions.length > 1" class="job-modal-decision-filter">
+                  <button
+                    v-for="opt in modalDecisionOptions"
+                    :key="opt.label"
+                    type="button"
+                    class="suggestion-decision-badge job-modal-decision-chip"
+                    :class="['sdb-' + opt.label.toLowerCase(), { 'job-modal-decision-chip-off': modalDecisionFilter.size && !modalDecisionFilter.has(opt.label) }]"
+                    :title="modalDecisionFilter.has(opt.label) ? 'Click to stop filtering on ' + opt.label : 'Click to show only ' + opt.label + ' decisions (combine by clicking several)'"
+                    @click="toggleDecisionFilter(opt.label)"
+                  >
+                    {{ opt.label }}
+                    <span class="job-modal-decision-chip-count">{{ opt.count }}</span>
+                  </button>
+                </div>
               </div>
               <!-- Plain text content (DAS, markdown info) -->
               <p v-if="modalContent && !modalItems" class="job-modal-text">{{ modalContent }}</p>
@@ -2630,6 +2677,33 @@ async function downloadMarkdownFile(fileId) {
   font-size: 0.8125rem;
   background: white;
   max-width: 14rem;
+}
+
+/* Decision filter chips (multi-select) in the suggestions modal */
+.job-modal-decision-filter {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.job-modal-decision-chip {
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.job-modal-decision-chip:hover {
+  border-color: currentColor;
+}
+
+.job-modal-decision-chip-off {
+  opacity: 0.35;
+}
+
+.job-modal-decision-chip-count {
+  margin-left: 0.25rem;
+  font-weight: 400;
+  opacity: 0.75;
 }
 
 .job-modal-filter-empty {
