@@ -356,7 +356,7 @@ async function auth0SocialLogin(req, res, next) {
     }
 
     if (!auth0Service.isEnabled()) {
-      throw new ExternalServiceError('Auth0 authentication is not available');
+      throw new ExternalServiceError('Auth0', 'Authentication is not available');
     }
 
     const { state, nonce, codeVerifier, codeChallenge } = generateOAuthFlowParams();
@@ -381,7 +381,7 @@ async function auth0PasswordLogin(req, res, next) {
     const { email, password } = req.validatedBody;
 
     if (!auth0Service.isEnabled()) {
-      throw new ExternalServiceError('Auth0 authentication is not available');
+      throw new ExternalServiceError('Auth0', 'Authentication is not available');
     }
 
     // Authenticate with Auth0
