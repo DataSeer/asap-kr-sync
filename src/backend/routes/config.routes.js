@@ -21,10 +21,14 @@ const router = express.Router();
 
 /**
  * GET /api/config/krt-template
- * Returns the KRT template URL (Google Sheets)
+ * Returns the KRT template URL (Google Sheets).
+ * The value is env/admin-configured and the frontend binds it straight to
+ * href attributes, so only http(s) URLs leave the server — a stored
+ * `javascript:` URL would otherwise become clickable XSS in every consumer.
  */
 router.get('/krt-template', (req, res) => {
-  res.json({ url: KRT_TEMPLATE_URL });
+  const url = /^https?:\/\//i.test(KRT_TEMPLATE_URL) ? KRT_TEMPLATE_URL : '';
+  res.json({ url });
 });
 
 /**

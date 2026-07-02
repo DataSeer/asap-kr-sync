@@ -1,2 +1,6 @@
-langextract>=1.2.0
-markitdown[pdf,docx,xlsx]>=0.1.0
+# Pinned exactly: these install at image build with no lockfile, so floor-only
+# constraints (>=) made every build pull whatever PyPI served that day —
+# non-reproducible images and an unreviewed supply-chain path into prod.
+# Versions match the tested dev image (2026-06). Bump deliberately.
+langextract==1.5.0
+markitdown[pdf,docx,xlsx]==0.1.6

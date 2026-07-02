@@ -52,7 +52,7 @@ function getJwksClient() {
  */
 function getLoginUrl(connection, { state, nonce, codeChallenge }) {
   if (!AUTH0_DOMAIN || !AUTH0_CLIENT_ID) {
-    throw new ExternalServiceError('Auth0 is not configured');
+    throw new ExternalServiceError('Auth0', 'Service is not configured');
   }
 
   const params = new URLSearchParams({
@@ -103,7 +103,7 @@ async function exchangeCodeForTokens(code, codeVerifier) {
       status: error.response?.status,
       error: error.response?.data?.error_description || error.message
     });
-    throw new ExternalServiceError('Failed to exchange authorization code');
+    throw new ExternalServiceError('Auth0', 'Failed to exchange authorization code');
   }
 }
 
@@ -140,7 +140,7 @@ async function passwordLogin(email, password) {
     if (error.response?.status === 403 || error.response?.status === 401) {
       throw new AuthenticationError('Invalid email or password');
     }
-    throw new ExternalServiceError('Auth0 authentication failed');
+    throw new ExternalServiceError('Auth0', 'Authentication failed');
   }
 }
 

@@ -85,9 +85,14 @@ api.interceptors.response.use(
         // header rewriting needed (auth travels on the cookie now).
         return api(originalRequest)
       } catch (refreshError) {
-        // Refresh failed — drop user state and bounce to login.
-        await authStore.clearAuth()
-        router.push({ name: 'login' })
+        // Refresh failed — drop user state and bounce to login, keeping the
+        // current location so login can return the user where they were
+        // (mirrors the router guard's redirect handling).
+        authStore.clearAuth()
+        router.push({
+          name: 'login',
+          query: { redirect: router.currentRoute.value.fullPath }
+        })
         return Promise.reject(refreshError)
       }
     }
