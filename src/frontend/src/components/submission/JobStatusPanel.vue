@@ -987,7 +987,16 @@ function downloadPdfAnalysisCsv() {
     'Additional Information': r.additionalInformation,
     'Dedup Key': r.dedupKey || ''
   }))
-  const csv = Papa.unparse(csvData)
+  // Neutralize spreadsheet formula triggers: these cells derive from LM
+  // analysis of an author-uploaded manuscript, so a value like =HYPERLINK(...)
+  // must not execute when a curator opens the export in Excel.
+  const guarded = csvData.map(row => Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [
+      k,
+      typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? `'${v}` : v
+    ])
+  ))
+  const csv = Papa.unparse(guarded)
   // BOM prefix so Excel opens UTF-8 cleanly without mangling accented chars.
   const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8;' })
   triggerBlobDownload(blob, 'pdf-analysis-generated-krt.csv')
@@ -1198,7 +1207,7 @@ async function downloadRawResponse(jobType, responseName) {
     const submissionId = route.params.id
     const data = await jobService.getJobResponseUrl(submissionId, jobType, responseName)
     if (data.url) {
-      window.open(data.url, '_blank')
+      window.open(data.url, '_blank', 'noopener,noreferrer')
     }
   } catch {
     // Silently fail — the button just won't work
@@ -1213,7 +1222,7 @@ async function downloadMarkdownFile(fileId) {
     const submissionId = route.params.id
     const data = await fileService.download(submissionId, fileId)
     if (data.url) {
-      window.open(data.url, '_blank')
+      window.open(data.url, '_blank', 'noopener,noreferrer')
     }
   } catch {
     // Silently fail
