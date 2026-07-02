@@ -85,13 +85,18 @@ PDF upload triggers a pipeline of parallel and dependent jobs:
 graph TD
     PDF[PDF Upload] --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
-    PDF --> MAT[Materials Detection]
     PDF --> MD[Markdown Convert]
 
     MD --> DAS[DAS Extraction]
-    MD --> DS[Datasets Detection]
-    MD --> PROT[Protocols Detection]
     MD --> ID[Identifier Detection]
+    MD --> DS[Datasets Detection]
+    MD --> MAT[Materials Detection]
+    MD --> PROT[Protocols Detection]
+
+    KRTV{{KRT validated?<br/>status past step_krt}}
+    KRTV -.->|gate: krt_curated| DS
+    KRTV -.->|gate: krt_curated| MAT
+    KRTV -.->|gate: krt_curated| PROT
 
     DAS --> PA[PDF Analysis]
     SW --> PA
@@ -118,38 +123,51 @@ graph TD
     style PA fill:#ef4444,color:#fff
     style SG fill:#db2777,color:#fff
     style PI fill:#6b7280,color:#fff
+    style KRTV fill:#6b7280,color:#fff
 ```
 
-ORCID Extraction is intentionally **not** an input to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT. **Suggestion Generation** (AI Suggestions) runs last and depends on PDF Analysis, which already gates on every KRT detector.
+**KRT-validation gate.** Datasets, Materials, and Protocols detection seed the LM
+with the author's KRT rows, so running them against a still-draft KRT would feed
+the models unvalidated data. These three additionally **gate on `krt_curated`**
+(the submission status has moved past `draft`/`step_krt`): until the author
+validates the KRT, the jobs stay in `waiting` and the jobs API reports
+`waitingReason: 'krt_validation'`. Unlike the DAS `pending_input` gate, this
+needs **no manual action** — the jobs advance by themselves once the status
+changes. Software, ORCID, DAS, Markdown Convert, and Identifier detection are
+unaffected and still start as soon as their dependencies are met, so the
+expensive markdown conversion still overlaps with curation.
+
+ORCID Extraction is intentionally **not** an input to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT. **Suggestion Generation** (AI Suggestions) runs last and depends on PDF Analysis, which already gates on every KRT detector. Because PDF Analysis and Suggestion Generation sit downstream of the three gated detectors, they inherit the KRT-validation gate transitively — the Generated KRT always diffs the curated KRT.
 
 ### Pipeline Definition
 
-| Job Type | Depends On | Auto-Advance Condition |
-|----------|-----------|------------------------|
-| DAS Extraction | Markdown Convert | Always |
-| Software Detection | (none) | Always |
-| ORCID Extraction | (none) | Always |
-| Materials Detection | (none) | Always |
-| Markdown Convert | (none) | Always |
-| Datasets Detection | Markdown Convert | Always (falls back gracefully if markdown unavailable) |
-| Protocols Detection | Markdown Convert | Always |
-| Identifier Detection | Markdown Convert | Always |
-| PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection | Only if DAS extraction `result.status.detected === true` |
-| Suggestion Generation | PDF Analysis | Always (runs last in the pipeline) |
+| Job Type | Depends On | Submission-State Gate | Auto-Advance Condition |
+|----------|-----------|-----------------------|------------------------|
+| DAS Extraction | Markdown Convert | — | Always |
+| Software Detection | (none) | — | Always |
+| ORCID Extraction | (none) | — | Always |
+| Markdown Convert | (none) | — | Always |
+| Identifier Detection | Markdown Convert | — | Always |
+| Datasets Detection | Markdown Convert | `krt_curated` | Always (falls back gracefully if markdown unavailable) |
+| Materials Detection | Markdown Convert | `krt_curated` | Always |
+| Protocols Detection | Markdown Convert | `krt_curated` | Always |
+| PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection | — (inherited transitively) | Only if DAS extraction `result.status.detected === true` |
+| Suggestion Generation | PDF Analysis | — (inherited transitively) | Always (runs last in the pipeline) |
 
 ### Pipeline Rules
 
-- Jobs with no dependencies start immediately with status `queued`
+- Jobs with no dependencies and no gate start immediately with status `queued`
 - Jobs with dependencies start as `waiting` until all dependencies reach a terminal state (`complete` or `failed`)
 - After any job completes or fails, the orchestrator checks dependent jobs
-- If a conditional gate fails (e.g., DAS not extracted), the dependent job moves to `pending_input` instead of `queued`
+- **Conditional (job-result) gate** — if a job-result gate fails (e.g., DAS not extracted), the dependent job moves to `pending_input` and waits for the user to click **Advance**
+- **Submission-state gate** — a job whose `gate` (e.g. `krt_curated`) is not yet satisfied stays in `waiting` (never `pending_input`). It needs no manual action: the status-change handler re-drives the pipeline on every submission transition, and the periodic reconciler re-checks gated jobs each sweep, so the job advances on its own once the gate opens
 
 ## Job Statuses
 
 | Status | Meaning | Transitions To |
 |--------|---------|----------------|
-| `waiting` | Waiting for dependencies to complete | `queued` or `pending_input` |
-| `pending_input` | Waiting for user action (gate condition failed) | `queued` (manual advance) |
+| `waiting` | Waiting for dependencies to complete, or for a submission-state gate (e.g. `krt_curated`) to open | `queued` or `pending_input` |
+| `pending_input` | Waiting for user action (a job-result gate condition failed, e.g. DAS not detected) | `queued` (manual advance) |
 | `queued` | Added to pg-boss queue, waiting for worker | `processing` |
 | `processing` | Worker is actively processing | `complete` or `failed` |
 | `complete` | Finished successfully | (terminal) |
@@ -162,8 +180,9 @@ stateDiagram-v2
     [*] --> waiting : Job created (has dependencies)
     [*] --> queued : Job created (no dependencies)
 
-    waiting --> queued : Dependencies met
-    waiting --> pending_input : Gate condition failed
+    waiting --> queued : Dependencies met and gate open
+    waiting --> waiting : Submission-state gate not yet satisfied (auto-retried)
+    waiting --> pending_input : Job-result gate condition failed
 
     pending_input --> queued : User clicks Advance
 
@@ -177,7 +196,9 @@ stateDiagram-v2
 
 **Happy path:** `waiting → queued → processing → complete → [pipeline advances dependent jobs]`
 
-**Conditional gate (e.g., PDF Analysis when DAS not extracted):** `waiting → pending_input → [user clicks Advance] → queued → processing → complete`
+**Job-result gate (e.g., PDF Analysis when DAS not extracted):** `waiting → pending_input → [user clicks Advance] → queued → processing → complete`
+
+**Submission-state gate (e.g., Datasets/Materials/Protocols before KRT validation):** `waiting → [author validates KRT — status leaves step_krt] → queued → processing → complete` (no manual advance; the orchestrator re-drives on the status change)
 
 ## Job Data Payloads
 

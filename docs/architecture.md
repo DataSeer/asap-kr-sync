@@ -160,12 +160,15 @@ PDF upload triggers parallel background jobs via pg-boss. PDF Analysis builds th
 graph TD
     PDF[PDF Upload] --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
-    PDF --> MAT[Materials Detection]
     PDF --> MD[Markdown Convert]
     MD --> DAS[DAS Extraction]
     MD --> DS[Datasets Detection]
+    MD --> MAT[Materials Detection]
     MD --> PROT[Protocols Detection]
     MD --> ID[Identifier Detection]
+    KRTV{{KRT validated?}} -.->|gate: krt_curated| DS
+    KRTV -.->|gate| MAT
+    KRTV -.->|gate| PROT
     DAS --> PA[PDF Analysis]
     SW --> PA
     DS --> PA
@@ -186,9 +189,10 @@ graph TD
     style ID fill:#a855f7,color:#fff
     style PA fill:#ef4444,color:#fff
     style SG fill:#db2777,color:#fff
+    style KRTV fill:#6b7280,color:#fff
 ```
 
-ORCID Extraction is intentionally **not** a contributor to PDF Analysis — its output lives on `submission.authors`, not in the Generated KRT. PDF Analysis auto-advances when DAS was detected; if DAS extraction fails, the job parks at `pending_input` until the user supplies a DAS manually and clicks Advance. **Suggestion Generation** (the AI Suggestions / KRT comparison) runs last, depending on PDF Analysis (which already gates on every KRT detector); it is LM-only, so with no LM configured no suggestions are produced.
+**Datasets, Materials, and Protocols detection are seeded with the author's KRT rows**, so they gate on `krt_curated` (submission status past `step_krt`): they stay in `waiting` until the author validates the KRT, then advance automatically — no manual action. ORCID Extraction is intentionally **not** a contributor to PDF Analysis — its output lives on `submission.authors`, not in the Generated KRT. PDF Analysis auto-advances when DAS was detected; if DAS extraction fails, the job parks at `pending_input` until the user supplies a DAS manually and clicks Advance. **Suggestion Generation** (the AI Suggestions / KRT comparison) runs last, depending on PDF Analysis (which already gates on every KRT detector); it is LM-only, so with no LM configured no suggestions are produced.
 
 See [Background Jobs](./background-jobs.md) for details.
 

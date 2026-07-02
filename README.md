@@ -87,14 +87,14 @@ When a PDF is uploaded, background jobs run in parallel:
 
 ```
 PDF Upload
-  ├── DAS Extraction         (immediate)
   ├── Software Detection     (immediate)
   ├── ORCID Extraction       (immediate)
-  ├── Materials Detection    (immediate)
   └── Markdown Convert       (immediate)
-        ├── Datasets Detection    (after markdown convert)
-        ├── Protocols Detection   (after markdown convert)
-        └── Identifier Detection  (after markdown convert)
+        ├── DAS Extraction        (after markdown convert)
+        ├── Identifier Detection  (after markdown convert)
+        ├── Datasets Detection    (after markdown convert; waits for KRT validation)
+        ├── Materials Detection   (after markdown convert; waits for KRT validation)
+        └── Protocols Detection   (after markdown convert; waits for KRT validation)
                                        ↓
                               PDF Analysis (consolidator)
                               (after DAS + Software + Datasets +
@@ -102,6 +102,11 @@ PDF Upload
                                auto-advances if DAS was detected,
                                otherwise waits for user input)
 ```
+
+Datasets, Materials, and Protocols detection are seeded with the author's KRT
+rows, so they wait for the KRT to be validated (submission status past
+`step_krt`) before running, then advance automatically. See
+[Background Jobs](./docs/background-jobs.md) for the full gating rules.
 
 PDF Analysis is an in-app step (no external API) that merges the
 items produced by every detection into the Generated KRT — feeding

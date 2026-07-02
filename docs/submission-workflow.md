@@ -172,12 +172,15 @@ When a PDF is uploaded, ten background jobs start (eight detections, the PDF Ana
 graph LR
     PDF[PDF Upload] --> SW[Software Detection]
     PDF --> ORCID[ORCID Extraction]
-    PDF --> MAT[Materials Detection]
     PDF --> MD[Markdown Convert]
     MD --> DAS[DAS Extraction]
     MD --> DS[Datasets Detection]
+    MD --> MAT[Materials Detection]
     MD --> PROT[Protocols Detection]
     MD --> ID[Identifier Detection]
+    KRTV{{KRT validated?}} -.->|gate| DS
+    KRTV -.->|gate| MAT
+    KRTV -.->|gate| PROT
     DAS --> PA[PDF Analysis]
     SW --> PA
     DS --> PA
@@ -201,9 +204,12 @@ graph LR
     style PA fill:#ef4444,color:#fff
     style SG fill:#db2777,color:#fff
     style PI fill:#6b7280,color:#fff
+    style KRTV fill:#6b7280,color:#fff
 ```
 
 ORCID Extraction is **not** a contributor to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT. **AI Suggestions** runs last, depending on PDF Analysis (which already gates on every KRT detector).
+
+**Datasets, Materials, and Protocols detection wait for KRT validation.** These three seed the LM with the author's KRT rows, so they gate on `krt_curated` — they stay in `waiting` (the panel shows *"Waiting for the Key Resources Table to be validated"*) until the submission status moves past `step_krt`, then advance automatically with no user action. PDF Analysis and AI Suggestions inherit this gate through their dependencies.
 
 Each job is displayed in the **JobStatusPanel** with live status updates:
 
@@ -257,12 +263,14 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 #### Datasets Detection
 - Two-pass pipeline: (1) extracts raw dataset signals from Markdown via Python langextract, (2) consolidates into canonical KRT resources via Gemini
 - **Depends on:** Markdown Convert
+- **Gated on:** `krt_curated` — waits (in `waiting`, panel shows *"Waiting for the Key Resources Table to be validated"*) until the author validates the KRT, then advances automatically
 - **On complete:** Shows "X dataset(s) detected (Y high relevance)"
 - **Show more:** Displays a table with Name, Role, Repository, Accessions/DOIs, Relevance (color-coded badges)
 
 #### Materials Detection
 - Detects lab material/reagent mentions in the manuscript via Google Gemini, **grounded on the author's KRT material rows** (a minimal, author-seeded prompt)
-- Runs independently (no dependencies)
+- **Depends on:** Markdown Convert
+- **Gated on:** `krt_curated` — waits until the author validates the KRT, then advances automatically (see Datasets Detection)
 - **Skips extraction entirely when the author provided no materials** (no author material rows → no Gemini call)
 - Contributes detected materials to the Generated KRT (mapped to appropriate resource types: Antibody, Cell line, Organism/strain, etc.)
 - **On complete:** Shows "X material(s) detected (Y high relevance)"
@@ -270,6 +278,7 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 #### Protocols Detection
 - Detects protocol mentions in the manuscript via Google Gemini, **seeded with the author's protocol rows as "Section 0"**
 - **Depends on:** Markdown Convert (uses the markdown text as input, not the PDF)
+- **Gated on:** `krt_curated` — waits until the author validates the KRT, then advances automatically (see Datasets Detection)
 - **Prompt fixes:** don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations; exclude analyses; better new/reuse classification
 - Contributes detected protocols to the Generated KRT
 - **On complete:** Shows "X protocol(s) detected (Y high relevance)"
