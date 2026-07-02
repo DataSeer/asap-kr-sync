@@ -130,6 +130,16 @@ const modalDropped = ref([])
 // editor so curators can find a line without scanning the whole table).
 const modalSearch = ref('')
 const modalTypeFilter = ref('all')
+// Tab-group filter for the consolidated views (Generated KRT, AI
+// suggestions) — same tabs as the KRT editor.
+const modalTabFilter = ref('all')
+const MODAL_TAB_GROUPS = [
+  { key: 'all', label: 'All' },
+  { key: 'Datasets', label: 'Datasets' },
+  { key: 'Software/code', label: 'Software/code' },
+  { key: 'Protocols', label: 'Protocols' },
+  { key: 'Lab Materials', label: 'Key Lab Materials' }
+]
 
 // Display-side scrub of internal references that leak into LM reasons —
 // candidate "ref" numbers (PDF Analysis) and raw KRT row UUIDs (AI Suggestions).
@@ -553,8 +563,8 @@ const suggestionDisplayRows = computed(() => {
   // (each decision expands to 1-2 display rows below).
   let items = [...(modalItems.value || [])]
   items.sort((a, b) => compareTypes(suggestionDecisionType(a), suggestionDecisionType(b)))
-  if (modalTypeFilter.value !== 'all') {
-    items = items.filter(d => suggestionDecisionType(d) === modalTypeFilter.value)
+  if (modalTabFilter.value !== 'all') {
+    items = items.filter(d => resourceTypesStore.getTabGroup(suggestionDecisionType(d)) === modalTabFilter.value)
   }
   const q = modalSearch.value.trim().toLowerCase()
   if (q) {
@@ -886,6 +896,7 @@ function openJobModal(job) {
   // Fresh filters per modal open
   modalSearch.value = ''
   modalTypeFilter.value = 'all'
+  modalTabFilter.value = 'all'
 
   showModal.value = true
 }
@@ -902,6 +913,7 @@ function closeModal() {
   modalExactMatchCount.value = 0
   modalSearch.value = ''
   modalTypeFilter.value = 'all'
+  modalTabFilter.value = 'all'
 }
 
 // ── PDF Analysis modal: pre-merge KRT view ─────────────────────────
@@ -952,15 +964,28 @@ function suggestionDecisionType(d) {
 // Distinct resource types present in the open table, in KRT-editor order —
 // the options of the type-filter select.
 const modalTypeOptions = computed(() => {
-  let types = []
-  if (modalTableType.value === 'resources' || modalTableType.value === 'software') {
-    types = (modalItems.value || []).map(it => it.resourceType || it.resource_type || (modalTableType.value === 'software' ? 'Software/code' : ''))
-  } else if (modalTableType.value === 'pdf_analysis_krt') {
-    types = (modalItems.value || []).map(it => it.resourceType || '')
-  } else if (modalTableType.value === 'suggestions') {
-    types = (modalItems.value || []).map(suggestionDecisionType)
-  }
+  if (modalTableType.value !== 'resources' && modalTableType.value !== 'software') return []
+  const types = (modalItems.value || []).map(it => it.resourceType || it.resource_type || (modalTableType.value === 'software' ? 'Software/code' : ''))
   return [...new Set(types.filter(Boolean))].sort(compareTypes)
+})
+
+// Per-tab row counts for the consolidated views (groups for the Generated
+// KRT, decisions for AI suggestions) — mirrors the KRT editor's tab badges.
+const modalTabCounts = computed(() => {
+  const counts = { all: 0 }
+  const bump = (type) => {
+    const g = resourceTypesStore.getTabGroup(type)
+    counts[g] = (counts[g] || 0) + 1
+    counts.all++
+  }
+  if (modalTableType.value === 'pdf_analysis_krt') {
+    for (const r of pdfAnalysisRows.value) {
+      if (r.isGroupStart) bump(r.resourceType || '')
+    }
+  } else if (modalTableType.value === 'suggestions') {
+    for (const d of (modalItems.value || [])) bump(suggestionDecisionType(d))
+  }
+  return counts
 })
 
 // Mentions (software/datasets/materials/protocols), sorted in the KRT
@@ -1225,8 +1250,8 @@ const displayedPdfAnalysisRows = computed(() => {
     if (r.isGroupStart) groupType.set(r.groupIndex, r.resourceType || '')
   }
   let keep = new Set(groupType.keys())
-  if (modalTypeFilter.value !== 'all') {
-    keep = new Set([...keep].filter(gi => groupType.get(gi) === modalTypeFilter.value))
+  if (modalTabFilter.value !== 'all') {
+    keep = new Set([...keep].filter(gi => resourceTypesStore.getTabGroup(groupType.get(gi)) === modalTabFilter.value))
   }
   const q = modalSearch.value.trim().toLowerCase()
   if (q) {
@@ -1253,7 +1278,7 @@ const expandedMergedRows = ref(new Set())
 
 // Row indexes shift when the search/type filter changes — drop any open
 // merged-row expansions so they don't reattach to the wrong line.
-watch([modalSearch, modalTypeFilter], () => { expandedMergedRows.value = new Set() })
+watch([modalSearch, modalTypeFilter, modalTabFilter], () => { expandedMergedRows.value = new Set() })
 
 function toggleMergedRow(idx) {
   const next = new Set(expandedMergedRows.value)
@@ -1608,6 +1633,24 @@ async function downloadMarkdownFile(fileId) {
               <h4 class="job-modal-section-title">Results</h4>
               <!-- Search + resource-type filter (mirrors the KRT editor's
                    controls) for every table view -->
+              <!-- Tab-group filter (same tabs as the KRT editor) for the
+                   consolidated Generated-KRT and AI-suggestions views -->
+              <div
+                v-if="(modalTableType === 'pdf_analysis_krt' || modalTableType === 'suggestions') && modalItems && modalItems.length"
+                class="job-modal-tabs"
+              >
+                <button
+                  v-for="tab in MODAL_TAB_GROUPS"
+                  :key="tab.key"
+                  type="button"
+                  class="job-modal-tab"
+                  :class="{ 'job-modal-tab-active': modalTabFilter === tab.key }"
+                  @click="modalTabFilter = tab.key"
+                >
+                  {{ tab.label }}
+                  <span class="job-modal-tab-count">{{ modalTabCounts[tab.key] || 0 }}</span>
+                </button>
+              </div>
               <div v-if="modalTableType && modalItems && modalItems.length" class="job-modal-table-controls">
                 <input
                   v-model="modalSearch"
@@ -1616,7 +1659,7 @@ async function downloadMarkdownFile(fileId) {
                   placeholder="Search rows…"
                 >
                 <select
-                  v-if="modalTableType !== 'authors' && modalTypeOptions.length > 1"
+                  v-if="modalTypeOptions.length > 1"
                   v-model="modalTypeFilter"
                   class="job-modal-type-filter"
                 >
@@ -2527,6 +2570,43 @@ async function downloadMarkdownFile(fileId) {
   z-index: 1;
 }
 
+/* Tab-group filter for the consolidated modal views */
+.job-modal-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 0.5rem;
+}
+
+.job-modal-tab {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  color: #6b7280;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.job-modal-tab:hover {
+  color: #374151;
+}
+
+.job-modal-tab-active {
+  color: #1d4ed8;
+  border-bottom-color: #1d4ed8;
+  font-weight: 500;
+}
+
+.job-modal-tab-count {
+  margin-left: 0.25rem;
+  padding: 0 0.375rem;
+  border-radius: 9999px;
+  background: #f3f4f6;
+  color: #6b7280;
+  font-size: 0.6875rem;
+}
+
 /* Modal table controls (search + resource-type filter) */
 .job-modal-table-controls {
   display: flex;
@@ -2616,13 +2696,16 @@ async function downloadMarkdownFile(fileId) {
 
 /* AI Suggestions column sizing: roomy Reason, compact Resource Name. */
 .suggestion-reason-col, .suggestion-reason-cell {
-  min-width: 320px;
+  min-width: 240px;
   max-width: 460px;
   white-space: normal;
   line-height: 1.35;
 }
 .suggestion-name-col, .suggestion-name-cell {
-  max-width: 150px;
+  /* min-width matters inside the scrolling wrapper: without it the browser
+     satisfies the reason column's min-width by collapsing this one to ~1ch. */
+  min-width: 160px;
+  max-width: 260px;
   white-space: normal;
   word-break: break-word;
 }
