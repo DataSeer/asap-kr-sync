@@ -14,6 +14,7 @@ import jobService from '@/services/job.service'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import HighlightText from '@/components/submission/HighlightText.vue'
+import { useColumnResize } from '@/composables/useColumnResize'
 
 const emit = defineEmits(['edit-das'])
 const route = useRoute()
@@ -546,6 +547,57 @@ const SUGGESTION_ROW_COLUMNS = [
   { key: 'source', label: 'Source' },
   { key: 'identifier', label: 'Identifier' },
   { key: 'newReuse', label: 'New/Reuse' }
+]
+
+// Resizable-column metadata for each modal table (drag a header's right edge to
+// widen it; widths persist in localStorage). Each entry is { key, label, width }
+// (+ optional cssClass); `width` is the default until the user drags. The order
+// must match the table body's column order. Shared instance below namespaces the
+// keys so one localStorage entry holds every table's widths.
+const colResize = useColumnResize('jobModal.columnWidths')
+const RESIZE_MENTIONS_COLS = [
+  { key: 'resourceType', label: 'Resource Type', width: 120 },
+  { key: 'resourceName', label: 'Resource Name', width: 240 },
+  { key: 'source', label: 'Source', width: 170 },
+  { key: 'identifier', label: 'Identifier', width: 170 },
+  { key: 'newReuse', label: 'New/Reuse', width: 90 },
+  { key: 'additionalInformation', label: 'Additional Information', width: 220 }
+]
+const RESIZE_PDF_COLS = [
+  { key: 'krtNum', label: 'KRT #', width: 70 },
+  { key: 'detection', label: 'Detection', width: 110 },
+  { key: 'resourceType', label: 'Resource Type', width: 120 },
+  { key: 'resourceName', label: 'Detected Name', width: 220 },
+  { key: 'source', label: 'Source', width: 150 },
+  { key: 'identifier', label: 'Identifier', width: 150 },
+  { key: 'newReuse', label: 'New/Reuse', width: 90 },
+  { key: 'additionalInformation', label: 'Additional Information', width: 200 },
+  { key: 'reason', label: 'Reason', width: 240 }
+]
+const RESIZE_DROPPED_COLS = [
+  { key: 'detectedBy', label: 'Detected by', width: 130 },
+  { key: 'resourceType', label: 'Resource Type', width: 120 },
+  { key: 'resourceName', label: 'Resource Name', width: 220 },
+  { key: 'identifier', label: 'Identifier', width: 160 },
+  { key: 'reason', label: 'Reason dropped', width: 260 }
+]
+const RESIZE_AUTHOR_COLS = [
+  { key: 'name', label: 'Name', width: 200 },
+  { key: 'orcid', label: 'ORCID', width: 170 },
+  { key: 'affiliation', label: 'Affiliation', width: 280 },
+  { key: 'source', label: 'Source', width: 130 }
+]
+const RESIZE_SUGGESTION_COLS = [
+  { key: 'decision', label: 'Decision', width: 100 },
+  { key: 'reason', label: 'Reason', width: 240, cssClass: 'suggestion-reason-col' },
+  { key: 'item', label: 'Item', width: 90 },
+  ...SUGGESTION_ROW_COLUMNS.map(c => ({
+    key: c.key,
+    label: c.label,
+    width: c.key === 'resourceName' ? 200 : (c.key === 'newReuse' ? 90 : 150),
+    cssClass: c.key === 'resourceName' ? 'suggestion-name-col' : undefined
+  })),
+  { key: 'modules', label: 'Modules', width: 130 }
 ]
 // Value for one column of a decision's row. Prefers the structured `row`
 // (new shape); falls back to the resource name / raw suggestion data for
@@ -1779,15 +1831,17 @@ async function downloadMarkdownFile(fileId) {
               <p v-if="modalContent && !modalItems" class="job-modal-text">{{ modalContent }}</p>
               <!-- Mentions table (software, datasets, materials, protocols) -->
               <div v-if="modalItems && modalItems.length && (modalTableType === 'software' || modalTableType === 'resources')" class="job-modal-table-wrapper">
-                <table class="job-modal-table">
+                <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('mentions', RESIZE_MENTIONS_COLS)">
                   <thead>
                     <tr>
-                      <th>Resource Type</th>
-                      <th>Resource Name</th>
-                      <th>Source</th>
-                      <th>Identifier</th>
-                      <th>New/Reuse</th>
-                      <th>Additional Information</th>
+                      <th
+                        v-for="c in RESIZE_MENTIONS_COLS"
+                        :key="c.key"
+                        :style="colResize.headStyle('mentions', c.key, c.width)"
+                      >
+                        {{ c.label }}
+                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('mentions', c.key, c.width, $event)"></span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1867,18 +1921,17 @@ async function downloadMarkdownFile(fileId) {
               <!-- PDF Analysis: Generated KRT pre-merge view -->
               <div v-if="modalTableType === 'pdf_analysis_krt'" class="pdf-analysis-modal-section">
                 <div v-if="pdfAnalysisRows.length" class="job-modal-table-wrapper">
-                  <table class="job-modal-table">
+                  <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('pdfAnalysis', RESIZE_PDF_COLS)">
                     <thead>
                       <tr>
-                        <th>KRT #</th>
-                        <th>Detection</th>
-                        <th>Resource Type</th>
-                        <th>Detected Name</th>
-                        <th>Source</th>
-                        <th>Identifier</th>
-                        <th>New/Reuse</th>
-                        <th>Additional Information</th>
-                        <th>Reason</th>
+                        <th
+                          v-for="c in RESIZE_PDF_COLS"
+                          :key="c.key"
+                          :style="colResize.headStyle('pdfAnalysis', c.key, c.width)"
+                        >
+                          {{ c.label }}
+                          <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('pdfAnalysis', c.key, c.width, $event)"></span>
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1944,14 +1997,17 @@ async function downloadMarkdownFile(fileId) {
                   </h4>
                   <p class="pdf-analysis-dropped-hint">These detections were not kept in the Generated KRT — with the reason for each.</p>
                   <div class="job-modal-table-wrapper">
-                    <table class="job-modal-table">
+                    <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('dropped', RESIZE_DROPPED_COLS)">
                       <thead>
                         <tr>
-                          <th>Detected by</th>
-                          <th>Resource Type</th>
-                          <th>Resource Name</th>
-                          <th>Identifier</th>
-                          <th>Reason dropped</th>
+                          <th
+                            v-for="c in RESIZE_DROPPED_COLS"
+                            :key="c.key"
+                            :style="colResize.headStyle('dropped', c.key, c.width)"
+                          >
+                            {{ c.label }}
+                            <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('dropped', c.key, c.width, $event)"></span>
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1973,13 +2029,17 @@ async function downloadMarkdownFile(fileId) {
 
               <!-- Authors table -->
               <div v-if="modalItems && modalItems.length && modalTableType === 'authors'" class="job-modal-table-wrapper">
-                <table class="job-modal-table">
+                <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('authors', RESIZE_AUTHOR_COLS)">
                   <thead>
                     <tr>
-                      <th>Name</th>
-                      <th>ORCID</th>
-                      <th>Affiliation</th>
-                      <th>Source</th>
+                      <th
+                        v-for="c in RESIZE_AUTHOR_COLS"
+                        :key="c.key"
+                        :style="colResize.headStyle('authors', c.key, c.width)"
+                      >
+                        {{ c.label }}
+                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('authors', c.key, c.width, $event)"></span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2006,20 +2066,18 @@ async function downloadMarkdownFile(fileId) {
                    concerned KRT row (with a red/green diff for updates) + the
                    decision and reason. -->
               <div v-if="modalTableType === 'suggestions' && modalItems && modalItems.length" class="job-modal-table-wrapper">
-                <table v-if="suggestionDisplayRows.length" class="job-modal-table">
+                <table v-if="suggestionDisplayRows.length" class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('suggestions', RESIZE_SUGGESTION_COLS)">
                   <thead>
                     <tr>
-                      <th>Decision</th>
-                      <th class="suggestion-reason-col">Reason</th>
-                      <th>Item</th>
                       <th
-                        v-for="c in SUGGESTION_ROW_COLUMNS"
+                        v-for="c in RESIZE_SUGGESTION_COLS"
                         :key="c.key"
-                        :class="{ 'suggestion-name-col': c.key === 'resourceName' }"
+                        :class="c.cssClass"
+                        :style="colResize.headStyle('suggestions', c.key, c.width)"
                       >
                         {{ c.label }}
+                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('suggestions', c.key, c.width, $event)"></span>
                       </th>
-                      <th>Modules</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2613,6 +2671,50 @@ async function downloadMarkdownFile(fileId) {
   color: #374151;
 }
 
+/* Resizable modal tables: fixed layout so the header widths drive the columns
+   (no per-cell styles needed); an explicit total width lets a widened column
+   scroll horizontally instead of squashing its neighbours. */
+.job-modal-table--resizable {
+  table-layout: fixed;
+  min-width: 100%;
+}
+
+.job-modal-table--resizable th,
+.job-modal-table--resizable td {
+  overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Drag grip on the right edge of a header cell. The header is already
+   position: sticky (a positioning context), so the handle anchors to it. */
+.job-modal-col-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 3;
+}
+
+.job-modal-col-resize:hover {
+  background: #c7d2fe;
+}
+
+/* Inside a resizable table the dragged width is authoritative, so drop the
+   fixed min/max-width caps some cells carry (they'd otherwise stop the drag).
+   Their white-space/line-height rules still apply. */
+.job-modal-table--resizable .suggestion-reason-col,
+.job-modal-table--resizable .suggestion-reason-cell,
+.job-modal-table--resizable .suggestion-name-col,
+.job-modal-table--resizable .suggestion-name-cell,
+.job-modal-table--resizable .pdf-analysis-reason-cell {
+  min-width: 0;
+  max-width: none;
+}
+
 .job-modal-source-badge {
   display: inline-block;
   padding: 0.0625rem 0.375rem;
@@ -2638,7 +2740,7 @@ async function downloadMarkdownFile(fileId) {
 
 .job-modal-table-wrapper {
   max-height: 400px;
-  overflow-y: auto;
+  overflow: auto;
   border: 1px solid #e5e7eb;
   border-radius: 0.375rem;
 }
