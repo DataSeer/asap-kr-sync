@@ -152,6 +152,28 @@ const requestSchemas = {
     source: Joi.string().valid(...CHANGE_SOURCES)
   }),
 
+  // Batch variant: one user gesture (bulk-apply fixes, multi-cell edit) = one
+  // request instead of a per-cell request storm. Same column allowlist as
+  // updateKrtCell; `source` applies to every item's ChangeLog entry. The item
+  // cap bounds the work a single request can queue (body limit is 10mb, so
+  // without a cap one request could carry an arbitrary number of writes).
+  batchUpdateKrtCells: Joi.object({
+    updates: Joi.array().items(Joi.object({
+      rowId: schemas.uuid.required(),
+      column: Joi.string().valid(
+        'resource_type', 'resource_name', 'source',
+        'identifier', 'new_reuse', 'additional_information',
+        'is_qc', 'is_optional'
+      ).required(),
+      value: Joi.alternatives().try(
+        Joi.string().allow('', null),
+        Joi.boolean(),
+        Joi.number()
+      ).required()
+    })).min(1).max(500).required(),
+    source: Joi.string().valid(...CHANGE_SOURCES)
+  }),
+
   // Process new version (new round)
   processNewVersion: Joi.object({
     hasNewKRT: Joi.boolean().required()

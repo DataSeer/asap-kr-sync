@@ -129,6 +129,16 @@ router.get('/:id/krt',
   krtController.getData
 );
 
+// PATCH /api/submissions/:id/krt/batch - Batch-update KRT cells (one request
+// per user gesture instead of a per-cell request storm). Must be declared
+// before the parameterized /:id/krt/:rowId route or "batch" is captured as a
+// rowId.
+router.patch('/:id/krt/batch',
+  canAccessSubmission,
+  validateBody('batchUpdateKrtCells'),
+  krtController.batchUpdateCells
+);
+
 // PATCH /api/submissions/:id/krt/:rowId - Update KRT row
 router.patch('/:id/krt/:rowId',
   canAccessSubmission,

@@ -16,6 +16,43 @@ const logger = require('../utils/logger');
 const QC_OPTIONAL_ROLES = [ROLES.ADMIN, ROLES.DS_ANNOTATOR];
 const QC_OPTIONAL_FIELDS = new Set(['isQc', 'isOptional']);
 
+// Map API column names to model fields. Strict allowlist shared by the single
+// and batch cell-update handlers: never fall back to the raw client string —
+// that would allow writes to arbitrary model attributes (submissionId, round,
+// id, ...). The route schemas already restrict `column`; the handlers'
+// lookup-and-throw guards against schema/map drift.
+const KRT_COLUMN_MAP = {
+  'resource_type': 'resourceType',
+  'resource_name': 'resourceName',
+  'source': 'source',
+  'identifier': 'identifier',
+  'new_reuse': 'newReuse',
+  'additional_information': 'additionalInformation',
+  'is_qc': 'isQc',
+  'is_optional': 'isOptional'
+};
+
+/**
+ * Resolve one cell update to { field, nextValue }, enforcing the column
+ * allowlist and the QC/Optional role gate.
+ * @throws {ValidationError|AuthorizationError}
+ */
+function resolveCellUpdate(column, value, userRole) {
+  const field = KRT_COLUMN_MAP[column];
+  if (!field) {
+    throw new ValidationError(`Unknown KRT column: ${column}`);
+  }
+  // QC / Optional flags are role-gated (request G1) and boolean-typed.
+  let nextValue = value;
+  if (QC_OPTIONAL_FIELDS.has(field)) {
+    if (!QC_OPTIONAL_ROLES.includes(userRole)) {
+      throw new AuthorizationError('Only administrators and DS annotators can set QC/Optional flags');
+    }
+    nextValue = value === true || value === 'true' || value === 1 || value === '1';
+  }
+  return { field, nextValue };
+}
+
 /**
  * Upload KRT file
  * POST /api/submissions/:id/krt/upload
@@ -141,34 +178,7 @@ async function updateRow(req, res, next) {
       throw new NotFoundError('KRT row');
     }
 
-    // Map column name to model field
-    const columnMap = {
-      'resource_type': 'resourceType',
-      'resource_name': 'resourceName',
-      'source': 'source',
-      'identifier': 'identifier',
-      'new_reuse': 'newReuse',
-      'additional_information': 'additionalInformation',
-      'is_qc': 'isQc',
-      'is_optional': 'isOptional'
-    };
-
-    // Strict allowlist: never fall back to the raw client string — that would
-    // allow writes to arbitrary model attributes (submissionId, round, id, ...).
-    // The route schema already restricts `column`; this guards against drift.
-    const field = columnMap[column];
-    if (!field) {
-      throw new ValidationError(`Unknown KRT column: ${column}`);
-    }
-
-    // QC / Optional flags are role-gated (request G1) and boolean-typed.
-    let nextValue = value;
-    if (QC_OPTIONAL_FIELDS.has(field)) {
-      if (!QC_OPTIONAL_ROLES.includes(req.user?.role)) {
-        throw new AuthorizationError('Only administrators and DS annotators can set QC/Optional flags');
-      }
-      nextValue = value === true || value === 'true' || value === 1 || value === '1';
-    }
+    const { field, nextValue } = resolveCellUpdate(column, value, req.user?.role);
 
     // The cell write and its audit-log entry commit together — an edit must
     // never persist without its ChangeLog record (or vice versa).
@@ -203,6 +213,85 @@ async function updateRow(req, res, next) {
     });
 
     res.json({ row: krtRow.toKRTRow() });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Batch-update KRT cells (bulk fixes, multi-cell edits).
+ * PATCH /api/submissions/:id/krt/batch
+ * Body: { updates: [{ rowId, column, value }], source? }
+ *
+ * One request replaces the per-cell request storm the frontend used to send
+ * for bulk actions. All-or-nothing: every cell write and its ChangeLog entry
+ * commit in a single transaction, so a failing item rolls back the whole
+ * batch (same guarantee a spreadsheet-style bulk edit implies). Validation
+ * runs once for the submission afterwards instead of once per cell.
+ */
+async function batchUpdateCells(req, res, next) {
+  try {
+    const { updates, source } = req.validatedBody;
+    const submissionId = req.params.id;
+    const round = req.submission.currentRound;
+    const step = statusToStep(req.submission.status);
+
+    // Load every referenced row, scoped to this submission/round — an ID from
+    // another submission must fail the batch, not be silently skipped.
+    const rowIds = [...new Set(updates.map(u => u.rowId))];
+    const rows = await KRTData.findAll({
+      where: { id: rowIds, submissionId, round }
+    });
+    const rowById = new Map(rows.map(r => [r.id, r]));
+    if (rowById.size !== rowIds.length) {
+      const missing = rowIds.filter(id => !rowById.has(id));
+      throw new NotFoundError(`KRT row(s): ${missing.join(', ')}`);
+    }
+
+    await sequelize.transaction(async (t) => {
+      // Apply all updates in memory first (several updates may target
+      // different columns of the same row), then save each row once.
+      const changeLogs = [];
+      for (const { rowId, column, value } of updates) {
+        const krtRow = rowById.get(rowId);
+        const { field, nextValue } = resolveCellUpdate(column, value, req.user?.role);
+        changeLogs.push({
+          submissionId,
+          userId: req.userId,
+          action: 'edit',
+          source: source || 'manual',
+          step,
+          round,
+          rowId,
+          columnName: column,
+          oldValue: krtRow[field],
+          newValue: value
+        });
+        krtRow[field] = nextValue;
+      }
+      for (const krtRow of rowById.values()) {
+        await krtRow.save({ transaction: t });
+      }
+      await ChangeLog.bulkCreate(changeLogs, { transaction: t });
+    });
+
+    // One validation pass post-commit (diagnostic, same as the single-cell
+    // handler's post-commit validateRow — full-submission here because a
+    // batch can touch many rows and per-row passes would be N sequential runs).
+    const validation = await krtService.validateSubmission(submissionId, round);
+
+    logger.info('KRT cells batch-updated', {
+      submissionId,
+      cellCount: updates.length,
+      rowCount: rowIds.length,
+      userId: req.userId
+    });
+
+    res.json({
+      rows: [...rowById.values()].map(r => r.toKRTRow()),
+      updated: updates.length,
+      validation
+    });
   } catch (error) {
     next(error);
   }
@@ -451,6 +540,7 @@ module.exports = {
   upload,
   getData,
   updateRow,
+  batchUpdateCells,
   addRow,
   deleteRow,
   mergeRows,
