@@ -575,13 +575,7 @@ const suggestionDisplayRows = computed(() => {
   }
   const q = modalSearch.value.trim().toLowerCase()
   if (q) {
-    items = items.filter(d => {
-      const fields = [d.action || d.type, d.reason || d.description, d.resourceName]
-      for (const cells of [d.authorRow, d.generatedRow, d.row]) {
-        if (cells) fields.push(...Object.values(cells))
-      }
-      return rowMatchesSearch(fields, q)
-    })
+    items = items.filter(d => suggestionMatchesSearch(d, q))
   }
   const out = []
   items.forEach((d, gi) => {
@@ -970,6 +964,21 @@ function suggestionDecisionType(d) {
     || ''
 }
 
+/**
+ * Whether a suggestion decision matches the given (already lower-cased) search
+ * query, across the same fields the suggestions table searches. Empty query
+ * matches everything. Shared by the display rows and the facet counts so the
+ * tab / decision-chip numbers reflect the active search.
+ */
+function suggestionMatchesSearch(d, q) {
+  if (!q) return true
+  const fields = [d.action || d.type, d.reason || d.description, d.resourceName]
+  for (const cells of [d.authorRow, d.generatedRow, d.row]) {
+    if (cells) fields.push(...Object.values(cells))
+  }
+  return rowMatchesSearch(fields, q)
+}
+
 // Distinct resource types present in the open table, in KRT-editor order —
 // the options of the type-filter select.
 const modalTypeOptions = computed(() => {
@@ -980,18 +989,28 @@ const modalTypeOptions = computed(() => {
 
 // Decisions present in the suggestions table, with counts, in a fixed
 // Add/Update/Remove/Skip order — the options for the decision filter chips.
+// The chip list stays stable (every decision present in the full result set),
+// but each count reflects the OTHER active filters (tab-group + search) — not
+// the decision filter itself — so a chip can read 0 yet stay clickable.
 const modalDecisionOptions = computed(() => {
   if (modalTableType.value !== 'suggestions') return []
+  const q = modalSearch.value.trim().toLowerCase()
+  const inTab = (d) => modalTabFilter.value === 'all'
+    || resourceTypesStore.getTabGroup(suggestionDecisionType(d)) === modalTabFilter.value
+  const present = new Set()
   const counts = new Map()
   for (const d of (modalItems.value || [])) {
     const label = suggestionDecisionLabel(d)
-    counts.set(label, (counts.get(label) || 0) + 1)
+    present.add(label)
+    if (inTab(d) && suggestionMatchesSearch(d, q)) {
+      counts.set(label, (counts.get(label) || 0) + 1)
+    }
   }
   const ORDER = ['Add', 'Update', 'Remove', 'Skip']
   const rank = (l) => { const i = ORDER.indexOf(l); return i === -1 ? ORDER.length : i }
-  return [...counts.entries()]
-    .sort((a, b) => rank(a[0]) - rank(b[0]))
-    .map(([label, count]) => ({ label, count }))
+  return [...present]
+    .sort((a, b) => rank(a) - rank(b))
+    .map(label => ({ label, count: counts.get(label) || 0 }))
 })
 
 function toggleDecisionFilter(label) {
@@ -1015,7 +1034,15 @@ const modalTabCounts = computed(() => {
       if (r.isGroupStart) bump(r.resourceType || '')
     }
   } else if (modalTableType.value === 'suggestions') {
-    for (const d of (modalItems.value || [])) bump(suggestionDecisionType(d))
+    // Each tab's count reflects the OTHER active filters (decision chips +
+    // search) but not the tab filter itself, so the numbers track what the
+    // user has filtered to.
+    const q = modalSearch.value.trim().toLowerCase()
+    for (const d of (modalItems.value || [])) {
+      if (modalDecisionFilter.value.size && !modalDecisionFilter.value.has(suggestionDecisionLabel(d))) continue
+      if (!suggestionMatchesSearch(d, q)) continue
+      bump(suggestionDecisionType(d))
+    }
   }
   return counts
 })
