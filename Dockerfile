@@ -89,5 +89,11 @@ USER app
 
 EXPOSE 3000 5173
 
+# Restart policies (systemd/compose) only react to process exit; the
+# healthcheck also catches a hung app. start-period covers the entrypoint's
+# migration step on boot.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD node -e "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["node", "src/backend/server.js"]
