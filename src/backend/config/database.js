@@ -45,45 +45,62 @@ const defaultUrls = {
   test: 'postgresql://postgres:postgres@localhost:5432/asap_krsync_test'
 };
 
+// Each environment is a getter so only the ACTIVE one is built: eagerly
+// spreading all three meant `parseDbUrl(process.env.DATABASE_URL)` ran at
+// require time in every environment, crashing dev/test setups without
+// DATABASE_URL on an opaque ERR_INVALID_URL and making the defaults above
+// unreachable. Both sequelize-cli and models/index.js access config[env],
+// which triggers exactly one getter.
 const config = {
-  development: {
-    ...parseDbUrl(process.env.DATABASE_URL || defaultUrls.development),
-    logging: console.log,
-    pool: {
-      min: parseInt(process.env.DATABASE_POOL_MIN, 10) || 2,
-      max: parseInt(process.env.DATABASE_POOL_MAX, 10) || 10,
-      acquire: 30000,
-      idle: 10000
-    }
-  },
-  test: {
-    ...parseDbUrl(process.env.DATABASE_URL || defaultUrls.test),
-    logging: false,
-    pool: {
-      min: 1,
-      max: 5
-    }
-  },
-  production: {
-    ...parseDbUrl(process.env.DATABASE_URL),
-    logging: false,
-    pool: {
-      min: parseInt(process.env.DATABASE_POOL_MIN, 10) || 5,
-      max: parseInt(process.env.DATABASE_POOL_MAX, 10) || 20,
-      acquire: 30000,
-      idle: 10000
-    },
-    // SSL is optional - enable via DATABASE_SSL=true if needed.
-    // Certificate validation is on by default; opt out only for self-signed
-    // certs in trusted networks via DATABASE_SSL_REJECT_UNAUTHORIZED=false.
-    ...(process.env.DATABASE_SSL === 'true' && {
-      dialectOptions: {
-        ssl: {
-          require: true,
-          rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false'
-        }
+  get development() {
+    return {
+      ...parseDbUrl(process.env.DATABASE_URL || defaultUrls.development),
+      logging: console.log,
+      pool: {
+        min: parseInt(process.env.DATABASE_POOL_MIN, 10) || 2,
+        max: parseInt(process.env.DATABASE_POOL_MAX, 10) || 10,
+        acquire: 30000,
+        idle: 10000
       }
-    })
+    };
+  },
+  get test() {
+    return {
+      ...parseDbUrl(process.env.DATABASE_URL || defaultUrls.test),
+      logging: false,
+      pool: {
+        min: 1,
+        max: 5
+      }
+    };
+  },
+  get production() {
+    if (!process.env.DATABASE_URL) {
+      throw new Error(
+        'DATABASE_URL must be set when NODE_ENV=production — there is deliberately no default.'
+      );
+    }
+    return {
+      ...parseDbUrl(process.env.DATABASE_URL),
+      logging: false,
+      pool: {
+        min: parseInt(process.env.DATABASE_POOL_MIN, 10) || 5,
+        max: parseInt(process.env.DATABASE_POOL_MAX, 10) || 20,
+        acquire: 30000,
+        idle: 10000
+      },
+      // SSL is optional - enable via DATABASE_SSL=true if needed.
+      // Certificate validation is on by default; opt out only for self-signed
+      // certs in trusted networks via DATABASE_SSL_REJECT_UNAUTHORIZED=false.
+      ...(process.env.DATABASE_SSL === 'true' && {
+        dialectOptions: {
+          ssl: {
+            require: true,
+            rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false'
+          }
+        }
+      })
+    };
   }
 };
 

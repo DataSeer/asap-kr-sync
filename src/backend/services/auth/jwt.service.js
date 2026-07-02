@@ -28,7 +28,11 @@ function generateAccessToken(user) {
     {
       userId: user.id,
       email: user.email,
-      role: user.role
+      role: user.role,
+      // Distinguishes access from refresh tokens: both are HS256 with the
+      // same secret, so without this claim a refresh token presented in the
+      // session cookie would pass local verification.
+      type: 'access'
     },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN, algorithm: 'HS256' }

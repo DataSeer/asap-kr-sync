@@ -61,10 +61,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Note: Rate limiting is applied per-route in the routes files
-// This allows authenticated users to bypass API rate limits while
-// still protecting auth endpoints from brute force attacks
-
 // Request parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

@@ -214,8 +214,21 @@ value the editor uses to group resource-type errors into one-click bulk fixes (e
 `normalizeResourceType` also maps variants such as Mouse / Virus Strain to the canonical type.
 
 ### `PATCH /api/submissions/:id/krt/:rowId`
-Update a KRT row cell.
+Update a single KRT row cell.
 - **Body**: `{ column, value, source? }`
+
+### `PATCH /api/submissions/:id/krt/batch`
+Batch-update KRT cells in **one transaction** — the editor routes both single edits and bulk gestures
+(apply-all validation fixes, multi-cell edits) through here instead of looping one request per cell, so a
+large "fix all" no longer trips the rate limit.
+- **Body**: `{ updates: [ { rowId, column, value } … ] (1–500 items), source? }`
+- `column` is a strict allowlist (`resource_type`, `resource_name`, `source`, `identifier`, `new_reuse`,
+  `additional_information`, `is_qc`, `is_optional`); `is_qc`/`is_optional` remain role-gated to Admin / DS Annotator.
+- All items apply together with per-item ChangeLog entries and a single post-commit validation pass; a `rowId`
+  belonging to another submission fails the **whole** batch (404) rather than being silently skipped.
+- **Returns**: the updated rows plus the same validation summary as `POST …/krt/validate`.
+
+> **Route order:** `/krt/batch` is registered before the parameterized `/krt/:rowId` so "batch" is not captured as a row id.
 
 ### `POST /api/submissions/:id/krt/row`
 Add a new KRT row.
@@ -484,6 +497,10 @@ All job endpoints support an optional `?round=N` query parameter. When omitted, 
 ### `GET /api/submissions/:id/jobs?round=N`
 Get all background job statuses for a submission.
 - **Returns**: `{ round, jobs: [...] }` — each job includes `logs`, `rawResponses`, `result`, `config`
+- A `waiting` job that is held by a submission-state gate (datasets/materials/protocols before KRT validation)
+  carries `waitingReason: 'krt_validation'`, so the UI can show *"Waiting for the Key Resources Table to be
+  validated."* These advance automatically once the KRT is validated — no `advance` call is needed (that is only
+  for `pending_input` jobs).
 
 ### `POST /api/submissions/:id/processes/run`
 Run (or re-run) all background processes for a submission.

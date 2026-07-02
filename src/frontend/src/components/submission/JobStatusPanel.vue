@@ -12,6 +12,9 @@ import Papa from 'papaparse'
 import { useAuthStore } from '@/stores/auth.store'
 import jobService from '@/services/job.service'
 import fileService from '@/services/file.service'
+import { useResourceTypesStore } from '@/stores/resourceTypes.store'
+import HighlightText from '@/components/submission/HighlightText.vue'
+import { useColumnResize } from '@/composables/useColumnResize'
 
 const emit = defineEmits(['edit-das'])
 const route = useRoute()
@@ -28,6 +31,7 @@ const submissionMaterials = inject('submissionMaterials', ref([]))
 const submissionProtocols = inject('submissionProtocols', ref([]))
 const serviceStatus = inject('serviceStatus', ref({}))
 const authStore = useAuthStore()
+const resourceTypesStore = useResourceTypesStore()
 
 const restartingJobs = ref(new Set())
 
@@ -77,6 +81,11 @@ let tickTimer = null
 // Tick every second for live elapsed time
 onMounted(() => {
   tickTimer = setInterval(() => { now.value = Date.now() }, 1000)
+  // Resource-type order powers the modal tables' KRT-editor-style sorting
+  // and the type filter; harmless if it fails (tables fall back to raw order).
+  if (!resourceTypesStore.resourceTypeNames.length) {
+    resourceTypesStore.fetchResourceTypeNames().catch(() => {})
+  }
 })
 onUnmounted(() => {
   if (tickTimer) clearInterval(tickTimer)
@@ -119,6 +128,23 @@ const modalJobType = ref(null)
 const modalExactMatchCount = ref(0)
 // PDF Analysis: candidates the LM dropped (not kept in the Generated KRT).
 const modalDropped = ref([])
+// Modal table controls: text search + resource-type filter (mirrors the KRT
+// editor so curators can find a line without scanning the whole table).
+const modalSearch = ref('')
+const modalTypeFilter = ref('all')
+// Tab-group filter for the consolidated views (Generated KRT, AI
+// suggestions) — same tabs as the KRT editor.
+const modalTabFilter = ref('all')
+// Multi-select decision filter for the AI-suggestions table (toggle chips).
+// Empty set = no filter (all decisions shown).
+const modalDecisionFilter = ref(new Set())
+const MODAL_TAB_GROUPS = [
+  { key: 'all', label: 'All' },
+  { key: 'Datasets', label: 'Datasets' },
+  { key: 'Software/code', label: 'Software/code' },
+  { key: 'Protocols', label: 'Protocols' },
+  { key: 'Lab Materials', label: 'Key Lab Materials' }
+]
 
 // Display-side scrub of internal references that leak into LM reasons —
 // candidate "ref" numbers (PDF Analysis) and raw KRT row UUIDs (AI Suggestions).
@@ -157,6 +183,7 @@ const jobList = computed(() => {
       type,
       label,
       status: job?.status || null,
+      waitingReason: job?.waitingReason || null,
       result: job?.result || null,
       errorMessage: job?.errorMessage || null,
       retryCount: job?.retryCount || 0,
@@ -521,6 +548,57 @@ const SUGGESTION_ROW_COLUMNS = [
   { key: 'identifier', label: 'Identifier' },
   { key: 'newReuse', label: 'New/Reuse' }
 ]
+
+// Resizable-column metadata for each modal table (drag a header's right edge to
+// widen it; widths persist in localStorage). Each entry is { key, label, width }
+// (+ optional cssClass); `width` is the default until the user drags. The order
+// must match the table body's column order. Shared instance below namespaces the
+// keys so one localStorage entry holds every table's widths.
+const colResize = useColumnResize('jobModal.columnWidths')
+const RESIZE_MENTIONS_COLS = [
+  { key: 'resourceType', label: 'Resource Type', width: 120 },
+  { key: 'resourceName', label: 'Resource Name', width: 240 },
+  { key: 'source', label: 'Source', width: 170 },
+  { key: 'identifier', label: 'Identifier', width: 170 },
+  { key: 'newReuse', label: 'New/Reuse', width: 90 },
+  { key: 'additionalInformation', label: 'Additional Information', width: 220 }
+]
+const RESIZE_PDF_COLS = [
+  { key: 'krtNum', label: 'KRT #', width: 70 },
+  { key: 'detection', label: 'Detection', width: 110 },
+  { key: 'reason', label: 'Reason', width: 240 },
+  { key: 'resourceType', label: 'Resource Type', width: 120 },
+  { key: 'resourceName', label: 'Detected Name', width: 220 },
+  { key: 'source', label: 'Source', width: 150 },
+  { key: 'identifier', label: 'Identifier', width: 150 },
+  { key: 'newReuse', label: 'New/Reuse', width: 90 },
+  { key: 'additionalInformation', label: 'Additional Information', width: 200 }
+]
+const RESIZE_DROPPED_COLS = [
+  { key: 'detectedBy', label: 'Detected by', width: 130 },
+  { key: 'resourceType', label: 'Resource Type', width: 120 },
+  { key: 'resourceName', label: 'Resource Name', width: 220 },
+  { key: 'identifier', label: 'Identifier', width: 160 },
+  { key: 'reason', label: 'Reason dropped', width: 260 }
+]
+const RESIZE_AUTHOR_COLS = [
+  { key: 'name', label: 'Name', width: 200 },
+  { key: 'orcid', label: 'ORCID', width: 170 },
+  { key: 'affiliation', label: 'Affiliation', width: 280 },
+  { key: 'source', label: 'Source', width: 130 }
+]
+const RESIZE_SUGGESTION_COLS = [
+  { key: 'decision', label: 'Decision', width: 100 },
+  { key: 'reason', label: 'Reason', width: 240, cssClass: 'suggestion-reason-col' },
+  { key: 'item', label: 'Item', width: 90 },
+  ...SUGGESTION_ROW_COLUMNS.map(c => ({
+    key: c.key,
+    label: c.label,
+    width: c.key === 'resourceName' ? 200 : (c.key === 'newReuse' ? 90 : 150),
+    cssClass: c.key === 'resourceName' ? 'suggestion-name-col' : undefined
+  })),
+  { key: 'modules', label: 'Modules', width: 130 }
+]
 // Value for one column of a decision's row. Prefers the structured `row`
 // (new shape); falls back to the resource name / raw suggestion data for
 // older results so the table still renders.
@@ -537,7 +615,20 @@ function suggestionCellValue(item, key) {
 // so a curator sees the concerned author entry — and, for changes, both sides.
 const suggestionDisplayRows = computed(() => {
   if (modalTableType.value !== 'suggestions') return []
-  const items = modalItems.value || []
+  // KRT-editor ordering + type filter + search operate on whole decisions
+  // (each decision expands to 1-2 display rows below).
+  let items = [...(modalItems.value || [])]
+  items.sort((a, b) => compareTypes(suggestionDecisionType(a), suggestionDecisionType(b)))
+  if (modalTabFilter.value !== 'all') {
+    items = items.filter(d => resourceTypesStore.getTabGroup(suggestionDecisionType(d)) === modalTabFilter.value)
+  }
+  if (modalDecisionFilter.value.size) {
+    items = items.filter(d => modalDecisionFilter.value.has(suggestionDecisionLabel(d)))
+  }
+  const q = modalSearch.value.trim().toLowerCase()
+  if (q) {
+    items = items.filter(d => suggestionMatchesSearch(d, q))
+  }
   const out = []
   items.forEach((d, gi) => {
     const action = d.action || d.type
@@ -680,10 +771,13 @@ function getResultTitle(job) {
  */
 function getWaitingFor(job) {
   const deps = {
+    das_extraction: ['markdown_convert'],
     pdf_analysis: ['das_extraction'],
     datasets_detection: ['markdown_convert'],
+    materials_detection: ['markdown_convert'],
     protocols_detection: ['markdown_convert'],
-    identifier_detection: ['markdown_convert']
+    identifier_detection: ['markdown_convert'],
+    suggestion_generation: ['pdf_analysis']
   }
   return deps[job.type] || []
 }
@@ -697,6 +791,9 @@ function getJobDetail(job) {
     return 'Waiting for user input before proceeding.'
   }
   if (job.status === 'waiting') {
+    if (job.waitingReason === 'krt_validation') {
+      return 'Waiting for the Key Resources Table to be validated — complete the KRT step to start this analysis.'
+    }
     const deps = getWaitingFor(job)
     if (deps.length) {
       const labels = deps.map(d => {
@@ -849,6 +946,12 @@ function openJobModal(job) {
     modalContent.value = ''
   }
 
+  // Fresh filters per modal open
+  modalSearch.value = ''
+  modalTypeFilter.value = 'all'
+  modalTabFilter.value = 'all'
+  modalDecisionFilter.value = new Set()
+
   showModal.value = true
 }
 
@@ -862,6 +965,10 @@ function closeModal() {
   modalRawResponses.value = {}
   modalJobType.value = null
   modalExactMatchCount.value = 0
+  modalSearch.value = ''
+  modalTypeFilter.value = 'all'
+  modalTabFilter.value = 'all'
+  modalDecisionFilter.value = new Set()
 }
 
 // ── PDF Analysis modal: pre-merge KRT view ─────────────────────────
@@ -882,6 +989,149 @@ const PDF_ANALYSIS_SOURCE_LABELS = {
 function pdfAnalysisSourceLabel(source) {
   return PDF_ANALYSIS_SOURCE_LABELS[source] || source
 }
+
+// ── Modal table search / type filter / KRT-editor ordering ─────────
+
+/**
+ * Compare two resource-type names in the KRT editor's display order:
+ * tab-group order first, then per-type sort_order from the DB. Ties return 0
+ * so stable sorts preserve the rows' original relative order (same rule the
+ * editor applies).
+ */
+function compareTypes(a, b) {
+  const ga = resourceTypesStore.getGroupSortOrder(a)
+  const gb = resourceTypesStore.getGroupSortOrder(b)
+  if (ga !== gb) return ga - gb
+  return resourceTypesStore.getTypeSortOrder(a) - resourceTypesStore.getTypeSortOrder(b)
+}
+
+function rowMatchesSearch(fields, query) {
+  return fields.some(f => (f || '').toString().toLowerCase().includes(query))
+}
+
+/** Resource type a suggestion decision belongs to (author row wins). */
+function suggestionDecisionType(d) {
+  return (d.authorRow && d.authorRow.resourceType)
+    || (d.generatedRow && d.generatedRow.resourceType)
+    || ''
+}
+
+/**
+ * Whether a suggestion decision matches the given (already lower-cased) search
+ * query, across the same fields the suggestions table searches. Empty query
+ * matches everything. Shared by the display rows and the facet counts so the
+ * tab / decision-chip numbers reflect the active search.
+ */
+function suggestionMatchesSearch(d, q) {
+  if (!q) return true
+  const fields = [d.action || d.type, d.reason || d.description, d.resourceName]
+  for (const cells of [d.authorRow, d.generatedRow, d.row]) {
+    if (cells) fields.push(...Object.values(cells))
+  }
+  return rowMatchesSearch(fields, q)
+}
+
+// Distinct resource types present in the open table, in KRT-editor order —
+// the options of the type-filter select.
+const modalTypeOptions = computed(() => {
+  if (modalTableType.value !== 'resources' && modalTableType.value !== 'software') return []
+  const types = (modalItems.value || []).map(it => it.resourceType || it.resource_type || (modalTableType.value === 'software' ? 'Software/code' : ''))
+  return [...new Set(types.filter(Boolean))].sort(compareTypes)
+})
+
+// Decisions present in the suggestions table, with counts, in a fixed
+// Add/Update/Remove/Skip order — the options for the decision filter chips.
+// The chip list stays stable (every decision present in the full result set),
+// but each count reflects the OTHER active filters (tab-group + search) — not
+// the decision filter itself — so a chip can read 0 yet stay clickable.
+const modalDecisionOptions = computed(() => {
+  if (modalTableType.value !== 'suggestions') return []
+  const q = modalSearch.value.trim().toLowerCase()
+  const inTab = (d) => modalTabFilter.value === 'all'
+    || resourceTypesStore.getTabGroup(suggestionDecisionType(d)) === modalTabFilter.value
+  const present = new Set()
+  const counts = new Map()
+  for (const d of (modalItems.value || [])) {
+    const label = suggestionDecisionLabel(d)
+    present.add(label)
+    if (inTab(d) && suggestionMatchesSearch(d, q)) {
+      counts.set(label, (counts.get(label) || 0) + 1)
+    }
+  }
+  const ORDER = ['Add', 'Update', 'Remove', 'Skip']
+  const rank = (l) => { const i = ORDER.indexOf(l); return i === -1 ? ORDER.length : i }
+  return [...present]
+    .sort((a, b) => rank(a) - rank(b))
+    .map(label => ({ label, count: counts.get(label) || 0 }))
+})
+
+function toggleDecisionFilter(label) {
+  const next = new Set(modalDecisionFilter.value)
+  if (next.has(label)) next.delete(label)
+  else next.add(label)
+  modalDecisionFilter.value = next
+}
+
+// Per-tab row counts for the consolidated views (groups for the Generated
+// KRT, decisions for AI suggestions) — mirrors the KRT editor's tab badges.
+const modalTabCounts = computed(() => {
+  const counts = { all: 0 }
+  const bump = (type) => {
+    const g = resourceTypesStore.getTabGroup(type)
+    counts[g] = (counts[g] || 0) + 1
+    counts.all++
+  }
+  if (modalTableType.value === 'pdf_analysis_krt') {
+    for (const r of pdfAnalysisRows.value) {
+      if (r.isGroupStart) bump(r.resourceType || '')
+    }
+  } else if (modalTableType.value === 'suggestions') {
+    // Each tab's count reflects the OTHER active filters (decision chips +
+    // search) but not the tab filter itself, so the numbers track what the
+    // user has filtered to.
+    const q = modalSearch.value.trim().toLowerCase()
+    for (const d of (modalItems.value || [])) {
+      if (modalDecisionFilter.value.size && !modalDecisionFilter.value.has(suggestionDecisionLabel(d))) continue
+      if (!suggestionMatchesSearch(d, q)) continue
+      bump(suggestionDecisionType(d))
+    }
+  }
+  return counts
+})
+
+// Mentions (software/datasets/materials/protocols), sorted in the KRT
+// editor's order, then type-filtered and searched across visible columns.
+const displayedModalItems = computed(() => {
+  if (modalTableType.value !== 'resources' && modalTableType.value !== 'software') {
+    return modalItems.value || []
+  }
+  const typeOf = (it) => it.resourceType || it.resource_type || (modalTableType.value === 'software' ? 'Software/code' : '')
+  let items = [...(modalItems.value || [])].sort((a, b) => compareTypes(typeOf(a), typeOf(b)))
+  if (modalTypeFilter.value !== 'all') {
+    items = items.filter(it => typeOf(it) === modalTypeFilter.value)
+  }
+  const q = modalSearch.value.trim().toLowerCase()
+  if (q) {
+    items = items.filter(it => rowMatchesSearch([
+      typeOf(it), getMentionName(it),
+      it.source || it.suggestedURL || it.url,
+      it.identifier || it.RRID || it.suggestedRRID,
+      it.newReuse,
+      it.additionalInformation || it.additional_information
+    ], q))
+  }
+  return items
+})
+
+// Authors table: search only (no resource types here).
+const displayedAuthorItems = computed(() => {
+  if (modalTableType.value !== 'authors') return modalItems.value || []
+  const q = modalSearch.value.trim().toLowerCase()
+  if (!q) return modalItems.value || []
+  return (modalItems.value || []).filter(it => rowMatchesSearch([
+    it.fullName, it.firstName, it.lastName, it.orcid, it.affiliation, it.source
+  ], q))
+})
 
 const pdfAnalysisRows = computed(() => {
   if (modalTableType.value !== 'pdf_analysis_krt') return []
@@ -987,7 +1237,16 @@ function downloadPdfAnalysisCsv() {
     'Additional Information': r.additionalInformation,
     'Dedup Key': r.dedupKey || ''
   }))
-  const csv = Papa.unparse(csvData)
+  // Neutralize spreadsheet formula triggers: these cells derive from LM
+  // analysis of an author-uploaded manuscript, so a value like =HYPERLINK(...)
+  // must not execute when a curator opens the export in Excel.
+  const guarded = csvData.map(row => Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [
+      k,
+      typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? `'${v}` : v
+    ])
+  ))
+  const csv = Papa.unparse(guarded)
   // BOM prefix so Excel opens UTF-8 cleanly without mangling accented chars.
   const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8;' })
   triggerBlobDownload(blob, 'pdf-analysis-generated-krt.csv')
@@ -1091,7 +1350,46 @@ function getMergedFromCount(item) {
 }
 
 /** Indices of rows whose mergedFrom drill-down is currently expanded. */
+// Generated-KRT view with the modal controls applied at GROUP level (a
+// group = one final KRT row; its contributor lines travel with it): groups
+// are kept whole by search/type-filter and ordered by resource type in the
+// KRT editor's order. displayParity re-alternates shading on the visible set.
+const displayedPdfAnalysisRows = computed(() => {
+  const all = pdfAnalysisRows.value
+  const groupType = new Map()
+  for (const r of all) {
+    if (r.isGroupStart) groupType.set(r.groupIndex, r.resourceType || '')
+  }
+  let keep = new Set(groupType.keys())
+  if (modalTabFilter.value !== 'all') {
+    keep = new Set([...keep].filter(gi => resourceTypesStore.getTabGroup(groupType.get(gi)) === modalTabFilter.value))
+  }
+  const q = modalSearch.value.trim().toLowerCase()
+  if (q) {
+    const matching = new Set(all.filter(r => rowMatchesSearch([
+      r.resourceType, r.resourceName, r.finalName, r.sourceUrl, r.identifier,
+      r.newReuse, r.additionalInformation, r.reason
+    ], q)).map(r => r.groupIndex))
+    keep = new Set([...keep].filter(gi => matching.has(gi)))
+  }
+  const rows = all
+    .filter(r => keep.has(r.groupIndex))
+    .sort((a, b) => a.groupIndex === b.groupIndex
+      ? 0
+      : (compareTypes(groupType.get(a.groupIndex), groupType.get(b.groupIndex)) || (a.groupIndex - b.groupIndex)))
+  let parity = -1
+  let lastGroup = null
+  return rows.map(r => {
+    if (r.groupIndex !== lastGroup) { parity++; lastGroup = r.groupIndex }
+    return { ...r, displayParity: parity % 2 }
+  })
+})
+
 const expandedMergedRows = ref(new Set())
+
+// Row indexes shift when the search/type filter changes — drop any open
+// merged-row expansions so they don't reattach to the wrong line.
+watch([modalSearch, modalTypeFilter, modalTabFilter], () => { expandedMergedRows.value = new Set() })
 
 function toggleMergedRow(idx) {
   const next = new Set(expandedMergedRows.value)
@@ -1198,7 +1496,7 @@ async function downloadRawResponse(jobType, responseName) {
     const submissionId = route.params.id
     const data = await jobService.getJobResponseUrl(submissionId, jobType, responseName)
     if (data.url) {
-      window.open(data.url, '_blank')
+      window.open(data.url, '_blank', 'noopener,noreferrer')
     }
   } catch {
     // Silently fail — the button just won't work
@@ -1213,7 +1511,7 @@ async function downloadMarkdownFile(fileId) {
     const submissionId = route.params.id
     const data = await fileService.download(submissionId, fileId)
     if (data.url) {
-      window.open(data.url, '_blank')
+      window.open(data.url, '_blank', 'noopener,noreferrer')
     }
   } catch {
     // Silently fail
@@ -1444,27 +1742,114 @@ async function downloadMarkdownFile(fileId) {
             <!-- Results section -->
             <div v-if="modalContent || (modalItems && modalItems.length) || modalTableType === 'pdf_analysis_krt'" class="job-modal-section">
               <h4 class="job-modal-section-title">Results</h4>
+              <!-- PDF Analysis: download actions + summary sit above the
+                   search/tab controls, separated by a divider. -->
+              <div v-if="modalTableType === 'pdf_analysis_krt' && pdfAnalysisRows.length" class="pdf-analysis-header">
+                <div class="pdf-analysis-actions">
+                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisCsv">
+                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                    </svg>
+                    Download CSV
+                  </button>
+                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisJson">
+                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                    </svg>
+                    Download JSON
+                  </button>
+                </div>
+                <div class="pdf-analysis-summary">
+                  <div>
+                    <strong>{{ modalItems?.length || 0 }}</strong> KRT row{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
+                    consolidated from <strong>{{ pdfAnalysisRows.length }}</strong> detection{{ pdfAnalysisRows.length !== 1 ? 's' : '' }}
+                    <span v-if="pdfAnalysisMergedGroups > 0">— {{ pdfAnalysisMergedGroups }} merged from multiple modules</span>
+                  </div>
+                  <div class="pdf-analysis-summary-hint">
+                    Rows sharing a <strong>KRT&nbsp;#</strong> are the <em>same</em> KRT row — one line per detection module that found it.
+                  </div>
+                </div>
+                <hr class="job-modal-divider">
+              </div>
+
+              <!-- Search + resource-type filter (mirrors the KRT editor's
+                   controls) for every table view -->
+              <div v-if="modalTableType && modalItems && modalItems.length" class="job-modal-table-controls">
+                <input
+                  v-model="modalSearch"
+                  type="text"
+                  class="job-modal-search"
+                  placeholder="Search rows…"
+                >
+                <select
+                  v-if="modalTypeOptions.length > 1"
+                  v-model="modalTypeFilter"
+                  class="job-modal-type-filter"
+                >
+                  <option value="all">All resource types</option>
+                  <option v-for="t in modalTypeOptions" :key="t" :value="t">{{ t }}</option>
+                </select>
+              </div>
+
+              <!-- Tab-group filter (same tabs as the KRT editor) sits directly
+                   above the table; the suggestions decision chips share the row. -->
+              <div
+                v-if="(modalTableType === 'pdf_analysis_krt' || modalTableType === 'suggestions') && modalItems && modalItems.length"
+                class="job-modal-tabs-row"
+              >
+                <div class="job-modal-tabs">
+                  <button
+                    v-for="tab in MODAL_TAB_GROUPS"
+                    :key="tab.key"
+                    type="button"
+                    class="job-modal-tab"
+                    :class="{ 'job-modal-tab-active': modalTabFilter === tab.key }"
+                    @click="modalTabFilter = tab.key"
+                  >
+                    {{ tab.label }}
+                    <span class="job-modal-tab-count">{{ modalTabCounts[tab.key] || 0 }}</span>
+                  </button>
+                </div>
+                <!-- Decision filter: toggle chips, multi-select. No chip
+                     active = every decision shown; dimmed = filtered out. -->
+                <div v-if="modalTableType === 'suggestions' && modalDecisionOptions.length > 1" class="job-modal-decision-filter">
+                  <button
+                    v-for="opt in modalDecisionOptions"
+                    :key="opt.label"
+                    type="button"
+                    class="suggestion-decision-badge job-modal-decision-chip"
+                    :class="['sdb-' + opt.label.toLowerCase(), { 'job-modal-decision-chip-off': modalDecisionFilter.size && !modalDecisionFilter.has(opt.label) }]"
+                    :title="modalDecisionFilter.has(opt.label) ? 'Click to stop filtering on ' + opt.label : 'Click to show only ' + opt.label + ' decisions (combine by clicking several)'"
+                    @click="toggleDecisionFilter(opt.label)"
+                  >
+                    {{ opt.label }}
+                    <span class="job-modal-decision-chip-count">{{ opt.count }}</span>
+                  </button>
+                </div>
+              </div>
               <!-- Plain text content (DAS, markdown info) -->
               <p v-if="modalContent && !modalItems" class="job-modal-text">{{ modalContent }}</p>
               <!-- Mentions table (software, datasets, materials, protocols) -->
               <div v-if="modalItems && modalItems.length && (modalTableType === 'software' || modalTableType === 'resources')" class="job-modal-table-wrapper">
-                <table class="job-modal-table">
+                <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('mentions', RESIZE_MENTIONS_COLS)">
                   <thead>
                     <tr>
-                      <th>Resource Type</th>
-                      <th>Resource Name</th>
-                      <th>Source</th>
-                      <th>Identifier</th>
-                      <th>New/Reuse</th>
-                      <th>Additional Information</th>
+                      <th
+                        v-for="c in RESIZE_MENTIONS_COLS"
+                        :key="c.key"
+                        :style="colResize.headStyle('mentions', c.key, c.width)"
+                      >
+                        {{ c.label }}
+                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('mentions', c.key, c.width, $event)"></span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    <template v-for="(item, i) in modalItems" :key="i">
+                    <template v-for="(item, i) in displayedModalItems" :key="i">
                       <tr>
-                        <td class="text-xs">{{ item.resourceType || item.resource_type || 'Software/code' }}</td>
+                        <td class="text-xs"><HighlightText :text="item.resourceType || item.resource_type || 'Software/code'" :query="modalSearch" /></td>
                         <td class="font-medium">
-                          {{ getMentionName(item) }}
+                          <HighlightText :text="getMentionName(item)" :query="modalSearch" />
                           <span
                             v-if="getEnrichmentMeta(item)?.matched"
                             class="enrichment-badge"
@@ -1486,15 +1871,15 @@ async function downloadMarkdownFile(fileId) {
                             <span class="merged-from-chevron" :class="{ open: expandedMergedRows.has(i) }">▾</span>
                           </button>
                         </td>
-                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'source') }" :title="isFieldFromEnrichment(item, 'source') ? 'Filled in from the enrichment list' : null">{{ item.source || item.suggestedURL || item.url || '—' }}</td>
-                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'identifier') }" :title="isFieldFromEnrichment(item, 'identifier') ? 'Filled in from the enrichment list' : null">{{ item.identifier || item.RRID || item.suggestedRRID || '—' }}</td>
+                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'source') }" :title="isFieldFromEnrichment(item, 'source') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.source || item.suggestedURL || item.url" :query="modalSearch" /></td>
+                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'identifier') }" :title="isFieldFromEnrichment(item, 'identifier') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.identifier || item.RRID || item.suggestedRRID" :query="modalSearch" /></td>
                         <td :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'newReuse') }" :title="isFieldFromEnrichment(item, 'newReuse') ? 'Filled in from the enrichment list' : null">
                           <span v-if="item.newReuse" class="job-modal-source-badge" :class="item.newReuse === 'new' ? 'source-enriched' : 'source-softcite'">
                             {{ item.newReuse }}
                           </span>
                           <span v-else>—</span>
                         </td>
-                        <td class="text-xs text-gray-500">{{ item.additionalInformation || item.additional_information || '—' }}</td>
+                        <td class="text-xs text-gray-500"><HighlightText :text="item.additionalInformation || item.additional_information" :query="modalSearch" /></td>
                       </tr>
                       <tr v-if="item.detectorMeta?.context || item.context" class="context-row">
                         <td colspan="6" class="context-cell">{{ item.detectorMeta?.context || item.context }}</td>
@@ -1525,6 +1910,7 @@ async function downloadMarkdownFile(fileId) {
                     </template>
                   </tbody>
                 </table>
+                <div v-if="!displayedModalItems.length" class="job-modal-filter-empty">No rows match the current filters.</div>
               </div>
               <!-- Enrichment summary note. The "already in KRT" judgment now
                    lives solely in the AI Suggestions section, which is fed by
@@ -1534,52 +1920,27 @@ async function downloadMarkdownFile(fileId) {
               </div>
               <!-- PDF Analysis: Generated KRT pre-merge view -->
               <div v-if="modalTableType === 'pdf_analysis_krt'" class="pdf-analysis-modal-section">
-                <div v-if="pdfAnalysisRows.length" class="pdf-analysis-summary">
-                  <div>
-                    <strong>{{ modalItems?.length || 0 }}</strong> KRT row{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
-                    consolidated from <strong>{{ pdfAnalysisRows.length }}</strong> detection{{ pdfAnalysisRows.length !== 1 ? 's' : '' }}
-                    <span v-if="pdfAnalysisMergedGroups > 0">— {{ pdfAnalysisMergedGroups }} merged from multiple modules</span>
-                  </div>
-                  <div class="pdf-analysis-summary-hint">
-                    Rows sharing a <strong>KRT&nbsp;#</strong> are the <em>same</em> KRT row — one line per detection module that found it.
-                  </div>
-                </div>
-                <div v-if="pdfAnalysisRows.length" class="pdf-analysis-actions">
-                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisCsv">
-                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-                    </svg>
-                    Download CSV
-                  </button>
-                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisJson">
-                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-                    </svg>
-                    Download JSON
-                  </button>
-                </div>
                 <div v-if="pdfAnalysisRows.length" class="job-modal-table-wrapper">
-                  <table class="job-modal-table">
+                  <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('pdfAnalysis', RESIZE_PDF_COLS)">
                     <thead>
                       <tr>
-                        <th>KRT #</th>
-                        <th>Detection</th>
-                        <th>Resource Type</th>
-                        <th>Detected Name</th>
-                        <th>Source</th>
-                        <th>Identifier</th>
-                        <th>New/Reuse</th>
-                        <th>Additional Information</th>
-                        <th>Reason</th>
+                        <th
+                          v-for="c in RESIZE_PDF_COLS"
+                          :key="c.key"
+                          :style="colResize.headStyle('pdfAnalysis', c.key, c.width)"
+                        >
+                          {{ c.label }}
+                          <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('pdfAnalysis', c.key, c.width, $event)"></span>
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr
-                        v-for="(row, i) in pdfAnalysisRows"
+                        v-for="(row, i) in displayedPdfAnalysisRows"
                         :key="i"
                         :class="[
                           'pdf-analysis-row',
-                          row.groupIndex % 2 === 0 ? 'pdf-analysis-group-even' : 'pdf-analysis-group-odd',
+                          row.displayParity === 0 ? 'pdf-analysis-group-even' : 'pdf-analysis-group-odd',
                           { 'pdf-analysis-row-duplicate': row.isDuplicate,
                             'pdf-analysis-group-start': row.isGroupStart,
                             'pdf-analysis-group-end': row.isGroupEnd,
@@ -1606,22 +1967,23 @@ async function downloadMarkdownFile(fileId) {
                           </span>
                           <span v-else>—</span>
                         </td>
-                        <td class="text-xs">{{ row.resourceType || '—' }}</td>
-                        <td class="font-medium">{{ row.resourceName || '—' }}</td>
-                        <td class="text-xs">{{ row.sourceUrl || '—' }}</td>
-                        <td class="text-xs">{{ row.identifier || '—' }}</td>
+                        <!-- LM consolidation reason — shown once per merged group -->
+                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell"><HighlightText v-if="row.isGroupStart" :text="row.reason" :query="modalSearch" /></td>
+                        <td class="text-xs"><HighlightText :text="row.resourceType" :query="modalSearch" /></td>
+                        <td class="font-medium"><HighlightText :text="row.resourceName" :query="modalSearch" /></td>
+                        <td class="text-xs"><HighlightText :text="row.sourceUrl" :query="modalSearch" /></td>
+                        <td class="text-xs"><HighlightText :text="row.identifier" :query="modalSearch" /></td>
                         <td>
                           <span v-if="row.newReuse" class="job-modal-source-badge" :class="row.newReuse === 'new' ? 'source-enriched' : 'source-softcite'">
                             {{ row.newReuse }}
                           </span>
                           <span v-else>—</span>
                         </td>
-                        <td class="text-xs text-gray-500">{{ row.additionalInformation || '—' }}</td>
-                        <!-- LM consolidation reason — shown once per merged group -->
-                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ row.isGroupStart ? (row.reason || '—') : '' }}</td>
+                        <td class="text-xs text-gray-500"><HighlightText :text="row.additionalInformation" :query="modalSearch" /></td>
                       </tr>
                     </tbody>
                   </table>
+                  <div v-if="!displayedPdfAnalysisRows.length" class="job-modal-filter-empty">No rows match the current filters.</div>
                 </div>
                 <div v-else class="pdf-analysis-empty">
                   No detections were consolidated yet. Run the upstream detections first.
@@ -1635,14 +1997,17 @@ async function downloadMarkdownFile(fileId) {
                   </h4>
                   <p class="pdf-analysis-dropped-hint">These detections were not kept in the Generated KRT — with the reason for each.</p>
                   <div class="job-modal-table-wrapper">
-                    <table class="job-modal-table">
+                    <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('dropped', RESIZE_DROPPED_COLS)">
                       <thead>
                         <tr>
-                          <th>Detected by</th>
-                          <th>Resource Type</th>
-                          <th>Resource Name</th>
-                          <th>Identifier</th>
-                          <th>Reason dropped</th>
+                          <th
+                            v-for="c in RESIZE_DROPPED_COLS"
+                            :key="c.key"
+                            :style="colResize.headStyle('dropped', c.key, c.width)"
+                          >
+                            {{ c.label }}
+                            <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('dropped', c.key, c.width, $event)"></span>
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1651,10 +2016,10 @@ async function downloadMarkdownFile(fileId) {
                             <span v-for="s in (d.sources || [])" :key="s" class="job-modal-source-badge source-enriched mr-1">{{ pdfAnalysisSourceLabel(s) }}</span>
                             <span v-if="!d.sources || !d.sources.length">—</span>
                           </td>
-                          <td class="text-xs">{{ d.resourceType || '—' }}</td>
-                          <td class="font-medium pdf-analysis-dropped-name">{{ d.resourceName || '—' }}</td>
-                          <td class="text-xs">{{ d.identifier || '—' }}</td>
-                          <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ cleanReason(d.reason) || '—' }}</td>
+                          <td class="text-xs"><HighlightText :text="d.resourceType" :query="modalSearch" /></td>
+                          <td class="font-medium pdf-analysis-dropped-name"><HighlightText :text="d.resourceName" :query="modalSearch" /></td>
+                          <td class="text-xs"><HighlightText :text="d.identifier" :query="modalSearch" /></td>
+                          <td class="text-xs text-gray-500 pdf-analysis-reason-cell"><HighlightText :text="cleanReason(d.reason)" :query="modalSearch" /></td>
                         </tr>
                       </tbody>
                     </table>
@@ -1663,78 +2028,86 @@ async function downloadMarkdownFile(fileId) {
               </div>
 
               <!-- Authors table -->
-              <table v-if="modalItems && modalItems.length && modalTableType === 'authors'" class="job-modal-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>ORCID</th>
-                    <th>Affiliation</th>
-                    <th>Source</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(item, i) in modalItems" :key="i">
-                    <td>{{ item.fullName || [item.firstName, item.lastName].filter(Boolean).join(' ') }}</td>
-                    <td>
-                      <a v-if="item.orcid" :href="'https://orcid.org/' + item.orcid" target="_blank" rel="noopener" class="orcid-link">
-                        {{ item.orcid }}
-                      </a>
-                      <span v-else>—</span>
-                    </td>
-                    <td>{{ item.affiliation || '—' }}</td>
-                    <td>
-                      <span v-if="item.source" class="job-modal-source-badge" :class="getOrcidSourceClass(item.source)">
-                        {{ formatOrcidSource(item.source) }}
-                      </span>
-                      <span v-else>—</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <div v-if="modalItems && modalItems.length && modalTableType === 'authors'" class="job-modal-table-wrapper">
+                <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('authors', RESIZE_AUTHOR_COLS)">
+                  <thead>
+                    <tr>
+                      <th
+                        v-for="c in RESIZE_AUTHOR_COLS"
+                        :key="c.key"
+                        :style="colResize.headStyle('authors', c.key, c.width)"
+                      >
+                        {{ c.label }}
+                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('authors', c.key, c.width, $event)"></span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(item, i) in displayedAuthorItems" :key="i">
+                      <td><HighlightText :text="item.fullName || [item.firstName, item.lastName].filter(Boolean).join(' ')" :query="modalSearch" /></td>
+                      <td>
+                        <a v-if="item.orcid" :href="'https://orcid.org/' + item.orcid" target="_blank" rel="noopener" class="orcid-link"><HighlightText :text="item.orcid" :query="modalSearch" /></a>
+                        <span v-else>—</span>
+                      </td>
+                      <td><HighlightText :text="item.affiliation" :query="modalSearch" /></td>
+                      <td>
+                        <span v-if="item.source" class="job-modal-source-badge" :class="getOrcidSourceClass(item.source)">
+                          {{ formatOrcidSource(item.source) }}
+                        </span>
+                        <span v-else>—</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-if="!displayedAuthorItems.length" class="job-modal-filter-empty">No rows match the current filters.</div>
+              </div>
 
               <!-- AI Suggestions: every choice the module made, shown as the
                    concerned KRT row (with a red/green diff for updates) + the
                    decision and reason. -->
-              <table v-if="suggestionDisplayRows.length && modalTableType === 'suggestions'" class="job-modal-table">
-                <thead>
-                  <tr>
-                    <th>Decision</th>
-                    <th class="suggestion-reason-col">Reason</th>
-                    <th>Item</th>
-                    <th
-                      v-for="c in SUGGESTION_ROW_COLUMNS"
-                      :key="c.key"
-                      :class="{ 'suggestion-name-col': c.key === 'resourceName' }"
-                    >{{ c.label }}</th>
-                    <th>Modules</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="(r, i) in suggestionDisplayRows"
-                    :key="i"
-                    :class="[ r.groupIndex % 2 === 0 ? 'sugg-group-even' : 'sugg-group-odd', { 'sugg-group-start': r.isGroupStart } ]"
-                  >
-                    <!-- Decision / Reason / Modules: shown once per decision group -->
-                    <td>
-                      <span v-if="r.isGroupStart" class="suggestion-decision-badge" :class="'sdb-' + suggestionDecisionLabel(r.decision).toLowerCase()">{{ suggestionDecisionLabel(r.decision) }}</span>
-                    </td>
-                    <td class="text-xs text-gray-500 suggestion-reason-cell">{{ r.isGroupStart ? (cleanReason(r.decision.reason || r.decision.description) || '—') : '' }}</td>
-                    <td class="text-xs">
-                      <span v-if="r.role" class="sugg-role" :class="'sugg-role-' + r.side">{{ r.role }}</span>
-                    </td>
-                    <td
-                      v-for="c in SUGGESTION_ROW_COLUMNS"
-                      :key="c.key"
-                      class="text-xs"
-                      :class="{ 'suggestion-name-cell': c.key === 'resourceName' }"
+              <div v-if="modalTableType === 'suggestions' && modalItems && modalItems.length" class="job-modal-table-wrapper">
+                <table v-if="suggestionDisplayRows.length" class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('suggestions', RESIZE_SUGGESTION_COLS)">
+                  <thead>
+                    <tr>
+                      <th
+                        v-for="c in RESIZE_SUGGESTION_COLS"
+                        :key="c.key"
+                        :class="c.cssClass"
+                        :style="colResize.headStyle('suggestions', c.key, c.width)"
+                      >
+                        {{ c.label }}
+                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('suggestions', c.key, c.width, $event)"></span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="(r, i) in suggestionDisplayRows"
+                      :key="i"
+                      :class="[ r.groupIndex % 2 === 0 ? 'sugg-group-even' : 'sugg-group-odd', { 'sugg-group-start': r.isGroupStart } ]"
                     >
-                      <span :class="(r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'diff-old' : 'diff-new') : ''">{{ (r.cells && r.cells[c.key]) || '—' }}</span>
-                    </td>
-                    <td class="text-xs">{{ r.isGroupStart ? ((r.decision.sources && r.decision.sources.length) ? r.decision.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—') : '' }}</td>
-                  </tr>
-                </tbody>
-              </table>
+                      <!-- Decision / Reason / Modules: shown once per decision group -->
+                      <td>
+                        <span v-if="r.isGroupStart" class="suggestion-decision-badge" :class="'sdb-' + suggestionDecisionLabel(r.decision).toLowerCase()">{{ suggestionDecisionLabel(r.decision) }}</span>
+                      </td>
+                      <td class="text-xs text-gray-500 suggestion-reason-cell"><HighlightText v-if="r.isGroupStart" :text="cleanReason(r.decision.reason || r.decision.description)" :query="modalSearch" /></td>
+                      <td class="text-xs">
+                        <span v-if="r.role" class="sugg-role" :class="'sugg-role-' + r.side">{{ r.role }}</span>
+                      </td>
+                      <td
+                        v-for="c in SUGGESTION_ROW_COLUMNS"
+                        :key="c.key"
+                        class="text-xs"
+                        :class="{ 'suggestion-name-cell': c.key === 'resourceName' }"
+                      >
+                        <HighlightText :class="(r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'diff-old' : 'diff-new') : ''" :text="r.cells && r.cells[c.key]" :query="modalSearch" />
+                      </td>
+                      <td class="text-xs">{{ r.isGroupStart ? ((r.decision.sources && r.decision.sources.length) ? r.decision.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—') : '' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-if="!suggestionDisplayRows.length" class="job-modal-filter-empty">No rows match the current filters.</div>
+              </div>
             </div>
 
             <!-- Logs section (hidden from authors) -->
@@ -2298,6 +2671,50 @@ async function downloadMarkdownFile(fileId) {
   color: #374151;
 }
 
+/* Resizable modal tables: fixed layout so the header widths drive the columns
+   (no per-cell styles needed); an explicit total width lets a widened column
+   scroll horizontally instead of squashing its neighbours. */
+.job-modal-table--resizable {
+  table-layout: fixed;
+  min-width: 100%;
+}
+
+.job-modal-table--resizable th,
+.job-modal-table--resizable td {
+  overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Drag grip on the right edge of a header cell. The header is already
+   position: sticky (a positioning context), so the handle anchors to it. */
+.job-modal-col-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 3;
+}
+
+.job-modal-col-resize:hover {
+  background: #c7d2fe;
+}
+
+/* Inside a resizable table the dragged width is authoritative, so drop the
+   fixed min/max-width caps some cells carry (they'd otherwise stop the drag).
+   Their white-space/line-height rules still apply. */
+.job-modal-table--resizable .suggestion-reason-col,
+.job-modal-table--resizable .suggestion-reason-cell,
+.job-modal-table--resizable .suggestion-name-col,
+.job-modal-table--resizable .suggestion-name-cell,
+.job-modal-table--resizable .pdf-analysis-reason-cell {
+  min-width: 0;
+  max-width: none;
+}
+
 .job-modal-source-badge {
   display: inline-block;
   padding: 0.0625rem 0.375rem;
@@ -2323,9 +2740,145 @@ async function downloadMarkdownFile(fileId) {
 
 .job-modal-table-wrapper {
   max-height: 400px;
-  overflow-y: auto;
+  overflow: auto;
   border: 1px solid #e5e7eb;
   border-radius: 0.375rem;
+}
+
+/* Sticky header inside the scrolling wrapper — the body scrolls, the column
+   labels stay visible. */
+.job-modal-table-wrapper .job-modal-table thead th {
+  position: sticky;
+  top: 0;
+  background: #f9fafb;
+  z-index: 1;
+}
+
+/* Tab-group filter for the consolidated modal views */
+.job-modal-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 0.5rem;
+}
+
+.job-modal-tab {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  color: #6b7280;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.job-modal-tab:hover {
+  color: #374151;
+}
+
+.job-modal-tab-active {
+  color: #1d4ed8;
+  border-bottom-color: #1d4ed8;
+  font-weight: 500;
+}
+
+.job-modal-tab-count {
+  margin-left: 0.25rem;
+  padding: 0 0.375rem;
+  border-radius: 9999px;
+  background: #f3f4f6;
+  color: #6b7280;
+  font-size: 0.6875rem;
+}
+
+/* Tab-group filter row directly above the table. The row carries the bottom
+   rule so the tabs and (for suggestions) the decision chips share one baseline. */
+.job-modal-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 0.5rem;
+}
+
+.job-modal-tabs-row .job-modal-tabs {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+/* PDF Analysis header: download actions + summary above the search/tab controls */
+.pdf-analysis-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.job-modal-divider {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 0.25rem 0 0.5rem;
+}
+
+/* Modal table controls (search + resource-type filter) */
+.job-modal-table-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.job-modal-search {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.8125rem;
+}
+
+.job-modal-type-filter {
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.8125rem;
+  background: white;
+  max-width: 14rem;
+}
+
+/* Decision filter chips (multi-select) in the suggestions modal */
+.job-modal-decision-filter {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.job-modal-decision-chip {
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.job-modal-decision-chip:hover {
+  border-color: currentColor;
+}
+
+.job-modal-decision-chip-off {
+  opacity: 0.35;
+}
+
+.job-modal-decision-chip-count {
+  margin-left: 0.25rem;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.job-modal-filter-empty {
+  padding: 1rem;
+  text-align: center;
+  color: #6b7280;
+  font-size: 0.8125rem;
 }
 
 /* ── PDF Analysis modal: Generated KRT pre-merge view ────────────── */
@@ -2385,13 +2938,16 @@ async function downloadMarkdownFile(fileId) {
 
 /* AI Suggestions column sizing: roomy Reason, compact Resource Name. */
 .suggestion-reason-col, .suggestion-reason-cell {
-  min-width: 320px;
+  min-width: 240px;
   max-width: 460px;
   white-space: normal;
   line-height: 1.35;
 }
 .suggestion-name-col, .suggestion-name-cell {
-  max-width: 150px;
+  /* min-width matters inside the scrolling wrapper: without it the browser
+     satisfies the reason column's min-width by collapsing this one to ~1ch. */
+  min-width: 160px;
+  max-width: 260px;
   white-space: normal;
   word-break: break-word;
 }

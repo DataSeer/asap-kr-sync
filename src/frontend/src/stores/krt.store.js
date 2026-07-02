@@ -246,22 +246,16 @@ export const useKRTStore = defineStore('krt', () => {
    */
   async function updateCell(submissionId, rowId, column, value, source = 'manual') {
     try {
-      const response = await krtService.updateRow(submissionId, rowId, {
-        column,
-        value,
+      // Single edits ride the batch endpoint with one item — one code path
+      // for all cell writes (applyBatchResult refreshes rows + errors).
+      const response = await krtService.batchUpdateRows(submissionId, {
+        updates: [{ rowId, column, value }],
         source
       })
 
-      // Update local state
-      const rowIndex = rows.value.findIndex(r => r.id === rowId)
-      if (rowIndex !== -1) {
-        rows.value[rowIndex] = response.row
-      }
+      await applyBatchResult(submissionId, response)
 
-      // Re-validate to update errors
-      await validate(submissionId)
-
-      return response
+      return { row: response.rows.find(r => r.id === rowId) }
     } catch (err) {
       error.value = err.response?.data?.error || 'Failed to update cell'
       throw err
@@ -269,7 +263,8 @@ export const useKRTStore = defineStore('krt', () => {
   }
 
   /**
-   * Batch update multiple cells
+   * Batch update multiple cells — a single request for the whole gesture
+   * (the old per-cell request loop tripped API rate limits on large KRTs).
    * @param {string} submissionId - The submission ID
    * @param {Array} updates - Array of { rowId, column, value }
    * @param {string} source - Change source for all updates (defaults to 'krt_validation' for batch ops)
@@ -279,31 +274,43 @@ export const useKRTStore = defineStore('krt', () => {
     error.value = null
 
     try {
-      // Apply updates sequentially (could be parallelized, but sequential is safer)
-      for (const update of updates) {
-        const response = await krtService.updateRow(submissionId, update.rowId, {
-          column: update.column,
-          value: update.value,
-          source
-        })
+      const response = await krtService.batchUpdateRows(submissionId, {
+        updates,
+        source
+      })
 
-        // Update local state
-        const rowIndex = rows.value.findIndex(r => r.id === update.rowId)
-        if (rowIndex !== -1) {
-          rows.value[rowIndex] = response.row
-        }
-      }
+      await applyBatchResult(submissionId, response)
 
-      // Re-validate once after all updates
-      await validate(submissionId)
-
-      return { updatedCount: updates.length }
+      return { updatedCount: response.updated }
     } catch (err) {
       error.value = err.response?.data?.error || 'Failed to batch update cells'
       throw err
     } finally {
       loading.value = false
     }
+  }
+
+  /**
+   * Sync local state after a batch update. The endpoint already re-validated
+   * the submission server-side, so use its summary directly and refetch the
+   * KRT for per-row errors — no extra POST /validate round-trip.
+   */
+  async function applyBatchResult(submissionId, response) {
+    for (const row of response.rows) {
+      const rowIndex = rows.value.findIndex(r => r.id === row.id)
+      if (rowIndex !== -1) {
+        rows.value[rowIndex] = row
+      }
+    }
+    if (response.validation) {
+      summary.value = {
+        totalErrors: response.validation.errorCount,
+        totalWarnings: response.validation.warningCount,
+        totalSuggestions: summary.value.totalSuggestions || 0
+      }
+    }
+    // Refresh data to get updated per-row validation errors
+    await fetchKRT(submissionId)
   }
 
   /**

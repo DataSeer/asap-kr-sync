@@ -3,7 +3,7 @@
  */
 
 const { Op } = require('sequelize');
-const { User, UserTeam } = require('../models');
+const { User, UserTeam, sequelize } = require('../models');
 const { NotFoundError, ConflictError, AuthorizationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
 const { ROLES } = require('../config/constants');
@@ -162,19 +162,25 @@ async function create(req, res, next) {
       throw new ConflictError('Email already registered');
     }
 
-    const user = await User.create({
-      email,
-      passwordHash: password,
-      name,
-      role
-    });
+    // User + team associations commit together — a failed bulkCreate must not
+    // leave a user without their assigned teams.
+    const user = await sequelize.transaction(async (t) => {
+      const created = await User.create({
+        email,
+        passwordHash: password,
+        name,
+        role
+      }, { transaction: t });
 
-    // Create team associations
-    if (teams && teams.length > 0) {
-      await UserTeam.bulkCreate(
-        teams.map(team => ({ userId: user.id, team }))
-      );
-    }
+      if (teams && teams.length > 0) {
+        await UserTeam.bulkCreate(
+          teams.map(team => ({ userId: created.id, team })),
+          { transaction: t }
+        );
+      }
+
+      return created;
+    });
 
     logger.info('User created by admin', { userId: user.id, email: user.email, createdBy: req.userId });
 
@@ -212,19 +218,23 @@ async function update(req, res, next) {
     if (role) user.role = role;
     if (password) user.passwordHash = password;
 
-    await user.save();
+    // Profile fields and team associations commit together — the old
+    // destroy-then-bulkCreate sequence could strip a user of every team if
+    // the re-insert failed.
+    await sequelize.transaction(async (t) => {
+      await user.save({ transaction: t });
 
-    // Update team associations if provided
-    if (teams !== undefined) {
-      // Remove existing team associations
-      await UserTeam.destroy({ where: { userId: user.id } });
-      // Create new team associations
-      if (teams.length > 0) {
-        await UserTeam.bulkCreate(
-          teams.map(team => ({ userId: user.id, team }))
-        );
+      // Update team associations if provided
+      if (teams !== undefined) {
+        await UserTeam.destroy({ where: { userId: user.id }, transaction: t });
+        if (teams.length > 0) {
+          await UserTeam.bulkCreate(
+            teams.map(team => ({ userId: user.id, team })),
+            { transaction: t }
+          );
+        }
       }
-    }
+    });
 
     logger.info('User updated by admin', { userId: user.id, updatedBy: req.userId });
 

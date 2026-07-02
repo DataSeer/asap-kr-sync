@@ -192,12 +192,12 @@ async function handleFileDownload(file) {
   try {
     // If file has a presigned URL, use it directly
     if (file.s3Url) {
-      window.open(file.s3Url, '_blank')
+      window.open(file.s3Url, '_blank', 'noopener,noreferrer')
       return
     }
     // Otherwise, fetch a new presigned URL
     const result = await fileService.download(props.submission.id, file.id)
-    window.open(result.url, '_blank')
+    window.open(result.url, '_blank', 'noopener,noreferrer')
   } catch (error) {
     notificationStore.error('Failed to download file')
   }
