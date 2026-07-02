@@ -13,6 +13,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import jobService from '@/services/job.service'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
+import HighlightText from '@/components/submission/HighlightText.vue'
 
 const emit = defineEmits(['edit-das'])
 const route = useRoute()
@@ -1662,26 +1663,38 @@ async function downloadMarkdownFile(fileId) {
             <!-- Results section -->
             <div v-if="modalContent || (modalItems && modalItems.length) || modalTableType === 'pdf_analysis_krt'" class="job-modal-section">
               <h4 class="job-modal-section-title">Results</h4>
+              <!-- PDF Analysis: download actions + summary sit above the
+                   search/tab controls, separated by a divider. -->
+              <div v-if="modalTableType === 'pdf_analysis_krt' && pdfAnalysisRows.length" class="pdf-analysis-header">
+                <div class="pdf-analysis-actions">
+                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisCsv">
+                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                    </svg>
+                    Download CSV
+                  </button>
+                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisJson">
+                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                    </svg>
+                    Download JSON
+                  </button>
+                </div>
+                <div class="pdf-analysis-summary">
+                  <div>
+                    <strong>{{ modalItems?.length || 0 }}</strong> KRT row{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
+                    consolidated from <strong>{{ pdfAnalysisRows.length }}</strong> detection{{ pdfAnalysisRows.length !== 1 ? 's' : '' }}
+                    <span v-if="pdfAnalysisMergedGroups > 0">— {{ pdfAnalysisMergedGroups }} merged from multiple modules</span>
+                  </div>
+                  <div class="pdf-analysis-summary-hint">
+                    Rows sharing a <strong>KRT&nbsp;#</strong> are the <em>same</em> KRT row — one line per detection module that found it.
+                  </div>
+                </div>
+                <hr class="job-modal-divider">
+              </div>
+
               <!-- Search + resource-type filter (mirrors the KRT editor's
                    controls) for every table view -->
-              <!-- Tab-group filter (same tabs as the KRT editor) for the
-                   consolidated Generated-KRT and AI-suggestions views -->
-              <div
-                v-if="(modalTableType === 'pdf_analysis_krt' || modalTableType === 'suggestions') && modalItems && modalItems.length"
-                class="job-modal-tabs"
-              >
-                <button
-                  v-for="tab in MODAL_TAB_GROUPS"
-                  :key="tab.key"
-                  type="button"
-                  class="job-modal-tab"
-                  :class="{ 'job-modal-tab-active': modalTabFilter === tab.key }"
-                  @click="modalTabFilter = tab.key"
-                >
-                  {{ tab.label }}
-                  <span class="job-modal-tab-count">{{ modalTabCounts[tab.key] || 0 }}</span>
-                </button>
-              </div>
               <div v-if="modalTableType && modalItems && modalItems.length" class="job-modal-table-controls">
                 <input
                   v-model="modalSearch"
@@ -1697,6 +1710,27 @@ async function downloadMarkdownFile(fileId) {
                   <option value="all">All resource types</option>
                   <option v-for="t in modalTypeOptions" :key="t" :value="t">{{ t }}</option>
                 </select>
+              </div>
+
+              <!-- Tab-group filter (same tabs as the KRT editor) sits directly
+                   above the table; the suggestions decision chips share the row. -->
+              <div
+                v-if="(modalTableType === 'pdf_analysis_krt' || modalTableType === 'suggestions') && modalItems && modalItems.length"
+                class="job-modal-tabs-row"
+              >
+                <div class="job-modal-tabs">
+                  <button
+                    v-for="tab in MODAL_TAB_GROUPS"
+                    :key="tab.key"
+                    type="button"
+                    class="job-modal-tab"
+                    :class="{ 'job-modal-tab-active': modalTabFilter === tab.key }"
+                    @click="modalTabFilter = tab.key"
+                  >
+                    {{ tab.label }}
+                    <span class="job-modal-tab-count">{{ modalTabCounts[tab.key] || 0 }}</span>
+                  </button>
+                </div>
                 <!-- Decision filter: toggle chips, multi-select. No chip
                      active = every decision shown; dimmed = filtered out. -->
                 <div v-if="modalTableType === 'suggestions' && modalDecisionOptions.length > 1" class="job-modal-decision-filter">
@@ -1732,9 +1766,9 @@ async function downloadMarkdownFile(fileId) {
                   <tbody>
                     <template v-for="(item, i) in displayedModalItems" :key="i">
                       <tr>
-                        <td class="text-xs">{{ item.resourceType || item.resource_type || 'Software/code' }}</td>
+                        <td class="text-xs"><HighlightText :text="item.resourceType || item.resource_type || 'Software/code'" :query="modalSearch" /></td>
                         <td class="font-medium">
-                          {{ getMentionName(item) }}
+                          <HighlightText :text="getMentionName(item)" :query="modalSearch" />
                           <span
                             v-if="getEnrichmentMeta(item)?.matched"
                             class="enrichment-badge"
@@ -1756,15 +1790,15 @@ async function downloadMarkdownFile(fileId) {
                             <span class="merged-from-chevron" :class="{ open: expandedMergedRows.has(i) }">▾</span>
                           </button>
                         </td>
-                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'source') }" :title="isFieldFromEnrichment(item, 'source') ? 'Filled in from the enrichment list' : null">{{ item.source || item.suggestedURL || item.url || '—' }}</td>
-                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'identifier') }" :title="isFieldFromEnrichment(item, 'identifier') ? 'Filled in from the enrichment list' : null">{{ item.identifier || item.RRID || item.suggestedRRID || '—' }}</td>
+                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'source') }" :title="isFieldFromEnrichment(item, 'source') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.source || item.suggestedURL || item.url" :query="modalSearch" /></td>
+                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'identifier') }" :title="isFieldFromEnrichment(item, 'identifier') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.identifier || item.RRID || item.suggestedRRID" :query="modalSearch" /></td>
                         <td :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'newReuse') }" :title="isFieldFromEnrichment(item, 'newReuse') ? 'Filled in from the enrichment list' : null">
                           <span v-if="item.newReuse" class="job-modal-source-badge" :class="item.newReuse === 'new' ? 'source-enriched' : 'source-softcite'">
                             {{ item.newReuse }}
                           </span>
                           <span v-else>—</span>
                         </td>
-                        <td class="text-xs text-gray-500">{{ item.additionalInformation || item.additional_information || '—' }}</td>
+                        <td class="text-xs text-gray-500"><HighlightText :text="item.additionalInformation || item.additional_information" :query="modalSearch" /></td>
                       </tr>
                       <tr v-if="item.detectorMeta?.context || item.context" class="context-row">
                         <td colspan="6" class="context-cell">{{ item.detectorMeta?.context || item.context }}</td>
@@ -1805,30 +1839,6 @@ async function downloadMarkdownFile(fileId) {
               </div>
               <!-- PDF Analysis: Generated KRT pre-merge view -->
               <div v-if="modalTableType === 'pdf_analysis_krt'" class="pdf-analysis-modal-section">
-                <div v-if="pdfAnalysisRows.length" class="pdf-analysis-summary">
-                  <div>
-                    <strong>{{ modalItems?.length || 0 }}</strong> KRT row{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
-                    consolidated from <strong>{{ pdfAnalysisRows.length }}</strong> detection{{ pdfAnalysisRows.length !== 1 ? 's' : '' }}
-                    <span v-if="pdfAnalysisMergedGroups > 0">— {{ pdfAnalysisMergedGroups }} merged from multiple modules</span>
-                  </div>
-                  <div class="pdf-analysis-summary-hint">
-                    Rows sharing a <strong>KRT&nbsp;#</strong> are the <em>same</em> KRT row — one line per detection module that found it.
-                  </div>
-                </div>
-                <div v-if="pdfAnalysisRows.length" class="pdf-analysis-actions">
-                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisCsv">
-                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-                    </svg>
-                    Download CSV
-                  </button>
-                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisJson">
-                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-                    </svg>
-                    Download JSON
-                  </button>
-                </div>
                 <div v-if="pdfAnalysisRows.length" class="job-modal-table-wrapper">
                   <table class="job-modal-table">
                     <thead>
@@ -1877,19 +1887,19 @@ async function downloadMarkdownFile(fileId) {
                           </span>
                           <span v-else>—</span>
                         </td>
-                        <td class="text-xs">{{ row.resourceType || '—' }}</td>
-                        <td class="font-medium">{{ row.resourceName || '—' }}</td>
-                        <td class="text-xs">{{ row.sourceUrl || '—' }}</td>
-                        <td class="text-xs">{{ row.identifier || '—' }}</td>
+                        <td class="text-xs"><HighlightText :text="row.resourceType" :query="modalSearch" /></td>
+                        <td class="font-medium"><HighlightText :text="row.resourceName" :query="modalSearch" /></td>
+                        <td class="text-xs"><HighlightText :text="row.sourceUrl" :query="modalSearch" /></td>
+                        <td class="text-xs"><HighlightText :text="row.identifier" :query="modalSearch" /></td>
                         <td>
                           <span v-if="row.newReuse" class="job-modal-source-badge" :class="row.newReuse === 'new' ? 'source-enriched' : 'source-softcite'">
                             {{ row.newReuse }}
                           </span>
                           <span v-else>—</span>
                         </td>
-                        <td class="text-xs text-gray-500">{{ row.additionalInformation || '—' }}</td>
+                        <td class="text-xs text-gray-500"><HighlightText :text="row.additionalInformation" :query="modalSearch" /></td>
                         <!-- LM consolidation reason — shown once per merged group -->
-                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ row.isGroupStart ? (row.reason || '—') : '' }}</td>
+                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell"><HighlightText v-if="row.isGroupStart" :text="row.reason" :query="modalSearch" /></td>
                       </tr>
                     </tbody>
                   </table>
@@ -1923,10 +1933,10 @@ async function downloadMarkdownFile(fileId) {
                             <span v-for="s in (d.sources || [])" :key="s" class="job-modal-source-badge source-enriched mr-1">{{ pdfAnalysisSourceLabel(s) }}</span>
                             <span v-if="!d.sources || !d.sources.length">—</span>
                           </td>
-                          <td class="text-xs">{{ d.resourceType || '—' }}</td>
-                          <td class="font-medium pdf-analysis-dropped-name">{{ d.resourceName || '—' }}</td>
-                          <td class="text-xs">{{ d.identifier || '—' }}</td>
-                          <td class="text-xs text-gray-500 pdf-analysis-reason-cell">{{ cleanReason(d.reason) || '—' }}</td>
+                          <td class="text-xs"><HighlightText :text="d.resourceType" :query="modalSearch" /></td>
+                          <td class="font-medium pdf-analysis-dropped-name"><HighlightText :text="d.resourceName" :query="modalSearch" /></td>
+                          <td class="text-xs"><HighlightText :text="d.identifier" :query="modalSearch" /></td>
+                          <td class="text-xs text-gray-500 pdf-analysis-reason-cell"><HighlightText :text="cleanReason(d.reason)" :query="modalSearch" /></td>
                         </tr>
                       </tbody>
                     </table>
@@ -1947,14 +1957,12 @@ async function downloadMarkdownFile(fileId) {
                   </thead>
                   <tbody>
                     <tr v-for="(item, i) in displayedAuthorItems" :key="i">
-                      <td>{{ item.fullName || [item.firstName, item.lastName].filter(Boolean).join(' ') }}</td>
+                      <td><HighlightText :text="item.fullName || [item.firstName, item.lastName].filter(Boolean).join(' ')" :query="modalSearch" /></td>
                       <td>
-                        <a v-if="item.orcid" :href="'https://orcid.org/' + item.orcid" target="_blank" rel="noopener" class="orcid-link">
-                          {{ item.orcid }}
-                        </a>
+                        <a v-if="item.orcid" :href="'https://orcid.org/' + item.orcid" target="_blank" rel="noopener" class="orcid-link"><HighlightText :text="item.orcid" :query="modalSearch" /></a>
                         <span v-else>—</span>
                       </td>
-                      <td>{{ item.affiliation || '—' }}</td>
+                      <td><HighlightText :text="item.affiliation" :query="modalSearch" /></td>
                       <td>
                         <span v-if="item.source" class="job-modal-source-badge" :class="getOrcidSourceClass(item.source)">
                           {{ formatOrcidSource(item.source) }}
@@ -1997,7 +2005,7 @@ async function downloadMarkdownFile(fileId) {
                       <td>
                         <span v-if="r.isGroupStart" class="suggestion-decision-badge" :class="'sdb-' + suggestionDecisionLabel(r.decision).toLowerCase()">{{ suggestionDecisionLabel(r.decision) }}</span>
                       </td>
-                      <td class="text-xs text-gray-500 suggestion-reason-cell">{{ r.isGroupStart ? (cleanReason(r.decision.reason || r.decision.description) || '—') : '' }}</td>
+                      <td class="text-xs text-gray-500 suggestion-reason-cell"><HighlightText v-if="r.isGroupStart" :text="cleanReason(r.decision.reason || r.decision.description)" :query="modalSearch" /></td>
                       <td class="text-xs">
                         <span v-if="r.role" class="sugg-role" :class="'sugg-role-' + r.side">{{ r.role }}</span>
                       </td>
@@ -2007,7 +2015,7 @@ async function downloadMarkdownFile(fileId) {
                         class="text-xs"
                         :class="{ 'suggestion-name-cell': c.key === 'resourceName' }"
                       >
-                        <span :class="(r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'diff-old' : 'diff-new') : ''">{{ (r.cells && r.cells[c.key]) || '—' }}</span>
+                        <HighlightText :class="(r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'diff-old' : 'diff-new') : ''" :text="r.cells && r.cells[c.key]" :query="modalSearch" />
                       </td>
                       <td class="text-xs">{{ r.isGroupStart ? ((r.decision.sources && r.decision.sources.length) ? r.decision.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—') : '' }}</td>
                     </tr>
@@ -2652,6 +2660,37 @@ async function downloadMarkdownFile(fileId) {
   background: #f3f4f6;
   color: #6b7280;
   font-size: 0.6875rem;
+}
+
+/* Tab-group filter row directly above the table. The row carries the bottom
+   rule so the tabs and (for suggestions) the decision chips share one baseline. */
+.job-modal-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 0.5rem;
+}
+
+.job-modal-tabs-row .job-modal-tabs {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+/* PDF Analysis header: download actions + summary above the search/tab controls */
+.pdf-analysis-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.job-modal-divider {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 0.25rem 0 0.5rem;
 }
 
 /* Modal table controls (search + resource-type filter) */
