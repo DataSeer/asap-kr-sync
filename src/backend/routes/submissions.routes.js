@@ -132,6 +132,7 @@ router.get('/:id/krt',
 // PATCH /api/submissions/:id/krt/:rowId - Update KRT row
 router.patch('/:id/krt/:rowId',
   canAccessSubmission,
+  validateBody('updateKrtCell'),
   krtController.updateRow
 );
 

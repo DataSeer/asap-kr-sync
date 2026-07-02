@@ -3,7 +3,7 @@
  */
 
 const Joi = require('joi');
-const { ROLES, SUBMISSION_STATUSES, REPORT_TYPES } = require('../config/constants');
+const { ROLES, SUBMISSION_STATUSES, REPORT_TYPES, CHANGE_SOURCES } = require('../config/constants');
 
 // Cache for dynamic schemas
 let dynamicSchemaCache = {
@@ -134,12 +134,22 @@ const requestSchemas = {
     additionalInformation: Joi.string().trim().max(2000).allow('', null)
   }),
 
+  // `column` is a strict allowlist: the controller maps it to a model field, and
+  // an unlisted value must be rejected here — falling through to the raw string
+  // would let clients write arbitrary attributes (submissionId, round, ...).
+  // is_qc/is_optional are role-gated in the controller and take booleans.
   updateKrtCell: Joi.object({
     column: Joi.string().valid(
       'resource_type', 'resource_name', 'source',
-      'identifier', 'new_reuse', 'additional_information'
+      'identifier', 'new_reuse', 'additional_information',
+      'is_qc', 'is_optional'
     ).required(),
-    value: Joi.string().allow('').required()
+    value: Joi.alternatives().try(
+      Joi.string().allow('', null),
+      Joi.boolean(),
+      Joi.number()
+    ).required(),
+    source: Joi.string().valid(...CHANGE_SOURCES)
   }),
 
   // Process new version (new round)

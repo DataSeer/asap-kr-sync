@@ -126,7 +126,7 @@ async function getData(req, res, next) {
 async function updateRow(req, res, next) {
   try {
     const { rowId } = req.params;
-    const { column, value, source } = req.body;
+    const { column, value, source } = req.validatedBody;
 
     const round = req.submission.currentRound;
     const krtRow = await KRTData.findOne({
@@ -153,7 +153,13 @@ async function updateRow(req, res, next) {
       'is_optional': 'isOptional'
     };
 
-    const field = columnMap[column] || column;
+    // Strict allowlist: never fall back to the raw client string — that would
+    // allow writes to arbitrary model attributes (submissionId, round, id, ...).
+    // The route schema already restricts `column`; this guards against drift.
+    const field = columnMap[column];
+    if (!field) {
+      throw new ValidationError(`Unknown KRT column: ${column}`);
+    }
 
     // QC / Optional flags are role-gated (request G1) and boolean-typed.
     let nextValue = value;
