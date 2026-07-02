@@ -2,9 +2,12 @@
  * Rate Limiting Middleware
  *
  * Strategy:
- * - Auth endpoints (login/register): Always rate limited (prevent brute force)
- * - API endpoints: Skip rate limiting for authenticated users
- * - Upload/LM API: Rate limited per user for resource protection
+ * - Auth endpoints (login/register): strict per-IP limit (prevent brute force)
+ * - API baseline: per-IP limit on the whole /api surface. It is mounted in
+ *   app.js BEFORE router-level authenticate, so req.user is never set here
+ *   and the limit applies to everyone, authenticated or not.
+ * - Upload/LM API: stricter per-user limits on top of the baseline for
+ *   expensive operations (storage, LM analysis, detection jobs)
  */
 
 const rateLimit = require('express-rate-limit');
@@ -22,7 +25,6 @@ function createRateLimiter(options = {}) {
     max = 100,
     message = 'Too many requests, please try again later',
     skipSuccessfulRequests = false,
-    skipIfAuthenticated = false,
     keyGenerator = null
   } = options;
 
@@ -32,8 +34,6 @@ function createRateLimiter(options = {}) {
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests,
-    // Skip rate limiting if user is authenticated (when skipIfAuthenticated is true)
-    skip: skipIfAuthenticated ? (req) => !!req.user : () => false,
     // Use user ID for authenticated users, IP for unauthenticated
     keyGenerator: keyGenerator || ((req) => {
       if (req.user?.id) {
@@ -48,12 +48,11 @@ function createRateLimiter(options = {}) {
 }
 
 /**
- * API rate limiter - skips for authenticated users
- * Unauthenticated users get limited to prevent abuse
+ * API rate limiter - baseline per-IP DoS protection for the whole /api surface
+ * (mounted before authenticate, so it keys by IP for everyone)
  */
 const apiLimiter = createRateLimiter({
-  ...RATE_LIMITS.api,
-  skipIfAuthenticated: true // Authenticated users are not rate limited on API
+  ...RATE_LIMITS.api
 });
 
 /**
@@ -62,7 +61,6 @@ const apiLimiter = createRateLimiter({
  */
 const authLimiter = createRateLimiter({
   ...RATE_LIMITS.auth,
-  skipIfAuthenticated: false, // Always rate limit auth endpoints
   keyGenerator: (req) => `ip:${req.ip}` // Always use IP for auth (no user yet)
 });
 
@@ -71,17 +69,17 @@ const authLimiter = createRateLimiter({
  * Prevents abuse of storage resources
  */
 const uploadLimiter = createRateLimiter({
-  ...RATE_LIMITS.upload,
-  skipIfAuthenticated: false // Keep limits but use user-based key
+  ...RATE_LIMITS.upload
 });
 
 /**
- * LM API rate limiter - applies per user
- * Protects expensive AI analysis operations
+ * LM API rate limiter - applies per user, shared across every route that
+ * spawns LM/detection/conversion work (Gemini calls, Python subprocesses,
+ * LibreOffice). One budget for all of them: these jobs are expensive, and a
+ * user has no legitimate reason to trigger more than a handful per minute.
  */
 const lmApiLimiter = createRateLimiter({
-  ...RATE_LIMITS.lmApi,
-  skipIfAuthenticated: false // Keep limits but use user-based key
+  ...RATE_LIMITS.lmApi
 });
 
 /**
@@ -90,7 +88,6 @@ const lmApiLimiter = createRateLimiter({
  */
 const refreshLimiter = createRateLimiter({
   ...RATE_LIMITS.refresh,
-  skipIfAuthenticated: false,
   keyGenerator: (req) => `ip:${req.ip}` // Use IP for refresh
 });
 
