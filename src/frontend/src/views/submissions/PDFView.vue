@@ -172,6 +172,12 @@ function registerJobCallbacks() {
     // any new matches surface.
     await refreshSuggestions()
   })
+  bg.onJobComplete('suggestion_generation', async () => {
+    // Terminal job: the LM comparison just (re)built the suggestion list —
+    // auto-refresh it so a module restart updates suggestions without a manual
+    // reload (request 2a).
+    await refreshSuggestions()
+  })
 }
 const latestFiles = computed(() => submissionStore.latestFiles)
 const pdfFile = computed(() => latestFiles.value?.pdf)
@@ -332,6 +338,33 @@ async function refreshSuggestions() {
     krtStore.setAiSuggestions(findings.value)
   } catch {
     // Suggestions not available yet
+  }
+}
+
+// Re-run the LM comparison job that produces suggestions. The job is async
+// (~30s), so we queue it then poll the suggestions a few times to pick up the
+// fresh list without a manual page refresh.
+const regenerating = ref(false)
+async function regenerateSuggestions() {
+  if (regenerating.value) return
+  regenerating.value = true
+  try {
+    await suggestionService.regenerate(route.params.id)
+    notificationStore.info('Regenerating suggestions… this can take up to a minute.')
+    let elapsed = 0
+    const before = findings.value.length
+    const poll = setInterval(async () => {
+      elapsed += 5
+      await refreshSuggestions()
+      if (findings.value.length !== before || elapsed >= 75) {
+        clearInterval(poll)
+        regenerating.value = false
+        if (findings.value.length !== before) notificationStore.success('Suggestions updated')
+      }
+    }, 5000)
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to regenerate suggestions')
+    regenerating.value = false
   }
 }
 
@@ -1072,6 +1105,19 @@ function scrollToFindingRow(finding) {
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-medium text-gray-700">AI Suggestions</h3>
           <div class="flex items-center space-x-2">
+            <!-- Regenerate suggestions (re-runs only the LM comparison job) -->
+            <button
+              :disabled="regenerating"
+              class="btn-secondary text-xs inline-flex items-center"
+              :class="{ 'opacity-50 cursor-not-allowed': regenerating }"
+              title="Regenerate AI suggestions by re-comparing your KRT with the generated KRT (does not re-run detection)"
+              @click="regenerateSuggestions"
+            >
+              <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              {{ regenerating ? 'Regenerating…' : 'Regenerate suggestions' }}
+            </button>
             <!-- Re-run Analysis button (shown after complete/failed) -->
             <button
               v-if="analysisStatus === 'complete' || analysisStatus === 'failed'"

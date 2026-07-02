@@ -67,6 +67,20 @@ module.exports = (sequelize) => {
         model: 'krt_data',
         key: 'id'
       }
+    },
+    // QC / Optional flags (request G1). Only Administrator and DS Annotator
+    // roles see or edit these; regular ASAP users never do.
+    isQc: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: 'is_qc'
+    },
+    isOptional: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: 'is_optional'
     }
   }, {
     tableName: 'krt_data',
@@ -90,7 +104,9 @@ module.exports = (sequelize) => {
       'ADDITIONAL INFORMATION': this.additionalInformation,
       parsedIdentifiers: this.parsedIdentifiers,
       round: this.round,
-      originRowId: this.originRowId
+      originRowId: this.originRowId,
+      isQc: this.isQc,
+      isOptional: this.isOptional
     };
   };
 

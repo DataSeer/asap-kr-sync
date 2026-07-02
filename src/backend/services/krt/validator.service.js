@@ -266,7 +266,26 @@ function normalizeResourceType(value) {
     'code/software': 'Software/code',
     'code': 'Software/code',
     'viral vector': 'Viral vector',
-    'viral vectors': 'Viral vector'
+    'viral vectors': 'Viral vector',
+    // Author KRT variants seen in practice that differ from our controlled
+    // vocabulary (request E). Organism/strain and viral-vector aliases.
+    'mouse strain': 'Experimental model: Organism/strain',
+    'mouse strains': 'Experimental model: Organism/strain',
+    'mouse line': 'Experimental model: Organism/strain',
+    'mouse lines': 'Experimental model: Organism/strain',
+    'rat strain': 'Experimental model: Organism/strain',
+    'rat strains': 'Experimental model: Organism/strain',
+    'animal strain': 'Experimental model: Organism/strain',
+    'organism': 'Experimental model: Organism/strain',
+    'organism/strain': 'Experimental model: Organism/strain',
+    'strain': 'Experimental model: Organism/strain',
+    'cell line': 'Experimental model: Cell line',
+    'cell lines': 'Experimental model: Cell line',
+    'virus strain': 'Viral vector',
+    'virus strains': 'Viral vector',
+    'virus': 'Viral vector',
+    'plasmid': 'Recombinant DNA',
+    'plasmids': 'Recombinant DNA'
   };
 
   return mappings[normalized] || null;
@@ -312,7 +331,12 @@ function validateResourceType(value, rowId, resourceTypes) {
         errorType: 'invalid_value',
         errorMessage: `Invalid resource type: "${value}"`,
         severity: VALIDATION_SEVERITY.ERROR,
-        suggestion: `Use "${caseMatch}" instead`
+        suggestion: `Use "${caseMatch}" instead`,
+        // Machine-actionable fields (request E): the frontend offers a one-click
+        // fix and groups equal (columnName, suggestedValue) pairs into a bulk
+        // action ("set N rows to <type>"). autoFixable ⇒ high-confidence mapping.
+        suggestedValue: caseMatch,
+        autoFixable: true
       });
     } else {
     // Try to normalize the resource type (plurals, synonyms)
@@ -325,7 +349,9 @@ function validateResourceType(value, rowId, resourceTypes) {
         errorType: 'invalid_value',
         errorMessage: `Invalid resource type: "${value}"`,
         severity: VALIDATION_SEVERITY.ERROR,
-        suggestion: `Use "${normalizedType}" instead`
+        suggestion: `Use "${normalizedType}" instead`,
+        suggestedValue: normalizedType,
+        autoFixable: true
       });
     } else {
       // Try to find closest match

@@ -211,8 +211,8 @@ async function runSoftware(pdfBuffer, fileName) {
   return dedupeKrtItems(krt, 'software-softcite');
 }
 
-async function runMaterials(pdfBuffer, fileName) {
-  const { resources } = await materialsService.detectMaterials(pdfBuffer, fileName);
+async function runMaterials(markdownText) {
+  const { resources } = await materialsService.detectMaterials(markdownText);
   const krt = materialsService.buildKrtItemsMaterials(resources);
   return dedupeKrtItems(krt, 'materials-gemini');
 }
@@ -384,7 +384,7 @@ async function processManuscript(ms, serviceStatus) {
     ['protocols',  'Protocols',  () => markdownForDetection && runProtocols(markdownForDetection)],
     ['datasets',   'Datasets',   () => markdownForDetection && runDatasets(markdownForDetection)],
     ['software',   'Software',   () => pdfBuffer && runSoftware(pdfBuffer, fileName)],
-    ['materials',  'Materials',  () => pdfBuffer && runMaterials(pdfBuffer, fileName)]
+    ['materials',  'Materials',  () => markdownForDetection && runMaterials(markdownForDetection)]
   ];
   for (const [type, kind, fn] of pipelineRuns) {
     if (!isTypeEnabled(type)) continue;

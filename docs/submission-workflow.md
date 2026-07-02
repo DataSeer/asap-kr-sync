@@ -108,13 +108,16 @@ persisted), uploads the PDF so the background pipeline begins, and navigates to 
 
 **Edit KRT rows:**
 - 6 editable columns: Resource Type, Resource Name, Source, Identifier, New/Reuse, Additional Information
-- Click any cell to edit inline
+- Click any cell to edit inline; inline **shortcut dropdowns** offer quick-pick values for Resource Type and New/Reuse
 - Add new rows, delete existing rows
+- **Merge rows:** select ≥2 rows → modal to pick each column's value → one merged row replaces them (`POST /api/submissions/:id/krt/merge`)
+- **Resizable columns:** drag a header edge to resize; width is remembered per browser
+- **QC / Optional flags** (boolean) are shown and editable **only** for Administrator and DS Annotator roles; regular users (author, asap_pm) never see them
 
 **Fix validation errors:**
 - Validation runs automatically after upload and after edits
 - A Quick Fixes carousel shows auto-fixable errors with "Fix All" buttons
-- Batch Fix modal lets users select a correct value for multiple rows with the same error (e.g., invalid resource types)
+- Batch Fix modal lets users select a correct value for multiple rows with the same error (e.g., invalid resource types); resource-type errors carry a machine-actionable `suggestedValue` that powers one-click bulk fixes (e.g. "Set 4 → Software/code")
 
 ### Proceeding to Step 2
 
@@ -147,7 +150,7 @@ flowchart TD
 
 **Instructions shown to the user:**
 1. Upload your manuscript PDF (accepted: .pdf or .docx files, max 50MB)
-2. View background job progress — DAS Extraction, Software Detection, ORCID Extraction, Markdown Convert, Datasets Detection, Materials Detection, Protocols Detection, Identifier Detection, and PDF Analysis (consolidator)
+2. View background job progress — DAS Extraction, Software Detection, ORCID Extraction, Markdown Convert, Datasets Detection, Materials Detection, Protocols Detection, Identifier Detection, PDF Analysis (Generated KRT), and AI Suggestions (KRT comparison)
 3. Wait for analysis to complete (may take a few minutes)
 4. Click "Continue" to proceed to Step 3
 
@@ -163,7 +166,7 @@ flowchart TD
 
 ### Background Job Pipeline
 
-When a PDF is uploaded, nine background jobs start (eight detections plus the PDF Analysis consolidator):
+When a PDF is uploaded, ten background jobs start (eight detections, the PDF Analysis Generated-KRT builder, and the AI Suggestions comparison that runs last):
 
 ```mermaid
 graph LR
@@ -181,6 +184,8 @@ graph LR
     MAT --> PA
     PROT --> PA
     ID --> PA
+    PA --> SG[AI Suggestions]
+    ORCID --> SG
     DAS -.->|DAS not detected| PI{{pending_input}}
     PI -->|User clicks Advance| PA
 
@@ -194,10 +199,11 @@ graph LR
     style PROT fill:#f97316,color:#fff
     style ID fill:#a855f7,color:#fff
     style PA fill:#ef4444,color:#fff
+    style SG fill:#db2777,color:#fff
     style PI fill:#6b7280,color:#fff
 ```
 
-ORCID Extraction is **not** a contributor to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT.
+ORCID Extraction is **not** a contributor to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT. **AI Suggestions** runs last, depending on PDF Analysis (which already gates on every KRT detector).
 
 Each job is displayed in the **JobStatusPanel** with live status updates:
 
@@ -213,28 +219,26 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 - **User actions:** "Edit" button to view/modify the extracted DAS; "Advance" to skip if not found
 - The structured response (`partial_match`, `section_fragmented`) is preserved on the job's raw response for forensics; only `content` is persisted on `submission.extractedDataAvailabilityStatement`.
 
-#### PDF Analysis (in-app consolidator)
-- Merges items from every detection job into the Generated KRT — no external API call
+#### PDF Analysis (Generated KRT)
+- Builds the Generated KRT in two stages: a rule-based merge of every detection's items, then an **LM (Google Gemini)** consolidation of those candidates (merging near-duplicates, dropping non-resources, cleaning fields, attaching a `reason` per kept line). **LM-primary with a rule-based fallback** — when `KRT_GENERATION_ENABLED` is off or the LM errors, the merged candidates are used so a Generated KRT is always produced.
 - **Depends on:** DAS Extraction + Software + Datasets + Materials + Protocols + Identifier Detection (all six must reach a terminal state)
 - **Auto-advances only if:** DAS extraction returned `result.status.detected === true`
 - **If DAS not detected:** Job moves to `pending_input` — user must click "Advance" to consolidate without DAS context
-- **On complete:** Shows the consolidated resource count (and multi-source overlap count) and refreshes the KRT suggestions
-- **Merge rule** (`merge-detections.service.js`): two detection items merge iff they share **resource type** (case-insensitive, with `Code/Software` and `Software/code` normalized to the same key) **and** New/Reuse **and** their identifier tokens overlap or their normalized names match. The merged row's display fields come from the highest-precedence contributor (Software / Datasets / Protocols / Materials beat Identifier-scan)
+- **On complete:** Shows the consolidated resource count (and multi-source overlap count); the AI Suggestions job then runs
+- **Merge rule** (stage 1, `merge-detections.service.js`): two detection items merge iff they share **resource type** (case-insensitive, with `Code/Software` and `Software/code` normalized to the same key) **and** New/Reuse **and** their identifier tokens overlap or their normalized names match. The merged row's display fields come from the highest-precedence contributor (Software / Datasets / Protocols / Materials beat Identifier-scan)
 
-#### Diff → suggestions
-The Generated KRT is diffed against the user's KRT (`diff-suggestions.service.js`). Each generated row matches a user row by identifier token, opaque-id, or normalized-name overlap. Per-column edits are emitted **unless** one of these guards trips:
-
-- **No-blank guard** — never overwrites a user value with `""`.
-- **Source-field protection** — `source` is only edited when the user's cell is empty.
-- **Identifier normalisation** — `AB_141607`, `RRID: AB_141607`, and `RRID:AB_141607` compare equal; cosmetic-only diffs are dropped.
-- **Resource-type normalisation** — `Code/Software` ↔ `Software/code` don't surface as edits.
-- **Lossy-rename guard** (`isLossyRename`) — refuses any `resourceName` edit that is a substring of the user's name, that drops more informative tokens than it adds, that shares zero meaningful tokens (different entity), or that differs only in case/whitespace/punctuation. Catches "Rabbit anti-TH" → "Anti-TH", "Sprague-Dawley rats" → "Sprague-Dawley", "Sheep anti-TH" → "tyrosine hydroxylase", etc.
-
-Curated-DB hygiene applied upstream of suggestions (in `tmp/identifiers/build-curated-csvs.js`): per-entry URL hard cap (3), hostname-dedup, resolver-URL drop (a bare DOI suppresses the matching `https://doi.org/<DOI>` URL), and a generic-name guard that prevents "Cell culture", "Code", "Confocal images", etc. from merging across unrelated submissions.
+#### AI Suggestions (KRT comparison)
+- A dedicated `suggestion_generation` job: a **Gemini** call compares the author KRT against the Generated KRT and emits, for **every** generated resource, a decision — **add / skip / update / remove** — each with a reason, plus author-side fixes. Author data is prioritized; the actionable list is kept manageable; `remove` decisions are rare (clear mistakes only).
+- **LM-only — no fallback:** with no LM configured (`KRT_COMPARISON_ENABLED` off or no key), **no suggestions are produced.**
+- **Depends on:** PDF Analysis (which already gates on every KRT detector); it runs **last** in the pipeline.
+- **Persisted, not recomputed:** the suggestions are stored on the job result, so editing the KRT does not silently change them. They change only when the job is re-run — the **Regenerate suggestions** button (`POST /api/submissions/:id/suggestions/regenerate`) or any module restart that cascades through.
+- `read`/`approve`/`reject` operate on the persisted list; **accepting a `remove` deletes the KRT row.** Each suggestion carries its real contributing detection module(s) (software/datasets/materials/protocols/identifier) as origin badges.
+- **Show more:** a modal **"Summary"** table listing every decision (Decision / Resource / Modules / Reason).
 
 #### Software Detection
 - Detects software mentions in the manuscript via Softcite API
 - Runs independently (no dependencies)
+- **Post-processing:** software defaults to **Reuse**; code (programming languages) becomes "`<Lang> code`" marked **New**; instrument/acquisition software is excluded; software is de-duplicated against the author KRT ignoring version numbers/RRIDs in the name
 - **On complete:** Shows "X software mentions found"
 - **Show more:** Displays a table with Name, Version, RRID, Source, Occurrences
 
@@ -257,15 +261,17 @@ Curated-DB hygiene applied upstream of suggestions (in `tmp/identifiers/build-cu
 - **Show more:** Displays a table with Name, Role, Repository, Accessions/DOIs, Relevance (color-coded badges)
 
 #### Materials Detection
-- Detects lab material/reagent mentions in the manuscript via Google Gemini
+- Detects lab material/reagent mentions in the manuscript via Google Gemini, **grounded on the author's KRT material rows** (a minimal, author-seeded prompt)
 - Runs independently (no dependencies)
-- Generates KRT add_row suggestions for detected materials (mapped to appropriate resource types: Antibody, Cell line, Organism/strain, etc.)
+- **Skips extraction entirely when the author provided no materials** (no author material rows → no Gemini call)
+- Contributes detected materials to the Generated KRT (mapped to appropriate resource types: Antibody, Cell line, Organism/strain, etc.)
 - **On complete:** Shows "X material(s) detected (Y high relevance)"
 
 #### Protocols Detection
-- Detects protocol mentions in the manuscript via Google Gemini
+- Detects protocol mentions in the manuscript via Google Gemini, **seeded with the author's protocol rows as "Section 0"**
 - **Depends on:** Markdown Convert (uses the markdown text as input, not the PDF)
-- Generates KRT add_row suggestions for detected protocols
+- **Prompt fixes:** don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations; exclude analyses; better new/reuse classification
+- Contributes detected protocols to the Generated KRT
 - **On complete:** Shows "X protocol(s) detected (Y high relevance)"
 
 #### Identifier Detection

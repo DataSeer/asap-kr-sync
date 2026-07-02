@@ -29,7 +29,8 @@ pg-boss runs in a dedicated `pgboss` schema, separate from application tables.
 | `materials-detection` | `MATERIALS_DETECTION` | Detect lab material mentions via Google Gemini |
 | `protocols-detection` | `PROTOCOLS_DETECTION` | Detect protocol mentions via Google Gemini |
 | `identifier-detection` | `IDENTIFIER_DETECTION` | Scan markdown against curated enrichment lists for DOIs/RRIDs/accessions/catalogs (no external API) |
-| `pdf-analysis` | `PDF_ANALYSIS` | In-app consolidator — merge every detection's items into the Generated KRT |
+| `pdf-analysis` | `PDF_ANALYSIS` | Build the Generated KRT — LM-consolidate (Gemini) the merged detection candidates, with a rule-based merge fallback |
+| `suggestion-generation` | `SUGGESTION_GENERATION` | AI Suggestions — Gemini compares author KRT vs Generated KRT and emits per-resource decisions (LM-only, no fallback) |
 | `report-generation` | `REPORT_GENERATION` | Generate Excel reports (ad-hoc, not part of the PDF pipeline) |
 
 ### Timeout and Retry Configuration
@@ -46,7 +47,8 @@ Each queue derives its timeout from the corresponding API timeout environment va
 | Materials Detection | `MATERIALS_DETECTION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Protocols Detection | `PROTOCOLS_DETECTION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Identifier Detection | — (fixed) | 60s | 1 | 30s |
-| PDF Analysis | — (fixed) | 120s (in-app, no external call) | 2 | 60s |
+| PDF Analysis | `KRT_GENERATION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
+| Suggestion Generation | `KRT_COMPARISON_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Report Generation | — (fixed) | 300s (5 min) | 2 | 60s |
 
 **Job expiry formula:**
@@ -64,6 +66,7 @@ maxTotalSeconds = expireInSeconds × (retryLimit + 1) + retryDelay × retryLimit
 | Job Type | Concurrency |
 |----------|-------------|
 | PDF Analysis | 1 |
+| Suggestion Generation | 1 |
 | DAS Extraction | 2 |
 | Software Detection | 1 |
 | ORCID Extraction | 2 |
@@ -97,6 +100,9 @@ graph TD
     PROT --> PA
     ID --> PA
 
+    PA --> SG[Suggestion Generation]
+    ORCID --> SG
+
     DAS -.->|status.detected = false| PI{{pending_input}}
     PI -.->|User advances| PA
 
@@ -110,10 +116,11 @@ graph TD
     style PROT fill:#f97316,color:#fff
     style ID fill:#a855f7,color:#fff
     style PA fill:#ef4444,color:#fff
+    style SG fill:#db2777,color:#fff
     style PI fill:#6b7280,color:#fff
 ```
 
-ORCID Extraction is intentionally **not** an input to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT.
+ORCID Extraction is intentionally **not** an input to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT. **Suggestion Generation** (AI Suggestions) runs last and depends on PDF Analysis, which already gates on every KRT detector.
 
 ### Pipeline Definition
 
@@ -128,6 +135,7 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 | Protocols Detection | Markdown Convert | Always |
 | Identifier Detection | Markdown Convert | Always |
 | PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection | Only if DAS extraction `result.status.detected === true` |
+| Suggestion Generation | PDF Analysis | Always (runs last in the pipeline) |
 
 ### Pipeline Rules
 
@@ -186,6 +194,7 @@ Data passed to workers when a job starts:
 | Protocols Detection | `submissionId`, `submissionJobId` |
 | Identifier Detection | `submissionId`, `submissionJobId` |
 | PDF Analysis | `submissionId`, `submissionJobId`, `userId` |
+| Suggestion Generation | `submissionId`, `submissionJobId`, `userId` |
 | Report Generation | `submissionId`, `submissionJobId`, `type`, `userId` |
 
 ## Result Summaries
@@ -203,6 +212,7 @@ Each job stores a structured result blob on completion. Every entry has the same
 | Protocols Detection | `counts: {total, unique, highRelevance}`; `data: {items, meta}`; `files` includes the raw Gemini response and the extracted JSON |
 | Identifier Detection | `counts`; `timing: {totalMs, indexMs, scanMs}`; `data: {items, meta: {byRelevance: {HIGH, MEDIUM, LOW}, byCategory: {software, materials, datasets, protocols}}}`; `files['detection-results', 'identifier-scan']` |
 | PDF Analysis | `counts: {resources, contributors, multiSource}`; `data: {items}` (the Generated KRT); `files['generated-krt']` |
+| Suggestion Generation | `counts` per decision (`add`/`skip`/`update`/`remove`); `data: {suggestions}` — the **persisted** AI Suggestions list (not recomputed on read), each carrying its decision, reason, and contributing detection module(s) |
 | Report Generation | `data: {reportId, fileUrl}` |
 
 ## API Endpoints

@@ -26,6 +26,7 @@ needed.
 | View all submissions | — | — | ✓ | ✓ |
 | Create submission | ✓ | ✓ | ✓ | ✓ |
 | Edit submission (metadata, KRT, PDF, suggestions) | own | team | all | all |
+| View / edit KRT QC & Optional flags | — | — | ✓ | ✓ |
 | Hide / unhide submission | own | team | all | all |
 | Delete submission (hard delete) | — | — | ✓ | ✓ |
 | Trigger AI analysis | own | team | all | all |
@@ -61,6 +62,7 @@ needed.
   - `src/backend/controllers/users.controller.js` — `assertCanTouchAdminRole` blocks ds_annotator from creating, editing, or promoting admin users.
   - `src/backend/controllers/teams.controller.js` — `deleteTeam` refuses team deletion when submissions are attached unless the actor is admin.
   - `src/backend/controllers/jobs.controller.js` — `getJobs` strips `logs`, `result.files`, and `config` from the JSON response when the requester is an author.
+  - The KRT row update endpoint role-gates the `is_qc` / `is_optional` columns — only admin and ds_annotator may set them (regular users never see or edit the QC/Optional flags).
 
 ### Frontend
 

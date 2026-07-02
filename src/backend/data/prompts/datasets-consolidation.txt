@@ -14,6 +14,44 @@ A valid resource must be a real, coherent, shareable data artifact or a clearly 
 
 ---
 
+## SECTION 0: AUTHOR-PROVIDED KRT DATASETS ARE THE BASE — APPLIES FIRST
+
+The INPUT contains `author_provided_datasets`: dataset rows taken directly from the authors' Key Resources Table. Each entry has `name`, `role` (GENERATED/REUSED), `source`, `accessions`, `dois`, `urls`, and `additional_info`. These are AUTHORITATIVE BASE RECORDS and form the foundation of the output. They have already been filtered to dataset-type rows by the curator — treat every entry as a valid dataset to emit.
+
+The `dataset_names`, `extracted_dataset_rows`, and `full_article` are used ONLY to enrich these records and to add datasets the KRT does not cover. `dataset_names` is auto-extracted and may be noisy — never treat it as authoritative.
+
+### RULES
+
+**1. SEED FIRST**
+* Emit one canonical record for every entry in `author_provided_datasets`.
+* Never drop, split, or merge-away an author KRT dataset, even if the article describes it differently, and even if its `additional_info` cites a publication (the author has classified it as a dataset).
+* You MAY collapse two entries that are literally the same dataset (same accession/DOI).
+
+**2. SEED THE FIELDS FROM THE KRT**
+For each seeded record, populate directly from the author entry:
+* canonical_name ← `name`
+* dataset_role ← `role`
+* repository / source_type ← derive from `source`
+* accessions / dois / urls ← take from the entry's `accessions` / `dois` / `urls`
+* Trust the author's values. Do NOT overwrite them with article-derived guesses; do NOT invent identifiers. If an identifier is pending or missing, leave it empty.
+
+**3. MATCH BEFORE CREATING**
+For each mention in `extracted_dataset_rows` / `full_article`, match it to a seeded KRT dataset in priority order:
+→ accession → DOI → URL → name/alias
+* MATCH → attach to that record, adding only MISSING accession/DOI/URL/repository/aliases. Do NOT create a new record.
+* NO MATCH → create a new record using Sections 1–3.
+
+**4. COVERAGE-GAP CREATION**
+* Create a new record only when a mention is a genuinely distinct, reusable dataset absent from `author_provided_datasets`.
+* Apply Section 1–2 logic to decide whether a gap becomes one or multiple records.
+* Section 3 ("NEVER INCLUDE") still applies to newly created records — but NEVER to author KRT seeds.
+
+**5. ENRICHMENT (KRT WINS)**
+* canonical_name: keep the author name; record article variants as aliases.
+* On any identifier conflict, keep the KRT value and store the article value as an alias.
+
+---
+
 ## SECTION 1: SEPARATION RULES
 
 Keep mentions as SEPARATE resources when they correspond to independent, reusable dataset artifacts that a human curator would list as separate KRT rows.
@@ -124,7 +162,6 @@ If unsure:
 → Evaluate REUSABILITY
 → If independently reusable → SEPARATE
 → If not → consider merging
-
 ---
 
 ## SECTION 2: MERGING RULES
@@ -206,6 +243,24 @@ If unsure:
 ---
 
 ## SECTION 3: NEVER INCLUDE
+
+---
+
+#### 0. NO DEPOSITION IDENTIFIER → NOT A NEW DATASET (HARD GATE)
+
+For any dataset you would CREATE (i.e. NOT an author KRT seed from Section 0), a real deposition identifier is REQUIRED. Create the record ONLY if the data explicitly provides one of:
+* a repository accession (e.g. GEO GSE/GSM, SRA SRR/SRP, ArrayExpress E-MTAB, PRIDE/ProteomeXchange PXD, dbGaP phs, EGA, MassIVE, BioStudies, PDB, …), OR
+* a DOI that resolves to a DATA repository (e.g. Zenodo, Figshare, Dryad), OR
+* an explicit download URL to the data.
+
+If none of these is present, DO NOT create the record. A bare mention of "… data" is not enough.
+
+Experimental outputs and lab measurements are NOT datasets just because the manuscript reports producing them. NEVER create a dataset for:
+* assay readouts / measurements — e.g. "BCA assay data", "enzyme assay data", "fluorophore/fluorescence measurements", "qPCR / mtDNA quantification", "immunoblot data", "immunoprecipitation data", "catalytic activity data"
+* biological samples or specimens — e.g. "peripheral blood samples", "patient samples"
+* generic "… data" / "… profiling data" / "clinical and genetic data" mentions with no accession, DOI, or URL
+
+This gate does NOT apply to author KRT seeds (Section 0): keep every author dataset even if its identifier is missing or pending. It applies ONLY to datasets you would newly create.
 
 ---
 
@@ -304,7 +359,7 @@ If unsure:
 ## OUTPUT FORMAT (STRICT JSON)
 
 {
-  "resources": [
+"resources": [
     {
       "canonical_name": "string",
       "dataset_role": "GENERATED|REUSED",

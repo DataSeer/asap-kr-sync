@@ -1,10 +1,11 @@
 /**
  * Materials Detection Service
  *
- * Detects lab material/reagent mentions via Google Gemini on the manuscript PDF.
+ * Detects lab material/reagent mentions via Google Gemini on the manuscript
+ * markdown (same input as protocols/datasets; only software still reads the PDF).
  *
  * Three-step pipeline:
- *   1. detectMaterials(pdfBuffer, fileName) → raw Gemini items (prompt-shape)
+ *   1. detectMaterials(markdownText)        → raw Gemini items (prompt-shape)
  *   2. buildKrtItemsMaterials(raw)          → canonical KrtEntry[]
  *   3. dedupeKrtItems(items, 'materials')   → one entry per logical resource
  *
@@ -25,7 +26,12 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
+const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
+const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+
+// KRT resource-type group for lab materials (0=dataset, 1=software, 2=protocol, 3=lab_material).
+const MATERIAL_GROUP = 3;
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const PROMPT_FILE = path.join(PROMPTS_DIR, 'materials-detection.txt');
@@ -119,21 +125,33 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const pdfFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.PDF, round },
+  // Materials detection is author-seeded only (request D): without author KRT
+  // material rows the prompt has nothing to ground on and tends to be noisy, so
+  // we skip the Gemini call entirely and return an empty result.
+  const authorMaterials = await loadAuthorSeeds(submissionId, round, MATERIAL_GROUP);
+  if (authorMaterials.length === 0) {
+    jobLogger?.log('materials_skipped', 'No author KRT materials — skipping materials detection');
+    return {
+      items: [],
+      meta: { totalCount: 0, uniqueCount: 0, highRelevanceCount: 0, skipped: true, reason: 'no_author_materials', totalMs: Date.now() - startTime }
+    };
+  }
+
+  const mdFile = await File.findOne({
+    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
     order: [['version', 'DESC']]
   });
-  if (!pdfFile) throw new Error('No PDF file found for materials detection');
+  if (!mdFile) throw new Error('No markdown file found for materials detection');
 
-  logger.info('Downloading PDF for materials detection', {
-    submissionId, fileName: pdfFile.fileName, s3Key: pdfFile.s3Key
-  });
-  const pdfBuffer = await s3Service.downloadFile(pdfFile.s3Key);
+  jobLogger?.log('download_markdown', 'Downloading markdown from S3', { fileName: mdFile.fileName, s3Key: mdFile.s3Key });
+  const mdBuffer = await s3Service.downloadFile(mdFile.s3Key);
+  const markdownText = mdBuffer.toString('utf-8');
+  jobLogger?.log('download_markdown_done', 'Markdown downloaded', { markdownLength: markdownText.length });
 
-  // ── Step 1: detect (Gemini)
-  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection');
+  // ── Step 1: detect (Gemini), seeded from the author's KRT materials
+  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection', { authorSeedCount: authorMaterials.length });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(pdfBuffer, pdfFile.fileName);
+  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(markdownText, undefined, authorMaterials);
   const geminiMs = Date.now() - geminiStartTime;
   await jobLogger?.saveRawResponse('gemini-materials', rawResponse || rawItems);
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
@@ -159,58 +177,69 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForMaterials(pdfBuffer, fileName, promptOverride) {
+async function callGeminiForMaterials(markdownText, promptOverride, authorMaterials = []) {
   const ai = new GoogleGenAI({ apiKey: materialsConfig.apiKey });
   const prompt = getPrompt(promptOverride);
+  // The prompt's Section 0 seeds from these. Omitted when empty so a custom
+  // prompt override can still be run article-only by callers/benchmarks.
+  const seedBlock = authorMaterials && authorMaterials.length > 0
+    ? '\n\n---\n\nAUTHOR-PROVIDED MATERIALS (KRT):\n\n' + JSON.stringify(authorMaterials, null, 2)
+    : '';
+  const fullPrompt = prompt + seedBlock + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
 
   try {
     const response = await ai.models.generateContent({
       model: materialsConfig.model,
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType: 'application/pdf', data: pdfBuffer.toString('base64') } }
-          ]
-        }
-      ]
+      contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
+      // Force complete, valid JSON and give the full token budget to output:
+      // gemini-2.5-flash thinks by default, and on long material lists that
+      // thinking ate the budget and truncated the JSON mid-object.
+      config: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: 32768,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
     });
+
+    if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+      logger.warn('Gemini response truncated (materials) — output hit maxOutputTokens');
+    }
 
     const text = response.text;
     if (!text) {
-      logger.warn('Gemini returned empty response for materials detection', { fileName });
+      logger.warn('Gemini returned empty response for materials detection');
       return { resources: [], rawResponse: '' };
     }
 
-    logger.debug('Gemini raw response preview (materials)', { fileName, preview: text.substring(0, 500) });
-    return { resources: parseGeminiResponse(text, fileName), rawResponse: text };
+    logger.debug('Gemini raw response preview (materials)', { preview: text.substring(0, 500) });
+    return { resources: parseGeminiResponse(text), rawResponse: text };
   } catch (error) {
-    logger.error('Gemini API call failed for materials detection', { fileName, error: error.message });
+    logger.error('Gemini API call failed for materials detection', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
   }
 }
 
-function parseGeminiResponse(text, fileName) {
+function parseGeminiResponse(text) {
   let jsonStr = text.trim();
   if (jsonStr.startsWith('```')) {
     jsonStr = jsonStr.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
   }
+  jsonStr = sanitizeJsonEscapes(jsonStr);
 
   try {
     const parsed = JSON.parse(jsonStr);
     const resources = parsed.resources || parsed;
 
     if (!Array.isArray(resources)) {
-      logger.warn('Gemini response is not an array (materials)', { fileName, type: typeof resources });
+      logger.warn('Gemini response is not an array (materials)', { type: typeof resources });
       return [];
     }
 
-    logger.info('Parsed materials from Gemini response', { fileName, count: resources.length });
+    logger.info('Parsed materials from Gemini response', { count: resources.length });
     return resources;
   } catch (error) {
     logger.error('Failed to parse Gemini JSON response (materials)', {
-      fileName, error: error.message, preview: jsonStr.substring(0, 300)
+      error: error.message, preview: jsonStr.substring(0, 300)
     });
     return [];
   }
@@ -221,17 +250,17 @@ function parseGeminiResponse(text, fileName) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Step 1: standalone Gemini call. Hits Gemini on the PDF and returns the
- * parsed resources array. No DB, no S3.
- * @param {Buffer} pdfBuffer
- * @param {string} fileName
- * @param {{ prompt?: string }} [options] - `prompt` overrides the default
- *   detection prompt (defaults to the committed prompt file content).
- * @returns {Promise<{ resources: object[] }>}
+ * Step 1: standalone Gemini call. Hits Gemini on the manuscript markdown and
+ * returns the parsed resources array. No DB, no S3.
+ * @param {string} markdownText - the full manuscript as markdown
+ * @param {{ prompt?: string, authorMaterials?: object[] }} [options] - `prompt`
+ *   overrides the default detection prompt; `authorMaterials` seeds the prompt's
+ *   Section 0 with the author's KRT material rows (empty by default).
+ * @returns {Promise<{ resources: object[], rawResponse?: string }>}
  */
-async function detectMaterials(pdfBuffer, fileName, { prompt } = {}) {
-  const { resources } = await callGeminiForMaterials(pdfBuffer, fileName, prompt);
-  return { resources };
+async function detectMaterials(markdownText, { prompt, authorMaterials } = {}) {
+  const { resources, rawResponse } = await callGeminiForMaterials(markdownText, prompt, authorMaterials || []);
+  return { resources, rawResponse };
 }
 
 /**

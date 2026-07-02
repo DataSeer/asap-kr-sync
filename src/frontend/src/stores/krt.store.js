@@ -368,6 +368,28 @@ export const useKRTStore = defineStore('krt', () => {
     }
   }
 
+  /**
+   * Merge several rows into one (request G2). Backend deletes the originals
+   * and creates the merged row in a single transaction; we then refetch.
+   * @param {string} submissionId
+   * @param {string[]} rowIds
+   * @param {Object} merged - merged row values
+   */
+  async function mergeRows(submissionId, rowIds, merged) {
+    loading.value = true
+    error.value = null
+    try {
+      const response = await krtService.mergeRows(submissionId, rowIds, merged)
+      await validate(submissionId) // refetches rows + validation
+      return response.row
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to merge rows'
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function validate(submissionId) {
     loading.value = true
     validating.value = true
@@ -478,6 +500,7 @@ export const useKRTStore = defineStore('krt', () => {
     batchUpdateCells,
     addRow,
     deleteRow,
+    mergeRows,
     validate,
     setEditingCell,
     clearEditingCell,

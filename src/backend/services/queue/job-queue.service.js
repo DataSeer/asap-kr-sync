@@ -22,6 +22,7 @@ const QUEUES = {
   MATERIALS_DETECTION: 'materials-detection',
   PROTOCOLS_DETECTION: 'protocols-detection',
   IDENTIFIER_DETECTION: 'identifier-detection',
+  SUGGESTION_GENERATION: 'suggestion-generation',
   EMAIL_NOTIFICATION: 'email-notification'
 };
 
@@ -119,6 +120,14 @@ const JOB_CONFIG = {
     typicalSeconds: 5,
     retryLimit: 1,
     retryDelay: 30
+  },
+  // LM comparison of author KRT vs Generated KRT → suggestions.
+  [QUEUES.SUGGESTION_GENERATION]: {
+    apiTimeoutMs: parseInt(process.env.KRT_COMPARISON_API_TIMEOUT, 10) || 300000,
+    get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 30,
+    retryLimit: 2,
+    retryDelay: 60
   }
 };
 

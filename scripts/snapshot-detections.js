@@ -177,8 +177,8 @@ async function runSoftware(pdfBuffer, fileName) {
   return dedupeKrtItems(krt, 'software-softcite');
 }
 
-async function runMaterials(pdfBuffer, fileName) {
-  const { resources } = await materialsService.detectMaterials(pdfBuffer, fileName);
+async function runMaterials(markdownText) {
+  const { resources } = await materialsService.detectMaterials(markdownText);
   const krt = materialsService.buildKrtItemsMaterials(resources);
   return dedupeKrtItems(krt, 'materials-gemini');
 }
@@ -243,7 +243,7 @@ async function processManuscript(ms, serviceStatus) {
     ['protocols',   () => markdownText && runProtocols(markdownText)],
     ['datasets',    () => markdownText && runDatasets(markdownText)],
     ['software',    () => pdfBuffer    && runSoftware(pdfBuffer, fileName)],
-    ['materials',   () => pdfBuffer    && runMaterials(pdfBuffer, fileName)],
+    ['materials',   () => markdownText && runMaterials(markdownText)],
     ['identifiers', () => markdownText && runIdentifiers(markdownText)]
   ];
 

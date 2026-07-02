@@ -192,9 +192,15 @@ metadata fields use camelCase:
   "parsedIdentifiers": {},         // structured identifier components (JSONB)
   "round": 1,
   "originRowId": null,             // self-ref to the source row on round copies, else null
-  "addedByTool": false             // true iff inserted by an accepted AI add_row suggestion
+  "addedByTool": false,            // true iff inserted by an accepted AI add_row suggestion
+  "isQc": false,                   // QC flag — admin / ds_annotator only (see note)
+  "isOptional": false              // Optional flag — admin / ds_annotator only (see note)
 }
 ```
+
+> `isQc` / `isOptional` (DB columns `krt_data.is_qc` / `is_optional`) are **role-gated**: only Administrator and
+> DS Annotator can see or edit them. The `PATCH .../krt/:rowId` endpoint rejects these columns from regular users
+> (author, asap_pm).
 
 > The persisted DB columns (snake_case: `resource_type`, `new_reuse`, `additional_information`, …)
 > are documented in [database.md → `krt_data`](./database.md#krt_data). `toKRTRow()` is the mapping
@@ -202,7 +208,10 @@ metadata fields use camelCase:
 > change log (not a stored column).
 
 The response also includes `validationErrors` (an object keyed by row `id`, each value an array of
-`{ column, type, message, severity, suggestion }`), plus `totalErrors` and `totalWarnings` counts.
+`{ column, type, message, severity, suggestion, suggestedValue }`), plus `totalErrors` and `totalWarnings`
+counts. `suggestedValue` (DB column `validation_results.suggested_value`, nullable) is a machine-actionable
+value the editor uses to group resource-type errors into one-click bulk fixes (e.g. "Set 4 → Software/code");
+`normalizeResourceType` also maps variants such as Mouse / Virus Strain to the canonical type.
 
 ### `PATCH /api/submissions/:id/krt/:rowId`
 Update a KRT row cell.
@@ -214,6 +223,11 @@ Add a new KRT row.
 
 ### `DELETE /api/submissions/:id/krt/:rowId`
 Delete a KRT row.
+
+### `POST /api/submissions/:id/krt/merge`
+Merge two or more KRT rows into one. The client picks each column's value to keep; the server performs a
+**transactional** bulk delete of the selected rows plus creation of the single merged row.
+- **Body**: the selected row ids and the chosen per-column values for the merged row.
 
 ### `POST /api/submissions/:id/krt/validate`
 Re-validate all KRT data.
@@ -236,13 +250,13 @@ Upload a supplemental methods file (PDF, DOC, or DOCX). Max 50MB. Word files are
 Upload a manuscript PDF (or DOCX). Max 50MB. Triggers the full background-job pipeline (`orchestrator.runAllProcesses`) automatically after upload.
 
 ### `GET /api/submissions/:id/pdf/analysis`
-Get the current PDF Analysis (consolidator) job status.
+Get the current PDF Analysis (Generated-KRT builder) job status.
 
 ### `GET /api/submissions/:id/pdf/findings`
 Get the unified suggestions list once PDF Analysis is complete.
 
 ### `POST /api/submissions/:id/pdf/analyze`
-Re-trigger PDF Analysis (the in-app consolidator). Rate-limited via `lmApiLimiter` (10 / min / user).
+Re-trigger PDF Analysis (the Generated-KRT builder: rule-based merge → LM consolidation). Rate-limited via `lmApiLimiter` (10 / min / user).
 
 ### `POST /api/submissions/:id/pdf/extract-das`
 Re-trigger DAS extraction from the latest PDF.
@@ -252,19 +266,27 @@ Re-trigger DAS extraction from the latest PDF.
 ## Suggestions
 
 ### `GET /api/submissions/:id/suggestions`
-Get all pending suggestions (unified from all sources: PDF analysis, software detection, etc.).
+Get all pending AI Suggestions.
 
 - **Returns**: `{ suggestions: Suggestion[] }`
 
-Suggestions are **not stored** — they are diff-computed at read time as the delta between the
-**Generated KRT** (the merged detector output, see
-[background-modules.md §2.3](./background-modules.md#23-how-module-outputs-become-suggestions)) and the
-user's current KRT, minus any rejected rows. IDs are **synthetic and deterministic**, derived from the
-resource's `dedupKey` (`identifier|resourceType|newReuse`), so the same resource always yields the same
-suggestion id across reads. Built in `src/backend/services/pdf-analysis/diff-suggestions.service.js`;
-the rejected view is rendered in `src/backend/services/suggestion/suggestion.service.js`.
+Suggestions are **persisted**, not diff-computed at read time. They are produced by the dedicated
+**`suggestion_generation`** background job (AI Suggestions / KRT Comparison): a Gemini call compares the author
+KRT against the **Generated KRT** and emits, for every generated resource, a decision (add / skip / update /
+remove) with a reason, plus author-side fixes (see
+[background-modules.md §3.10](./background-modules.md#310-suggestion_generation--ai-suggestions-krt-comparison)).
+The module is **LM-only — with no LM configured, no suggestions are produced.** Because the list is persisted on
+the job result, editing the KRT does **not** silently change it; suggestions change only when the job is re-run
+(the "Regenerate suggestions" button → `POST /api/submissions/:id/suggestions/regenerate`, or a module restart
+cascading through). `read`/`approve`/`reject` operate on the persisted list; **accepting a `remove` deletes the
+KRT row.** Each suggestion carries its real contributing detection module(s)
+(software/datasets/materials/protocols/identifier) as origin badges. Built in
+`src/backend/services/suggestion/kr-comparison.service.js`. *(The old read-time diff
+`src/backend/services/pdf-analysis/diff-suggestions.service.js` is retired in production but kept in the repo.)*
 
-There are two pending shapes (`add_row`, `edit`) plus a `rejected` view of either.
+IDs remain **deterministic**, derived from the resource's `dedupKey` (`identifier|resourceType|newReuse`), so the
+same resource yields a stable suggestion id. There are two pending shapes (`add_row`, `edit`) plus a `rejected`
+view of either.
 
 **`add_row`** — propose inserting a new resource row:
 
@@ -357,6 +379,11 @@ Approve a suggestion (applies the change to the KRT).
 ### `POST /api/submissions/:id/suggestions/reject`
 Reject a suggestion.
 - **Body**: `{ suggestionId }`
+
+### `POST /api/submissions/:id/suggestions/regenerate`
+Re-run the AI Suggestions (`suggestion_generation`) job — the LM comparison of the author KRT vs the Generated
+KRT — and replace the persisted suggestions list. Use after editing the KRT to refresh suggestions (they are not
+recomputed on read).
 
 ---
 
@@ -482,7 +509,7 @@ Get valid resource type names from the DB-backed catalog.
 Get the current environment label and signup flag. Returns `{ environment, signupEnabled }`.
 
 ### `GET /api/config/services`
-Get the runtime state of every background service. Returns `{ services: { das_extraction, pdf_analysis, software_detection, orcid_extraction, markdown_convert, datasets_detection, materials_detection, protocols_detection, identifier_detection } }` — each entry is `{ state: 'on' | 'demo' | 'off', enabled: boolean, hasDemoData: boolean }`. The ORCID entry also exposes `subServices.{grobid, openalex, orcid_api}`.
+Get the runtime state of every background service. Returns `{ services: { das_extraction, pdf_analysis, suggestion_generation, software_detection, orcid_extraction, markdown_convert, datasets_detection, materials_detection, protocols_detection, identifier_detection } }` — each entry is `{ state: 'on' | 'demo' | 'off', enabled: boolean, hasDemoData: boolean }`. The ORCID entry also exposes `subServices.{grobid, openalex, orcid_api}`.
 
 ---
 

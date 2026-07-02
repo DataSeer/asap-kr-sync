@@ -25,6 +25,22 @@ async function getSuggestions(req, res, next) {
 }
 
 /**
+ * (Re)generate suggestions by re-running the LM comparison job.
+ * POST /api/submissions/:id/suggestions/regenerate
+ */
+async function regenerateSuggestions(req, res, next) {
+  try {
+    const { queueSuggestionGeneration } = require('../services/suggestion/kr-comparison.service');
+    const round = req.submission.currentRound;
+    const jobId = await queueSuggestionGeneration(req.params.id, round);
+    logger.info('Suggestion regeneration requested', { submissionId: req.params.id, round, jobId, userId: req.userId });
+    res.status(202).json({ message: 'Suggestion generation queued', jobId });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Approve a suggestion
  * POST /api/submissions/:id/suggestions/approve
  */
@@ -235,6 +251,7 @@ async function bulkRejectSuggestions(req, res, next) {
 
 module.exports = {
   getSuggestions,
+  regenerateSuggestions,
   approveSuggestion,
   rejectSuggestion,
   bulkApproveSuggestions,

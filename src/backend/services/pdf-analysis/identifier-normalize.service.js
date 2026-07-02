@@ -78,6 +78,34 @@ function normalizeName(name) {
 }
 
 /**
+ * Strip version numbers and parenthetical annotations from a SOFTWARE resource
+ * name so author-typed names dedup against bare detector names (request B2).
+ *
+ * Author KRT software often carries a version and/or an RRID in the Resource
+ * Name ("Fiji 2.9.0", "MATLAB R2019b", "ImageJ (RRID:SCR_003070)") while the
+ * detector emits just "Fiji" / "MATLAB" / "ImageJ" — strict name matching then
+ * misses the duplicate and a spurious "add" suggestion appears. This collapses
+ * the version/annotation noise so both sides normalize to the same stem.
+ *
+ * Only meant for software/code names; do NOT apply to datasets/materials where
+ * trailing numbers can be meaningful (accession-like names, antibody clones).
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function stripSoftwareVersion(name) {
+  if (name == null) return '';
+  let s = String(name);
+  s = s.replace(/\([^)]*\)/g, ' ');                 // drop "(RRID:…)", "(v1.2)", "(2019)"
+  s = s.replace(/\bversion\b/gi, ' ');              // the literal word "version"
+  s = s.replace(/\bv?\d+(?:\.\d+)+[a-z]?\b/gi, ' '); // dotted versions: 1.2, v2.9.0, 1.53t
+  s = s.replace(/\bR20\d{2}[ab]?\b/g, ' ');         // MATLAB releases: R2019b
+  s = s.replace(/\b20\d{2}\b/g, ' ');               // bare years
+  s = s.replace(/\s+v?\d{1,4}$/i, ' ');             // trailing simple version: "Prism 9"
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Extract every identifier present in a raw field as a Set of typed tokens.
  * Each token is `<type>:<normalized-value>`.
  *
@@ -338,6 +366,7 @@ function computeDedupKey(resource) {
 module.exports = {
   normalizeRawValue,
   normalizeName,
+  stripSoftwareVersion,
   normalizeResourceTypeKey,
   canonicalResourceType,
   inferSourceFromIdentifier,

@@ -54,6 +54,14 @@ module.exports = (sequelize) => {
       type: DataTypes.STRING(500),
       allowNull: true
     },
+    // Machine-actionable target value for a one-click / bulk fix (request E).
+    // e.g. an invalid "Code" RESOURCE TYPE carries suggestedValue "Software/code".
+    // Null when there is no high-confidence canonical to apply.
+    suggestedValue: {
+      type: DataTypes.STRING(200),
+      allowNull: true,
+      field: 'suggested_value'
+    },
     round: {
       type: DataTypes.INTEGER,
       allowNull: false,

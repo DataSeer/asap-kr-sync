@@ -18,9 +18,39 @@ const {
   extractIdentifierTokens,
   normalizeRawValue,
   normalizeName,
+  stripSoftwareVersion,
   identifiersMatch
 } = require('./identifier-normalize.service');
 const { normalizeResourceTypeKey } = require('./merge-detections.service');
+
+/** True for the software/code resource type (drives version-aware matching). */
+function isSoftwareType(typeKey) {
+  return typeKey === 'software/code';
+}
+
+/**
+ * Name normalization used for lookup. For software/code we additionally strip
+ * version numbers / parenthetical annotations (request B2) so an author row
+ * "Fiji 2.9.0" matches a detector "Fiji".
+ */
+function lookupName(name, typeKey) {
+  return isSoftwareType(typeKey)
+    ? normalizeName(stripSoftwareVersion(name))
+    : normalizeName(name);
+}
+
+/**
+ * Identifier tokens for lookup. For software/code we also harvest identifiers
+ * embedded in the NAME (author KRT often writes "ImageJ (RRID:SCR_003070)"),
+ * so they match a detector that carries the RRID in its identifier column.
+ */
+function lookupIdTokens(idField, name, typeKey) {
+  const tokens = extractIdentifierTokens(idField);
+  if (isSoftwareType(typeKey)) {
+    for (const tok of extractIdentifierTokens(name)) tokens.add(tok);
+  }
+  return tokens;
+}
 
 const KRT_COLUMNS = [
   'resourceType',
@@ -69,22 +99,23 @@ function indexKrtForLookup(krtRows) {
   const indexed = krtRows.map(row => {
     const id = row.identifier ?? row['IDENTIFIER'] ?? '';
     const name = row.resourceName ?? row['RESOURCE NAME'] ?? '';
+    // Same normalization mergeDetections.shouldMerge uses, so e.g. a
+    // user row "Code/Software" matches a generated entry "Software/code".
+    const type = normalizeResourceTypeKey(row.resourceType ?? row['RESOURCE TYPE'] ?? '');
     return {
       row,
-      // Same normalization mergeDetections.shouldMerge uses, so e.g. a
-      // user row "Code/Software" matches a generated entry "Software/code".
-      type: normalizeResourceTypeKey(row.resourceType ?? row['RESOURCE TYPE'] ?? ''),
-      idTokens: extractIdentifierTokens(id),
+      type,
+      idTokens: lookupIdTokens(id, name, type),
       idValue: normalizeRawValue(id),
-      nameNorm: normalizeName(name)
+      nameNorm: lookupName(name, type)
     };
   });
 
   function findMatch(generated) {
     const gType = normalizeResourceTypeKey(generated.resourceType);
-    const gTokens = extractIdentifierTokens(generated.identifier);
+    const gTokens = lookupIdTokens(generated.identifier, generated.resourceName, gType);
     const gIdValue = normalizeRawValue(generated.identifier);
-    const gName = normalizeName(generated.resourceName);
+    const gName = lookupName(generated.resourceName, gType);
 
     for (const entry of indexed) {
       if (entry.type !== gType) continue;

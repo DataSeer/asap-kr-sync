@@ -74,7 +74,7 @@ async function processSoftwareDetection(submissionId, jobLogger = null, { isFina
       // Demo items use the legacy pre-refactor shape (resource_type, name,
       // context, etc.). Run them through the canonical builder + dedupe so
       // the output matches the External path.
-      const krt = buildKrtItemsSoftware(demo.items);
+      const krt = applySoftwarePolicy(buildKrtItemsSoftware(demo.items));
       const items = dedupeKrtItems(krt, 'software-demo');
       await jobLogger?.saveRawResponse('demo-software', items);
       return {
@@ -116,8 +116,9 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
   });
   await jobLogger?.saveRawResponse('softcite-response', rawMentions);
 
-  // ── Step 2: buildKrtItems
-  const krtItems = buildKrtItemsSoftware(rawMentions);
+  // ── Step 2: buildKrtItems + policy (B1 default reuse, B3 drop instrument
+  //    software, B4 language → "<Lang> code" NEW)
+  const krtItems = applySoftwarePolicy(buildKrtItemsSoftware(rawMentions));
 
   // ── Step 3: dedupe
   const items = dedupeKrtItems(krtItems, 'software-softcite');
@@ -200,6 +201,118 @@ function buildKrtItemsSoftware(rawItems) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Software policy (post-processing of Softcite mentions) — requests B1/B3/B4.
+// We only control the EXTRACTED mentions here, not Softcite itself, so all of
+// this operates on the canonical KrtEntry[] produced by buildKrtItemsSoftware.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Programming languages we treat as author-written "code" (request B4). A
+ * mention whose name is exactly one of these is rewritten to "<Lang> code" and
+ * marked NEW (the author wrote scripts in it), instead of being listed as a
+ * reused tool. Keyed by lowercased name → canonical display label. Keep this to
+ * unambiguous languages; general software stays the default (Reuse, B1).
+ */
+const PROGRAMMING_LANGUAGES = new Map([
+  ['r', 'R'],
+  ['python', 'Python'],
+  ['matlab', 'MATLAB'],
+  ['julia', 'Julia'],
+  ['perl', 'Perl'],
+  ['c', 'C'],
+  ['c++', 'C++'],
+  ['java', 'Java'],
+  ['fortran', 'Fortran'],
+  ['bash', 'Bash'],
+  ['shell', 'Shell'],
+  ['ruby', 'Ruby'],
+  ['go', 'Go']
+]);
+
+/**
+ * Instrument / acquisition software to exclude (request B3). These are control
+ * software bundled with lab instruments (microscopes, plate readers, cytometers,
+ * sequencers, mass specs) — not analysis tools a curator wants in the KRT.
+ * Matched case-insensitively as whole words against the resource name.
+ *
+ * Curated and intentionally conservative (dropping a real analysis tool is worse
+ * than keeping one instrument tool). Add new offenders here as they surface.
+ */
+const INSTRUMENT_SOFTWARE_PATTERNS = [
+  /\bzen\b/i,                       // Zeiss ZEN
+  /\bnis[-\s]?elements\b/i,         // Nikon NIS-Elements
+  /\blas\s?(?:x|af)\b/i,            // Leica LAS X / LAS AF
+  /\bmetamorph\b/i,                 // Molecular Devices MetaMorph
+  /\bcellsens\b/i,                  // Olympus cellSens
+  /\bsoftmax\s?pro\b/i,             // Molecular Devices SoftMax Pro
+  /\bgen5\b/i,                      // BioTek Gen5
+  /\bfacs\s?diva\b/i,               // BD FACSDiva
+  /\bxcalibur\b/i,                  // Thermo Xcalibur
+  /\bslidebook\b/i,                 // 3i Slidebook
+  /\bclampex\b/i,                   // Molecular Devices Clampex (acquisition)
+  /\bandor\s?solis\b/i,             // Andor Solis
+  /\bharmony\b/i                    // PerkinElmer Harmony
+];
+
+/**
+ * Is this resource name instrument/acquisition software? (request B3)
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isInstrumentSoftware(name) {
+  const s = String(name || '');
+  if (!s.trim()) return false;
+  return INSTRUMENT_SOFTWARE_PATTERNS.some((re) => re.test(s));
+}
+
+/**
+ * If a name is a known programming language, return its canonical label;
+ * otherwise null. Matches the whole trimmed name (case-insensitive). (B4)
+ * @param {string} name
+ * @returns {string|null}
+ */
+function detectCodeLanguage(name) {
+  const key = String(name || '').trim().toLowerCase();
+  return PROGRAMMING_LANGUAGES.get(key) || null;
+}
+
+/**
+ * Apply the software policy to canonical KrtEntry[] (run AFTER buildKrtItems,
+ * BEFORE dedupe so renamed languages collapse and excluded items never merge):
+ *   - B3: drop instrument/acquisition software.
+ *   - B4: a language mention → "<Lang> code", role NEW.
+ *   - B1: everything else defaults to REUSE when no new/reuse is set.
+ * Existing new/reuse values are preserved (e.g. demo data that already set it).
+ *
+ * Pure function.
+ * @param {object[]} items
+ * @returns {object[]}
+ */
+function applySoftwarePolicy(items) {
+  if (!Array.isArray(items)) return [];
+  const out = [];
+  for (const item of items) {
+    if (isInstrumentSoftware(item.resourceName)) continue; // B3
+
+    const language = detectCodeLanguage(item.resourceName);
+    if (language) {
+      // B4: author-written code in a specific language → NEW.
+      out.push({
+        ...item,
+        resourceName: `${language} code`,
+        newReuse: item.newReuse || 'new',
+        detectorMeta: { ...(item.detectorMeta || {}), codeLanguage: language }
+      });
+      continue;
+    }
+
+    // B1: general software defaults to REUSE unless already set.
+    out.push({ ...item, newReuse: item.newReuse || 'reuse' });
+  }
+  return out;
+}
+
 /**
  * Persist helper output's data on the SubmissionJob so downstream suggestion
  * generation can read it via SubmissionJob.getLatest().
@@ -235,5 +348,8 @@ module.exports = {
   getSoftwareMentions,
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectSoftware,
-  buildKrtItemsSoftware
+  buildKrtItemsSoftware,
+  applySoftwarePolicy,
+  isInstrumentSoftware,
+  detectCodeLanguage
 };

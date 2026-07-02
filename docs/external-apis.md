@@ -6,22 +6,49 @@ The application integrates with several external services for PDF analysis, soft
 > background module works end-to-end (engine, the 4-stage contract, demo fallback, outputs), see
 > [background-modules.md](./background-modules.md).
 
-## PDF Analysis (in-app KRT consolidator)
+## PDF Analysis (Generated KRT — rule-based merge → LM consolidation)
 
-PDF Analysis is the **in-app consolidator** that merges every detection's items into the Generated KRT. It has no external API call — `pdf-analysis-client.service.js` and the `PDF_ANALYSIS_API_*` env vars are vestigial and unused.
+PDF Analysis builds the Generated KRT in two stages: an **in-app** rule-based merge of every detection's items, then an **LM (Google Gemini)** consolidation of those candidates into the final Generated KRT. The LM step is **LM-primary with a rule-based fallback** — when it is off or errors, the merged candidates become the Generated KRT (the pipeline always yields one). The legacy `pdf-analysis-client.service.js` and the `PDF_ANALYSIS_API_*` env vars are vestigial and unused; the LM call is configured via the `KRT_GENERATION_*` vars below.
 
 | Property | Value |
 |----------|-------|
 | **Service** | `src/backend/services/pdf-analysis/pdf-analysis.service.js` |
+| **LM step** | `src/backend/services/pdf-analysis/krt-generation.service.js` (Google Gemini consolidation) |
+| **Config** | `src/backend/config/krt-generation-api.js` |
+| **Prompt** | `src/backend/data/prompts/pdf-analysis-krt.txt` |
 | **Inputs** | The `result.data.items` arrays of the latest Software, Datasets, Materials, Protocols, and Identifier Detection jobs for the submission's current round |
-| **Helpers** | `merge-detections.service.js` (the core matcher), `identifier-normalize.service.js` (DOI/RRID/PID token extraction), `dedupe-krt-items.service.js` (per-detection dedup), `diff-suggestions.service.js` (consumed by the `/suggestions` API at read time) |
-| **Disable** | `PDF_ANALYSIS_ENABLED=false` (keeps the job from being scheduled, but doesn't gate anything externally — it's an in-process step) |
+| **Helpers** | `merge-detections.service.js` (the core matcher), `identifier-normalize.service.js` (DOI/RRID/PID token extraction), `dedupe-krt-items.service.js` (per-detection dedup) |
+| **LM auth / model / timeout** | `KRT_GENERATION_GEMINI_API_KEY` / `KRT_GENERATION_GEMINI_MODEL` (default `gemini-2.5-flash`) / `KRT_GENERATION_API_TIMEOUT` (default 5 min) |
+| **Disable LM** | `KRT_GENERATION_ENABLED=false` → rule-based merge fallback is used |
+| **Disable module** | `PDF_ANALYSIS_ENABLED=false` (keeps the job from being scheduled) |
 
-**Algorithm:** flatten every contributor's items into a uniform shape, then greedy-merge primaries using identifier-token intersection / opaque-id match / normalized-name match. `SOURCE_PRECEDENCE` gives software/datasets/protocols/materials precedence over identifier_detection when fields collide. Each merged resource records every contributing source under `detectedBy[]`. The final Generated KRT is persisted under `submission_jobs.result.data.items` for the `pdf_analysis` job and uploaded to S3 as `generated-krt.json`.
+**Stage 1 (rule-based merge):** flatten every contributor's items into a uniform shape, then greedy-merge primaries using identifier-token intersection / opaque-id match / normalized-name match. `SOURCE_PRECEDENCE` gives software/datasets/protocols/materials precedence over identifier_detection when fields collide. Each merged resource records every contributing source under `detectedBy[]`.
+
+**Stage 2 (LM consolidation):** Gemini consolidates the merged candidates into the final Generated KRT — merging near-duplicates, dropping non-resources, cleaning fields — attaching a `reason` to each kept line and recording dropped candidates with reasons. The final Generated KRT is persisted under `submission_jobs.result.data.items` for the `pdf_analysis` job and uploaded to S3 as `generated-krt.json`.
 
 **Source auto-detection:** when a merged resource has **no** SOURCE supplied by any contributor, `mergeDetections` infers one from the identifier via `inferSourceFromIdentifier` (`identifier-normalize.service.js`). This is **allowlist-only** — it maps unambiguous repository URLs (GitHub, GitLab, Bitbucket), registered DOI prefixes (Zenodo `10.5281/zenodo.`, Dryad `10.5061/dryad.`, figshare `10.6084/m9.figshare.`, protocols.io `10.17504/protocols.io.`), and structured accessions (NCBI GEO/SRA/BioProject/BioSample, dbGaP, ArrayExpress, ProteomeXchange, EMPIAR, EMDB, Addgene) to a canonical source name. Anything not on the allowlist (journal DOIs, bare RRIDs, PDB/GenBank/UniProt) returns `null` and the SOURCE stays blank — it never guesses. On conflict, a **DOI/accession source outranks a URL source** (the registered identifier is the more authoritative pointer); two distinct DOI/accession sources, or two distinct URL hosts, also return `null`. It never overwrites a detector-supplied source, and the diff engine separately refuses to overwrite a user-filled SOURCE cell.
 
 ORCID extraction is **not** a contributor — its output writes to `submission.authors`.
+
+---
+
+## Google Gemini API (AI Suggestions / KRT Comparison)
+
+Powers the `suggestion_generation` background job. A Gemini call compares the **author KRT** against the **Generated KRT** and emits, for every generated resource, a decision (add / skip / update / remove) with a reason, plus author-side fixes. Author data is prioritized, the actionable list is kept manageable, and `remove` decisions are rare (clear mistakes only). The resulting suggestions are **persisted** on the job result. This module is **LM-only — there is no fallback**: with no LM configured, no suggestions are produced.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/krt-comparison-api.js` |
+| **Service** | `src/backend/services/suggestion/kr-comparison.service.js` |
+| **Prompt** | `src/backend/data/prompts/krt-comparison.txt` |
+| **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
+| **Model** | `gemini-2.5-flash` (configurable via `KRT_COMPARISON_GEMINI_MODEL`) |
+| **Auth** | API key (`KRT_COMPARISON_GEMINI_API_KEY`) |
+| **Timeout** | 5 minutes (`KRT_COMPARISON_API_TIMEOUT`) |
+| **Depends on** | PDF Analysis (Generated KRT), which already gates on every KRT detector; runs last in the pipeline |
+| **Disable** | `KRT_COMPARISON_ENABLED=false` (no suggestions are generated) |
+
+Each suggestion carries the real contributing detection module(s) (software/datasets/materials/protocols/identifier) as origin badges. Re-run via `POST /api/submissions/:id/suggestions/regenerate` (the "Regenerate suggestions" button) or any module restart that cascades through.
 
 ---
 
@@ -251,13 +278,10 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 
 ## Google Gemini API (Materials Detection)
 
-> ⚠️ **Currently disabled — quality too low to ship.** Materials detection is intentionally
-> turned off because the module's output quality is not yet good enough for production use.
-> The prompt file (`src/backend/data/prompts/materials-detection.txt`) has been removed, so
-> `materials.service.js`'s `hasPrompt()` gate returns `false` and the external Gemini path never
-> runs — the detector returns an empty result (or demo data when demo mode is enabled). The
-> wiring below is retained for when the module is re-enabled after the quality issues are
-> addressed; to bring it back, restore the prompt file (and its `.txt.example`) and re-evaluate.
+> **Author-seeded and minimal.** Materials detection is now grounded on the author's KRT: the prompt
+> (`src/backend/data/prompts/materials-detection.txt`) is seeded with the author's KRT material rows (via the
+> shared `src/backend/services/krt/author-krt-seeds.service.js`). The detector **skips extraction entirely when
+> the author provided no materials** — no author material rows → no Gemini call.
 
 Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Follows the same pattern as datasets detection.
 
@@ -300,6 +324,8 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 **Response:** JSON object with a `resources` array. Each resource contains:
 - `canonical_name`, `protocol_type` (EXPERIMENTAL, COMPUTATIONAL, etc.), `protocol_role` (NEW/REUSE)
 - `source`, `doi`, `url`, `krt_relevance`
+
+**Author-KRT seeding:** the prompt is seeded with the author's protocol rows as "Section 0" (via the shared `src/backend/services/krt/author-krt-seeds.service.js`). Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
 
 **Prompt file:** `src/backend/data/prompts/protocols-detection.txt`
 

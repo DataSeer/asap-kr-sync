@@ -99,11 +99,17 @@ sudo journalctl -u asap-kr-sync-dev -f
 /opt/asap-kr-sync-{dev|prod}/
 ├── .env                    # Environment variables
 ├── credentials/            # Service account keys (mounted read-only, optional)
-├── backend/data/           # Local data (prompt files, demo findings)
+├── src/backend/data/demo-findings/   # Demo findings dropped in manually (mounted read-only)
 ├── src/frontend/public/demo-files/   # Demo manuscripts dropped in manually
 └── logs/                   # Application logs
     └── app.log
 ```
+
+> **Prompt files come from the image, not the host.** The `src/backend/data/prompts/*.txt`
+> files are baked into the Docker image at build time and must NOT be shadowed by a host
+> mount. Only `src/backend/data/demo-findings/` is mounted read-only from the host. Mounting
+> the whole `src/backend/data/` over the container would hide the image's prompts and break
+> detection — mount only the `demo-findings` subdirectory (see the `.service` files in `deploy/`).
 
 The `credentials/` directory is mounted read-only into the container, but there are no committed credentials in the repo today — Auth0 secrets come from AWS Secrets Manager (`AUTH0_SECRET_ID`), AWS S3 uses the EC2 instance role, and there is no Google Sheets integration. The directory is reserved for future provider keys if needed.
 
