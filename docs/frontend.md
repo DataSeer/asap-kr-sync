@@ -233,7 +233,11 @@ A handful of admin views (notably `UsersView.vue`) call the `api` instance direc
 - **StepIndicator** — visual 5-step progress indicator
 - **StepHelpPanel** — contextual help text for each workflow step
 - **SubmissionHeader** — submission metadata display with edit/action buttons
-- **JobStatusPanel** — background job status cards with "show more" detail modals
+- **JobStatusPanel** — background job status cards with "show more" detail modals. The detail tables (detected
+  mentions, authors, Generated KRT, AI Suggestions) share a fixed-height scrolling wrapper with sticky headers, a
+  text search (matches are highlighted in-cell via the `HighlightText` component), a resource-type or KRT-tab-group
+  filter, and — on AI Suggestions — Add/Update/Remove/Skip decision chips. Gated jobs render *"Waiting for the Key
+  Resources Table to be validated"* from the API's `waitingReason`.
 - **EditMetadataModal** — edit submission title and DAS
 - **NewRoundModal** — start a new submission round (revision)
 

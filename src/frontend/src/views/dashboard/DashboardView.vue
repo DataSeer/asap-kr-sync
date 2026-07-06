@@ -268,7 +268,7 @@ function handleCreateNew() {
 
 function handleViewSubmission(submission) {
   const route = router.resolve({ name: 'submission-detail', params: { id: submission.id } })
-  window.open(route.href, '_blank')
+  window.open(route.href, '_blank', 'noopener,noreferrer')
 }
 
 async function handleHideSubmission(submission) {

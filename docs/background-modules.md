@@ -21,9 +21,9 @@ run by a worker in `services/queue/workers.js`. Ten modules participate in the a
 | `markdown_convert` | — (PDF → Markdown text) | Modal/Docling **or** local MarkItDown | — | the text detectors below |
 | `das_extraction` | Data Availability Statement | Google Gemini | `markdown_convert` | the PDF-Analysis gate |
 | `software_detection` | Software / code | Softcite (NER, not an LLM) | — | PDF Analysis |
-| `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` | PDF Analysis |
-| `materials_detection` | Lab materials / reagents | Google Gemini *(author-seeded; see §3.5)* | — | PDF Analysis |
-| `protocols_detection` | Protocols | Google Gemini | `markdown_convert` | PDF Analysis |
+| `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` + gate `krt_curated` | PDF Analysis |
+| `materials_detection` | Lab materials / reagents | Google Gemini *(author-seeded; see §3.5)* | `markdown_convert` + gate `krt_curated` | PDF Analysis |
+| `protocols_detection` | Protocols | Google Gemini | `markdown_convert` + gate `krt_curated` | PDF Analysis |
 | `identifier_detection` | Known RRIDs / DOIs / accessions | **Local** scan of curated lists | `markdown_convert` | PDF Analysis |
 | `orcid_extraction` | Authors + ORCIDs | GROBID → OpenAlex → ORCID API | — | `submission.authors` (not the KRT) |
 | `pdf_analysis` | The consolidated Generated KRT | Rule-based merge → **LM (Gemini)** consolidation, rule-based fallback | all detectors above | Suggestion Generation |
@@ -35,12 +35,15 @@ Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./
 flowchart LR
     UP(["PDF uploaded"]) --> SW["software_detection<br/>(Softcite)"]
     UP --> OR["orcid_extraction<br/>(GROBID+OpenAlex+ORCID)"]
-    UP --> MAT["materials_detection<br/>(Gemini — disabled)"]
     UP --> MDC["markdown_convert<br/>(Docling / MarkItDown)"]
     MDC --> DAS["das_extraction<br/>(Gemini)"]
     MDC --> DS["datasets_detection<br/>(LangExtract → Gemini)"]
+    MDC --> MAT["materials_detection<br/>(Gemini — disabled by default)"]
     MDC --> PR["protocols_detection<br/>(Gemini)"]
     MDC --> ID["identifier_detection<br/>(local)"]
+    KRTV{{"KRT validated?<br/>(gate: krt_curated)"}} -.-> DS
+    KRTV -.-> MAT
+    KRTV -.-> PR
     SW --> PA["pdf_analysis<br/>(rule-merge → LM consolidate)"]
     MAT --> PA
     DAS --> PA
@@ -52,6 +55,12 @@ flowchart LR
     PA --> GK(["Generated KRT"])
     OR --> AU(["submission.authors"])
 ```
+
+The **datasets**, **materials**, and **protocols** detectors seed the LM with the author's KRT rows, so beyond
+`markdown_convert` they gate on `krt_curated`: they hold in `waiting` (the panel shows *"Waiting for the Key
+Resources Table to be validated"*, `waitingReason: 'krt_validation'` from the jobs API) until the submission status
+moves past `step_krt`, then advance automatically with no manual step. `pdf_analysis` and `suggestion_generation`
+inherit the gate transitively.
 
 ---
 
@@ -237,7 +246,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
      **grounded candidate signals** with source spans (high recall, reduces hallucination).
   2. **Google Gemini** consolidates those signals + the article: merges duplicate mentions, applies exclusion
      rules (no annotation tracks / preprints / literature-only refs), and classifies KRT relevance.
-- **Depends on:** `markdown_convert`. **Input:** the Markdown (both passes).
+- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (KRT-seeded, so it waits for KRT validation — see §1). **Input:** the Markdown (both passes).
 - **Config:** `DATASETS_DETECTION_ENABLED`, `DATASETS_DETECTION_GEMINI_API_KEY/_MODEL`, `DATASETS_DETECTION_API_TIMEOUT`,
   `DATASETS_DETECTION_DEMO_DATA_ENABLED`, and the LangExtract tunables `DATASETS_LANGEXTRACT_MAX_WORKERS /
   _MAX_CHAR_BUFFER / _EXTRACTION_PASSES / _BATCH_LENGTH / _TIMEOUT`, `PYTHON_BIN`. **Prompts:** pass 1
@@ -253,7 +262,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Engine:** **Google Gemini**, driven by a materials-detection prompt **seeded with the author's KRT material
   rows** (via the shared `services/krt/author-krt-seeds.service.js`). The detector is intentionally minimal: it
   **SKIPS extraction entirely when the author provided no materials** (no author material rows → no Gemini call).
-- **Depends on:** nothing (immediate). **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
+- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (KRT-seeded, so it waits for KRT validation — see §1). **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
 - **Config:** `MATERIALS_DETECTION_ENABLED`, `MATERIALS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `MATERIALS_DETECTION_API_TIMEOUT`, `MATERIALS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
   `data/prompts/materials-detection.txt`.
@@ -270,7 +279,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   rows as "Section 0"** (via the shared `services/krt/author-krt-seeds.service.js`). Recent prompt fixes: don't
   pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations;
   exclude analyses; and improve new/reuse classification.
-- **Depends on:** `markdown_convert`. **Output:** `KrtEntry[]` (Protocol).
+- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (KRT-seeded, so it waits for KRT validation — see §1). **Output:** `KrtEntry[]` (Protocol).
 - **Config:** `PROTOCOLS_DETECTION_ENABLED`, `PROTOCOLS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `PROTOCOLS_DETECTION_API_TIMEOUT`, `PROTOCOLS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
   `data/prompts/protocols-detection.txt`.

@@ -202,12 +202,15 @@ When a PDF is uploaded, the orchestrator runs modules as a small dependency grap
 flowchart LR
     UP(["PDF uploaded"]) --> SW["Software<br/>(Softcite)"]
     UP --> OR["ORCID / authors<br/>(GROBID+OpenAlex+ORCID)"]
-    UP --> MAT["Materials<br/>(Gemini — disabled)"]
     UP --> MDC["Markdown Convert<br/>(Docling / MarkItDown)"]
     MDC --> DAS["DAS extraction<br/>(Gemini)"]
     MDC --> DS["Datasets<br/>(LangExtract → Gemini)"]
+    MDC --> MAT["Materials<br/>(Gemini — disabled by default)"]
     MDC --> PR["Protocols<br/>(Gemini)"]
     MDC --> ID["Identifier scan<br/>(local)"]
+    KRTV{{"KRT validated?"}} -.->|gate| DS
+    KRTV -.->|gate| MAT
+    KRTV -.->|gate| PR
     SW --> PA["PDF Analysis<br/>(merge → LM consolidate)"]
     MAT --> PA
     DAS --> PA
@@ -221,8 +224,11 @@ flowchart LR
     OR --> AU(["submission.authors"])
 ```
 
-- Independent modules (software, ORCID, materials, markdown) start immediately.
-- The text detectors (DAS, datasets, protocols, identifier) wait for **Markdown Convert**.
+- Independent modules (software, ORCID, markdown) start immediately.
+- The text detectors (DAS, datasets, materials, protocols, identifier) wait for **Markdown Convert**.
+- **Datasets, materials, and protocols** additionally **gate on `krt_curated`** — because they seed the LM with the
+  author's KRT rows, they stay in `waiting` until the author validates the KRT (status past `step_krt`), then advance
+  on their own (no manual action, unlike the DAS `pending_input` gate).
 - **PDF Analysis** waits for all detectors, then builds the Generated KRT (rule-based merge → LM consolidation).
   It auto-advances only if a DAS was detected; otherwise it parks in `pending_input` for the curator to supply
   the statement.

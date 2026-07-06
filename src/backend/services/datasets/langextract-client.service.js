@@ -103,11 +103,18 @@ async function extractSignals(markdownText, { prompt, examples } = {}) {
       env: { ...process.env }
     });
 
-    // Set timeout
+    // Set timeout. SIGTERM first; escalate to SIGKILL if the process is
+    // still alive a few seconds later (a Python process stuck in a C
+    // extension or blocked on I/O can ignore SIGTERM indefinitely).
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
         child.kill('SIGTERM');
+        setTimeout(() => {
+          if (!child.killed || child.exitCode === null) {
+            child.kill('SIGKILL');
+          }
+        }, 5000).unref();
         reject(new ExternalServiceError('langextract', `Script timed out after ${TIMEOUT_MS}ms`));
       }
     }, TIMEOUT_MS);
@@ -175,7 +182,13 @@ async function extractSignals(markdownText, { prompt, examples } = {}) {
       reject(new ExternalServiceError('langextract', `Python not found: ${error.message}. Run the app inside the Docker container.`));
     });
 
-    // Write markdown to stdin
+    // Write markdown to stdin. Without an error handler, a child that
+    // exits before reading (bad args, import error) makes this write emit
+    // an unhandled EPIPE stream error and crash the worker; the 'close'
+    // handler already reports the real failure, so just log here.
+    child.stdin.on('error', (err) => {
+      logger.warn('langextract stdin write failed', { error: err.message });
+    });
     child.stdin.write(markdownText);
     child.stdin.end();
     });

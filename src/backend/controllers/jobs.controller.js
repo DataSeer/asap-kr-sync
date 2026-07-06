@@ -7,22 +7,10 @@
  */
 
 const { SubmissionJob } = require('../models');
-const { JOB_CONFIG, QUEUES } = require('../services/queue/job-queue.service');
+const { JOB_CONFIG, JOB_TYPE_TO_QUEUE } = require('../services/queue/job-queue.service');
 const orchestrator = require('../services/queue/orchestrator.service');
 const s3Service = require('../services/storage/s3.service');
 const { ROLES } = require('../config/constants');
-
-const JOB_TYPE_TO_QUEUE = {
-  pdf_analysis: QUEUES.PDF_ANALYSIS,
-  das_extraction: QUEUES.DAS_EXTRACTION,
-  markdown_convert: QUEUES.MARKDOWN_CONVERT,
-  software_detection: QUEUES.SOFTWARE_DETECTION,
-  orcid_extraction: QUEUES.ORCID_EXTRACTION,
-  datasets_detection: QUEUES.DATASETS_DETECTION,
-  materials_detection: QUEUES.MATERIALS_DETECTION,
-  protocols_detection: QUEUES.PROTOCOLS_DETECTION,
-  report_generation: QUEUES.REPORT_GENERATION
-};
 
 /**
  * Resolve the round number from ?round=N query param, or fall back to submission.currentRound.
@@ -73,6 +61,11 @@ async function getJobs(req, res, next) {
           id: job.id,
           jobType: job.jobType,
           status: job.status,
+          // Explains a `waiting` status the dependency graph can't: the step
+          // is gated on submission state (e.g. KRT not yet validated).
+          waitingReason: job.status === 'waiting' && orchestrator.isGateBlocked(job.jobType, req.submission)
+            ? 'krt_validation'
+            : null,
           referenceId: job.referenceId,
           result: safeResult,
           errorMessage: job.errorMessage,

@@ -303,9 +303,11 @@ async function main() {
 
   // Run seeders if requested
   if (shouldSeed) {
-    // When preserving users, skip the user seeder if users already exist
-    if (preserveUsers && preservedUsers.length > 0) {
-      console.log('Running seeders (skipping user seeder - users preserved)...');
+    // The demo seeder itself skips when users already exist, so a preserving
+    // reset only changes the message. (`preservedUsers` was never defined —
+    // this branch used to crash with a ReferenceError.)
+    if (preserveUsers && shouldReset) {
+      console.log('Running seeders (user seeder skips existing users - users preserved)...');
     } else {
       console.log('Running seeders...');
     }

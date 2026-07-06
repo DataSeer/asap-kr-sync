@@ -155,7 +155,7 @@ async function handleDownload(report) {
   try {
     const result = await reportService.download(route.params.id, report.id)
     // Open the presigned URL in a new tab
-    window.open(result.url, '_blank')
+    window.open(result.url, '_blank', 'noopener,noreferrer')
   } catch (error) {
     notificationStore.error('Failed to download report')
   }

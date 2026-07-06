@@ -49,6 +49,17 @@ export default {
   },
 
   /**
+   * Batch-update KRT cells in a single request (max 500 items server-side).
+   * @param {string} submissionId - The submission ID
+   * @param {Object} data - { updates: [{ rowId, column, value }], source? }
+   * @returns {Promise<Object>} - { rows, updated, validation }
+   */
+  async batchUpdateRows(submissionId, data) {
+    const response = await api.patch(`/submissions/${submissionId}/krt/batch`, data)
+    return response.data
+  },
+
+  /**
    * Add a new row to the KRT
    * @param {string} submissionId - The submission ID
    * @param {Object} data - Row data with resourceType, resourceName, etc.

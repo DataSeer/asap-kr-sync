@@ -17,7 +17,9 @@ module.exports = {
   rules: {
     'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
     'vue/multi-word-component-names': 'off',
-    'vue/no-v-html': 'off',
+    // The codebase has zero v-html; keep it that way (XSS surface). If a
+    // genuine need appears, sanitize with DOMPurify and disable per-line.
+    'vue/no-v-html': 'error',
     'vue/require-default-prop': 'off',
     'vue/max-attributes-per-line': 'off',
     'vue/singleline-html-element-content-newline': 'off',

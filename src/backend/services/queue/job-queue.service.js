@@ -5,6 +5,7 @@
 
 const PgBoss = require('pg-boss');
 const logger = require('../../utils/logger');
+const { JOB_TYPES } = require('../../config/constants');
 
 let boss = null;
 
@@ -25,6 +26,19 @@ const QUEUES = {
   SUGGESTION_GENERATION: 'suggestion-generation',
   EMAIL_NOTIFICATION: 'email-notification'
 };
+
+/**
+ * Map a SubmissionJob jobType to its pg-boss queue name.
+ * Derived from the shared key set of JOB_TYPES and QUEUES so it cannot drift
+ * when a job type is added — hand-written copies of this map went stale in
+ * both the orchestrator and the jobs controller. EMAIL_NOTIFICATION has no
+ * job type and is skipped by the filter.
+ */
+const JOB_TYPE_TO_QUEUE = Object.fromEntries(
+  Object.entries(JOB_TYPES)
+    .filter(([key]) => QUEUES[key])
+    .map(([key, jobType]) => [jobType, QUEUES[key]])
+);
 
 /**
  * Compute job expiry (seconds) from the API timeout (milliseconds).
@@ -311,6 +325,7 @@ async function stop() {
 
 module.exports = {
   QUEUES,
+  JOB_TYPE_TO_QUEUE,
   JOB_CONFIG,
   initialize,
   getInstance,

@@ -129,9 +129,20 @@ router.get('/:id/krt',
   krtController.getData
 );
 
+// PATCH /api/submissions/:id/krt/batch - Batch-update KRT cells (one request
+// per user gesture instead of a per-cell request storm). Must be declared
+// before the parameterized /:id/krt/:rowId route or "batch" is captured as a
+// rowId.
+router.patch('/:id/krt/batch',
+  canAccessSubmission,
+  validateBody('batchUpdateKrtCells'),
+  krtController.batchUpdateCells
+);
+
 // PATCH /api/submissions/:id/krt/:rowId - Update KRT row
 router.patch('/:id/krt/:rowId',
   canAccessSubmission,
+  validateBody('updateKrtCell'),
   krtController.updateRow
 );
 
@@ -210,6 +221,7 @@ router.post('/:id/pdf/analyze',
 // POST /api/submissions/:id/pdf/extract-das - Extract DAS from uploaded PDF
 router.post('/:id/pdf/extract-das',
   canAccessSubmission,
+  lmApiLimiter,
   pdfController.extractDAS
 );
 
@@ -251,6 +263,7 @@ router.get('/:id/suggestions',
 // POST /api/submissions/:id/suggestions/regenerate - Re-run the LM comparison job
 router.post('/:id/suggestions/regenerate',
   canAccessSubmission,
+  lmApiLimiter,
   suggestionController.regenerateSuggestions
 );
 
@@ -293,6 +306,7 @@ router.get('/:id/software',
 // POST /api/submissions/:id/software/detect - Trigger software detection
 router.post('/:id/software/detect',
   canAccessSubmission,
+  lmApiLimiter,
   softwareController.triggerDetection
 );
 
@@ -307,6 +321,7 @@ router.get('/:id/authors',
 // POST /api/submissions/:id/authors/extract - Trigger ORCID extraction
 router.post('/:id/authors/extract',
   canAccessSubmission,
+  lmApiLimiter,
   orcidController.triggerExtraction
 );
 
@@ -321,6 +336,7 @@ router.get('/:id/datasets',
 // POST /api/submissions/:id/datasets/detect - Trigger datasets detection
 router.post('/:id/datasets/detect',
   canAccessSubmission,
+  lmApiLimiter,
   datasetsController.triggerDetection
 );
 
@@ -329,6 +345,7 @@ router.post('/:id/datasets/detect',
 // POST /api/submissions/:id/markdown/convert - Trigger markdown conversion
 router.post('/:id/markdown/convert',
   canAccessSubmission,
+  lmApiLimiter,
   markdownController.triggerConvert
 );
 
@@ -343,6 +360,7 @@ router.get('/:id/materials',
 // POST /api/submissions/:id/materials/detect - Trigger materials detection
 router.post('/:id/materials/detect',
   canAccessSubmission,
+  lmApiLimiter,
   materialsController.triggerDetection
 );
 
@@ -357,6 +375,7 @@ router.get('/:id/protocols',
 // POST /api/submissions/:id/protocols/detect - Trigger protocols detection
 router.post('/:id/protocols/detect',
   canAccessSubmission,
+  lmApiLimiter,
   protocolsController.triggerDetection
 );
 
@@ -371,6 +390,7 @@ router.get('/:id/identifiers',
 // POST /api/submissions/:id/identifiers/detect - Trigger identifier detection
 router.post('/:id/identifiers/detect',
   canAccessSubmission,
+  lmApiLimiter,
   identifierDetectionController.triggerDetection
 );
 
@@ -385,6 +405,7 @@ router.get('/:id/jobs',
 // POST /api/submissions/:id/processes/run - Run (or re-run) all background processes
 router.post('/:id/processes/run',
   canAccessSubmission,
+  lmApiLimiter,
   jobsController.runProcesses
 );
 

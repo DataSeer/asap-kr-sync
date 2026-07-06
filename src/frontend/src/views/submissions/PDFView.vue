@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch, provide, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, provide, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useKRTStore } from '@/stores/krt.store'
@@ -345,6 +345,13 @@ async function refreshSuggestions() {
 // (~30s), so we queue it then poll the suggestions a few times to pick up the
 // fresh list without a manual page refresh.
 const regenerating = ref(false)
+// Poll handle for suggestion regeneration — cleared on unmount so the poll
+// doesn't keep firing against a stale route after navigation.
+let regeneratePollTimer = null
+onUnmounted(() => {
+  if (regeneratePollTimer) clearInterval(regeneratePollTimer)
+})
+
 async function regenerateSuggestions() {
   if (regenerating.value) return
   regenerating.value = true
@@ -353,11 +360,12 @@ async function regenerateSuggestions() {
     notificationStore.info('Regenerating suggestions… this can take up to a minute.')
     let elapsed = 0
     const before = findings.value.length
-    const poll = setInterval(async () => {
+    regeneratePollTimer = setInterval(async () => {
       elapsed += 5
       await refreshSuggestions()
       if (findings.value.length !== before || elapsed >= 75) {
-        clearInterval(poll)
+        clearInterval(regeneratePollTimer)
+        regeneratePollTimer = null
         regenerating.value = false
         if (findings.value.length !== before) notificationStore.success('Suggestions updated')
       }

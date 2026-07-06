@@ -182,32 +182,39 @@ async function create(req, res, next) {
       status: 'step_krt'
     });
 
+    // uploadAndProcess runs its own internal transaction; it can't join an
+    // outer one (it re-reads the submission row on a separate connection), so
+    // creation is compensated rather than transactional: any failure after
+    // Submission.create destroys the submission, and the FK cascades remove
+    // whatever children (files, KRT rows, change logs) were committed. The
+    // S3 object is intentionally left behind — uploadAndProcess documents
+    // orphaned keys as harmless and cleaned up by lifecycle rules.
     try {
       await krtService.uploadAndProcess(submission.id, req.file, req.userId, 1);
-    } catch (krtErr) {
+
+      // Log the creation
+      await ChangeLog.create({
+        submissionId: submission.id,
+        userId: req.userId,
+        action: 'upload',
+        step: 1,
+        round: 1,
+        description: 'Submission created with Key Resources Table'
+      });
+    } catch (creationErr) {
       // Roll back the submission so the user can retry cleanly. We catch
       // and log the destroy failure separately — losing the cleanup is
-      // worse than the original KRT error, so don't mask it.
+      // worse than the original error, so don't mask it.
       try {
         await Submission.destroy({ where: { id: submission.id } });
       } catch (cleanupErr) {
-        logger.error('Failed to clean up submission after KRT persistence error', {
+        logger.error('Failed to clean up submission after creation error', {
           submissionId: submission.id,
           cleanupError: cleanupErr.message
         });
       }
-      throw krtErr;
+      throw creationErr;
     }
-
-    // Log the creation
-    await ChangeLog.create({
-      submissionId: submission.id,
-      userId: req.userId,
-      action: 'upload',
-      step: 1,
-      round: 1,
-      description: 'Submission created with Key Resources Table'
-    });
 
     logger.info('Submission created with KRT', {
       submissionId: submission.id,
@@ -308,6 +315,7 @@ async function update(req, res, next) {
     }
     if (notes !== undefined) submission.notes = notes;
 
+    let statusChanged = false;
     if (status) {
       // Allow staying in the same status (no-op)
       if (status !== submission.status) {
@@ -321,10 +329,28 @@ async function update(req, res, next) {
           });
         }
         submission.status = status;
+        statusChanged = true;
       }
     }
 
     await submission.save();
+
+    // Pipeline steps can gate on submission state (e.g. the seeded detectors
+    // wait for the KRT step to be validated), so a status change may unblock
+    // waiting jobs. Failure here is non-fatal: the periodic reconciler
+    // re-drives gated jobs within one sweep interval.
+    if (statusChanged) {
+      try {
+        const orchestrator = require('../services/queue/orchestrator.service');
+        await orchestrator.reconcileSubmission(submission.id, submission.currentRound, req.userId);
+      } catch (advanceErr) {
+        logger.error('Failed to re-drive pipeline after status change', {
+          submissionId: submission.id,
+          status: submission.status,
+          error: advanceErr.message
+        });
+      }
+    }
 
     logger.info('Submission updated', { submissionId: submission.id, userId: req.userId });
 
@@ -609,8 +635,10 @@ async function processNewVersion(req, res, next) {
           transaction: t
         });
 
-        for (const row of previousRows) {
-          await KRTData.create({
+        // Single bulkCreate instead of per-row inserts — large KRTs held the
+        // transaction open for dozens of sequential round-trips.
+        await KRTData.bulkCreate(
+          previousRows.map(row => ({
             submissionId: submission.id,
             resourceType: row.resourceType,
             resourceName: row.resourceName,
@@ -621,8 +649,9 @@ async function processNewVersion(req, res, next) {
             parsedIdentifiers: row.parsedIdentifiers,
             round: newRound,
             originRowId: row.id
-          }, { transaction: t });
-        }
+          })),
+          { transaction: t }
+        );
 
         // Copy the latest KRT file record to the new round
         const latestKrtFile = await File.findOne({
