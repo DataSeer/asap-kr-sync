@@ -17,8 +17,18 @@
  *     Shared in Text or Supplemental, not Optional). With --random, a random
  *     subset of any line is removed instead.
  *
- * Writes one xlsx per document + a global _summary.xlsx with recall metrics
- * broken down by Object Type and the summary's "Shared in …" flags.
+ * Writes one xlsx per document with 5 tabs —
+ *   Summary                              side-by-side Original vs Modified stats
+ *                                        + per-author-line coverage (removed?,
+ *                                        found in Original / Modified, re-suggested)
+ *   Original/Modified - KRTs             author KRT aligned to the generated KRT
+ *                                        (novel generated lines at the end) + the
+ *                                        summary.csv reference signals per line
+ *   Original/Modified - Cand. & Sugg.    every merged candidate (kept + rejected
+ *                                        by LM consolidation, with reasons) and
+ *                                        the AI suggestion made from it
+ * (+ an Errors tab when a module failed) — plus a global _summary.xlsx with
+ * recall metrics broken down by Object Type and the summary's "Shared in …" flags.
  *
  * Requires the same external services the app uses, configured in .env:
  *   Docling/MarkItDown (markdown), Softcite (software), and Gemini for
@@ -55,10 +65,42 @@
 
 const fs = require('fs');
 const path = require('path');
+const { AsyncLocalStorage } = require('async_hooks');
 const ExcelJS = require('exceljs');
 const Papa = require('papaparse');
 
+// ── Per-document log tagging ────────────────────────────────────────────────
+// With --concurrency > 1 many documents log at once, so tag every line with the
+// PDF name of the async context that emitted it. The id is read at LOG-CALL time
+// (while the async context is still intact) and baked into the message. An
+// earlier version instead prefixed process.stdout.write, but that reads the
+// context at stream-write time — and winston buffers its records and flushes
+// them on a later tick in the root context, by which point the id is gone, so
+// the services' (winston) lines came out untagged. Wrapping the log methods
+// themselves fixes that.
+const logCtx = new AsyncLocalStorage();
+const tagWithDocId = (fn) => (first, ...rest) => {
+  const id = logCtx.getStore();
+  return (id && typeof first === 'string') ? fn(`[${id}] ${first}`, ...rest) : fn(first, ...rest);
+};
+// The script's own logging (and any service that logs via console directly).
+for (const method of ['log', 'info', 'warn', 'error', 'debug']) {
+  const orig = console[method].bind(console);
+  console[method] = tagWithDocId(orig);
+}
+
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
+
+// The pipeline services log through the app's winston logger (a singleton the
+// service requires all share). Wrap its level methods the same way so their
+// lines carry the PDF name too. Required here — after dotenv — so the logger
+// reads its env config once, before any service does.
+const appLogger = require('../src/backend/utils/logger');
+for (const level of ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']) {
+  if (typeof appLogger[level] !== 'function') continue;
+  const orig = appLogger[level].bind(appLogger);
+  appLogger[level] = tagWithDocId(orig);
+}
 
 // ── Pipeline imports (same code the app runs) ───────────────────────────────
 const { convertToMarkdown } = require('../src/backend/services/pdf/pdf-markdown-client.service');
@@ -327,12 +369,23 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
   try { consolidation = await consolidateWithLM(candidates); generatedKrt = consolidation.items || candidates; }
   catch (e) { errors.push(`krt-generation: ${e.message}`); }
 
+  // The app services (Gemini + markdown) now retry transient failures (503 /
+  // timeout / overload) internally, so a momentary outage no longer silently
+  // empties a stage. If the comparison STILL comes back empty for a non-empty
+  // Generated KRT, that's the tell-tale of a failed/degraded call (it corrupts
+  // recall — every generated line looks un-suggested), so flag it loudly here
+  // rather than letting it disappear into the metrics.
   let suggestions = [], decisions = [], comparisonRaw = null;
   await safe('comparison', async () => {
     const res = await compareKrts(authorRows, generatedKrt);
     suggestions = res.suggestions; decisions = res.decisions; comparisonRaw = res.rawResponse || null;
     return [];
   }, errors);
+  if (generatedKrt.length > 0 && decisions.length === 0) {
+    const msg = `comparison: returned 0 decisions for ${generatedKrt.length} generated rows — treating suggestions as unavailable for this pass (likely a degraded LM call)`;
+    errors.push(msg);
+    console.warn(`  ! ${msg}`);
+  }
 
   // Full trace of this pass: every module's items, the merged candidates, the LM
   // consolidation (+ what it dropped) and the LM comparison decisions, plus each
@@ -431,61 +484,12 @@ function addSheet(wb, name, columns, rows) {
   ws.getRow(1).font = { bold: true };
   return ws;
 }
-const modulesOf = (item) => [...new Set((item.detectedBy || []).map(d => d.source).filter(Boolean))]
+const shortSources = (sources) => (sources || [])
   .map(s => ({ software_detection: 'SW', datasets_detection: 'DS', materials_detection: 'MAT', protocols_detection: 'PROT', identifier_detection: 'ID' }[s] || s)).join(', ');
-
-function generatedRows(generatedKrt, authorRows, decisions) {
-  return generatedKrt.map((g, i) => ({
-    '#': i + 1, type: g.resourceType, name: g.resourceName, source: g.sourceUrl || '',
-    identifier: g.identifier || '', newReuse: g.newReuse || '', modules: modulesOf(g),
-    inAuthorKrt: genInAuthor(g, authorRows, decisions) ? 'yes' : 'NO (novel)', reason: g.reason || ''
-  }));
-}
-function decisionRows(decisions) {
-  const label = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove' };
-  return decisions.map(d => {
-    const row = d.authorRow || d.generatedRow || {};
-    const short = (d.sources || []).map(s => ({ software_detection: 'SW', datasets_detection: 'DS', materials_detection: 'MAT', protocols_detection: 'PROT', identifier_detection: 'ID' }[s] || s)).join(', ');
-    return {
-      decision: label[d.action] || d.action, name: d.resourceName || row.resourceName || '',
-      type: row.resourceType || '', identifier: row.identifier || '', newReuse: row.newReuse || '',
-      changes: d.changes ? Object.entries(d.changes).map(([k, v]) => `${k}: "${v.old}"→"${v.new}"`).join('; ') : '',
-      modules: short, reason: d.reason || ''
-    };
-  });
-}
-
-const GEN_COLS = [
-  { header: '#', key: '#', width: 5 }, { header: 'Resource Type', key: 'type', width: 24 },
-  { header: 'Resource Name', key: 'name', width: 40 }, { header: 'Source', key: 'source', width: 18 },
-  { header: 'Identifier', key: 'identifier', width: 26 }, { header: 'New/Reuse', key: 'newReuse', width: 10 },
-  { header: 'Modules', key: 'modules', width: 14 }, { header: 'In Author KRT?', key: 'inAuthorKrt', width: 14 },
-  { header: 'Reason', key: 'reason', width: 60 }
-];
-const SUG_COLS = [
-  { header: 'Decision', key: 'decision', width: 10 }, { header: 'Resource Name', key: 'name', width: 40 },
-  { header: 'Resource Type', key: 'type', width: 24 }, { header: 'Identifier', key: 'identifier', width: 26 },
-  { header: 'New/Reuse', key: 'newReuse', width: 10 }, { header: 'Changes', key: 'changes', width: 40 },
-  { header: 'Modules', key: 'modules', width: 14 }, { header: 'Reason', key: 'reason', width: 60 }
-];
-
-// Author KRT sheet (the input). For the modified pass, the removed lines are
-// appended at the end tagged 'REMOVED'.
-const AUTHOR_COLS = [
-  { header: '#', key: '#', width: 5 }, { header: 'Resource Type', key: 'type', width: 24 },
-  { header: 'Resource Name', key: 'name', width: 40 }, { header: 'Source', key: 'source', width: 18 },
-  { header: 'Identifier', key: 'identifier', width: 26 }, { header: 'New/Reuse', key: 'newReuse', width: 10 },
-  { header: 'Additional Info', key: 'additionalInformation', width: 30 }, { header: 'Tag', key: 'tag', width: 11 }
-];
-function authorSheetRows(keptRows, removedRows = []) {
-  const mk = (r, tag) => ({
-    type: r.resourceType || '', name: r.resourceName || '', source: r.source || '',
-    identifier: r.identifier || '', newReuse: r.newReuse || '', additionalInformation: r.additionalInformation || '', tag
-  });
-  const out = [...keptRows.map(r => mk(r, '')), ...removedRows.map(r => mk(r, 'REMOVED'))];
-  out.forEach((o, i) => { o['#'] = i + 1; });
-  return out;
-}
+const modulesOf = (item) => shortSources([...new Set((item.detectedBy || []).map(d => d.source).filter(Boolean))]);
+const DECISION_LABEL = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove' };
+const fmtChanges = (changes) => changes
+  ? Object.entries(changes).map(([k, v]) => `${k}: "${v.old}"→"${v.new}"`).join('; ') : '';
 
 // Match a KRT line to its summary.csv row by name (same fuzzy join used to pick
 // removals): exact normalized-name first, then containment either way.
@@ -511,37 +515,192 @@ function summarySignals(name, summaryRows) {
   return { inText: yn(inText), inSupp: yn(inSupp), optional: yn(s.optional), detectable };
 }
 
-// Diff summary: Author KRT vs Generated KRT, with the AI decision per line and
-// the summary.csv "was it mentioned in the text/supplemental?" reference signal.
-const SUMMARY_COLS = [
-  { header: 'Status', key: 'status', width: 28 }, { header: 'Resource Type', key: 'type', width: 24 },
-  { header: 'Resource Name', key: 'name', width: 40 }, { header: 'Identifier', key: 'identifier', width: 26 },
-  { header: 'Modules', key: 'modules', width: 14 }, { header: 'AI Note', key: 'note', width: 30 },
+// ── KRTs sheet: author KRT ↔ generated KRT aligned side by side ─────────────
+// One row per author line (kept first, then the REMOVED ones for the modified
+// pass) with its aligned generated line — AI skip/update decision first, then an
+// add decision naming the same resource (how a removed line comes back), then
+// identifier match. Generated lines aligned to nothing are appended at the end
+// as 'Generated only (new)'. The trailing (ref) columns are the summary.csv
+// signals: was the resource even visible to detection (text / supplemental)?
+const KRT_COLS = [
+  { header: '#', key: '#', width: 5 }, { header: 'Status', key: 'status', width: 27 },
+  { header: 'A: Resource Type', key: 'aType', width: 22 }, { header: 'A: Resource Name', key: 'aName', width: 36 },
+  { header: 'A: Source', key: 'aSource', width: 16 }, { header: 'A: Identifier', key: 'aId', width: 24 },
+  { header: 'A: New/Reuse', key: 'aNewReuse', width: 12 }, { header: 'A: Additional Info', key: 'aInfo', width: 26 },
+  { header: 'G: Resource Type', key: 'gType', width: 22 }, { header: 'G: Resource Name', key: 'gName', width: 36 },
+  { header: 'G: Source', key: 'gSource', width: 16 }, { header: 'G: Identifier', key: 'gId', width: 24 },
+  { header: 'G: New/Reuse', key: 'gNewReuse', width: 12 }, { header: 'G: Modules', key: 'gModules', width: 12 },
+  { header: 'G: AI Decision', key: 'gDecision', width: 14 }, { header: 'G: Reason', key: 'gReason', width: 55 },
   { header: 'In Text (ref)', key: 'inText', width: 12 }, { header: 'In Suppl. (ref)', key: 'inSupp', width: 13 },
   { header: 'Optional (ref)', key: 'optional', width: 12 }, { header: 'Detectable? (ref)', key: 'detectable', width: 22 }
 ];
-function aiNote(genLine, decisions) {
-  const d = decisionForGenerated(genLine, decisions);
-  if (!d) return '—';
-  return ({ add: 'Suggested (add)', skip: 'Skipped (already in author KRT)', update: 'Suggested (update)' })[d.action] || d.action;
+function genCells(g, decisions) {
+  const d = decisionForGenerated(g, decisions);
+  return {
+    gType: g.resourceType || '', gName: g.resourceName || '', gSource: g.sourceUrl || '',
+    gId: g.identifier || '', gNewReuse: g.newReuse || '', gModules: modulesOf(g),
+    gDecision: d ? (DECISION_LABEL[d.action] || d.action) : '—', gReason: g.reason || ''
+  };
 }
-function buildSummary(generatedKrt, authorRows, decisions, summaryRows) {
-  const rows = generatedKrt.map(g => ({
-    status: genInAuthor(g, authorRows, decisions) ? 'In both (Author + Generated)' : 'Generated only (novel)',
-    type: g.resourceType, name: g.resourceName, identifier: g.identifier || '',
-    modules: modulesOf(g), note: aiNote(g, decisions), ...summarySignals(g.resourceName, summaryRows)
-  }));
-  // The other side of the diff: author lines detection did NOT align to. The
-  // reference signal tells whether each miss was even detectable from the text.
-  for (const a of authorRows) {
-    if (!authorCovered(a, generatedKrt, decisions)) {
-      rows.push({
-        status: 'Author only (not generated)', type: a.resourceType, name: a.resourceName,
-        identifier: a.identifier || '', modules: '', note: '', ...summarySignals(a.resourceName, summaryRows)
-      });
-    }
+function buildKrtRows(keptRows, removedRows, generatedKrt, decisions, summaryRows) {
+  const entries = [...keptRows.map(r => ({ row: r, removed: false })), ...removedRows.map(r => ({ row: r, removed: true }))];
+  const used = new Set();
+  const claimGen = (pred) => {
+    const i = generatedKrt.findIndex((g, idx) => !used.has(idx) && pred(g));
+    if (i === -1) return null;
+    used.add(i);
+    return generatedKrt[i];
+  };
+  const rows = [];
+  for (const e of entries) {
+    const a = e.row;
+    const g = claimGen(x => { const d = decisionForGenerated(x, decisions); return !!(d && (d.action === 'skip' || d.action === 'update') && d.authorRow && sameLine(a, d.authorRow)); })
+      || claimGen(x => { const d = decisionForGenerated(x, decisions); return !!(d && d.action === 'add' && d.generatedRow && sameLine(a, d.generatedRow)); })
+      || claimGen(x => identifierMatch(a, x));
+    // An author line the AI explicitly suggested deleting still shows a decision.
+    const removeDecision = !g && (decisions || []).find(d => d.action === 'remove' && d.authorRow && sameLine(a, d.authorRow));
+    rows.push({
+      status: e.removed ? (g ? 'REMOVED — re-detected' : 'REMOVED — not re-detected')
+        : (g ? 'In both (Author + Generated)' : 'Author only (not generated)'),
+      aType: a.resourceType || '', aName: a.resourceName || '', aSource: a.source || '',
+      aId: a.identifier || '', aNewReuse: a.newReuse || '', aInfo: a.additionalInformation || '',
+      ...(g ? genCells(g, decisions) : { gDecision: removeDecision ? 'Remove' : '', gReason: removeDecision ? (removeDecision.reason || '') : '' }),
+      ...summarySignals(a.resourceName, summaryRows)
+    });
   }
+  generatedKrt.forEach((g, i) => {
+    if (used.has(i)) return;
+    rows.push({ status: 'Generated only (new)', ...genCells(g, decisions), ...summarySignals(g.resourceName, summaryRows) });
+  });
+  rows.forEach((r, i) => { r['#'] = i + 1; });
   return rows;
+}
+
+// ── Candidates & Suggestions sheet ──────────────────────────────────────────
+// Every merged detection candidate: the ones consolidation KEPT (one per
+// generated KRT line, with the consolidation reason) carry the AI suggestion
+// made from them on the same row; the ones it REJECTED carry the drop reason.
+// 'Remove' suggestions target an author row (no candidate) — listed at the end.
+const CAND_COLS = [
+  { header: '#', key: '#', width: 5 }, { header: 'Candidate', key: 'status', width: 12 },
+  { header: 'Resource Type', key: 'type', width: 24 }, { header: 'Resource Name', key: 'name', width: 40 },
+  { header: 'Source', key: 'source', width: 18 }, { header: 'Identifier', key: 'identifier', width: 26 },
+  { header: 'New/Reuse', key: 'newReuse', width: 10 }, { header: 'Modules', key: 'modules', width: 14 },
+  { header: 'Consolidation Reason', key: 'consReason', width: 45 },
+  { header: 'AI Suggestion', key: 'decision', width: 14 }, { header: 'Changes', key: 'changes', width: 40 },
+  { header: 'Suggestion Reason', key: 'sugReason', width: 55 }
+];
+function buildCandSuggRows(trace, decisions) {
+  const rows = [];
+  for (const g of trace.consolidation.items) {
+    const d = decisionForGenerated(g, decisions);
+    rows.push({
+      status: 'Kept', type: g.resourceType || '', name: g.resourceName || '', source: g.sourceUrl || '',
+      identifier: g.identifier || '', newReuse: g.newReuse || '', modules: modulesOf(g),
+      consReason: g.reason || '', decision: d ? (DECISION_LABEL[d.action] || d.action) : '—',
+      changes: fmtChanges(d?.changes), sugReason: d?.reason || ''
+    });
+  }
+  for (const c of trace.consolidation.dropped) {
+    rows.push({
+      status: 'Rejected', type: c.resourceType || '', name: c.resourceName || '',
+      identifier: c.identifier || '', modules: shortSources(c.sources), consReason: c.reason || ''
+    });
+  }
+  for (const d of (decisions || []).filter(x => x.action === 'remove')) {
+    rows.push({
+      status: '— (author row)', type: d.authorRow?.resourceType || '', name: d.resourceName || '',
+      identifier: d.authorRow?.identifier || '', decision: 'Remove', sugReason: d.reason || ''
+    });
+  }
+  rows.forEach((r, i) => { r['#'] = i + 1; });
+  return rows;
+}
+
+// ── Summary sheet: Original vs Modified at a glance ─────────────────────────
+// Two stacked tables: the stats block (these 4 columns), then a per-author-line
+// coverage table appended below by appendCoverageTable(). Widths are shared per
+// column index across both tables, hence the generous B/C/D widths here.
+const RUN_SUMMARY_COLS = [
+  { header: 'Metric', key: 'metric', width: 40 }, { header: 'Original', key: 'a', width: 22 },
+  { header: 'Modified', key: 'b', width: 36 }, { header: 'What it tells you', key: 'note', width: 40 }
+];
+function passStats(pass, authorRows) {
+  const aligned = pass.generatedKrt.filter(g => genInAuthor(g, authorRows, pass.decisions)).length;
+  const dec = (a) => pass.decisions.filter(d => d.action === a).length;
+  return {
+    authorRows: authorRows.length,
+    candidates: pass.trace.merge.count,
+    rejected: pass.trace.consolidation.droppedCount,
+    generated: pass.generatedKrt.length,
+    aligned,
+    novel: pass.generatedKrt.length - aligned,
+    misses: authorRows.filter(a => !authorCovered(a, pass.generatedKrt, pass.decisions)).length,
+    add: dec('add'), skip: dec('skip'), update: dec('update'), remove: dec('remove')
+  };
+}
+function buildRunSummary(passA, passB, authorRows, modifiedRows, removed, removedReport, errorCount) {
+  const A = passStats(passA, authorRows);
+  const B = passB ? passStats(passB, modifiedRows) : null;
+  const pct = (n, d) => (d ? `${n} (${Math.round(100 * n / d)}%)` : String(n));
+  const row = (metric, a, b, note) => ({ metric, a, b: B ? b : '—', note });
+  const reDet = removedReport.filter(r => r.reDetected === 'yes').length;
+  const reSug = removedReport.filter(r => r.reSuggested === 'yes').length;
+  const rows = [
+    row('Author KRT rows (input)', A.authorRows, B?.authorRows, 'Modified = Original minus the removed lines'),
+    row('Lines removed for Modified pass', '—', removed.length, RANDOM_MODE ? 'Random subset of any line (--random)' : 'Only "clearly detectable" lines (in text/supplemental, not optional)'),
+    row('Candidates (PDF analysis, merged)', A.candidates, B?.candidates, 'Detector output after merge, before LM consolidation'),
+    row('Candidates rejected by consolidation', A.rejected, B?.rejected, 'Reasons in the Candidates & Suggestions tabs'),
+    row('Generated KRT lines (kept)', A.generated, B?.generated, 'Candidates kept by consolidation = the Generated KRT'),
+    row('— aligned to author KRT', pct(A.aligned, A.generated), B && pct(B.aligned, B.generated), 'AI skip/update decision or identifier match'),
+    row('— novel (not in author KRT)', pct(A.novel, A.generated), B && pct(B.novel, B.generated), 'Original: over-detection / hallucination signal. Modified: should contain the removed lines'),
+    row('Author rows not generated (misses)', pct(A.misses, A.authorRows), B && pct(B.misses, B.authorRows), 'Check "Detectable? (ref)" in the KRTs tabs — a miss that was never in the text is not a detection failure'),
+    row('AI suggestions — Add', A.add, B?.add, 'Original: few expected (author KRT should already cover). Modified: the removed lines coming back'),
+    row('AI suggestions — Update', A.update, B?.update, ''),
+    row('AI suggestions — Remove', A.remove, B?.remove, ''),
+    row('AI decisions — Skip (already covered)', A.skip, B?.skip, ''),
+    row('Removed lines re-detected (recall)', '—', pct(reDet, removed.length), 'Removed line reappears in the Generated KRT'),
+    row('Removed lines re-suggested as Add (recall)', '—', pct(reSug, removed.length), 'Removed line comes back as an Add suggestion — the end-to-end target'),
+    row('Pipeline errors (see Errors tab)', errorCount, '', '')
+  ];
+  return rows;
+}
+
+// Per-line coverage table, appended BELOW the stats block on the same Summary
+// sheet: one row per author KRT line — was it removed for pass B, did the
+// Original pass generate it, did the Modified pass generate / re-suggest it.
+// Same coverage rules as everywhere else: AI decision first, then identifier.
+function appendCoverageTable(ws, authorRows, removed, passA, passB) {
+  const removedIds = new Set(removed.map(r => r.row.id));
+  const yn = (b) => (b ? 'yes' : 'NO');
+  const addDecisionsB = passB ? passB.decisions.filter(d => d.action === 'add' && d.generatedRow) : [];
+
+  ws.addRow([]);
+  const title = ws.addRow(['Author KRT coverage — per line (details in the KRTs tabs)']);
+  title.font = { bold: true };
+  const header = ws.addRow(['Removed (B)', 'Resource Type', 'Resource Name', 'Identifier',
+    'Original: Found', 'Modified: Found', 'Modified: Suggested (Add)']);
+  header.font = { bold: true };
+  [15, 15, 20].forEach((w, i) => { ws.getColumn(5 + i).width = w; });
+
+  for (const a of authorRows) {
+    const isRemoved = removedIds.has(a.id);
+    const origFound = yn(authorCovered(a, passA.generatedKrt, passA.decisions));
+    let modFound = '—', modSuggested = '—';
+    if (passB) {
+      if (isRemoved) {
+        // Removed line: back as an Add suggestion (the end-to-end target), or at
+        // least back in the generated KRT (detected)?
+        const reSuggested = addDecisionsB.some(d => sameLine(a, d.generatedRow));
+        modFound = yn(reSuggested || passB.generatedKrt.some(g => identifierMatch(a, g)));
+        modSuggested = yn(reSuggested);
+      } else {
+        modFound = yn(authorCovered(a, passB.generatedKrt, passB.decisions));
+      }
+    }
+    ws.addRow([isRemoved ? 'yes' : '', a.resourceType || '', a.resourceName || '',
+      a.identifier || '', origFound, modFound, modSuggested]);
+  }
 }
 
 // Run `worker` over `items` with at most `size` in flight; preserves order.
@@ -573,7 +732,7 @@ async function getMarkdown(doc, errors, pdfBuffer = null) {
   }
   // Apply the markdown filter at read time (gated by env), matching the app.
   const { markdown, applied, stats } = markdownFilter.applyFilter(raw || '');
-  if (applied) console.log(`  ${doc.id}: markdown-filter ${stats.charsBefore}→${stats.charsAfter} chars (-${stats.charsDropped})`);
+  if (applied) console.log(`  markdown-filter ${stats.charsBefore}→${stats.charsAfter} chars (-${stats.charsDropped})`);
   return { markdown: raw ? markdown : raw, cached };
 }
 
@@ -584,23 +743,23 @@ async function processDoc(doc, summaryAll) {
     const errs = [];
     const { markdown, cached } = await getMarkdown(doc, errs);
     if (markdown && String(markdown).trim()) {
-      console.log(`  ${doc.id}: markdown ${cached ? 'already cached' : 'converted + cached'} (${markdown.length} chars)`);
+      console.log(`  markdown ${cached ? 'already cached' : 'converted + cached'} (${markdown.length} chars)`);
       return { id: doc.id, markdownOnly: true };
     }
-    console.log(`  ! ${doc.id}: markdown failed — ${errs.join('; ')}`);
+    console.log(`  ! markdown failed — ${errs.join('; ')}`);
     return null;
   }
 
   const summaryRows = summaryAll.filter(s => s.key === doc.key);
   const authorRows = await parseKrtFile(doc.krtFile);
-  if (!authorRows.length) { console.log(`  ! ${doc.id}: KRT parsed to 0 rows — skipping`); return null; }
+  if (!authorRows.length) { console.log(`  ! KRT parsed to 0 rows — skipping`); return null; }
 
   // Pass B removal plan (computed offline, used for both plan + run)
   const removed = SKIP_MODIFIED ? [] : chooseRemovals(authorRows, summaryRows);
   const removedIds = new Set(removed.map(r => r.row.id));
   const modifiedRows = authorRows.filter(r => !removedIds.has(r.id)).map((r, i) => ({ ...r, id: `a${i + 1}` }));
 
-  console.log(`  ${doc.id}: ${authorRows.length} KRT rows, ${summaryRows.length} summary rows, removing ${removed.length} for pass B`);
+  console.log(`  ${authorRows.length} KRT rows, ${summaryRows.length} summary rows, removing ${removed.length} for pass B`);
   if (PLAN_ONLY) {
     removed.forEach(r => console.log(`      - remove: [${r.row.resourceType}] ${r.row.resourceName}` +
       (r.summary ? `  (text=${r.summary.sharedText} supp=${r.summary.sharedSupp} opt=${r.summary.optional})` : '  (no summary match)')));
@@ -610,8 +769,8 @@ async function processDoc(doc, summaryAll) {
   const errors = [];
   const pdfBuffer = fs.readFileSync(doc.pdf);
   const { markdown, cached } = await getMarkdown(doc, errors, pdfBuffer);
-  if (!markdown || !String(markdown).trim()) { console.log(`  ! ${doc.id}: markdown conversion failed — skipping (${errors.join('; ')})`); return null; }
-  if (cached) console.log(`  ${doc.id}: using cached markdown`);
+  if (!markdown || !String(markdown).trim()) { console.log(`  ! markdown conversion failed — skipping (${errors.join('; ')})`); return null; }
+  if (cached) console.log('  using cached markdown');
   const seedIndependent = await detectSeedIndependent(pdfBuffer, markdown, path.basename(doc.pdf), errors);
 
   const passA = await runPass(pdfBuffer, markdown, path.basename(doc.pdf), authorRows, seedIndependent, errors);
@@ -624,22 +783,7 @@ async function processDoc(doc, summaryAll) {
     if (passB) writeTrace(doc.id, 'modified', passB.trace);
   }
 
-  // Build per-document workbook — sheets in the requested order
-  // (Modified sheets only when pass B ran).
-  const wb = new ExcelJS.Workbook();
-  addSheet(wb, 'Original - Summary', SUMMARY_COLS, buildSummary(passA.generatedKrt, authorRows, passA.decisions, summaryRows));
-  addSheet(wb, 'Original - AI Suggestions', SUG_COLS, decisionRows(passA.decisions));
-  addSheet(wb, 'Original - Author KRT', AUTHOR_COLS, authorSheetRows(authorRows));
-  addSheet(wb, 'Original - Generated KRT', GEN_COLS, generatedRows(passA.generatedKrt, authorRows, passA.decisions));
-  if (passB) {
-    addSheet(wb, 'Modified - Summary', SUMMARY_COLS, buildSummary(passB.generatedKrt, modifiedRows, passB.decisions, summaryRows));
-    addSheet(wb, 'Modified - AI Suggestions', SUG_COLS, decisionRows(passB.decisions));
-    addSheet(wb, 'Modified - Author KRT', AUTHOR_COLS, authorSheetRows(modifiedRows, removed.map(r => r.row)));
-    addSheet(wb, 'Modified - Generated KRT', GEN_COLS, generatedRows(passB.generatedKrt, modifiedRows, passB.decisions));
-  }
-  if (errors.length) addSheet(wb, 'Errors', [{ header: 'Module error', key: 'e', width: 100 }], errors.map(e => ({ e })));
-
-  // Recall data — kept for the GLOBAL summary (_summary.xlsx), no longer a per-doc sheet.
+  // Recall data — feeds the per-doc Summary sheet and the GLOBAL _summary.xlsx.
   let removedReport = [];
   if (passB) {
     // Recall signals, per the same rule: did the AI re-suggest adding it (its own
@@ -656,6 +800,22 @@ async function processDoc(doc, summaryAll) {
       };
     });
   }
+
+  // Build per-document workbook — sheets in the requested order
+  // (Modified sheets only when pass B ran).
+  const wb = new ExcelJS.Workbook();
+  const wsSummary = addSheet(wb, 'Summary', RUN_SUMMARY_COLS,
+    buildRunSummary(passA, passB, authorRows, modifiedRows, removed, removedReport, errors.length));
+  appendCoverageTable(wsSummary, authorRows, removed, passA, passB);
+  addSheet(wb, 'Original - KRTs', KRT_COLS,
+    buildKrtRows(authorRows, [], passA.generatedKrt, passA.decisions, summaryRows));
+  addSheet(wb, 'Original - Cand. & Suggestions', CAND_COLS, buildCandSuggRows(passA.trace, passA.decisions));
+  if (passB) {
+    addSheet(wb, 'Modified - KRTs', KRT_COLS,
+      buildKrtRows(modifiedRows, removed.map(r => r.row), passB.generatedKrt, passB.decisions, summaryRows));
+    addSheet(wb, 'Modified - Cand. & Suggestions', CAND_COLS, buildCandSuggRows(passB.trace, passB.decisions));
+  }
+  if (errors.length) addSheet(wb, 'Errors', [{ header: 'Module error', key: 'e', width: 100 }], errors.map(e => ({ e })));
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
   await wb.xlsx.writeFile(path.join(OUT_DIR, `${doc.id}.xlsx`));
@@ -700,11 +860,13 @@ function discoverDocuments() {
     `${MARKDOWN_ONLY ? '' : `, modules: ${enabledMods.join(',') || 'none'}`}, concurrency: ${effConcurrency}` +
     `${(MARKDOWN_ONLY || PLAN_ONLY) ? '' : `, trace: ${TRACE ? 'on' : 'off'}`}]\n`);
 
-  const settled = await runPool(docs, effConcurrency, async (doc) => {
-    if (!doc.key && !MARKDOWN_ONLY) console.log(`  ! ${doc.id}: could not derive summary key`);
+  // Everything inside runs with the doc id as log context — every line this
+  // document emits (script + services) is prefixed with [<pdf name>].
+  const settled = await runPool(docs, effConcurrency, (doc) => logCtx.run(doc.id, async () => {
+    if (!doc.key && !MARKDOWN_ONLY) console.log('  ! could not derive summary key');
     try { return await processDoc(doc, summaryAll); }
-    catch (e) { console.error(`  ! ${doc.id}: ${e.message}`); return null; }
-  });
+    catch (e) { console.error(`  ! ${e.message}`); return null; }
+  }));
   const results = settled.filter(Boolean);
 
   if (MARKDOWN_ONLY) { console.log(`\nDone — ${results.length} markdown file(s) cached in ${MD_DIR}`); return; }
