@@ -176,9 +176,19 @@ function sleep(ms) {
 }
 
 /**
- * Retry async function with exponential backoff
+ * Retry async function with exponential backoff.
  * @param {Function} fn - Async function to retry
  * @param {object} options - Retry options
+ * @param {number} [options.maxRetries=3] - total attempts (not just retries)
+ * @param {number} [options.delay=1000] - base backoff delay in ms
+ * @param {number} [options.multiplier=2] - backoff growth factor
+ * @param {number} [options.maxDelay=Infinity] - cap on a single backoff wait (ms)
+ * @param {number} [options.jitter=0] - random ms in [0, jitter) added to each wait
+ *   so concurrent callers hitting the same outage don't retry in lockstep
+ * @param {(error:Error)=>boolean} [options.shouldRetry] - retry only when this
+ *   returns true; a non-retryable error is rethrown immediately. Defaults to
+ *   retrying every error (previous behaviour).
+ * @param {(attempt:number, waitMs:number, error:Error)=>void} [options.onRetry]
  * @returns {Promise<any>}
  */
 async function retry(fn, options = {}) {
@@ -186,6 +196,9 @@ async function retry(fn, options = {}) {
     maxRetries = 3,
     delay = 1000,
     multiplier = 2,
+    maxDelay = Infinity,
+    jitter = 0,
+    shouldRetry = () => true,
     onRetry = () => {}
   } = options;
 
@@ -195,14 +208,42 @@ async function retry(fn, options = {}) {
       return await fn();
     } catch (error) {
       lastError = error;
-      if (attempt < maxRetries) {
-        const waitTime = delay * Math.pow(multiplier, attempt - 1);
-        onRetry(attempt, waitTime, error);
-        await sleep(waitTime);
-      }
+      if (attempt >= maxRetries || !shouldRetry(error)) break;
+      const backoff = Math.min(maxDelay, delay * Math.pow(multiplier, attempt - 1));
+      const waitTime = backoff + (jitter > 0 ? Math.floor(Math.random() * jitter) : 0);
+      onRetry(attempt, waitTime, error);
+      await sleep(waitTime);
     }
   }
   throw lastError;
+}
+
+/**
+ * Heuristic: is this a transient (worth-retrying) failure from an external HTTP
+ * service — a 408/429/5xx status, a network reset, or a timeout/overload — as
+ * opposed to a deterministic 4xx / auth / validation error that will never
+ * succeed on retry? Robust to several error shapes: an axios error (status on
+ * error.response.status / error.code), a Google GenAI error (status/code fields
+ * or a JSON body embedded in error.message), and a bare Error message string.
+ * @param {*} error
+ * @returns {boolean}
+ */
+function isTransientError(error) {
+  if (!error) return false;
+  const msg = String(error.message || error);
+  const lower = msg.toLowerCase();
+  const statuses = [408, 429, 500, 502, 503, 504];
+
+  const numericStatus = Number(
+    error.status ?? error.statusCode ?? error.code ?? error?.response?.status
+  );
+  if (statuses.includes(numericStatus)) return true;
+  // Google GenAI surfaces the status inside the message JSON, e.g.
+  // {"error":{"code":503,"status":"UNAVAILABLE"}}.
+  if (new RegExp(`"code"\\s*:\\s*(${statuses.join('|')})\\b`).test(msg)) return true;
+
+  return /\b(unavailable|overloaded|resource[_ ]exhausted|deadline|timed?\s*out|timeout|fetch failed|econnreset|etimedout|enotfound|eai_again|socket hang up|network error|high demand|temporar|please try again|rate limit|quota exceeded)\b/i
+    .test(lower);
 }
 
 /**
@@ -260,5 +301,6 @@ module.exports = {
   parsePagination,
   buildPaginationMeta,
   sleep,
-  retry
+  retry,
+  isTransientError
 };

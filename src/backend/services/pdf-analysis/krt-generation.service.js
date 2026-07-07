@@ -12,6 +12,7 @@ const { GoogleGenAI } = require('@google/genai');
 const krtGenConfig = require('../../config/krt-generation-api');
 const { computeDedupKey } = require('./identifier-normalize.service');
 const logger = require('../../utils/logger');
+const { generateContentWithRetry } = require('../../utils/gemini');
 
 function isConfigured() {
   return krtGenConfig.isConfigured();
@@ -161,10 +162,10 @@ async function callGeminiForKrt(candidates) {
   const prompt = fs.readFileSync(path.join(__dirname, '../../data/prompts/pdf-analysis-krt.txt'), 'utf-8').trim();
   const payload = { candidates: candidates.map((c, i) => candidateForPrompt(c, i)) };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
-  const response = await ai.models.generateContent({
+  const response = await generateContentWithRetry(ai, {
     model: krtGenConfig.model,
     contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
-  });
+  }, { label: 'krt-generation' });
   return { lmOutput: parseLMResponse(response.text || ''), rawResponse: response.text || '' };
 }
 

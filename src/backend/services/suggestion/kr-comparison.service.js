@@ -21,6 +21,7 @@ const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
+const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/krt-comparison.txt');
 let _promptCache = null;
@@ -273,10 +274,10 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: krtComparisonConfig.model,
       contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
-    });
+    }, { label: 'kr-comparison' });
     const text = response.text || '';
     return { lmDecisions: parseLMResponse(text), rawResponse: text };
   } catch (error) {

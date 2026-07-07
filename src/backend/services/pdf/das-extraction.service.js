@@ -23,6 +23,7 @@ const { GoogleGenAI } = require('@google/genai');
 const dasConfig = require('../../config/das-extraction-api');
 const { ExternalServiceError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
+const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/das-extraction.txt');
 let _promptCache = null;
@@ -112,12 +113,12 @@ async function extractDAS(markdownText, { prompt } = {}) {
   const fullPrompt = `${resolvedPrompt}\n\nSection type: ${dasConfig.section}\n\nMANUSCRIPT:\n${markdownText}`;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: dasConfig.model,
       contents: [
         { role: 'user', parts: [{ text: fullPrompt }] }
       ]
-    });
+    }, { label: 'das-extraction' });
 
     const text = response.text;
     if (!text) {

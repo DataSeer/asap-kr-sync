@@ -31,6 +31,7 @@ const { runWithDemoFallback } = require('../demo-fallback.service');
 const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
 const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const { generateContentWithRetry } = require('../../utils/gemini');
 
 // KRT resource-type group for protocols (0=dataset, 1=software, 2=protocol, 3=lab_material).
 const PROTOCOL_GROUP = 2;
@@ -196,7 +197,7 @@ async function callGeminiForProtocols(markdownText, promptOverride, authorProtoc
   const fullPrompt = prompt + seedBlock + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: protocolsConfig.model,
       contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
       // Force complete, valid JSON and give the full token budget to output:
@@ -207,7 +208,7 @@ async function callGeminiForProtocols(markdownText, promptOverride, authorProtoc
         maxOutputTokens: 32768,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    });
+    }, { label: 'protocols' });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (protocols) — output hit maxOutputTokens');

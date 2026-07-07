@@ -29,6 +29,7 @@ const { runWithDemoFallback } = require('../demo-fallback.service');
 const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
 const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const { generateContentWithRetry } = require('../../utils/gemini');
 
 // KRT resource-type group for lab materials (0=dataset, 1=software, 2=protocol, 3=lab_material).
 const MATERIAL_GROUP = 3;
@@ -188,7 +189,7 @@ async function callGeminiForMaterials(markdownText, promptOverride, authorMateri
   const fullPrompt = prompt + seedBlock + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: materialsConfig.model,
       contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
       // Force complete, valid JSON and give the full token budget to output:
@@ -199,7 +200,7 @@ async function callGeminiForMaterials(markdownText, promptOverride, authorMateri
         maxOutputTokens: 32768,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    });
+    }, { label: 'materials' });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (materials) — output hit maxOutputTokens');
