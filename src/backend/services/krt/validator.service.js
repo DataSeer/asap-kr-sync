@@ -677,6 +677,80 @@ function levenshteinDistance(s1, s2) {
   return dp[m][n];
 }
 
+// ── Pure, DB-free validation core (for offline tooling / scripts) ───────────
+// The canonical KRT resource types the validator is built around. At runtime
+// the app loads types from the DB (config service); this mirrors the seeded set
+// so an offline caller (e.g. scripts/check-krt.js) can validate without a DB.
+const DEFAULT_RESOURCE_TYPES = [
+  TYPE_ANTIBODY, TYPE_BACTERIAL, TYPE_VIRAL, TYPE_BIO_SAMPLE, TYPE_CHEM, TYPE_CCA,
+  TYPE_CELL_LINE, TYPE_ORGANISM, TYPE_OLIGO, TYPE_RECOMB_DNA, TYPE_DATASET,
+  TYPE_SOFTWARE, TYPE_PROTOCOL, TYPE_OTHER
+];
+
+/**
+ * Pure IDENTIFIER validation — the same error branches as validateIdentifier
+ * but on plain values, with no DB access and no row mutation (so no auto-copy;
+ * the empty-but-found case is surfaced as a warning instead). Reuses the same
+ * kind-extraction + allowed-per-type helpers as the DB path.
+ * @returns {Array} error objects (without rowId)
+ */
+function validateIdentifierValues({ identifier = '', additionalInformation = '', resourceType = '' } = {}) {
+  const errors = [];
+  const idVal = String(identifier || '');
+  const trimmedLower = idVal.trim().toLowerCase();
+  if (trimmedLower === 'no identifier exists' || trimmedLower === 'identifier pending') return errors;
+
+  if (isNAVariation(idVal)) {
+    errors.push({ columnName: 'IDENTIFIER', errorType: 'na_not_allowed', errorMessage: `"${idVal.trim()}" is not allowed as an identifier`, severity: VALIDATION_SEVERITY.ERROR, suggestion: 'Provide a DOI, RRID, URL, catalog number, "No identifier exists" or "Identifier pending"' });
+    return errors;
+  }
+
+  const identifierExtracted = identifierExtractor.extractAll(idVal);
+  const additionalExtracted = identifierExtractor.extractAll(String(additionalInformation || ''));
+
+  if (!idVal.trim()) {
+    const allowedInAddl = getDetectedKinds(additionalExtracted).some(k => isKindAllowedFor(k, resourceType));
+    if (allowedInAddl) {
+      errors.push({ columnName: 'IDENTIFIER', errorType: 'missing_but_found', errorMessage: 'Identifier column is empty but identifier found in Additional Information', severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Move the identifier into the IDENTIFIER column' });
+    } else {
+      errors.push({ columnName: 'IDENTIFIER', errorType: 'required', errorMessage: 'Identifier is required', severity: VALIDATION_SEVERITY.ERROR, suggestion: 'Provide a DOI, RRID, URL, catalog number, "No identifier exists" or "Identifier pending"' });
+    }
+  } else {
+    const detectedKinds = getDetectedKinds(identifierExtracted);
+    const allowedKinds = detectedKinds.filter(k => isKindAllowedFor(k, resourceType));
+    if (detectedKinds.length === 0) {
+      errors.push({ columnName: 'IDENTIFIER', errorType: 'invalid_format', errorMessage: 'Identifier not recognized', severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"' });
+    } else if (allowedKinds.length === 0) {
+      const detectedLabel = detectedKinds.map(k => IDENTIFIER_KIND_LABELS[k] || k).join(', ');
+      errors.push({ columnName: 'IDENTIFIER', errorType: 'kind_not_accepted_for_type', errorMessage: resourceType ? `${detectedLabel} is not a typical identifier for "${resourceType}"` : `${detectedLabel} detected, but RESOURCE TYPE is missing`, severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Use a DOI, RRID, URL, or other identifier accepted for this resource type' });
+    }
+  }
+  return errors;
+}
+
+/**
+ * Validate one KRT row from plain values (no DB). Runs the same field checks as
+ * validateRow — resource type / name / source / identifier / new-reuse — and
+ * returns the combined error list. Used by offline tooling to diagnose KRT
+ * files before they are uploaded.
+ * @param {object} values - { resourceType, resourceName, source, identifier, newReuse, additionalInformation, rowId? }
+ * @param {string[]} [resourceTypes] - allowed types (defaults to DEFAULT_RESOURCE_TYPES)
+ * @returns {Array} error objects, each with rowId
+ */
+function validateRowValues(values = {}, resourceTypes = DEFAULT_RESOURCE_TYPES) {
+  const types = (Array.isArray(resourceTypes) && resourceTypes.length) ? resourceTypes : DEFAULT_RESOURCE_TYPES;
+  const rowId = values.rowId ?? null;
+  const errors = [];
+  errors.push(...validateResourceType(values.resourceType, rowId, types));
+  errors.push(...validateResourceName(values.resourceName, rowId));
+  errors.push(...validateSource(values.source, rowId));
+  errors.push(...validateIdentifierValues({
+    identifier: values.identifier, additionalInformation: values.additionalInformation, resourceType: values.resourceType
+  }).map(e => ({ rowId, ...e })));
+  errors.push(...validateNewReuse(values.newReuse, rowId));
+  return errors;
+}
+
 module.exports = {
   validateSubmission,
   validateRow,
@@ -685,5 +759,9 @@ module.exports = {
   validateSource,
   validateIdentifier,
   validateNewReuse,
-  refreshResourceTypesCache
+  refreshResourceTypesCache,
+  // Pure, DB-free core for offline tooling (scripts/check-krt.js)
+  validateRowValues,
+  validateIdentifierValues,
+  DEFAULT_RESOURCE_TYPES
 };
