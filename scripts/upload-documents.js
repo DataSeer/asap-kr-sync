@@ -2,12 +2,14 @@
 /**
  * Bulk-upload documents (PDF + author KRT) into the app via its HTTP API.
  *
- * For every `<id>.pdf` in the input directory that has a matching author KRT
- * (`<id>.xlsx` or `<id>.csv`), this logs in once with a local (DS) account and
- * then, per document:
- *   1. POST /api/submissions            — create the submission WITH the KRT
- *      (the KRT is mandatory at creation; the server validates its format and
- *       creates no submission if it is invalid, so there are no orphans)
+ * For every `<id>.pdf` in the input directory, this logs in once with a local
+ * (DS) account and then, per document:
+ *   1. POST /api/submissions            — create the submission WITH a KRT
+ *      (the server requires a KRT file at creation and validates its format, so
+ *       there are no orphans). The KRT is the matching `<id>.xlsx`/`<id>.csv`
+ *       when present; a PDF with NO KRT is still uploaded — the script sends a
+ *       header-only (empty) KRT and the pipeline generates suggestions from
+ *       scratch for the author to curate.
  *   2. POST /api/submissions/:id/pdf/upload   — attach the PDF
  *   3. POST /api/submissions/:id/pdf/analyze   — (only with --analyze) queue
  *      the PDF-analysis pipeline so the user doesn't have to click it
@@ -27,8 +29,10 @@
  * Usage:
  *   ASAP_EMAIL=… ASAP_PASSWORD=… node scripts/upload-documents.js --dir DIR [options]
  * Options:
- *   --dir DIR         directory holding <id>.pdf + <id>.(xlsx|csv) pairs (required).
- *                     "<name>-DS<n>.xlsx" DataSeer report files are ignored (not KRTs).
+ *   --dir DIR         directory of <id>.pdf files, each optionally paired with an
+ *                     <id>.(xlsx|csv) author KRT (required). A PDF with no KRT is
+ *                     uploaded with an empty KRT. "<name>-DS<n>.xlsx" DataSeer
+ *                     report files are ignored (they are not KRTs).
  *   --url URL         API base URL, e.g. https://app.example.com (required; or set
  *                     $ASAP_BASE_URL). No default — the target is always explicit.
  *   --only a,b        only these document ids (basename without extension)
@@ -77,6 +81,9 @@ const KRT_MIME = { '.xlsx': 'application/vnd.openxmlformats-officedocument.sprea
 // DataSeer report spreadsheets (e.g. "<name>-DS1.xlsx") are NOT author KRT
 // files — ignore them so they're never picked up as a document's KRT.
 const DS_REPORT_RE = /-DS\d+\.xlsx$/i;
+// Header-only KRT sent when a PDF has no author KRT (a valid use case): the app
+// requires a KRT file at creation, and a header-only one is accepted.
+const EMPTY_KRT_CSV = 'RESOURCE TYPE,RESOURCE NAME,SOURCE,IDENTIFIER,NEW/REUSE,ADDITIONAL INFORMATION\n';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -162,10 +169,19 @@ async function createSubmission(doc) {
   const form = new FormData();
   form.append('title', doc.title);
   if (doc.manuscriptId) form.append('manuscriptId', doc.manuscriptId);
-  form.append('krt', fs.createReadStream(doc.krtPath), {
-    filename: path.basename(doc.krtPath),
-    contentType: KRT_MIME[doc.krtExt] || 'application/octet-stream'
-  });
+  if (doc.krtPath) {
+    form.append('krt', fs.createReadStream(doc.krtPath), {
+      filename: path.basename(doc.krtPath),
+      contentType: KRT_MIME[doc.krtExt] || 'application/octet-stream'
+    });
+  } else {
+    // No author KRT — the create endpoint still requires a KRT file, so send an
+    // empty (header-only) one. The pipeline then generates suggestions from
+    // scratch, and the author fills the table later. Header-only KRTs are valid.
+    form.append('krt', Buffer.from(EMPTY_KRT_CSV, 'utf-8'), {
+      filename: `${doc.id}.csv`, contentType: 'text/csv'
+    });
+  }
   const res = await postWithRetry('/api/submissions', form, authHeaders(form.getHeaders()), { label: 'create' });
   if (res.status !== 201) throw new Error(`Create submission failed — ${errText(res)}`);
   const id = res.data?.submission?.id;
@@ -196,21 +212,21 @@ function discover() {
   // mistaken for the author KRT.
   const files = fs.readdirSync(root).filter(f => !DS_REPORT_RE.test(f));
   const docs = [];
-  const skipped = [];
   for (const pdf of files.filter(f => f.toLowerCase().endsWith('.pdf'))) {
     const id = pdf.replace(/\.pdf$/i, '');
     if (ONLY.length && !ONLY.includes(id)) continue;
+    // A PDF with no KRT is a valid case — it's uploaded with an empty KRT (see
+    // createSubmission). krtPath stays null for those.
     const krtName = ['.xlsx', '.csv'].map(ext => `${id}${ext}`).find(n => files.includes(n));
-    if (!krtName) { skipped.push(`${id} (no matching .xlsx/.csv KRT)`); continue; }
     docs.push({
       id, title: id,
       manuscriptId: MANUSCRIPT_ID_RE.test(id) ? id.toUpperCase() : null,
       pdfPath: path.join(root, pdf),
-      krtPath: path.join(root, krtName),
-      krtExt: path.extname(krtName).toLowerCase()
+      krtPath: krtName ? path.join(root, krtName) : null,
+      krtExt: krtName ? path.extname(krtName).toLowerCase() : null
     });
   }
-  return { docs, skipped };
+  return { docs };
 }
 
 // Run `worker` over `items` with at most `size` in flight; preserves order.
@@ -224,14 +240,15 @@ async function runPool(items, size, worker) {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 (async () => {
-  const { docs, skipped } = discover();
-  skipped.forEach(s => console.log(`  - skip: ${s}`));
-  if (!docs.length) { console.log('No PDF+KRT pairs to upload.'); return; }
+  const { docs } = discover();
+  if (!docs.length) { console.log('No PDF files found to upload.'); return; }
 
-  console.log(`Found ${docs.length} document(s) with a PDF + KRT in ${path.resolve(DIR)}`);
+  const noKrt = docs.filter(d => !d.krtPath).length;
+  console.log(`Found ${docs.length} PDF(s) in ${path.resolve(DIR)}` +
+    (noKrt ? ` (${noKrt} with no KRT → will use an empty KRT)` : ''));
   if (DRY_RUN) {
     console.log('\n[DRY RUN] Plan (no API calls):');
-    docs.forEach(d => console.log(`  • ${d.id}  →  create (manuscriptId=${d.manuscriptId || '—'}) + pdf${ANALYZE ? ' + analyze' : ''}`));
+    docs.forEach(d => console.log(`  • ${d.id}  →  create (manuscriptId=${d.manuscriptId || '—'}, KRT=${d.krtPath ? path.basename(d.krtPath) : 'EMPTY'}) + pdf${ANALYZE ? ' + analyze' : ''}`));
     console.log(`\nTarget API: ${BASE_URL || '(not set — pass --url or ASAP_BASE_URL for the real run)'}`);
     return;
   }
@@ -268,7 +285,7 @@ async function runPool(items, size, worker) {
       const submissionId = await createSubmission(doc);
       await uploadPdf(submissionId, doc);
       if (ANALYZE) await triggerAnalysis(submissionId);
-      console.log(`  ✓ ${doc.id}: created ${submissionId}, PDF uploaded${ANALYZE ? ', analysis queued' : ''}`);
+      console.log(`  ✓ ${doc.id}: created ${submissionId}${doc.krtPath ? '' : ' (empty KRT)'}, PDF uploaded${ANALYZE ? ', analysis queued' : ''}`);
       return { id: doc.id, status: 'ok', submissionId };
     } catch (e) {
       console.log(`  ✗ ${doc.id}: ${e.message}`);
