@@ -41,6 +41,10 @@
  *   --dir DIR         input root (default: tmp/suggestions-quality)
  *   --out DIR         output dir (default: <dir>/results)
  *   --doc ID          only this document id (repeatable via comma)
+ *   --rebuild         regenerate the .xlsx reports from an existing run's traces
+ *                     (<out>/traces/<id>/) — no PDF, no API. Use after changing
+ *                     the report code, or to re-derive a saved run's stats:
+ *                       --rebuild --out tmp/suggestions-quality/save/run-v3-1
  *   --modules a,b     only run these detection modules
  *   --skip-modules x  run all detection modules except these
  *                     (modules: software, datasets, protocols, materials, identifier)
@@ -138,6 +142,11 @@ const RANDOM_MODE = has('--random');
 const REMOVE_FRAC = Math.max(0, Math.min(1, parseFloat(getArg('--remove-frac', '0.5')) || 0.5));
 const SKIP_MODIFIED = has('--skip-modified');
 const PLAN_ONLY = has('--plan');
+// Rebuild the .xlsx reports from an existing run's on-disk traces (no PDF, no
+// API calls). Reads <out>/traces/<id>/ and rewrites <out>/<id>.xlsx + _summary.
+// Use it to regenerate reports after changing the report/metric code, or to
+// re-derive stats for a saved run (e.g. --rebuild --out .../save/run-v3-1).
+const REBUILD = has('--rebuild');
 const MARKDOWN_ONLY = has('--markdown-only');
 const REFRESH_MARKDOWN = has('--refresh-markdown');
 const MD_DIR = path.join(ROOT, 'markdown');
@@ -305,6 +314,23 @@ async function safe(label, fn, errors, fallback = []) {
   catch (e) { errors.push(`${label}: ${e.message}`); return fallback; }
 }
 
+// Degraded-comparison detection, derived purely from the generated KRT + the LM
+// decisions — so live runs and --rebuild (which reads decisions from the trace)
+// produce identical flags. 0 usable (reviewed) decisions = a fully broken
+// response; any 'unreviewed' rows = a partial comparison (the LM forgot refs).
+function comparisonHealthErrors(generatedKrt, decisions) {
+  const out = [];
+  if (!generatedKrt.length) return out;
+  const unreviewed = (decisions || []).filter(d => d.action === 'unreviewed').length;
+  const reviewed = (decisions || []).length - unreviewed;
+  if (reviewed === 0) {
+    out.push(`comparison: 0 usable decisions for ${generatedKrt.length} generated rows — degraded/broken LM response (suggestions unavailable for this pass)`);
+  } else if (unreviewed > 0) {
+    out.push(`comparison: AI returned no decision for ${unreviewed}/${generatedKrt.length} generated rows (flagged 'unreviewed') — partial comparison`);
+  }
+  return out;
+}
+
 async function detectSeedIndependent(pdfBuffer, markdown, fileName, errors) {
   // Mirror the app: detection modules fan out concurrently (here the two
   // KRT-independent ones; the seed-dependent ones run per pass). Each is
@@ -369,23 +395,19 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
   try { consolidation = await consolidateWithLM(candidates); generatedKrt = consolidation.items || candidates; }
   catch (e) { errors.push(`krt-generation: ${e.message}`); }
 
-  // The app services (Gemini + markdown) now retry transient failures (503 /
-  // timeout / overload) internally, so a momentary outage no longer silently
-  // empties a stage. If the comparison STILL comes back empty for a non-empty
-  // Generated KRT, that's the tell-tale of a failed/degraded call (it corrupts
-  // recall — every generated line looks un-suggested), so flag it loudly here
-  // rather than letting it disappear into the metrics.
+  // The app now retries transient failures AND empty/broken responses, and the
+  // comparison flags every generated row it left undecided as an 'unreviewed'
+  // decision. So the degraded signal here is precise: 0 usable (reviewed)
+  // decisions = a fully broken response; any 'unreviewed' rows = a partial
+  // comparison (the LM forgot some refs). Either corrupts recall silently, so
+  // flag it loudly rather than letting it disappear into the metrics.
   let suggestions = [], decisions = [], comparisonRaw = null;
   await safe('comparison', async () => {
     const res = await compareKrts(authorRows, generatedKrt);
     suggestions = res.suggestions; decisions = res.decisions; comparisonRaw = res.rawResponse || null;
     return [];
   }, errors);
-  if (generatedKrt.length > 0 && decisions.length === 0) {
-    const msg = `comparison: returned 0 decisions for ${generatedKrt.length} generated rows — treating suggestions as unavailable for this pass (likely a degraded LM call)`;
-    errors.push(msg);
-    console.warn(`  ! ${msg}`);
-  }
+  for (const msg of comparisonHealthErrors(generatedKrt, decisions)) { errors.push(msg); console.warn(`  ! ${msg}`); }
 
   // Full trace of this pass: every module's items, the merged candidates, the LM
   // consolidation (+ what it dropped) and the LM comparison decisions, plus each
@@ -454,13 +476,17 @@ function chooseRemovals(authorRows, summaryRows) {
 //   modified.raw/<stage>.txt        materials, krt-generation, kr-comparison)
 function traceDir(docId) { return path.join(OUT_DIR, 'traces', docId); }
 
-function writeInputs(docId, authorRows, modifiedRows, removed) {
+function writeInputs(docId, authorRows, modifiedRows, removed, errors = []) {
   const base = traceDir(docId);
   fs.mkdirSync(base, { recursive: true });
   fs.writeFileSync(path.join(base, 'inputs.json'), JSON.stringify({
     authorKrt: authorRows,
     removedForModified: removed.map(r => ({ row: r.row, summary: r.summary })),
-    modifiedKrt: modifiedRows
+    modifiedKrt: modifiedRows,
+    // Persisted so --rebuild can reproduce the Errors tab (module/transient
+    // failures aren't in the per-stage trace). Older traces lack this — rebuild
+    // then re-derives the degraded-comparison flags from the decisions instead.
+    errors
   }, null, 2));
 }
 
@@ -487,7 +513,7 @@ function addSheet(wb, name, columns, rows) {
 const shortSources = (sources) => (sources || [])
   .map(s => ({ software_detection: 'SW', datasets_detection: 'DS', materials_detection: 'MAT', protocols_detection: 'PROT', identifier_detection: 'ID' }[s] || s)).join(', ');
 const modulesOf = (item) => shortSources([...new Set((item.detectedBy || []).map(d => d.source).filter(Boolean))]);
-const DECISION_LABEL = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove' };
+const DECISION_LABEL = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove', unreviewed: 'Unreviewed' };
 const fmtChanges = (changes) => changes
   ? Object.entries(changes).map(([k, v]) => `${k}: "${v.old}"→"${v.new}"`).join('; ') : '';
 
@@ -581,6 +607,12 @@ function buildKrtRows(keptRows, removedRows, generatedKrt, decisions, summaryRow
 // generated KRT line, with the consolidation reason) carry the AI suggestion
 // made from them on the same row; the ones it REJECTED carry the drop reason.
 // 'Remove' suggestions target an author row (no candidate) — listed at the end.
+// The trailing "Curator Label" column is for measuring the tool's real goal
+// (issue #5): a curator marks each AI **Add** suggestion TP (a genuinely missing
+// KRT item) or FP (noise) so precision can be computed. Left blank by the script
+// for actionable Add/Update/Remove rows; 'n/a' for skips/rejections that aren't
+// suggestions. NOTE: labels live in the sheet, so re-running --rebuild overwrites
+// them — copy a labelled sheet aside before rebuilding, or keep labels separately.
 const CAND_COLS = [
   { header: '#', key: '#', width: 5 }, { header: 'Candidate', key: 'status', width: 12 },
   { header: 'Resource Type', key: 'type', width: 24 }, { header: 'Resource Name', key: 'name', width: 40 },
@@ -588,8 +620,11 @@ const CAND_COLS = [
   { header: 'New/Reuse', key: 'newReuse', width: 10 }, { header: 'Modules', key: 'modules', width: 14 },
   { header: 'Consolidation Reason', key: 'consReason', width: 45 },
   { header: 'AI Suggestion', key: 'decision', width: 14 }, { header: 'Changes', key: 'changes', width: 40 },
-  { header: 'Suggestion Reason', key: 'sugReason', width: 55 }
+  { header: 'Suggestion Reason', key: 'sugReason', width: 55 },
+  { header: 'Curator Label (TP/FP)', key: 'label', width: 18 }
 ];
+// TP/FP labelling applies only to actionable suggestions the tool is asserting.
+const labelCell = (action) => (action === 'add' || action === 'update' || action === 'remove') ? '' : 'n/a';
 function buildCandSuggRows(trace, decisions) {
   const rows = [];
   for (const g of trace.consolidation.items) {
@@ -598,19 +633,19 @@ function buildCandSuggRows(trace, decisions) {
       status: 'Kept', type: g.resourceType || '', name: g.resourceName || '', source: g.sourceUrl || '',
       identifier: g.identifier || '', newReuse: g.newReuse || '', modules: modulesOf(g),
       consReason: g.reason || '', decision: d ? (DECISION_LABEL[d.action] || d.action) : '—',
-      changes: fmtChanges(d?.changes), sugReason: d?.reason || ''
+      changes: fmtChanges(d?.changes), sugReason: d?.reason || '', label: labelCell(d?.action)
     });
   }
   for (const c of trace.consolidation.dropped) {
     rows.push({
       status: 'Rejected', type: c.resourceType || '', name: c.resourceName || '',
-      identifier: c.identifier || '', modules: shortSources(c.sources), consReason: c.reason || ''
+      identifier: c.identifier || '', modules: shortSources(c.sources), consReason: c.reason || '', label: 'n/a'
     });
   }
   for (const d of (decisions || []).filter(x => x.action === 'remove')) {
     rows.push({
       status: '— (author row)', type: d.authorRow?.resourceType || '', name: d.resourceName || '',
-      identifier: d.authorRow?.identifier || '', decision: 'Remove', sugReason: d.reason || ''
+      identifier: d.authorRow?.identifier || '', decision: 'Remove', sugReason: d.reason || '', label: labelCell('remove')
     });
   }
   rows.forEach((r, i) => { r['#'] = i + 1; });
@@ -778,31 +813,39 @@ async function processDoc(doc, summaryAll) {
 
   // Full audit trail: inputs + every module/LM stage for both passes.
   if (TRACE) {
-    writeInputs(doc.id, authorRows, modifiedRows, removed);
+    writeInputs(doc.id, authorRows, modifiedRows, removed, errors);
     writeTrace(doc.id, 'original', passA.trace);
     if (passB) writeTrace(doc.id, 'modified', passB.trace);
   }
 
-  // Recall data — feeds the per-doc Summary sheet and the GLOBAL _summary.xlsx.
-  let removedReport = [];
-  if (passB) {
-    // Recall signals, per the same rule: did the AI re-suggest adding it (its own
-    // decision), or does it match a generated line by identifier?
-    const addDecisions = passB.decisions.filter(d => d.action === 'add' && d.generatedRow);
-    removedReport = removed.map(r => {
-      const reSuggested = addDecisions.some(d => sameLine(r.row, d.generatedRow));
-      const reDetected = reSuggested || passB.generatedKrt.some(g => identifierMatch(r.row, g));
-      return {
-        type: r.row.resourceType, name: r.row.resourceName, identifier: r.row.identifier,
-        sharedKrt: r.summary?.sharedKrt ?? '', sharedText: r.summary?.sharedText ?? '', sharedSupp: r.summary?.sharedSupp ?? '',
-        onlyKrt: r.summary?.onlyKrt ?? '', onlyText: r.summary?.onlyText ?? '', onlySupp: r.summary?.onlySupp ?? '',
-        optional: r.summary?.optional ?? '', reDetected: reDetected ? 'yes' : 'NO', reSuggested: reSuggested ? 'yes' : 'NO'
-      };
-    });
-  }
+  return writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, errors });
+}
 
-  // Build per-document workbook — sheets in the requested order
-  // (Modified sheets only when pass B ran).
+// Recall over the removed lines: did the AI re-suggest adding it (its own
+// decision), or does it match a generated line by identifier? Pure over the
+// pass-B results, so it works for both live runs and --rebuild.
+function computeRemovedReport(removed, passB) {
+  if (!passB) return [];
+  const addDecisions = passB.decisions.filter(d => d.action === 'add' && d.generatedRow);
+  return removed.map(r => {
+    const reSuggested = addDecisions.some(d => sameLine(r.row, d.generatedRow));
+    const reDetected = reSuggested || passB.generatedKrt.some(g => identifierMatch(r.row, g));
+    return {
+      type: r.row.resourceType, name: r.row.resourceName, identifier: r.row.identifier,
+      sharedKrt: r.summary?.sharedKrt ?? '', sharedText: r.summary?.sharedText ?? '', sharedSupp: r.summary?.sharedSupp ?? '',
+      onlyKrt: r.summary?.onlyKrt ?? '', onlyText: r.summary?.onlyText ?? '', onlySupp: r.summary?.onlySupp ?? '',
+      optional: r.summary?.optional ?? '', reDetected: reDetected ? 'yes' : 'NO', reSuggested: reSuggested ? 'yes' : 'NO'
+    };
+  });
+}
+
+// Build + write one document's workbook and return its per-document summary row.
+// Pure function of its context (generated KRT, decisions, suggestions, inputs) —
+// the SAME entry point for a live pipeline pass and a --rebuild from traces, so
+// both produce identical reports.
+async function writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, errors }) {
+  const removedReport = computeRemovedReport(removed, passB);
+
   const wb = new ExcelJS.Workbook();
   const wsSummary = addSheet(wb, 'Summary', RUN_SUMMARY_COLS,
     buildRunSummary(passA, passB, authorRows, modifiedRows, removed, removedReport, errors.length));
@@ -848,29 +891,95 @@ function discoverDocuments() {
   return docs;
 }
 
+// ── Rebuild from on-disk traces (no PDF, no API) ────────────────────────────
+// Discover the documents whose traces exist under <out>/traces/<id>/.
+function discoverTraceDocuments() {
+  const base = path.join(OUT_DIR, 'traces');
+  if (!fs.existsSync(base)) { console.error(`No traces dir to rebuild from: ${base}`); process.exit(1); }
+  return fs.readdirSync(base, { withFileTypes: true })
+    .filter(d => d.isDirectory() && fs.existsSync(path.join(base, d.name, 'inputs.json')))
+    .map(d => d.name)
+    .filter(id => !ONLY_DOCS.length || ONLY_DOCS.includes(id))
+    .map(id => ({ id, key: docIdToKey(id) }));
+}
+
+// Reconstruct one document's pass results from its trace files and re-emit the
+// workbook. inputs.json holds the author/modified/removed rows; each pass's
+// <pass>.trace.json holds the generated KRT, decisions and suggestions.
+async function rebuildDoc(doc, summaryAll) {
+  const base = path.join(OUT_DIR, 'traces', doc.id);
+  const readJson = (f) => { const p = path.join(base, f); return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : null; };
+  const inputs = readJson('inputs.json');
+  if (!inputs) { console.log(`  ! ${doc.id}: no inputs.json — skipping`); return null; }
+
+  const passFromTrace = (name) => {
+    const t = readJson(`${name}.trace.json`);
+    if (!t) return null;
+    return {
+      generatedKrt: t.consolidation?.items || [],
+      decisions: t.comparison?.decisions || [],
+      suggestions: t.comparison?.suggestions || [],
+      trace: t
+    };
+  };
+  const passA = passFromTrace('original');
+  if (!passA) { console.log(`  ! ${doc.id}: no original.trace.json — skipping`); return null; }
+  const passB = passFromTrace('modified');
+
+  const authorRows = inputs.authorKrt || [];
+  const modifiedRows = inputs.modifiedKrt || [];
+  const removed = inputs.removedForModified || [];
+  const summaryRows = summaryAll.filter(s => s.key === doc.key);
+
+  // Errors: prefer the persisted list (new traces); otherwise re-derive the
+  // degraded-comparison flags from the decisions (old traces predate the field).
+  let errors = inputs.errors;
+  if (!Array.isArray(errors)) {
+    errors = [...comparisonHealthErrors(passA.generatedKrt, passA.decisions)];
+    if (passB) errors.push(...comparisonHealthErrors(passB.generatedKrt, passB.decisions));
+  }
+
+  console.log(`  ${doc.id}: rebuilding from traces (${authorRows.length} KRT rows, ${removed.length} removed)`);
+  return writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, errors });
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 (async () => {
   const summaryAll = parseSummary(path.join(ROOT, 'summary.csv'));
   console.log(`summary.csv: ${summaryAll.length} object rows across ${new Set(summaryAll.map(s => s.key)).size} documents`);
-  const docs = discoverDocuments();
-  const enabledMods = ALL_MODULES.filter(moduleEnabled);
-  const effConcurrency = PLAN_ONLY ? 1 : CONCURRENCY;
-  const modeLabel = MARKDOWN_ONLY ? 'MARKDOWN ONLY (pre-warm cache)' : (PLAN_ONLY ? 'PLAN ONLY' : (RANDOM_MODE ? 'random removal' : 'detectable removal'));
-  console.log(`Processing ${docs.length} document(s) [mode: ${modeLabel}` +
-    `${MARKDOWN_ONLY ? '' : `, modules: ${enabledMods.join(',') || 'none'}`}, concurrency: ${effConcurrency}` +
-    `${(MARKDOWN_ONLY || PLAN_ONLY) ? '' : `, trace: ${TRACE ? 'on' : 'off'}`}]\n`);
 
-  // Everything inside runs with the doc id as log context — every line this
-  // document emits (script + services) is prefixed with [<pdf name>].
-  const settled = await runPool(docs, effConcurrency, (doc) => logCtx.run(doc.id, async () => {
-    if (!doc.key && !MARKDOWN_ONLY) console.log('  ! could not derive summary key');
-    try { return await processDoc(doc, summaryAll); }
-    catch (e) { console.error(`  ! ${e.message}`); return null; }
-  }));
-  const results = settled.filter(Boolean);
+  let results;
+  if (REBUILD) {
+    // Reuse the existing run's traces to regenerate every .xlsx — no PDF, no API.
+    const docs = discoverTraceDocuments();
+    console.log(`Rebuilding ${docs.length} document report(s) from traces in ${OUT_DIR}\n`);
+    const settled = await runPool(docs, CONCURRENCY, (doc) => logCtx.run(doc.id, async () => {
+      try { return await rebuildDoc(doc, summaryAll); }
+      catch (e) { console.error(`  ! ${e.message}`); return null; }
+    }));
+    results = settled.filter(Boolean);
+    if (!results.length) { console.log('\nNothing to rebuild.'); return; }
+  } else {
+    const docs = discoverDocuments();
+    const enabledMods = ALL_MODULES.filter(moduleEnabled);
+    const effConcurrency = PLAN_ONLY ? 1 : CONCURRENCY;
+    const modeLabel = MARKDOWN_ONLY ? 'MARKDOWN ONLY (pre-warm cache)' : (PLAN_ONLY ? 'PLAN ONLY' : (RANDOM_MODE ? 'random removal' : 'detectable removal'));
+    console.log(`Processing ${docs.length} document(s) [mode: ${modeLabel}` +
+      `${MARKDOWN_ONLY ? '' : `, modules: ${enabledMods.join(',') || 'none'}`}, concurrency: ${effConcurrency}` +
+      `${(MARKDOWN_ONLY || PLAN_ONLY) ? '' : `, trace: ${TRACE ? 'on' : 'off'}`}]\n`);
 
-  if (MARKDOWN_ONLY) { console.log(`\nDone — ${results.length} markdown file(s) cached in ${MD_DIR}`); return; }
-  if (PLAN_ONLY || !results.length) { console.log('\nDone (plan).'); return; }
+    // Everything inside runs with the doc id as log context — every line this
+    // document emits (script + services) is prefixed with [<pdf name>].
+    const settled = await runPool(docs, effConcurrency, (doc) => logCtx.run(doc.id, async () => {
+      if (!doc.key && !MARKDOWN_ONLY) console.log('  ! could not derive summary key');
+      try { return await processDoc(doc, summaryAll); }
+      catch (e) { console.error(`  ! ${e.message}`); return null; }
+    }));
+    results = settled.filter(Boolean);
+
+    if (MARKDOWN_ONLY) { console.log(`\nDone — ${results.length} markdown file(s) cached in ${MD_DIR}`); return; }
+    if (PLAN_ONLY || !results.length) { console.log('\nDone (plan).'); return; }
+  }
 
   // Global summary workbook
   const wb = new ExcelJS.Workbook();
