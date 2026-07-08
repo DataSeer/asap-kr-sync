@@ -81,8 +81,9 @@ keys at all, the app still runs and (by default) serves **demo data** so you can
 | `deploy/asap-kr-sync-{dev,prod}.service` | ✅ tracked | Production systemd units (the `docker run` command). |
 | `nginx/asap-kr-sync.conf` | ✅ tracked | Production reverse-proxy / TLS config. |
 
-> **`.txt` vs `.txt.example`:** the live `.txt` prompt is what the app loads; the `.txt.example` is the
-> reference template. Prompts are cached in-process at startup — **restart the backend after editing a prompt.**
+> **Prompts:** the detection/comparison prompts live at `src/backend/data/prompts/*.txt` and are **public and
+> version-controlled** — a single canonical set, no `.txt.example` templates and no copy step. Prompts are cached
+> in-process at startup — **restart the backend after editing a prompt.**
 
 ---
 

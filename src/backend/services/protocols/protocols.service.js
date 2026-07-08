@@ -62,7 +62,7 @@ function getPrompt(override) {
   }
   if (!_promptCache) {
     if (!hasPrompt()) {
-      throw new Error(`Prompt file not found: ${PROMPT_FILE} — copy the .example file and customize it to enable protocols detection`);
+      throw new Error(`Prompt file not found: ${PROMPT_FILE} — this prompt is version-controlled; restore it from git to enable protocols detection`);
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded protocols detection prompt', { file: PROMPT_FILE, length: _promptCache.length });

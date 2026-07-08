@@ -34,7 +34,7 @@ function getPrompt(override) {
   if (override != null && String(override).trim()) return String(override).trim();
   if (!_promptCache) {
     if (!hasPrompt()) {
-      throw new Error(`Prompt file not found: ${PROMPT_FILE} — copy the .example file to enable suggestion generation`);
+      throw new Error(`Prompt file not found: ${PROMPT_FILE} — this prompt is version-controlled; restore it from git to enable suggestion generation`);
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   }

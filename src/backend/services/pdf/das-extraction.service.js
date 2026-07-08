@@ -9,8 +9,7 @@
  *
  * Replaces the previous Modal-hosted llama fine-tune
  * (pdf-das-extractor-client.service.js). The prompt lives in
- * src/backend/data/prompts/das-extraction.txt; copy `.txt.example` and
- * customise to enable.
+ * src/backend/data/prompts/das-extraction.txt (public, version-controlled).
  *
  * No PDF handling here — by the time DAS extraction runs the Markdown
  * Convert job has already produced a markdown File on S3, and the caller
@@ -45,7 +44,7 @@ function getPrompt(override) {
   }
   if (!_promptCache) {
     if (!hasPrompt()) {
-      throw new Error(`Prompt file not found: ${PROMPT_FILE} — copy the .example file to enable DAS extraction`);
+      throw new Error(`Prompt file not found: ${PROMPT_FILE} — this prompt is version-controlled; restore it from git to enable DAS extraction`);
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded DAS extraction prompt', { file: PROMPT_FILE, length: _promptCache.length });

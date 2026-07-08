@@ -61,7 +61,7 @@ function getConsolidationPrompt(override) {
   }
   if (!_consolidationPromptCache) {
     if (!hasConsolidationPrompt()) {
-      throw new Error(`Consolidation prompt file not found: ${CONSOLIDATION_PROMPT_FILE} — copy the .example file to enable datasets detection`);
+      throw new Error(`Consolidation prompt file not found: ${CONSOLIDATION_PROMPT_FILE} — this prompt is version-controlled; restore it from git to enable datasets detection`);
     }
     _consolidationPromptCache = fs.readFileSync(CONSOLIDATION_PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded datasets consolidation prompt', {
