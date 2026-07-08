@@ -13,13 +13,18 @@ Compare the two and decide, for EVERY generated resource, what to do — and giv
 3. **`remove` must be very rare.** Only for a clear mistake (a duplicate of another author row, or plainly not a resource). NEVER remove just because detection missed it or you are unsure.
 4. **Never invent identifiers.** Only use identifiers/sources present in the data.
 5. **In `reason`, do not quote raw row ids/UUIDs.** Refer to a row by its resource name (e.g. "already present in the author's KRT as Fiji"), not "(row a3d12…)".
-6. **Only add datasets you are sure of.** Do NOT `add` a generated **Dataset** that has no identifier — i.e. no repository accession (GEO/SRA/ArrayExpress/PRIDE/ProteomeXchange/dbGaP/EGA/MassIVE/PDB/…), no DOI to a data repository (Zenodo/Figshare/Dryad), and no download URL. An identifier-less "dataset" is almost always an assay readout, measurement, or biological sample — not a shareable artifact — so `skip` it rather than spam the curator with a non-actionable suggestion. This stricter bar is for **Datasets only**: software, protocols, and lab materials may still be added without an identifier when clearly evidenced.
+6. **Datasets: surface shareable artifacts; skip noise and mere citations.**
+   a. **Identifier-less shareable data — surface it (it will be flagged for verification).** You MAY `add` a generated **Dataset** that has no accession/DOI/URL ONLY when it is the authors' OWN (new) data of a depositable type — sequencing/omics, proteomics/mass-spec, structural, or imaging — that the manuscript states was deposited or made available (typically in the Data Availability Statement), even though the concrete identifier is missing or pending. Say in the `reason` that the identifier is missing and should be confirmed. Do NOT do this for assay readouts, quantifications, measurements, cell counts, figure "Source Data" files, or biological samples — `skip` those; they are not shareable datasets.
+   b. **Cited, not used — skip it.** Do NOT `add` a dataset that the manuscript only CITES for comparison or background (e.g. previously-published structures/accessions listed to compare against), even when it carries an accession/DOI. Only `add` a reused dataset when the authors actually USE it as a resource in their methods (a reference genome, an atlas or database they queried).
+   This nuanced bar is for **Datasets only**: software, protocols, and lab materials may still be added without an identifier when clearly evidenced.
 
 ## DECISIONS — one per generated resource, plus author-side fixes
 
+**COMPLETENESS IS MANDATORY.** You MUST output exactly one decision (`add` or `skip`) for EVERY generated `ref`, from the first to the last — no ref may be omitted, skipped over, truncated, or summarised, and the count of `add`+`skip` decisions MUST equal the number of generated resources. If you are unsure about a resource, still emit a `skip` for it with a short reason — never leave it out. `update`/`remove` are additional author-side fixes and do NOT replace a ref's `add`/`skip`. Before returning, check that every `ref` value from 0 to the last generated index appears exactly once.
+
 For EVERY generated `ref`, output exactly one of:
 - `{ "action": "add",  "generatedRef": <ref>, "reason": "why this is a new resource worth adding" }`
-  (For a **Dataset**, only `add` when it carries an identifier — see principle 6; otherwise `skip` it.)
+  (For a **Dataset**, `add` when it carries an identifier and is actually used/generated (not merely cited), OR — per principle 6a — when it is the authors' own depositable data stated as deposited/available with the identifier missing; otherwise `skip` it.)
 - `{ "action": "skip", "generatedRef": <ref>, "authorRowId": "<id of the author row this duplicates, if it is already in the KRT>", "reason": "why not added — e.g. already in the author KRT, not relevant, duplicate" }`
   (Include `authorRowId` whenever the skip is because the resource is already in the author KRT, so the matching author row can be shown.)
 
@@ -35,4 +40,4 @@ Plus, optionally:
 { "decisions": [ { "action": "add", "generatedRef": 0, "reason": "..." } ] }
 ```
 
-Output nothing except the JSON block.
+Output nothing except the JSON block. The `decisions` array MUST cover every generated `ref` (one `add` or `skip` each) — do not stop early.

@@ -22,6 +22,7 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
+const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/krt-comparison.txt');
 let _promptCache = null;
@@ -68,6 +69,26 @@ function sourcesOf(g) {
 }
 function primarySource(g) {
   return sourcesOf(g)[0] || null;
+}
+
+/**
+ * Confidence tier for an `add` suggestion (issue #2). An add with a concrete
+ * identifier is directly verifiable → `confident`. One without an identifier is
+ * a "possible missing item" the curator should check before accepting →
+ * `needs_verification`, so identifier-less finds are surfaced (per the goal:
+ * find missing items with OR without identifiers) without being presented as
+ * high-confidence. Deterministic — independent of anything the LM asserts.
+ */
+function addTier(g) {
+  const hasIdentifier = !!(g.identifier && String(g.identifier).trim());
+  if (hasIdentifier) return { tier: 'confident', tierReason: null };
+  const hasSource = !!((g.sourceUrl || g.source) && String(g.sourceUrl || g.source).trim());
+  return {
+    tier: 'needs_verification',
+    tierReason: hasSource
+      ? 'No identifier found — a source/repository is given; confirm it and add the accession/RRID.'
+      : 'No identifier or source found — verify this is a real, shareable resource before adding.'
+  };
 }
 
 /** Shape a Generated KRT item for the prompt payload (ref + provenance). */
@@ -164,6 +185,7 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
         description: `Add ${g.resourceType || ''}: ${g.resourceName || g.identifier}`.trim(),
         reason: cleanReason(d.reason) || null,
         dedupKey, confidence: g.confidence || 0.8, existsInKRT: 'false', matchedKrtRowId: null,
+        ...addTier(g), // issue #2: confident vs needs_verification (identifier-less)
         mergedFrom: g.detectedBy || [], // 2b: real detection-module origin
         data: {
           resourceType: g.resourceType || '', resourceName: g.resourceName || '',
@@ -241,6 +263,29 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
       continue;
     }
   }
+
+  // Flag any generated resource the LM never returned a decision for. The
+  // prompt asks for exactly one decision per generated `ref`, but the model
+  // sometimes forgets/omits some — those would otherwise vanish silently
+  // (neither suggested nor skipped). We surface each as an `unreviewed`
+  // decision (audit-only, NOT an actionable suggestion) so the curator can see
+  // the resource wasn't evaluated and review it by hand.
+  const decidedRefs = new Set();
+  for (const d of lmDecisions) {
+    const action = String(d?.action || '').toLowerCase();
+    if ((action === 'add' || action === 'skip' || action === 'update') && Number.isInteger(d.generatedRef)) {
+      decidedRefs.add(d.generatedRef);
+    }
+  }
+  gen.forEach((g, ref) => {
+    if (decidedRefs.has(ref)) return;
+    decisions.push({
+      action: 'unreviewed', resourceName: g.resourceName || '',
+      reason: 'The AI did not return a decision for this detected resource — please review it manually.',
+      sources: sourcesOf(g), authorRow: null, generatedRow: generatedRowDisplay(g)
+    });
+  });
+
   return { suggestions, decisions };
 }
 
@@ -255,7 +300,10 @@ function extractJsonBlock(text) {
 
 function parseLMResponse(text) {
   try {
-    const parsed = JSON.parse(extractJsonBlock(text));
+    // sanitizeJsonEscapes repairs the common malformation where the model quotes
+    // verbatim text (LaTeX/units/paths) with unescaped backslashes — the same
+    // repair the detection modules already apply.
+    const parsed = JSON.parse(sanitizeJsonEscapes(extractJsonBlock(text)));
     const list = parsed.decisions || parsed;
     return Array.isArray(list) ? list : [];
   } catch (err) {
@@ -277,7 +325,14 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
     const response = await generateContentWithRetry(ai, {
       model: krtComparisonConfig.model,
       contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
-    }, { label: 'kr-comparison' });
+    }, {
+      label: 'kr-comparison',
+      // When there is something to compare, a healthy response parses to at
+      // least one decision. An empty/unparseable body (0 decisions) means the
+      // response was broken — retry it rather than silently dropping every
+      // suggestion for this submission.
+      validate: (res) => generatedKrt.length === 0 || parseLMResponse(res?.text || '').length > 0
+    });
     const text = response.text || '';
     return { lmDecisions: parseLMResponse(text), rawResponse: text };
   } catch (error) {
@@ -328,8 +383,14 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
   await jobLogger?.saveRawResponse('krt-comparison', rawResponse || lmDecisions);
 
   const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions);
+  const unreviewedCount = decisions.filter(d => d.action === 'unreviewed').length;
+  if (unreviewedCount) {
+    logger.warn('KRT comparison left some generated resources unreviewed', {
+      submissionId, round, unreviewedCount, generatedCount: generatedKrt.length
+    });
+  }
   jobLogger?.log('comparison_done', 'Suggestions generated', {
-    decisionCount: decisions.length, suggestionCount: suggestions.length
+    decisionCount: decisions.length, suggestionCount: suggestions.length, unreviewedCount
   });
 
   return {
@@ -341,6 +402,7 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
       generatedCount: generatedKrt.length,
       decisionCount: decisions.length,
       suggestionCount: suggestions.length,
+      unreviewedCount,
       totalMs: Date.now() - startTime,
       model: krtComparisonConfig.model
     }

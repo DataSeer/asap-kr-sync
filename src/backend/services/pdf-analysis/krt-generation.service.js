@@ -13,6 +13,7 @@ const krtGenConfig = require('../../config/krt-generation-api');
 const { computeDedupKey } = require('./identifier-normalize.service');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
+const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 
 function isConfigured() {
   return krtGenConfig.isConfigured();
@@ -147,7 +148,9 @@ function extractJsonBlock(text) {
 
 function parseLMResponse(text) {
   try {
-    const parsed = JSON.parse(extractJsonBlock(text));
+    // sanitizeJsonEscapes repairs unescaped backslashes in verbatim text
+    // (LaTeX/units/paths), the same repair the detection modules apply.
+    const parsed = JSON.parse(sanitizeJsonEscapes(extractJsonBlock(text)));
     return { resources: parsed.resources || [], dropped: parsed.dropped || [] };
   } catch (err) {
     logger.error('Failed to parse KRT generation JSON', { error: err.message });
@@ -165,7 +168,17 @@ async function callGeminiForKrt(candidates) {
   const response = await generateContentWithRetry(ai, {
     model: krtGenConfig.model,
     contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
-  }, { label: 'krt-generation' });
+  }, {
+    label: 'krt-generation',
+    // With candidates to consolidate, a healthy response parses to at least one
+    // resource or drop; an empty/unparseable body means a broken response —
+    // retry it. (On persistent failure the caller falls back to rule-based.)
+    validate: (res) => {
+      if (!candidates.length) return true;
+      const { resources, dropped } = parseLMResponse(res?.text || '');
+      return resources.length > 0 || dropped.length > 0;
+    }
+  });
   return { lmOutput: parseLMResponse(response.text || ''), rawResponse: response.text || '' };
 }
 

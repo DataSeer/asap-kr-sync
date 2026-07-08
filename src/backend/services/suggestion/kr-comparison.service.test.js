@@ -26,13 +26,18 @@ test('add → add_row suggestion carrying detection-module origin (mergedFrom)',
   // 2b: origin badges read mergedFrom[].source
   assert.equal(suggestions[0].mergedFrom[0].source, 'datasets_detection');
   assert.equal(suggestions[0].source, 'datasets_detection');
-  assert.equal(decisions.length, 1);
-  assert.equal(decisions[0].action, 'add');
-  assert.equal(decisions[0].reason, 'not present in author KRT');
+  const addDec = decisions.filter(d => d.action === 'add');
+  assert.equal(addDec.length, 1);
+  assert.equal(addDec[0].reason, 'not present in author KRT');
   // add carries the generated row (no author item exists)
-  assert.equal(decisions[0].generatedRow.resourceName, 'RNA-seq');
-  assert.equal(decisions[0].generatedRow.identifier, 'GSE1');
-  assert.equal(decisions[0].authorRow, null);
+  assert.equal(addDec[0].generatedRow.resourceName, 'RNA-seq');
+  assert.equal(addDec[0].generatedRow.identifier, 'GSE1');
+  assert.equal(addDec[0].authorRow, null);
+  // ref 1 (Fiji) got no decision from the LM → flagged 'unreviewed' so it is
+  // not silently dropped; it stays out of the actionable suggestions.
+  const unreviewed = decisions.filter(d => d.action === 'unreviewed');
+  assert.equal(unreviewed.length, 1);
+  assert.equal(unreviewed[0].generatedRow.resourceName, 'Fiji');
 });
 
 test('skip → decision carries the matched author row (by authorRowId)', () => {

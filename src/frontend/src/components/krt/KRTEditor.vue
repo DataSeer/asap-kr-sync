@@ -1837,6 +1837,7 @@ defineExpose({
                   <span v-else class="cell-display">{{ suggestion.data?.resourceType || '' }}</span>
                   <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
                   <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
+                  <span v-if="suggestion.tier === 'needs_verification'" class="suggestion-source-badge source-needs-verification" :title="suggestion.tierReason || 'No identifier found — verify before adding'">Verify</span>
                 </div>
               </td>
               <!-- RESOURCE NAME -->
@@ -2280,6 +2281,7 @@ defineExpose({
                     <span v-else class="cell-display">{{ suggestion.data?.resourceType || '' }}</span>
                     <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
                     <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
+                    <span v-if="suggestion.tier === 'needs_verification'" class="suggestion-source-badge source-needs-verification" :title="suggestion.tierReason || 'No identifier found — verify before adding'">Verify</span>
                   </div>
                 </td>
                 <!-- RESOURCE NAME -->
@@ -3512,6 +3514,11 @@ tr:hover {
 .source-update-krt {
   background: #e0e7ff;
   color: #3730a3;
+}
+
+.source-needs-verification {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .add-icon {

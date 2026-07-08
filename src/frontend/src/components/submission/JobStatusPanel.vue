@@ -536,7 +536,7 @@ const SOURCE_SHORT = {
 // ({action}) and raw suggestion objects ({type}).
 function suggestionDecisionLabel(item) {
   const a = item.action || item.type
-  const map = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove', add_row: 'Add', edit: 'Update', delete_row: 'Remove' }
+  const map = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove', add_row: 'Add', edit: 'Update', delete_row: 'Remove', unreviewed: 'Unreviewed' }
   return map[a] || a || '—'
 }
 
@@ -1058,7 +1058,7 @@ const modalDecisionOptions = computed(() => {
       counts.set(label, (counts.get(label) || 0) + 1)
     }
   }
-  const ORDER = ['Add', 'Update', 'Remove', 'Skip']
+  const ORDER = ['Add', 'Update', 'Remove', 'Skip', 'Unreviewed']
   const rank = (l) => { const i = ORDER.indexOf(l); return i === -1 ? ORDER.length : i }
   return [...present]
     .sort((a, b) => rank(a) - rank(b))
@@ -2917,6 +2917,7 @@ async function downloadMarkdownFile(fileId) {
 .sdb-update { background: #dbeafe; color: #1e40af; }
 .sdb-remove { background: #fee2e2; color: #b91c1c; }
 .sdb-skip   { background: #f3f4f6; color: #6b7280; }
+.sdb-unreviewed { background: #fef3c7; color: #92400e; }
 /* Diff cells: author side = old (red), generated side = new (green). */
 .diff-old { color: #b91c1c; background: #fef2f2; padding: 0 0.2rem; border-radius: 3px; font-weight: 600; }
 .diff-new { color: #166534; background: #f0fdf4; padding: 0 0.2rem; border-radius: 3px; font-weight: 600; }
