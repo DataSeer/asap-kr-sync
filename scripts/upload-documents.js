@@ -27,7 +27,8 @@
  * Usage:
  *   ASAP_EMAIL=… ASAP_PASSWORD=… node scripts/upload-documents.js --dir DIR [options]
  * Options:
- *   --dir DIR         directory holding <id>.pdf + <id>.(xlsx|csv) pairs (required)
+ *   --dir DIR         directory holding <id>.pdf + <id>.(xlsx|csv) pairs (required).
+ *                     "<name>-DS<n>.xlsx" DataSeer report files are ignored (not KRTs).
  *   --url URL         API base URL, e.g. https://app.example.com (required; or set
  *                     $ASAP_BASE_URL). No default — the target is always explicit.
  *   --only a,b        only these document ids (basename without extension)
@@ -73,6 +74,9 @@ const EMAIL = process.env.ASAP_EMAIL;
 const PASSWORD = process.env.ASAP_PASSWORD;
 const MANUSCRIPT_ID_RE = /^[A-Z]{2}\d-\d{6}-\d{3}-org-[A-Z]-\d$/i;
 const KRT_MIME = { '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.csv': 'text/csv' };
+// DataSeer report spreadsheets (e.g. "<name>-DS1.xlsx") are NOT author KRT
+// files — ignore them so they're never picked up as a document's KRT.
+const DS_REPORT_RE = /-DS\d+\.xlsx$/i;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -188,7 +192,9 @@ function discover() {
   if (!DIR) { console.error('Missing --dir'); process.exit(1); }
   const root = path.resolve(DIR);
   if (!fs.existsSync(root)) { console.error(`Directory not found: ${root}`); process.exit(1); }
-  const files = fs.readdirSync(root);
+  // Drop DataSeer report spreadsheets up front so a "<id>-DS1.xlsx" can never be
+  // mistaken for the author KRT.
+  const files = fs.readdirSync(root).filter(f => !DS_REPORT_RE.test(f));
   const docs = [];
   const skipped = [];
   for (const pdf of files.filter(f => f.toLowerCase().endsWith('.pdf'))) {
