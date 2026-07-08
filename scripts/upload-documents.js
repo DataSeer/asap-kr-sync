@@ -117,16 +117,23 @@ const http = axios.create({
   validateStatus: () => true
 });
 
-/** POST that retries on 429 (respecting Retry-After) and transient 5xx. */
-async function postWithRetry(url, data, headers, { label }) {
-  for (let attempt = 1; attempt <= 4; attempt++) {
+/**
+ * POST with retry on rate-limit / timeout / 5xx. `buildRequest()` is called
+ * fresh for EACH attempt and returns `{ data, headers }` — this is required for
+ * multipart uploads: a FormData body is a single-use stream, so a retry must
+ * rebuild it (re-sending a consumed one makes the server hang → 408).
+ */
+const MAX_ATTEMPTS = 5;
+async function postWithRetry(url, buildRequest, { label }) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const { data, headers } = buildRequest();
     const res = await http.post(url, data, { headers });
     storeSetCookies(res);
-    if (res.status !== 429 && res.status < 500) return res;
-    if (attempt === 4) return res;
+    const retryable = res.status === 429 || res.status === 408 || res.status >= 500;
+    if (!retryable || attempt === MAX_ATTEMPTS) return res;
     const retryAfter = Number(res.headers?.['retry-after']);
     const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1000 * 2 ** (attempt - 1);
-    console.log(`    ${label}: HTTP ${res.status}, retrying in ${Math.round(waitMs / 1000)}s (attempt ${attempt}/3)`);
+    console.log(`    ${label}: HTTP ${res.status}, retrying in ${Math.round(waitMs / 1000)}s (attempt ${attempt}/${MAX_ATTEMPTS - 1})`);
     await sleep(waitMs);
   }
 }
@@ -165,7 +172,8 @@ async function fetchExistingManuscriptIds() {
   return ids;
 }
 
-async function createSubmission(doc) {
+// Build a fresh multipart body per attempt (streams/FormData are single-use).
+function buildCreateForm(doc) {
   const form = new FormData();
   form.append('title', doc.title);
   if (doc.manuscriptId) form.append('manuscriptId', doc.manuscriptId);
@@ -182,7 +190,11 @@ async function createSubmission(doc) {
       filename: `${doc.id}.csv`, contentType: 'text/csv'
     });
   }
-  const res = await postWithRetry('/api/submissions', form, authHeaders(form.getHeaders()), { label: 'create' });
+  return { data: form, headers: authHeaders(form.getHeaders()) };
+}
+
+async function createSubmission(doc) {
+  const res = await postWithRetry('/api/submissions', () => buildCreateForm(doc), { label: 'create' });
   if (res.status !== 201) throw new Error(`Create submission failed — ${errText(res)}`);
   const id = res.data?.submission?.id;
   if (!id) throw new Error('Create submission returned no id');
@@ -190,16 +202,20 @@ async function createSubmission(doc) {
 }
 
 async function uploadPdf(submissionId, doc) {
-  const form = new FormData();
-  form.append('file', fs.createReadStream(doc.pdfPath), {
-    filename: path.basename(doc.pdfPath), contentType: 'application/pdf'
-  });
-  const res = await postWithRetry(`/api/submissions/${submissionId}/pdf/upload`, form, authHeaders(form.getHeaders()), { label: 'pdf' });
+  const build = () => {
+    const form = new FormData();
+    form.append('file', fs.createReadStream(doc.pdfPath), {
+      filename: path.basename(doc.pdfPath), contentType: 'application/pdf'
+    });
+    return { data: form, headers: authHeaders(form.getHeaders()) };
+  };
+  const res = await postWithRetry(`/api/submissions/${submissionId}/pdf/upload`, build, { label: 'pdf' });
   if (res.status < 200 || res.status >= 300) throw new Error(`PDF upload failed — ${errText(res)}`);
 }
 
 async function triggerAnalysis(submissionId) {
-  const res = await postWithRetry(`/api/submissions/${submissionId}/pdf/analyze`, {}, authHeaders({ 'Content-Type': 'application/json' }), { label: 'analyze' });
+  const build = () => ({ data: {}, headers: authHeaders({ 'Content-Type': 'application/json' }) });
+  const res = await postWithRetry(`/api/submissions/${submissionId}/pdf/analyze`, build, { label: 'analyze' });
   if (res.status < 200 || res.status >= 300) throw new Error(`Analyze failed — ${errText(res)}`);
 }
 
