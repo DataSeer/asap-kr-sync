@@ -217,7 +217,7 @@ async function saveMetadata() {
       class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
       @click.self="closeModal"
     >
-      <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
+      <div class="bg-white rounded-lg shadow-xl w-2/3 min-w-[66%] mx-4 max-h-[90vh] overflow-hidden flex flex-col">
         <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <h3 class="text-lg font-medium">Edit Submission Metadata</h3>
           <button class="text-gray-400 hover:text-gray-600" @click="closeModal">
