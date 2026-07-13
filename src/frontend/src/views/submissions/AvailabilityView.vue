@@ -82,6 +82,10 @@ async function fetchDasSuggestions() {
   }
 }
 
+// Safety cap: don't poll (and don't block Continue) forever if the job stalls.
+const MAX_POLL_MS = 3 * 60 * 1000
+let pollStartedAt = 0
+
 function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer)
@@ -91,7 +95,14 @@ function stopPolling() {
 
 function startPolling() {
   stopPolling()
+  pollStartedAt = Date.now()
   pollTimer = setInterval(async () => {
+    if (Date.now() - pollStartedAt > MAX_POLL_MS) {
+      // Gave the job long enough — stop waiting, unblock Continue, fall back.
+      stopPolling()
+      if (RUNNING_STATUSES.includes(dasJobStatus.value)) dasJobStatus.value = 'failed'
+      return
+    }
     await fetchDasSuggestions()
     if (!RUNNING_STATUSES.includes(dasJobStatus.value)) stopPolling()
   }, 3000)
