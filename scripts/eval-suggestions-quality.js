@@ -17,6 +17,14 @@
  *     Shared in Text or Supplemental, not Optional). With --random, a random
  *     subset of any line is removed instead.
  *
+ *   Pass C (no KRT):  detection + comparison with NO author KRT at all (cold
+ *     start). Measures recall of the FULL author KRT from scratch. Materials are
+ *     run article-only here (the app skips them without seeds) to measure whether
+ *     unseeded material detection is worth enabling. Off via --skip-empty.
+ *
+ * Together the three passes give the app's behaviour across Complete / Partial /
+ * No author KRT.
+ *
  * Writes one xlsx per document with 5 tabs —
  *   Summary                              side-by-side Original vs Modified stats
  *                                        + per-author-line coverage (removed?,
@@ -52,7 +60,8 @@
  *   --random          pass B removes a random subset of ANY line (not just detectable)
  *   --remove-frac F   fraction to remove per resource type in pass B (default 0.5, min 1 per type)
  *   --seed N          RNG seed for deterministic removal (default 42)
- *   --skip-modified   only run pass A
+ *   --skip-modified   skip pass B (the partial-KRT / removal pass)
+ *   --skip-empty      skip pass C (the no-KRT / cold-start pass)
  *   --markdown-only   only convert + cache each PDF's markdown (pre-warm), then exit
  *   --refresh-markdown re-convert markdown even if a cached .md exists
  *   --plan            offline: discover + parse + show the removal plan, NO pipeline/API calls
@@ -141,6 +150,13 @@ const ONLY_DOCS = (getArg('--doc', '') || '').split(',').map(s => s.trim()).filt
 const RANDOM_MODE = has('--random');
 const REMOVE_FRAC = Math.max(0, Math.min(1, parseFloat(getArg('--remove-frac', '0.5')) || 0.5));
 const SKIP_MODIFIED = has('--skip-modified');
+// The "empty" pass (C): run detection + comparison with NO author KRT at all —
+// the cold-start case. Measures raw recall of the FULL author KRT from scratch
+// (every generated line becomes an add). Unlike the app, which skips the
+// materials module entirely when there are no author materials (request D), this
+// pass runs materials UNSEEDED (article-only) so we can MEASURE whether cold-
+// start material detection is worth enabling. On by default; --skip-empty off.
+const SKIP_EMPTY = has('--skip-empty');
 const PLAN_ONLY = has('--plan');
 // Rebuild the .xlsx reports from an existing run's on-disk traces (no PDF, no
 // API calls). Reads <out>/traces/<id>/ and rewrites <out>/<id>.xlsx + _summary.
@@ -351,12 +367,18 @@ async function detectSeedIndependent(pdfBuffer, markdown, fileName, errors) {
   return { software, identifier };
 }
 
-/** One full pass: seed-dependent detectors + merge + LM consolidation + LM comparison. */
-async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependent, errors) {
+/**
+ * One full pass: seed-dependent detectors + merge + LM consolidation + LM
+ * comparison. opts.materialsUnseeded runs the materials module article-only even
+ * when there are no author material seeds (the app skips it — request D); used
+ * by the empty pass (C) to measure cold-start material detection.
+ */
+async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependent, errors, opts = {}) {
   const byGroup = (g) => authorRows.filter(r => authorGroup(r.resourceType) === g);
   const datasetSeeds = datasetsService.buildAuthorDatasetSeeds(byGroup('dataset'));
   const protocolSeeds = buildAuthorSeeds(byGroup('protocol'));
   const materialSeeds = buildAuthorSeeds(byGroup('material'));
+  const runMaterials = moduleEnabled('materials') && (materialSeeds.length > 0 || opts.materialsUnseeded);
 
   // Seed-dependent detectors fan out concurrently, exactly as the app runs them
   // as independent parallel jobs; merge + LM consolidation below is the barrier.
@@ -372,8 +394,9 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
       const r = await protocolsService.detectProtocols(markdown, { authorProtocols: protocolSeeds });
       return { items: dedupeKrtItems(protocolsService.buildKrtItemsProtocols(r.resources), 'protocols'), raw: r.rawResponse || null };
     }, errors, NONE),
-    // Materials is author-seeded only — skipped when the author listed none (same as the app).
-    (!moduleEnabled('materials') || materialSeeds.length === 0) ? Promise.resolve(NONE) : safe('materials', async () => {
+    // Materials is author-seeded only in the app (skipped when the author listed
+    // none); opts.materialsUnseeded forces it article-only for the empty pass.
+    !runMaterials ? Promise.resolve(NONE) : safe('materials', async () => {
       const r = await materialsService.detectMaterials(markdown, { authorMaterials: materialSeeds });
       return { items: dedupeKrtItems(materialsService.buildKrtItemsMaterials(r.resources), 'materials'), raw: r.rawResponse || null };
     }, errors, NONE)
@@ -657,8 +680,9 @@ function buildCandSuggRows(trace, decisions) {
 // coverage table appended below by appendCoverageTable(). Widths are shared per
 // column index across both tables, hence the generous B/C/D widths here.
 const RUN_SUMMARY_COLS = [
-  { header: 'Metric', key: 'metric', width: 40 }, { header: 'Original', key: 'a', width: 22 },
-  { header: 'Modified', key: 'b', width: 36 }, { header: 'What it tells you', key: 'note', width: 40 }
+  { header: 'Metric', key: 'metric', width: 40 }, { header: 'Complete KRT (A)', key: 'a', width: 18 },
+  { header: 'Partial KRT (B)', key: 'b', width: 18 }, { header: 'No KRT (C)', key: 'c', width: 18 },
+  { header: 'What it tells you', key: 'note', width: 62 }
 ];
 function passStats(pass, authorRows) {
   const aligned = pass.generatedKrt.filter(g => genInAuthor(g, authorRows, pass.decisions)).length;
@@ -670,53 +694,70 @@ function passStats(pass, authorRows) {
     generated: pass.generatedKrt.length,
     aligned,
     novel: pass.generatedKrt.length - aligned,
-    misses: authorRows.filter(a => !authorCovered(a, pass.generatedKrt, pass.decisions)).length,
     add: dec('add'), skip: dec('skip'), update: dec('update'), remove: dec('remove')
   };
 }
-function buildRunSummary(passA, passB, authorRows, modifiedRows, removed, removedReport, errorCount) {
+// Empty pass: no author rows were seeded, so alignment to the (full) author KRT
+// is measured by identifier/name match, not by the LM's decisions (all 'add').
+function passStatsEmpty(pass, authorRows) {
+  const matchesAuthor = (g) => authorRows.some(a => identifierMatch(a, g) || sameLine(a, g));
+  const aligned = pass.generatedKrt.filter(matchesAuthor).length;
+  const dec = (a) => pass.decisions.filter(d => d.action === a).length;
+  return {
+    authorRows: 0, candidates: pass.trace.merge.count, rejected: pass.trace.consolidation.droppedCount,
+    generated: pass.generatedKrt.length, aligned, novel: pass.generatedKrt.length - aligned,
+    add: dec('add'), skip: dec('skip'), update: dec('update'), remove: dec('remove')
+  };
+}
+function buildRunSummary({ passA, passB, passC, authorRows, modifiedRows, removed, removedReport, emptyReport, errorCount }) {
   const A = passStats(passA, authorRows);
   const B = passB ? passStats(passB, modifiedRows) : null;
+  const C = passC ? passStatsEmpty(passC, authorRows) : null;
   const pct = (n, d) => (d ? `${n} (${Math.round(100 * n / d)}%)` : String(n));
-  const row = (metric, a, b, note) => ({ metric, a, b: B ? b : '—', note });
-  const reDet = removedReport.filter(r => r.reDetected === 'yes').length;
-  const reSug = removedReport.filter(r => r.reSuggested === 'yes').length;
-  const rows = [
-    row('Author KRT rows (input)', A.authorRows, B?.authorRows, 'Modified = Original minus the removed lines'),
-    row('Lines removed for Modified pass', '—', removed.length, RANDOM_MODE ? 'Random subset of any line (--random)' : 'Only "clearly detectable" lines (in text/supplemental, not optional)'),
-    row('Candidates (PDF analysis, merged)', A.candidates, B?.candidates, 'Detector output after merge, before LM consolidation'),
-    row('Candidates rejected by consolidation', A.rejected, B?.rejected, 'Reasons in the Candidates & Suggestions tabs'),
-    row('Generated KRT lines (kept)', A.generated, B?.generated, 'Candidates kept by consolidation = the Generated KRT'),
-    row('— aligned to author KRT', pct(A.aligned, A.generated), B && pct(B.aligned, B.generated), 'AI skip/update decision or identifier match'),
-    row('— novel (not in author KRT)', pct(A.novel, A.generated), B && pct(B.novel, B.generated), 'Original: over-detection / hallucination signal. Modified: should contain the removed lines'),
-    row('Author rows not generated (misses)', pct(A.misses, A.authorRows), B && pct(B.misses, B.authorRows), 'Check "Detectable? (ref)" in the KRTs tabs — a miss that was never in the text is not a detection failure'),
-    row('AI suggestions — Add', A.add, B?.add, 'Original: few expected (author KRT should already cover). Modified: the removed lines coming back'),
-    row('AI suggestions — Update', A.update, B?.update, ''),
-    row('AI suggestions — Remove', A.remove, B?.remove, ''),
-    row('AI decisions — Skip (already covered)', A.skip, B?.skip, ''),
-    row('Removed lines re-detected (recall)', '—', pct(reDet, removed.length), 'Removed line reappears in the Generated KRT'),
-    row('Removed lines re-suggested as Add (recall)', '—', pct(reSug, removed.length), 'Removed line comes back as an Add suggestion — the end-to-end target'),
-    row('Pipeline errors (see Errors tab)', errorCount, '', '')
+  const g = (stats, key) => (stats ? stats[key] : '—');
+  const gp = (stats, n, d) => (stats ? pct(stats[n], stats[d]) : '—');
+  const row = (metric, a, b, c, note) => ({ metric, a, b, c, note });
+  const reDetB = removedReport.filter(r => r.reDetected === 'yes').length;
+  const reSugB = removedReport.filter(r => r.reSuggested === 'yes').length;
+  const reDetC = emptyReport.filter(r => r.reDetected === 'yes').length;
+  const reSugC = emptyReport.filter(r => r.reSuggested === 'yes').length;
+  const N = authorRows.length;
+  return [
+    row('Author rows seeded into detection', A.authorRows, g(B, 'authorRows'), C ? 0 : '—', 'What detection was grounded on. C: none — cold start (materials run article-only)'),
+    row('Candidates (PDF analysis, merged)', A.candidates, g(B, 'candidates'), g(C, 'candidates'), 'Detector output after merge, before LM consolidation'),
+    row('Candidates rejected by consolidation', A.rejected, g(B, 'rejected'), g(C, 'rejected'), 'Reasons in the Cand. & Suggestions tabs'),
+    row('Generated KRT lines (kept)', A.generated, g(B, 'generated'), g(C, 'generated'), 'Candidates kept by consolidation'),
+    row('— matching a real author row', gp(A, 'aligned', 'generated'), gp(B, 'aligned', 'generated'), gp(C, 'aligned', 'generated'), 'Generated line corresponds to a full-KRT author item (identifier/name)'),
+    row('— novel (not in author KRT)', gp(A, 'novel', 'generated'), gp(B, 'novel', 'generated'), gp(C, 'novel', 'generated'), 'Over-detection / author-omission signal'),
+    row('AI suggestions — Add', A.add, g(B, 'add'), g(C, 'add'), 'C: every generated line is an add (nothing to compare against)'),
+    row('AI suggestions — Update', A.update, g(B, 'update'), g(C, 'update'), ''),
+    row('AI suggestions — Remove', A.remove, g(B, 'remove'), g(C, 'remove'), ''),
+    row('AI decisions — Skip (already covered)', A.skip, g(B, 'skip'), g(C, 'skip'), ''),
+    row('Recall target — author rows withheld', '—', removed.length, C ? N : '—', 'Rows detection did NOT see: B = the removed subset, C = the whole KRT'),
+    row('Recall — re-detected', '—', passB ? pct(reDetB, removed.length) : '—', C ? pct(reDetC, N) : '—', 'Withheld row reappears in the Generated KRT'),
+    row('Recall — re-suggested as Add', '—', passB ? pct(reSugB, removed.length) : '—', C ? pct(reSugC, N) : '—', 'Withheld row comes back as an Add suggestion — the end-to-end target'),
+    row('Pipeline errors (see Errors tab)', errorCount, '', '', '')
   ];
-  return rows;
 }
 
 // Per-line coverage table, appended BELOW the stats block on the same Summary
 // sheet: one row per author KRT line — was it removed for pass B, did the
 // Original pass generate it, did the Modified pass generate / re-suggest it.
 // Same coverage rules as everywhere else: AI decision first, then identifier.
-function appendCoverageTable(ws, authorRows, removed, passA, passB) {
+function appendCoverageTable(ws, authorRows, removed, passA, passB, passC) {
   const removedIds = new Set(removed.map(r => r.row.id));
   const yn = (b) => (b ? 'yes' : 'NO');
   const addDecisionsB = passB ? passB.decisions.filter(d => d.action === 'add' && d.generatedRow) : [];
+  const addDecisionsC = passC ? passC.decisions.filter(d => d.action === 'add' && d.generatedRow) : [];
+  const foundIn = (a, pass, adds) => yn(adds.some(d => sameLine(a, d.generatedRow)) || pass.generatedKrt.some(g => identifierMatch(a, g)));
 
   ws.addRow([]);
   const title = ws.addRow(['Author KRT coverage — per line (details in the KRTs tabs)']);
   title.font = { bold: true };
   const header = ws.addRow(['Removed (B)', 'Resource Type', 'Resource Name', 'Identifier',
-    'Original: Found', 'Modified: Found', 'Modified: Suggested (Add)']);
+    'Complete: Found', 'Partial: Found', 'Partial: Suggested', 'No KRT: Found']);
   header.font = { bold: true };
-  [15, 15, 20].forEach((w, i) => { ws.getColumn(5 + i).width = w; });
+  [15, 15, 18, 15].forEach((w, i) => { ws.getColumn(5 + i).width = w; });
 
   for (const a of authorRows) {
     const isRemoved = removedIds.has(a.id);
@@ -724,8 +765,6 @@ function appendCoverageTable(ws, authorRows, removed, passA, passB) {
     let modFound = '—', modSuggested = '—';
     if (passB) {
       if (isRemoved) {
-        // Removed line: back as an Add suggestion (the end-to-end target), or at
-        // least back in the generated KRT (detected)?
         const reSuggested = addDecisionsB.some(d => sameLine(a, d.generatedRow));
         modFound = yn(reSuggested || passB.generatedKrt.some(g => identifierMatch(a, g)));
         modSuggested = yn(reSuggested);
@@ -733,8 +772,10 @@ function appendCoverageTable(ws, authorRows, removed, passA, passB) {
         modFound = yn(authorCovered(a, passB.generatedKrt, passB.decisions));
       }
     }
+    // No-KRT (cold start): found if the tool re-detected/re-suggested it from scratch.
+    const emptyFound = passC ? foundIn(a, passC, addDecisionsC) : '—';
     ws.addRow([isRemoved ? 'yes' : '', a.resourceType || '', a.resourceName || '',
-      a.identifier || '', origFound, modFound, modSuggested]);
+      a.identifier || '', origFound, modFound, modSuggested, emptyFound]);
   }
 }
 
@@ -808,17 +849,21 @@ async function processDoc(doc, summaryAll) {
   if (cached) console.log('  using cached markdown');
   const seedIndependent = await detectSeedIndependent(pdfBuffer, markdown, path.basename(doc.pdf), errors);
 
-  const passA = await runPass(pdfBuffer, markdown, path.basename(doc.pdf), authorRows, seedIndependent, errors);
-  const passB = SKIP_MODIFIED ? null : await runPass(pdfBuffer, markdown, path.basename(doc.pdf), modifiedRows, seedIndependent, errors);
+  const fileName = path.basename(doc.pdf);
+  const passA = await runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependent, errors);
+  const passB = SKIP_MODIFIED ? null : await runPass(pdfBuffer, markdown, fileName, modifiedRows, seedIndependent, errors);
+  // Pass C — no author KRT at all (materials forced article-only, see runPass).
+  const passC = SKIP_EMPTY ? null : await runPass(pdfBuffer, markdown, fileName, [], seedIndependent, errors, { materialsUnseeded: true });
 
-  // Full audit trail: inputs + every module/LM stage for both passes.
+  // Full audit trail: inputs + every module/LM stage for every pass.
   if (TRACE) {
     writeInputs(doc.id, authorRows, modifiedRows, removed, errors);
     writeTrace(doc.id, 'original', passA.trace);
     if (passB) writeTrace(doc.id, 'modified', passB.trace);
+    if (passC) writeTrace(doc.id, 'empty', passC.trace);
   }
 
-  return writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, errors });
+  return writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, passC, errors });
 }
 
 // Recall over the removed lines: did the AI re-suggest adding it (its own
@@ -843,13 +888,18 @@ function computeRemovedReport(removed, passB) {
 // Pure function of its context (generated KRT, decisions, suggestions, inputs) —
 // the SAME entry point for a live pipeline pass and a --rebuild from traces, so
 // both produce identical reports.
-async function writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, errors }) {
+async function writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, passC, errors }) {
   const removedReport = computeRemovedReport(removed, passB);
+  // Pass C recall is over the FULL author KRT (every row is "withheld", since
+  // detection was seeded with nothing) — reuse the same recall computation by
+  // treating every author row as a removed line annotated with its summary flags.
+  const authorAsRemoved = authorRows.map(a => ({ row: a, summary: summaryFor(a.resourceName, summaryRows) }));
+  const emptyReport = passC ? computeRemovedReport(authorAsRemoved, passC) : [];
 
   const wb = new ExcelJS.Workbook();
   const wsSummary = addSheet(wb, 'Summary', RUN_SUMMARY_COLS,
-    buildRunSummary(passA, passB, authorRows, modifiedRows, removed, removedReport, errors.length));
-  appendCoverageTable(wsSummary, authorRows, removed, passA, passB);
+    buildRunSummary({ passA, passB, passC, authorRows, modifiedRows, removed, removedReport, emptyReport, errorCount: errors.length }));
+  appendCoverageTable(wsSummary, authorRows, removed, passA, passB, passC);
   addSheet(wb, 'Original - KRTs', KRT_COLS,
     buildKrtRows(authorRows, [], passA.generatedKrt, passA.decisions, summaryRows));
   addSheet(wb, 'Original - Cand. & Suggestions', CAND_COLS, buildCandSuggRows(passA.trace, passA.decisions));
@@ -857,6 +907,13 @@ async function writeDocReport({ doc, authorRows, modifiedRows, removed, summaryR
     addSheet(wb, 'Modified - KRTs', KRT_COLS,
       buildKrtRows(modifiedRows, removed.map(r => r.row), passB.generatedKrt, passB.decisions, summaryRows));
     addSheet(wb, 'Modified - Cand. & Suggestions', CAND_COLS, buildCandSuggRows(passB.trace, passB.decisions));
+  }
+  if (passC) {
+    // Empty pass: no seeded author rows; the full author KRT is the ground truth
+    // (shown as the author side) against the cold-start generated KRT.
+    addSheet(wb, 'Empty - KRTs', KRT_COLS,
+      buildKrtRows(authorRows, [], passC.generatedKrt, passC.decisions, summaryRows));
+    addSheet(wb, 'Empty - Cand. & Suggestions', CAND_COLS, buildCandSuggRows(passC.trace, passC.decisions));
   }
   if (errors.length) addSheet(wb, 'Errors', [{ header: 'Module error', key: 'e', width: 100 }], errors.map(e => ({ e })));
 
@@ -870,7 +927,10 @@ async function writeDocReport({ doc, authorRows, modifiedRows, removed, summaryR
     removed: removed.length,
     reDetected: removedReport.filter(r => r.reDetected === 'yes').length,
     reSuggested: removedReport.filter(r => r.reSuggested === 'yes').length,
-    removedReport, errors: errors.length
+    genC: passC ? passC.generatedKrt.length : '',
+    foundC: emptyReport.filter(r => r.reDetected === 'yes').length,
+    suggestedC: emptyReport.filter(r => r.reSuggested === 'yes').length,
+    removedReport, emptyReport, errors: errors.length
   };
 }
 
@@ -925,6 +985,7 @@ async function rebuildDoc(doc, summaryAll) {
   const passA = passFromTrace('original');
   if (!passA) { console.log(`  ! ${doc.id}: no original.trace.json — skipping`); return null; }
   const passB = passFromTrace('modified');
+  const passC = passFromTrace('empty');
 
   const authorRows = inputs.authorKrt || [];
   const modifiedRows = inputs.modifiedKrt || [];
@@ -937,10 +998,11 @@ async function rebuildDoc(doc, summaryAll) {
   if (!Array.isArray(errors)) {
     errors = [...comparisonHealthErrors(passA.generatedKrt, passA.decisions)];
     if (passB) errors.push(...comparisonHealthErrors(passB.generatedKrt, passB.decisions));
+    if (passC) errors.push(...comparisonHealthErrors(passC.generatedKrt, passC.decisions));
   }
 
   console.log(`  ${doc.id}: rebuilding from traces (${authorRows.length} KRT rows, ${removed.length} removed)`);
-  return writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, errors });
+  return writeDocReport({ doc, authorRows, modifiedRows, removed, summaryRows, passA, passB, passC, errors });
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -983,27 +1045,75 @@ async function rebuildDoc(doc, summaryAll) {
 
   // Global summary workbook
   const wb = new ExcelJS.Workbook();
+
+  // ── Overall recall, WITH and WITHOUT materials ────────────────────────────
+  // Material-type rows behave very differently by pass (seeded in B, unseeded in
+  // C), so they distort the headline number. Split them out for an apples-to-
+  // apples read of the rest of the pipeline. (Materials group = everything that
+  // isn't a dataset / software / protocol — see authorGroup.)
+  const allRemoved = results.flatMap(r => r.removedReport || []);
+  const allEmpty = results.flatMap(r => r.emptyReport || []);
+  const isMaterial = (row) => authorGroup(row.type) === 'material';
+  const aggRecall = (rows) => {
+    const det = rows.filter(r => r.reDetected === 'yes').length;
+    const sug = rows.filter(r => r.reSuggested === 'yes').length;
+    return { target: rows.length, det, sug,
+      dr: rows.length ? (det / rows.length).toFixed(2) : '', sr: rows.length ? (sug / rows.length).toFixed(2) : '' };
+  };
+  const overallRows = [];
+  const addScope = (pass, rows) => {
+    if (!rows.length) return;
+    overallRows.push({ pass, scope: 'All types', ...aggRecall(rows) });
+    overallRows.push({ pass, scope: 'Excluding materials', ...aggRecall(rows.filter(r => !isMaterial(r))) });
+    overallRows.push({ pass, scope: 'Materials only', ...aggRecall(rows.filter(isMaterial)) });
+  };
+  addScope('B (partial KRT)', allRemoved);
+  addScope('C (no KRT)', allEmpty);
+  if (overallRows.length) {
+    addSheet(wb, 'Overall recall', [
+      { header: 'Pass', key: 'pass', width: 18 }, { header: 'Scope', key: 'scope', width: 20 },
+      { header: 'Target', key: 'target', width: 10 }, { header: 'Re-detected', key: 'det', width: 12 },
+      { header: 'Re-suggested', key: 'sug', width: 13 }, { header: 'Detect recall', key: 'dr', width: 13 },
+      { header: 'Suggest recall', key: 'sr', width: 13 }
+    ], overallRows);
+  }
+
   addSheet(wb, 'Per-document', [
     { header: 'Document', key: 'id', width: 30 }, { header: 'KRT rows', key: 'krtRows', width: 10 },
     { header: 'Generated (A)', key: 'genA', width: 12 }, { header: 'Novel-in-A (over-detection)', key: 'novelA', width: 24 },
     { header: 'Add suggestions (A)', key: 'addA', width: 18 }, { header: 'Removed (B)', key: 'removed', width: 11 },
     { header: 'Re-detected (B)', key: 'reDetected', width: 14 }, { header: 'Re-suggested (B)', key: 'reSuggested', width: 15 },
-    { header: 'Module errors', key: 'errors', width: 13 }
+    { header: 'Generated (C, no KRT)', key: 'genC', width: 18 }, { header: 'Found (C)', key: 'foundC', width: 10 },
+    { header: 'Suggested (C)', key: 'suggestedC', width: 13 }, { header: 'Module errors', key: 'errors', width: 13 }
   ], results.map(r => ({ ...r })));
 
   // Recall by Object Type
-  const allRemoved = results.flatMap(r => r.removedReport || []);
   const byType = {};
   for (const r of allRemoved) {
     const t = r.type || '(none)';
     byType[t] = byType[t] || { type: t, removed: 0, reDetected: 0, reSuggested: 0 };
     byType[t].removed++; if (r.reDetected === 'yes') byType[t].reDetected++; if (r.reSuggested === 'yes') byType[t].reSuggested++;
   }
-  addSheet(wb, 'Recall by type', [
-    { header: 'Object Type', key: 'type', width: 28 }, { header: 'Removed', key: 'removed', width: 10 },
+  const RECALL_TYPE_COLS = [
+    { header: 'Object Type', key: 'type', width: 28 }, { header: 'Target', key: 'removed', width: 10 },
     { header: 'Re-detected', key: 'reDetected', width: 12 }, { header: 'Re-suggested', key: 'reSuggested', width: 12 },
     { header: 'Detect recall', key: 'dr', width: 13 }, { header: 'Suggest recall', key: 'sr', width: 13 }
-  ], Object.values(byType).map(v => ({ ...v, dr: v.removed ? (v.reDetected / v.removed).toFixed(2) : '', sr: v.removed ? (v.reSuggested / v.removed).toFixed(2) : '' })));
+  ];
+  const withRecall = (rows) => rows.map(v => ({ ...v, dr: v.removed ? (v.reDetected / v.removed).toFixed(2) : '', sr: v.removed ? (v.reSuggested / v.removed).toFixed(2) : '' }));
+  addSheet(wb, 'Recall by type (B, partial)', RECALL_TYPE_COLS, withRecall(Object.values(byType)));
+
+  // No-KRT (cold start) recall by type — same aggregation over the full author
+  // KRT (emptyReport). Shows what the tool finds from scratch, per type — e.g.
+  // whether unseeded materials detection is worth it.
+  if (allEmpty.length) {
+    const byTypeC = {};
+    for (const r of allEmpty) {
+      const t = r.type || '(none)';
+      byTypeC[t] = byTypeC[t] || { type: t, removed: 0, reDetected: 0, reSuggested: 0 };
+      byTypeC[t].removed++; if (r.reDetected === 'yes') byTypeC[t].reDetected++; if (r.reSuggested === 'yes') byTypeC[t].reSuggested++;
+    }
+    addSheet(wb, 'Recall by type (C, no KRT)', RECALL_TYPE_COLS, withRecall(Object.values(byTypeC)));
+  }
 
   // Recall by sharing / mention flag (a removed line can carry several flags,
   // so these subsets overlap — each row is recall CONDITIONED on that flag).
@@ -1041,7 +1151,14 @@ async function rebuildDoc(doc, summaryAll) {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   await wb.xlsx.writeFile(path.join(OUT_DIR, '_summary.xlsx'));
 
-  const totRemoved = allRemoved.length, totDet = allRemoved.filter(r => r.reDetected === 'yes').length, totSug = allRemoved.filter(r => r.reSuggested === 'yes').length;
   console.log(`\nWrote ${results.length} document workbook(s) + _summary.xlsx to ${OUT_DIR}`);
-  if (totRemoved) console.log(`Recall over ${totRemoved} removed lines — re-detected: ${totDet} (${(100 * totDet / totRemoved).toFixed(0)}%), re-suggested: ${totSug} (${(100 * totSug / totRemoved).toFixed(0)}%)`);
+  const pctOf = (n, d) => (d ? `${(100 * n / d).toFixed(0)}%` : '—');
+  const line = (label, rows) => {
+    if (!rows.length) return;
+    const a = aggRecall(rows), nm = aggRecall(rows.filter(r => !isMaterial(r)));
+    console.log(`${label} recall over ${a.target} rows — re-detected ${pctOf(a.det, a.target)} / re-suggested ${pctOf(a.sug, a.target)}` +
+      `  |  excl. materials (${nm.target}): re-detected ${pctOf(nm.det, nm.target)} / re-suggested ${pctOf(nm.sug, nm.target)}`);
+  };
+  line('Partial-KRT (B)', allRemoved);
+  line('No-KRT     (C)', allEmpty);
 })().catch(e => { console.error(e); process.exit(1); });
