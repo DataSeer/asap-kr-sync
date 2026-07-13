@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const authService = require('../services/auth/auth.service');
 const auth0Service = require('../services/auth/auth0.service');
 const jwtService = require('../services/auth/jwt.service');
+const teamEmailService = require('../services/teams/team-email.service');
 const { User, UserTeam } = require('../models');
 const logger = require('../utils/logger');
 const { ValidationError, ExternalServiceError, AuthenticationError, AuthorizationError } = require('../utils/errors');
@@ -325,18 +326,21 @@ async function findOrCreateAuth0User(auth0Profile) {
     role: user.role
   });
 
-  const userData = user.toJSON();
-  userData.teams = [];
-  return { user, userData };
+  return buildAuth0UserResult(user);
 }
 
 /**
  * Flatten the user-with-teams Sequelize result into the standard
- * { user, userData } shape used by the auth flows.
+ * { user, userData } shape used by the auth flows, after syncing the
+ * admin-managed (team, email) roster — so roster-listed users get their
+ * team memberships on every Auth0 sign-in (create, link, and return alike).
  */
-function buildAuth0UserResult(user) {
+async function buildAuth0UserResult(user) {
+  const mappedTeams = await teamEmailService.applyMappingsForUser(user.id, user.email);
+
   const userData = user.toJSON();
-  userData.teams = userData.userTeams ? userData.userTeams.map(ut => ut.team) : [];
+  const loadedTeams = userData.userTeams ? userData.userTeams.map(ut => ut.team) : [];
+  userData.teams = [...new Set([...loadedTeams, ...mappedTeams])];
   delete userData.userTeams;
   return { user, userData };
 }

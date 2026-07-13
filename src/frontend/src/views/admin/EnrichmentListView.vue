@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import Papa from 'papaparse'
 import { useNotificationStore } from '@/stores/notification.store'
 import enrichmentListService from '@/services/enrichment-list.service'
+import SearchInput from '@/components/common/SearchInput.vue'
 
 // ---------------------------------------------------------------------------
 // Category config
@@ -357,9 +358,9 @@ function categoryBadgeClass(cat) {
 </script>
 
 <template>
-  <div>
+  <div class="h-full flex flex-col">
     <!-- Header -->
-    <div class="flex items-center justify-between mb-4">
+    <div class="flex items-center justify-between mb-4 flex-shrink-0">
       <h1 class="text-2xl font-bold text-gray-900">Enrichments</h1>
       <div class="flex items-center gap-2">
         <input ref="fileInput" type="file" accept=".csv" class="hidden" @change="handleFileSelect" />
@@ -370,7 +371,7 @@ function categoryBadgeClass(cat) {
     </div>
 
     <!-- Category tabs -->
-    <div class="border-b border-gray-200 mb-4">
+    <div class="border-b border-gray-200 mb-4 flex-shrink-0">
       <nav class="-mb-px flex space-x-2 overflow-x-auto" aria-label="Tabs">
         <button
           v-for="c in CATEGORIES"
@@ -392,13 +393,13 @@ function categoryBadgeClass(cat) {
       </nav>
     </div>
 
-    <!-- Search -->
-    <div class="mb-4">
-      <input v-model="search" type="text" class="input max-w-md" placeholder="Search by name or identifier..." />
+    <!-- Search (server-side, by name or identifier) -->
+    <div class="mb-4 flex-shrink-0">
+      <SearchInput v-model="search" placeholder="Search by name or identifier…" />
     </div>
 
     <!-- Summary + per-page -->
-    <div class="flex items-center justify-between mb-3">
+    <div class="flex items-center justify-between mb-3 flex-shrink-0">
       <p class="text-sm text-gray-500">
         {{ total }} {{ total === 1 ? 'entry' : 'entries' }} in
         {{ isAllMode ? 'all categories' : selectedCategory }}
@@ -416,7 +417,7 @@ function categoryBadgeClass(cat) {
     </div>
 
     <!-- Loading spinner -->
-    <div v-if="loading" class="flex items-center justify-center py-12">
+    <div v-if="loading" class="flex-1 flex items-center justify-center py-12">
       <svg class="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -424,7 +425,7 @@ function categoryBadgeClass(cat) {
     </div>
 
     <!-- Table -->
-    <div v-else class="card overflow-hidden">
+    <div v-else class="card overflow-hidden flex-1 min-h-0 flex flex-col">
       <div class="table-scroll">
         <table class="min-w-full divide-y divide-gray-200">
           <thead class="bg-gray-50 sticky top-0 z-10">
@@ -470,7 +471,7 @@ function categoryBadgeClass(cat) {
     </div>
 
     <!-- Pagination -->
-    <div v-if="totalPages > 1" class="flex items-center justify-center mt-4 space-x-2">
+    <div v-if="totalPages > 1" class="flex-shrink-0 flex items-center justify-center mt-4 space-x-2">
       <button :disabled="page === 1" class="px-3 py-1 text-sm rounded border" :class="page === 1 ? 'text-gray-300 cursor-not-allowed' : 'text-gray-700 hover:bg-gray-100'" @click="goToPage(page - 1)">Previous</button>
       <span class="text-sm text-gray-600">Page {{ page }} of {{ totalPages }}</span>
       <button :disabled="page === totalPages" class="px-3 py-1 text-sm rounded border" :class="page === totalPages ? 'text-gray-300 cursor-not-allowed' : 'text-gray-700 hover:bg-gray-100'" @click="goToPage(page + 1)">Next</button>
@@ -653,7 +654,8 @@ function categoryBadgeClass(cat) {
 
 <style scoped>
 .table-scroll {
-  max-height: 480px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 </style>

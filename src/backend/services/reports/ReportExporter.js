@@ -62,7 +62,7 @@ class ReportExporter {
     return {
       'Manuscript ID': submission.manuscriptId,
       'Title': submission.title,
-      'Team': submission.team,
+      'Project': submission.project,
       'Status': submission.status,
       'Author': submission.user?.name || 'Unknown',
       'Created': submission.createdAt.toISOString(),

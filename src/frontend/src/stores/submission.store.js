@@ -26,8 +26,8 @@ export const useSubmissionStore = defineStore('submission', () => {
     submissions.value.filter(s => s.status === status)
   )
 
-  const submissionsByTeam = computed(() => (team) =>
-    submissions.value.filter(s => s.team === team)
+  const submissionsByProject = computed(() => (project) =>
+    submissions.value.filter(s => s.project === project)
   )
 
   // Actions
@@ -110,6 +110,31 @@ export const useSubmissionStore = defineStore('submission', () => {
       return response.submission
     } catch (err) {
       error.value = err.response?.data?.error || 'Failed to update submission'
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function reassignOwner(id, userId) {
+    loading.value = true
+    error.value = null
+
+    try {
+      const response = await submissionService.reassignOwner(id, userId)
+      const updated = { ...response.submission, user: response.user }
+
+      if (currentSubmission.value?.id === id) {
+        currentSubmission.value = updated
+      }
+      const index = submissions.value.findIndex(s => s.id === id)
+      if (index !== -1) {
+        submissions.value[index] = updated
+      }
+
+      return updated
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to reassign owner'
       throw err
     } finally {
       loading.value = false
@@ -238,12 +263,13 @@ export const useSubmissionStore = defineStore('submission', () => {
     // Getters
     submissionById,
     submissionsByStatus,
-    submissionsByTeam,
+    submissionsByProject,
     // Actions
     fetchSubmissions,
     fetchSubmission,
     createSubmission,
     updateSubmission,
+    reassignOwner,
     deleteSubmission,
     hideSubmission,
     unhideSubmission,

@@ -2,9 +2,11 @@
  * Teams Controller
  */
 
-const { Team, UserTeam, Submission } = require('../models');
-const { NotFoundError, ConflictError } = require('../utils/errors');
+const { Op } = require('sequelize');
+const { Team, UserTeam, TeamEmail, Submission, User } = require('../models');
+const { NotFoundError, ConflictError, ValidationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
+const teamEmailService = require('../services/teams/team-email.service');
 const { ROLES } = require('../config/constants');
 const logger = require('../utils/logger');
 
@@ -125,9 +127,13 @@ async function update(req, res, next) {
         throw new ConflictError('Team code already exists');
       }
 
-      // Update user_teams references with the new code
+      // Update user_teams and team_emails references with the new code
       const oldCode = team.code;
       await UserTeam.update(
+        { team: code },
+        { where: { team: oldCode } }
+      );
+      await TeamEmail.update(
         { team: code },
         { where: { team: oldCode } }
       );
@@ -188,11 +194,159 @@ async function deleteTeam(req, res, next) {
   }
 }
 
+/**
+ * List (team, email) roster mappings
+ * GET /api/teams/email-mappings?team=XX&email=foo
+ */
+async function listEmailMappings(req, res, next) {
+  try {
+    const { page, limit, offset } = parsePagination(req.query);
+
+    const whereClause = {};
+    if (req.query.team) {
+      whereClause.team = String(req.query.team).trim();
+    }
+    if (req.query.email) {
+      whereClause.email = String(req.query.email).trim().toLowerCase();
+    }
+    // Free-text search over team name or email (server-side — the roster can
+    // exceed the page cap, so a client-side filter would miss rows).
+    if (req.query.search && String(req.query.search).trim()) {
+      const term = `%${String(req.query.search).trim()}%`;
+      whereClause[Op.or] = [
+        { team: { [Op.iLike]: term } },
+        { email: { [Op.iLike]: term } }
+      ];
+    }
+
+    const { count, rows } = await TeamEmail.findAndCountAll({
+      where: whereClause,
+      order: [['team', 'ASC'], ['email', 'ASC']],
+      limit,
+      offset
+    });
+
+    res.json({
+      mappings: rows,
+      pagination: buildPaginationMeta(count, page, limit)
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Bulk-create (team, email) roster mappings. Every mapping pointing at an
+ * already-registered user is applied to their memberships immediately;
+ * everyone else picks theirs up on next login.
+ * POST /api/teams/email-mappings  { mappings: [{ team, email }] }
+ */
+async function createEmailMappings(req, res, next) {
+  try {
+    const { mappings } = req.validatedBody;
+
+    // Reject unknown teams up front so a typo in a pasted roster fails
+    // loudly instead of half-importing.
+    const validTeams = new Set((await Team.findAll({ attributes: ['code'], raw: true })).map(t => t.code));
+    const unknownTeams = [...new Set(mappings.map(m => m.team).filter(team => !validTeams.has(team)))];
+    if (unknownTeams.length > 0) {
+      throw new ValidationError(`Unknown team(s): ${unknownTeams.join(', ')}. Create the team(s) first.`);
+    }
+
+    let created = 0;
+    let skipped = 0;
+    let applied = 0;
+
+    for (const { team, email } of mappings) {
+      const [, wasCreated] = await TeamEmail.findOrCreate({ where: { team, email } });
+      if (!wasCreated) {
+        skipped++;
+        continue;
+      }
+      created++;
+      if (await teamEmailService.applyMappingToExistingUser(team, email)) {
+        applied++;
+      }
+    }
+
+    logger.info('Team email mappings imported', {
+      created,
+      skipped,
+      appliedToExistingUsers: applied,
+      createdBy: req.userId
+    });
+
+    res.status(201).json({ created, skipped, appliedToExistingUsers: applied });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Export the full (team, email) roster as CSV. This is the "save" side of the
+ * CSV import/export workflow — the downloaded file re-imports cleanly.
+ * GET /api/teams/email-mappings/export
+ */
+async function exportEmailMappings(req, res, next) {
+  try {
+    const rows = await TeamEmail.findAll({
+      order: [['team', 'ASC'], ['email', 'ASC']],
+      raw: true
+    });
+
+    const escape = (v) => {
+      const s = String(v == null ? '' : v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = ['Team,Email', ...rows.map(r => `${escape(r.team)},${escape(r.email)}`)];
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="team-emails.csv"');
+    res.send(lines.join('\n'));
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Delete a roster mapping. Memberships already granted from it are removed for
+ * existing accounts so the roster stays authoritative.
+ * DELETE /api/teams/email-mappings/:id
+ */
+async function deleteEmailMapping(req, res, next) {
+  try {
+    const mapping = await TeamEmail.findByPk(req.params.id);
+    if (!mapping) {
+      throw new NotFoundError('Email mapping');
+    }
+
+    const { team, email } = mapping;
+    await mapping.destroy();
+
+    // Keep the roster authoritative: drop the membership from the matching
+    // account too, if any, so removing a roster entry actually revokes access.
+    const user = await User.findOne({ where: { email: email.toLowerCase() }, attributes: ['id'] });
+    if (user) {
+      await UserTeam.destroy({ where: { userId: user.id, team } });
+    }
+
+    logger.info('Team email mapping deleted', { team, email, deletedBy: req.userId });
+
+    res.json({ message: 'Email mapping deleted successfully' });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   list,
   getCodes,
   getById,
   create,
   update,
-  delete: deleteTeam
+  delete: deleteTeam,
+  listEmailMappings,
+  createEmailMappings,
+  exportEmailMappings,
+  deleteEmailMapping
 };

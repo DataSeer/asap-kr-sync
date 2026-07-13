@@ -57,5 +57,41 @@ export default {
   async delete(id) {
     const response = await api.delete(`/teams/${id}`)
     return response.data
+  },
+
+  /**
+   * List (team, email) roster mappings
+   * @param {object} params - { page?, limit?, team?, email? }
+   */
+  async listEmailMappings(params = {}) {
+    const response = await api.get('/teams/email-mappings', { params })
+    return response.data
+  },
+
+  /**
+   * Bulk-create (team, email) roster mappings
+   * @param {Array<{team: string, email: string}>} mappings
+   */
+  async createEmailMappings(mappings) {
+    const response = await api.post('/teams/email-mappings', { mappings })
+    return response.data
+  },
+
+  /**
+   * Delete a roster mapping
+   * @param {string} id - Mapping ID
+   */
+  async deleteEmailMapping(id) {
+    const response = await api.delete(`/teams/email-mappings/${id}`)
+    return response.data
+  },
+
+  /**
+   * Download the full (team, email) roster as CSV text
+   * @returns {Promise<string>}
+   */
+  async exportEmailMappings() {
+    const response = await api.get('/teams/email-mappings/export', { responseType: 'text' })
+    return response.data
   }
 }

@@ -79,6 +79,15 @@ router.patch('/:id',
   submissionsController.update
 );
 
+// PATCH /api/submissions/:id/owner - Reassign owner (admin and ds_annotator only).
+// canAccessSubmission loads req.submission (staff pass its checks).
+router.patch('/:id/owner',
+  requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),
+  canAccessSubmission,
+  validateBody('reassignOwner'),
+  submissionsController.reassignOwner
+);
+
 // DELETE /api/submissions/:id - Delete submission (admin and ds_annotator only)
 router.delete('/:id',
   requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),

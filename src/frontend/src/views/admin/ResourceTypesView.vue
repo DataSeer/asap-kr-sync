@@ -1,8 +1,9 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import resourceTypesService from '@/services/resourceTypes.service'
+import SearchInput from '@/components/common/SearchInput.vue'
 
 const resourceTypesStore = useResourceTypesStore()
 const notificationStore = useNotificationStore()
@@ -15,6 +16,18 @@ const RESOURCE_TYPE_CATEGORIES = [
 ]
 
 const loading = ref(true)
+const search = ref('')
+
+const filteredResourceTypes = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return resourceTypesStore.resourceTypes
+  return resourceTypesStore.resourceTypes.filter(rt =>
+    (rt.name || '').toLowerCase().includes(q) ||
+    (rt.type || '').toLowerCase().includes(q) ||
+    (rt.description || '').toLowerCase().includes(q)
+  )
+})
+
 const showEditModal = ref(false)
 const showCreateModal = ref(false)
 const editingResourceType = ref(null)
@@ -276,8 +289,8 @@ async function handleImport() {
 </script>
 
 <template>
-  <div>
-    <div class="flex items-center justify-between mb-6">
+  <div class="h-full flex flex-col">
+    <div class="flex items-center justify-between mb-6 flex-shrink-0">
       <h1 class="text-2xl font-bold text-gray-900">Resource Types</h1>
       <div class="flex items-center gap-2">
         <input ref="fileInput" type="file" accept=".csv" class="hidden" @change="handleFileSelect" />
@@ -287,20 +300,25 @@ async function handleImport() {
       </div>
     </div>
 
-    <div v-if="loading" class="flex items-center justify-center py-12">
+    <div v-if="loading" class="flex-1 flex items-center justify-center py-12">
       <svg class="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
       </svg>
     </div>
 
-    <template v-else>
-      <p class="text-sm text-gray-500 mb-3">{{ resourceTypesStore.resourceTypes.length }} resource types</p>
+    <div v-else class="flex-1 min-h-0 flex flex-col">
+      <p class="text-sm text-gray-500 mb-3 flex-shrink-0">{{ resourceTypesStore.resourceTypes.length }} resource types</p>
 
-      <div class="card overflow-hidden">
+      <div class="card overflow-hidden flex-1 min-h-0 flex flex-col">
         <div class="table-scroll">
           <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50 sticky top-0 z-10">
+              <tr>
+                <th colspan="6" class="px-4 py-3 bg-white border-b border-gray-200">
+                  <SearchInput v-model="search" full-width placeholder="Search resource types…" />
+                </th>
+              </tr>
               <tr>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
@@ -311,7 +329,7 @@ async function handleImport() {
               </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
-              <tr v-for="resourceType in resourceTypesStore.resourceTypes" :key="resourceType.id" :class="{ 'bg-gray-50 opacity-60': !resourceType.active }">
+              <tr v-for="resourceType in filteredResourceTypes" :key="resourceType.id" :class="{ 'bg-gray-50 opacity-60': !resourceType.active }">
                 <td class="px-4 py-3 whitespace-nowrap text-gray-500">
                   {{ resourceType.sortOrder }}
                 </td>
@@ -336,16 +354,16 @@ async function handleImport() {
                   <button class="text-red-600 hover:text-red-800" @click="handleDeleteResourceType(resourceType)">Delete</button>
                 </td>
               </tr>
-              <tr v-if="resourceTypesStore.resourceTypes.length === 0">
+              <tr v-if="filteredResourceTypes.length === 0">
                 <td colspan="6" class="px-4 py-8 text-center text-gray-500">
-                  No resource types found. Create one to get started.
+                  {{ search ? 'No resource types match your search.' : 'No resource types found. Create one to get started.' }}
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
-    </template>
+    </div>
 
     <!-- Import Modal -->
     <div v-if="showImportModal" class="fixed inset-0 z-50 overflow-y-auto">
@@ -485,7 +503,8 @@ async function handleImport() {
 
 <style scoped>
 .table-scroll {
-  max-height: 480px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 </style>

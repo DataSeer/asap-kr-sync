@@ -7,7 +7,7 @@
 import { ref, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth.store'
 import StatusBadge from './StatusBadge.vue'
-import TeamBadge from './TeamBadge.vue'
+import ProjectBadge from './ProjectBadge.vue'
 import StepIndicator from './StepIndicator.vue'
 import EditMetadataModal from './EditMetadataModal.vue'
 import { statusToStep } from '@/utils/submission'
@@ -87,7 +87,7 @@ function handleMetadataSaved() {
         v{{ submission.currentRound || 1 }}
       </span>
       <!-- Team badge -->
-      <TeamBadge v-if="submission.team" :team="submission.team" />
+      <ProjectBadge v-if="submission.project" :project="submission.project" />
     </div>
 
     <div class="flex items-start justify-between mb-4">

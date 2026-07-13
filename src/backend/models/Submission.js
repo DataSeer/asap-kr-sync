@@ -21,10 +21,12 @@ module.exports = (sequelize) => {
         key: 'id'
       }
     },
-    team: {
-      type: DataTypes.STRING(2),
+    project: {
+      type: DataTypes.STRING(10),
       allowNull: true
-      // Team validation is done at controller level using dynamic values from DB
+      // The 2-letter grant code, extracted from the manuscript ID. Validated at
+      // controller level against the projects table. Used as a filter only —
+      // visibility is driven by the owner's teams, not the project.
     },
     title: {
       type: DataTypes.STRING(500),
@@ -75,7 +77,7 @@ module.exports = (sequelize) => {
     underscored: true,
     indexes: [
       { fields: ['user_id'] },
-      { fields: ['team'] },
+      { fields: ['project'] },
       { fields: ['status'] },
       { fields: ['manuscript_id'] },
       { fields: ['created_at'] }

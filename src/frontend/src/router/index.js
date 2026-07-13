@@ -14,6 +14,8 @@ const AvailabilityView = () => import('@/views/submissions/AvailabilityView.vue'
 const ReportView = () => import('@/views/submissions/ReportView.vue')
 const UsersView = () => import('@/views/admin/UsersView.vue')
 const TeamsView = () => import('@/views/admin/TeamsView.vue')
+const TeamEmailsView = () => import('@/views/admin/TeamEmailsView.vue')
+const ProjectsView = () => import('@/views/admin/ProjectsView.vue')
 const ResourceTypesView = () => import('@/views/admin/ResourceTypesView.vue')
 const AppConfigView = () => import('@/views/admin/AppConfigView.vue')
 const EnrichmentListView = () => import('@/views/admin/EnrichmentListView.vue')
@@ -101,6 +103,18 @@ const routes = [
         name: 'admin-teams',
         component: TeamsView,
         meta: { roles: ['admin', 'ds_annotator'], title: 'Teams' }
+      },
+      {
+        path: 'admin/team-emails',
+        name: 'admin-team-emails',
+        component: TeamEmailsView,
+        meta: { roles: ['admin', 'ds_annotator', 'asap_pm'], title: 'Team Email Assignment' }
+      },
+      {
+        path: 'admin/projects',
+        name: 'admin-projects',
+        component: ProjectsView,
+        meta: { roles: ['admin', 'ds_annotator'], title: 'Projects' }
       },
       {
         path: 'admin/krt-editor/resource-types',

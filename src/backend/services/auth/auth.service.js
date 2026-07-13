@@ -15,6 +15,7 @@ const crypto = require('crypto');
 const { sequelize, User, UserTeam, RefreshToken } = require('../../models');
 const jwtService = require('./jwt.service');
 const auth0Service = require('./auth0.service');
+const teamEmailService = require('../teams/team-email.service');
 const { AuthenticationError, ConflictError } = require('../../utils/errors');
 const { ROLES } = require('../../config/constants');
 const logger = require('../../utils/logger');
@@ -85,10 +86,17 @@ async function register(userData, ctx = {}) {
     role: ROLES.AUTHOR
   });
 
+  // Apply the admin-managed (team, email) roster so a listed user starts
+  // with their teams already set (matters once they're promoted to asap_pm).
+  const teams = await teamEmailService.applyMappingsForUser(user.id, user.email);
+
   const tokens = await issueSession(user, ctx);
 
+  const createdUser = user.toJSON();
+  createdUser.teams = teams;
+
   return {
-    user: user.toJSON(),
+    user: createdUser,
     tokens
   };
 }
@@ -122,8 +130,15 @@ async function login(email, password, ctx = {}) {
 
   const tokens = await issueSession(user, ctx);
 
+  // Sync memberships with the (team, email) roster on every login, so a
+  // roster entry added after the account was created takes effect without
+  // admin intervention. The returned mapped teams are merged into the
+  // eagerly-loaded list to avoid a re-query.
+  const mappedTeams = await teamEmailService.applyMappingsForUser(user.id, user.email);
+
   const userData = user.toJSON();
-  userData.teams = userData.userTeams ? userData.userTeams.map(ut => ut.team) : [];
+  const loadedTeams = userData.userTeams ? userData.userTeams.map(ut => ut.team) : [];
+  userData.teams = [...new Set([...loadedTeams, ...mappedTeams])];
   delete userData.userTeams;
 
   return {

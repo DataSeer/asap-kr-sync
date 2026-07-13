@@ -7,6 +7,7 @@ import { useNotificationStore } from '@/stores/notification.store'
 import submissionService from '@/services/submission.service'
 import SubmissionCard from '@/components/submission/SubmissionCard.vue'
 import DeleteConfirmModal from '@/components/submission/DeleteConfirmModal.vue'
+import SearchInput from '@/components/common/SearchInput.vue'
 
 const router = useRouter()
 const submissionStore = useSubmissionStore()
@@ -15,17 +16,19 @@ const notificationStore = useNotificationStore()
 
 // Filter state (arrays for multi-select)
 const selectedStatuses = ref([])
-const selectedTeams = ref([])
+const selectedProjects = ref([])
 const selectedUsers = ref([])
 const selectedVisibility = ref('visible') // 'visible' | 'hidden' | 'all'
+const titleFilter = ref('') // server-side structured filter (by title)
+const tableSearch = ref('') // client-side post-filter of the returned page
 
 // Filter options from backend
-const filterOptions = ref({ teams: [], users: [] })
+const filterOptions = ref({ projects: [], users: [] })
 const loadingOptions = ref(false)
 
 // Dropdown visibility
 const showStatusDropdown = ref(false)
-const showTeamDropdown = ref(false)
+const showProjectDropdown = ref(false)
 const showUserDropdown = ref(false)
 
 // Delete modal state
@@ -39,6 +42,7 @@ const viewMode = ref(localStorage.getItem('dashboard-view-mode') || 'card')
 function setViewMode(mode) {
   viewMode.value = mode
   localStorage.setItem('dashboard-view-mode', mode)
+  tableSearch.value = '' // the in-table post-filter only exists in table view
 }
 
 // Bulk selection (table view)
@@ -148,6 +152,20 @@ function setPageSize(size) {
 }
 
 const submissions = computed(() => submissionStore.submissions)
+
+// Client-side post-filter over the returned page: concatenate the displayed
+// values of each row and substring-match. Complements the server-side filters.
+const visibleSubmissions = computed(() => {
+  const q = tableSearch.value.trim().toLowerCase()
+  if (!q) return submissions.value
+  return submissions.value.filter(s => {
+    const haystack = [
+      s.title, s.manuscriptId, s.project, s.status,
+      s.user?.name, s.user?.email
+    ].filter(Boolean).join(' ').toLowerCase()
+    return haystack.includes(q)
+  })
+})
 const loading = computed(() => submissionStore.loading)
 const pagination = computed(() => submissionStore.pagination)
 
@@ -190,8 +208,8 @@ async function fetchSubmissions() {
   if (selectedStatuses.value.length > 0) {
     params.status = selectedStatuses.value.join(',')
   }
-  if (selectedTeams.value.length > 0) {
-    params.team = selectedTeams.value.join(',')
+  if (selectedProjects.value.length > 0) {
+    params.project = selectedProjects.value.join(',')
   }
   if (selectedUsers.value.length > 0) {
     params.userId = selectedUsers.value.join(',')
@@ -199,16 +217,30 @@ async function fetchSubmissions() {
   if (selectedVisibility.value !== 'visible') {
     params.visibility = selectedVisibility.value
   }
+  if (titleFilter.value.trim()) {
+    params.title = titleFilter.value.trim()
+  }
 
   await submissionStore.fetchSubmissions(params)
 }
 
 // Watch filters and refetch
-watch([selectedStatuses, selectedTeams, selectedUsers, selectedVisibility], () => {
+watch([selectedStatuses, selectedProjects, selectedUsers, selectedVisibility], () => {
   currentPage.value = 1 // Reset to first page on filter change
   selectedIds.value = new Set()
   fetchSubmissions()
 }, { deep: true })
+
+// Debounced server-side title filter (structured — lives in the filters section)
+let titleDebounce = null
+watch(titleFilter, () => {
+  clearTimeout(titleDebounce)
+  titleDebounce = setTimeout(() => {
+    currentPage.value = 1
+    selectedIds.value = new Set()
+    fetchSubmissions()
+  }, 300)
+})
 
 watch(currentPage, () => {
   selectedIds.value = new Set()
@@ -224,12 +256,12 @@ function toggleStatus(value) {
   }
 }
 
-function toggleTeam(value) {
-  const idx = selectedTeams.value.indexOf(value)
+function toggleProject(value) {
+  const idx = selectedProjects.value.indexOf(value)
   if (idx === -1) {
-    selectedTeams.value.push(value)
+    selectedProjects.value.push(value)
   } else {
-    selectedTeams.value.splice(idx, 1)
+    selectedProjects.value.splice(idx, 1)
   }
 }
 
@@ -244,9 +276,10 @@ function toggleUser(value) {
 
 function clearFilters() {
   selectedStatuses.value = []
-  selectedTeams.value = []
+  selectedProjects.value = []
   selectedUsers.value = []
   selectedVisibility.value = 'visible'
+  titleFilter.value = ''
 }
 
 function getStatusLabel(value) {
@@ -328,7 +361,7 @@ function goToPage(page) {
 function closeDropdowns(event) {
   if (!event.target.closest('.filter-dropdown')) {
     showStatusDropdown.value = false
-    showTeamDropdown.value = false
+    showProjectDropdown.value = false
     showUserDropdown.value = false
   }
 }
@@ -338,27 +371,26 @@ const canDelete = computed(() => authStore.canDeleteSubmission)
 const canFilterTeamAndAuthor = computed(() => ['admin', 'ds_annotator', 'asap_pm'].includes(authStore.effectiveRole))
 
 const activeFilterCount = computed(() => {
-  let count = selectedStatuses.value.length + selectedTeams.value.length + selectedUsers.value.length
+  let count = selectedStatuses.value.length + selectedProjects.value.length + selectedUsers.value.length
   if (selectedVisibility.value !== 'visible') count++
+  if (titleFilter.value.trim()) count++
   return count
 })
 </script>
 
 <template>
-  <div @click="closeDropdowns">
+  <div @click="closeDropdowns" class="h-full flex flex-col">
     <!-- Header with CTA -->
-    <div class="card mb-6 bg-gradient-to-r from-primary-50 to-primary-100 border-primary-200">
+    <div class="card mb-6 flex-shrink-0 bg-gradient-to-r from-primary-50 to-primary-100 border-primary-200">
       <div>
         <h1 class="text-2xl font-bold text-primary-900">Dashboard</h1>
       </div>
     </div>
 
     <!-- Filters -->
-    <div class="card mb-6">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-sm font-medium text-gray-700">Filters</h3>
+    <div class="card mb-6 flex-shrink-0">
+      <div v-if="activeFilterCount > 0" class="flex justify-end mb-2">
         <button
-          v-if="activeFilterCount > 0"
           class="text-sm text-gray-500 hover:text-gray-700 flex items-center"
           @click="clearFilters"
         >
@@ -370,12 +402,20 @@ const activeFilterCount = computed(() => {
       </div>
 
       <div class="flex flex-wrap items-start gap-4">
+        <!-- Title (structured, server-side) -->
+        <div class="filter-dropdown relative" @click.stop>
+          <label class="label">Title</label>
+          <div class="w-40">
+            <SearchInput v-model="titleFilter" full-width placeholder="Search…" />
+          </div>
+        </div>
+
         <!-- Status Multi-Select -->
         <div class="filter-dropdown relative">
           <label class="label">Status</label>
           <button
             class="input w-56 text-left flex items-center justify-between"
-            @click.stop="showStatusDropdown = !showStatusDropdown; showTeamDropdown = false; showUserDropdown = false"
+            @click.stop="showStatusDropdown = !showStatusDropdown; showProjectDropdown = false; showUserDropdown = false"
           >
             <span v-if="selectedStatuses.length === 0" class="text-gray-400">All statuses</span>
             <span v-else class="truncate">{{ selectedStatuses.length }} selected</span>
@@ -408,38 +448,38 @@ const activeFilterCount = computed(() => {
           </div>
         </div>
 
-        <!-- Team Multi-Select (asap_pm, ds_annotator, admin) -->
-        <div v-if="canFilterTeamAndAuthor && filterOptions.teams.length > 0" class="filter-dropdown relative">
-          <label class="label">Team</label>
+        <!-- Project Multi-Select (all roles — a filter for clarity) -->
+        <div v-if="filterOptions.projects.length > 0" class="filter-dropdown relative">
+          <label class="label">Project</label>
           <button
             class="input w-40 text-left flex items-center justify-between"
-            @click.stop="showTeamDropdown = !showTeamDropdown; showStatusDropdown = false; showUserDropdown = false"
+            @click.stop="showProjectDropdown = !showProjectDropdown; showStatusDropdown = false; showUserDropdown = false"
           >
-            <span v-if="selectedTeams.length === 0" class="text-gray-400">All teams</span>
-            <span v-else class="truncate">{{ selectedTeams.length }} selected</span>
+            <span v-if="selectedProjects.length === 0" class="text-gray-400">All projects</span>
+            <span v-else class="truncate">{{ selectedProjects.length }} selected</span>
             <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
             </svg>
           </button>
 
           <div
-            v-if="showTeamDropdown"
+            v-if="showProjectDropdown"
             class="absolute z-20 mt-1 w-40 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-auto"
           >
             <div
-              v-for="team in filterOptions.teams"
-              :key="team"
+              v-for="project in filterOptions.projects"
+              :key="project"
               class="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center"
-              @click.stop="toggleTeam(team)"
+              @click.stop="toggleProject(project)"
             >
               <input
                 type="checkbox"
-                :checked="selectedTeams.includes(team)"
+                :checked="selectedProjects.includes(project)"
                 class="mr-2 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                 @click.stop
-                @change="toggleTeam(team)"
+                @change="toggleProject(project)"
               />
-              <span class="text-sm">{{ team }}</span>
+              <span class="text-sm">{{ project }}</span>
             </div>
           </div>
         </div>
@@ -449,7 +489,7 @@ const activeFilterCount = computed(() => {
           <label class="label">Author</label>
           <button
             class="input w-48 text-left flex items-center justify-between"
-            @click.stop="showUserDropdown = !showUserDropdown; showStatusDropdown = false; showTeamDropdown = false"
+            @click.stop="showUserDropdown = !showUserDropdown; showStatusDropdown = false; showProjectDropdown = false"
           >
             <span v-if="selectedUsers.length === 0" class="text-gray-400">All authors</span>
             <span v-else class="truncate">{{ selectedUsers.length }} selected</span>
@@ -517,12 +557,12 @@ const activeFilterCount = computed(() => {
           </button>
         </span>
         <span
-          v-for="team in selectedTeams"
-          :key="`team-${team}`"
+          v-for="project in selectedProjects"
+          :key="`project-${project}`"
           class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800"
         >
-          Team: {{ team }}
-          <button class="ml-1 hover:opacity-70" @click="toggleTeam(team)">
+          Project: {{ project }}
+          <button class="ml-1 hover:opacity-70" @click="toggleProject(project)">
             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -555,7 +595,7 @@ const activeFilterCount = computed(() => {
     </div>
 
     <!-- Results summary + view toggle -->
-    <div class="flex items-center justify-between mb-4">
+    <div class="flex items-center justify-between mb-4 flex-shrink-0">
       <p class="text-sm text-gray-500">
         <span v-if="loading">Loading...</span>
         <span v-else>
@@ -587,8 +627,10 @@ const activeFilterCount = computed(() => {
       </div>
     </div>
 
+    <!-- Results region — fills the remaining page height -->
+    <div class="flex-1 min-h-0 flex flex-col">
     <!-- Loading state -->
-    <div v-if="loading" class="flex items-center justify-center py-12">
+    <div v-if="loading" class="flex-1 flex items-center justify-center py-12">
       <svg class="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -613,9 +655,9 @@ const activeFilterCount = computed(() => {
       </div>
     </div>
 
-    <!-- Submissions grid (card view) -->
+    <!-- Submissions grid (card view) — no in-table post-filter here -->
     <template v-else-if="viewMode === 'card'">
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 flex-1 min-h-0 overflow-y-auto content-start">
         <SubmissionCard
           v-for="submission in submissions"
           :key="submission.id"
@@ -629,7 +671,7 @@ const activeFilterCount = computed(() => {
       </div>
 
       <!-- Pagination -->
-      <div v-if="totalPages > 1 || itemsPerPage !== 12" class="mt-8 flex items-center justify-between">
+      <div v-if="totalPages > 1 || itemsPerPage !== 12" class="mt-4 flex-shrink-0 flex items-center justify-between">
         <!-- Page size selector -->
         <div class="flex items-center gap-2 text-sm text-gray-600">
           <span>Show</span>
@@ -725,10 +767,15 @@ const activeFilterCount = computed(() => {
         </button>
       </div>
 
-      <div class="card overflow-hidden !p-0">
-        <div class="max-h-[480px] overflow-y-auto">
+      <div class="card overflow-hidden !p-0 flex-1 min-h-0 flex flex-col">
+        <div class="flex-1 min-h-0 overflow-y-auto">
           <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50 sticky top-0 z-10">
+              <tr>
+                <th colspan="9" class="px-4 py-3 bg-white border-b border-gray-200">
+                  <SearchInput v-model="tableSearch" full-width placeholder="Search these results…" />
+                </th>
+              </tr>
               <tr>
                 <th class="w-10 px-3 py-3">
                   <input
@@ -740,7 +787,7 @@ const activeFilterCount = computed(() => {
                 </th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Manuscript ID</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Team</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Round</th>
@@ -749,8 +796,13 @@ const activeFilterCount = computed(() => {
               </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
+              <tr v-if="visibleSubmissions.length === 0">
+                <td colspan="9" class="px-4 py-8 text-center text-gray-500">
+                  No results on this page match “{{ tableSearch }}”.
+                </td>
+              </tr>
               <tr
-                v-for="sub in submissions"
+                v-for="sub in visibleSubmissions"
                 :key="sub.id"
                 class="hover:bg-gray-50 transition-colors"
                 :class="{ 'bg-primary-50/30': selectedIds.has(sub.id) }"
@@ -776,7 +828,7 @@ const activeFilterCount = computed(() => {
                   {{ sub.manuscriptId || '—' }}
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-600">
-                  {{ sub.team || '—' }}
+                  {{ sub.project || '—' }}
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-600 truncate max-w-[120px]">
                   {{ sub.user?.name || '—' }}
@@ -834,7 +886,7 @@ const activeFilterCount = computed(() => {
       </div>
 
       <!-- Pagination (table view) -->
-      <div v-if="totalPages > 1 || itemsPerPage !== 12" class="mt-8 flex items-center justify-between">
+      <div v-if="totalPages > 1 || itemsPerPage !== 12" class="mt-4 flex-shrink-0 flex items-center justify-between">
         <!-- Page size selector -->
         <div class="flex items-center gap-2 text-sm text-gray-600">
           <span>Show</span>
@@ -893,6 +945,7 @@ const activeFilterCount = computed(() => {
         </div>
       </div>
     </template>
+    </div><!-- /results region -->
 
     <!-- Delete Confirmation Modal (single) -->
     <DeleteConfirmModal

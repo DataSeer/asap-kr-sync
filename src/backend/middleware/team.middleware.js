@@ -1,13 +1,23 @@
 /**
  * Team-Based Access Control Middleware
  *
- * Implements the per-record and list scoping rules for submissions:
+ * Visibility is TEAM-based (a team is a lab, keyed by leader name). A
+ * submission's `project` (2-letter grant code) is NOT an access key — it is
+ * only a filter. A submission is "related to" the teams of its OWNER, so:
+ *
  *  - admin / ds_annotator: full access, no filter.
- *  - asap_pm: access to submissions whose `team` is in the PM's team list.
- *    Edge case — if the PM has no teams, they can only see/touch submissions
- *    whose team is NULL. This lets a "general" PM with no team assignment
- *    handle teamless submissions without seeing other teams' work.
- *  - author: access to submissions whose `userId` matches their own.
+ *  - asap_pm: their own submissions, plus any submission whose OWNER shares one
+ *    of the PM's teams (their teammates). A PM with no teams sees only their
+ *    own. Two teams working the same project each see only their own team's
+ *    submissions, because ownership — not the project — drives visibility.
+ *  - author: their own submissions only.
+ *
+ * Staff-owned submissions are hidden from non-staff. Admins and DS annotators
+ * upload many PDFs for testing, so their own submissions would otherwise
+ * surface for PMs who share a team; submissions owned by an admin/ds_annotator
+ * are therefore never visible to asap_pm or author viewers. Staff hand a
+ * document to a real user via the reassign-owner endpoint, after which it
+ * follows the new owner's teams.
  *
  * The same rules are mirrored in the frontend auth store
  * (`canEditSubmission`, `canAccessSubmission`) for UI gating; this file is the
@@ -15,9 +25,50 @@
  */
 
 const { Op } = require('sequelize');
-const { Submission } = require('../models');
+const { Submission, User, UserTeam } = require('../models');
 const { AuthorizationError, NotFoundError } = require('../utils/errors');
 const { ROLES } = require('../config/constants');
+
+const STAFF_ROLES = [ROLES.ADMIN, ROLES.DS_ANNOTATOR];
+
+/**
+ * IDs of all staff (admin / ds_annotator) users. Used to exclude staff-owned
+ * submissions from non-staff viewers.
+ * @returns {Promise<string[]>}
+ */
+async function getStaffUserIds() {
+  const staff = await User.findAll({
+    where: { role: { [Op.in]: STAFF_ROLES } },
+    attributes: ['id'],
+    raw: true
+  });
+  return staff.map(u => u.id);
+}
+
+/**
+ * AND a staff-owner exclusion onto a base where-clause. No-op when there are
+ * no staff users (an empty NOT IN would otherwise match nothing).
+ * @param {object} filter - base Sequelize where clause
+ * @param {string[]} staffIds
+ * @returns {object}
+ */
+function withStaffOwnerExclusion(filter, staffIds) {
+  if (!staffIds.length) return filter;
+  return { [Op.and]: [filter, { userId: { [Op.notIn]: staffIds } }] };
+}
+
+/**
+ * Whether a submission's owner is a staff (admin / ds_annotator) user.
+ * @param {string} ownerId
+ * @returns {Promise<boolean>}
+ */
+async function isStaffOwned(ownerId) {
+  if (!ownerId) return false;
+  const count = await User.count({
+    where: { id: ownerId, role: { [Op.in]: STAFF_ROLES } }
+  });
+  return count > 0;
+}
 
 /**
  * Check if user can access a specific submission
@@ -49,18 +100,21 @@ async function canAccessSubmission(req, res, next) {
       return next();
     }
 
-    // ASAP PM can only access their teams' submissions (or no-team submissions if PM has no teams)
+    // ASAP PM: their own, plus any submission whose OWNER shares one of the
+    // PM's teams. Staff-owned (test) submissions are never exposed.
     if (role === ROLES.ASAP_PM) {
-      if (userTeams.length === 0) {
-        // PM has no teams - can only access submissions with no team
-        if (submission.team !== null) {
-          return next(new AuthorizationError('You can only access submissions without a team assigned'));
-        }
-      } else {
-        // PM has teams - can only access submissions from their teams
-        if (!userTeams.includes(submission.team)) {
-          return next(new AuthorizationError('You can only access submissions from your teams'));
-        }
+      if (submission.userId === userId) {
+        req.submission = submission;
+        return next();
+      }
+      if (await isStaffOwned(submission.userId)) {
+        return next(new AuthorizationError('You can only access submissions from your teams'));
+      }
+      const ownerSharesTeam = userTeams.length > 0 && await UserTeam.count({
+        where: { userId: submission.userId, team: { [Op.in]: userTeams } }
+      }) > 0;
+      if (!ownerSharesTeam) {
+        return next(new AuthorizationError('You can only access submissions from your teams'));
       }
       req.submission = submission;
       return next();
@@ -84,9 +138,9 @@ async function canAccessSubmission(req, res, next) {
 /**
  * Build query filter based on user role
  * @param {object} user - User object from request
- * @returns {object} Sequelize where clause
+ * @returns {Promise<object>} Sequelize where clause
  */
-function buildSubmissionFilter(user) {
+async function buildSubmissionFilter(user) {
   if (!user) {
     return { id: null }; // Return empty result
   }
@@ -99,16 +153,25 @@ function buildSubmissionFilter(user) {
       // Can see all submissions
       return {};
 
-    case ROLES.ASAP_PM:
-      // Can only see their teams' submissions (or submissions with no team if PM has no teams)
-      if (userTeams.length === 0) {
-        // PM has no teams - can only see submissions with no team assigned
-        return { team: { [Op.is]: null } };
+    case ROLES.ASAP_PM: {
+      // Their own submissions, plus any submission whose OWNER is on one of the
+      // PM's teams (their teammates). A PM with no teams sees only their own.
+      // Result: { userId IN (own + teammates) } AND (not staff-owned). The list
+      // controller's optional ?project= filter AND-combines and can only narrow.
+      const ownerIds = new Set([userId]);
+      if (userTeams.length > 0) {
+        const teammates = await UserTeam.findAll({
+          where: { team: { [Op.in]: userTeams } },
+          attributes: ['userId'],
+          raw: true
+        });
+        teammates.forEach(t => ownerIds.add(t.userId));
       }
-      return { team: { [Op.in]: userTeams } };
+      return withStaffOwnerExclusion({ userId: { [Op.in]: [...ownerIds] } }, await getStaffUserIds());
+    }
 
     case ROLES.AUTHOR:
-      // Can only see their own submissions
+      // Can only see their own submissions.
       return { userId };
 
     default:
@@ -119,9 +182,13 @@ function buildSubmissionFilter(user) {
 /**
  * Middleware to attach submission filter to request
  */
-function attachSubmissionFilter(req, res, next) {
-  req.submissionFilter = buildSubmissionFilter(req.user);
-  next();
+async function attachSubmissionFilter(req, res, next) {
+  try {
+    req.submissionFilter = await buildSubmissionFilter(req.user);
+    next();
+  } catch (error) {
+    next(error);
+  }
 }
 
 module.exports = {

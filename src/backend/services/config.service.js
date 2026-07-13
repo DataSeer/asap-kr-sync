@@ -3,7 +3,7 @@
  * Provides cached access to configuration stored in database
  */
 
-const { Team, ResourceType, AppConfig } = require('../models');
+const { Team, Project, ResourceType, AppConfig } = require('../models');
 const logger = require('../utils/logger');
 
 // Cache TTL in milliseconds (5 minutes)
@@ -12,6 +12,7 @@ const CACHE_TTL = 5 * 60 * 1000;
 // In-memory cache with per-key timestamps
 const cache = {
   teams: { data: null, refreshedAt: null },
+  projects: { data: null, refreshedAt: null },
   resourceTypes: { data: null, refreshedAt: null },
   resourceTypeGroupOrder: { data: null, refreshedAt: null },
   validationRules: { data: null, refreshedAt: null }
@@ -36,6 +37,20 @@ async function getTeams() {
 
   const codes = await Team.getActiveCodes();
   cache.teams = { data: codes, refreshedAt: Date.now() };
+  return codes;
+}
+
+/**
+ * Get all active project (grant) codes from database (cached)
+ * @returns {Promise<string[]>}
+ */
+async function getProjects() {
+  if (isEntryValid(cache.projects) && cache.projects.data !== null) {
+    return cache.projects.data;
+  }
+
+  const codes = await Project.getActiveCodes();
+  cache.projects = { data: codes, refreshedAt: Date.now() };
   return codes;
 }
 
@@ -105,6 +120,7 @@ async function getValidationRules() {
  */
 function invalidateCache() {
   cache.teams = { data: null, refreshedAt: null };
+  cache.projects = { data: null, refreshedAt: null };
   cache.resourceTypes = { data: null, refreshedAt: null };
   cache.resourceTypeGroupOrder = { data: null, refreshedAt: null };
   cache.validationRules = { data: null, refreshedAt: null };
@@ -120,6 +136,7 @@ async function initialize() {
     // Pre-load all config into cache
     await Promise.all([
       getTeams(),
+      getProjects(),
       getResourceTypes(),
       getValidationRules()
     ]);
@@ -136,6 +153,7 @@ async function initialize() {
 
 module.exports = {
   getTeams,
+  getProjects,
   getResourceTypes,
   getResourceTypeGroupOrder,
   getResourceTypeSortOrder,

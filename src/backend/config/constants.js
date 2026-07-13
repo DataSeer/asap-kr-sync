@@ -48,6 +48,7 @@ module.exports = {
 
   // Async getters for dynamic configuration from database
   getTeams: () => getConfigService().getTeams(),
+  getProjects: () => getConfigService().getProjects(),
   getResourceTypes: () => getConfigService().getResourceTypes(),
   getValidationRules: () => getConfigService().getValidationRules(),
 

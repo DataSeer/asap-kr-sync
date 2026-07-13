@@ -2,25 +2,25 @@
  * Helper Utility Functions
  */
 
-const { getTeams } = require('../config/constants');
+const { getProjects } = require('../config/constants');
 
 /**
- * Extract team code from manuscript ID
+ * Extract the project (grant) code from a manuscript ID.
  * @param {string} manuscriptId - e.g., "XX1-000000-001-org-X-1"
- * @returns {Promise<string|null>} - Team code (e.g., "RE") or null if invalid
+ * @returns {Promise<string|null>} - Project code (e.g., "RE") or null if invalid
  */
-async function extractTeamFromManuscriptId(manuscriptId) {
+async function extractProjectFromManuscriptId(manuscriptId) {
   if (!manuscriptId || typeof manuscriptId !== 'string') {
     return null;
   }
 
-  // Extract first 2 characters
-  const teamCode = manuscriptId.substring(0, 2).toUpperCase();
+  // Extract first 2 characters (the project/grant code)
+  const projectCode = manuscriptId.substring(0, 2).toUpperCase();
 
-  // Validate against known teams from database
-  const teams = await getTeams();
-  if (teams.includes(teamCode)) {
-    return teamCode;
+  // Validate against known projects from database
+  const projects = await getProjects();
+  if (projects.includes(projectCode)) {
+    return projectCode;
   }
 
   return null;
@@ -289,7 +289,7 @@ function buildReportFilename(manuscriptId, pdfFileName, ext = 'xlsx') {
 }
 
 module.exports = {
-  extractTeamFromManuscriptId,
+  extractProjectFromManuscriptId,
   statusToStep,
   sanitizeFilename,
   buildReportFilename,

@@ -5,7 +5,7 @@ import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
 import StatusBadge from '@/components/submission/StatusBadge.vue'
-import TeamBadge from '@/components/submission/TeamBadge.vue'
+import ProjectBadge from '@/components/submission/ProjectBadge.vue'
 import StepIndicator from '@/components/submission/StepIndicator.vue'
 import { statusToStep } from '@/utils/submission'
 
@@ -88,7 +88,7 @@ function getStepStatus(step) {
           <p v-else class="text-gray-400 italic">No manuscript ID set</p>
         </div>
         <div class="flex items-center space-x-2">
-          <TeamBadge v-if="submission.team" :team="submission.team" />
+          <ProjectBadge v-if="submission.project" :project="submission.project" />
           <StatusBadge :status="submission.status" />
         </div>
       </div>

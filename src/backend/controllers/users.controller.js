@@ -6,6 +6,7 @@ const { Op } = require('sequelize');
 const { User, UserTeam, sequelize } = require('../models');
 const { NotFoundError, ConflictError, AuthorizationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
+const teamEmailService = require('../services/teams/team-email.service');
 const { ROLES } = require('../config/constants');
 const logger = require('../utils/logger');
 
@@ -184,9 +185,12 @@ async function create(req, res, next) {
 
     logger.info('User created by admin', { userId: user.id, email: user.email, createdBy: req.userId });
 
-    // Fetch user with teams
+    // Merge in the (team, email) roster on top of the explicitly assigned
+    // teams, same as the login flows do.
+    const mappedTeams = await teamEmailService.applyMappingsForUser(user.id, user.email);
+
     const userData = user.toJSON();
-    userData.teams = teams || [];
+    userData.teams = [...new Set([...(teams || []), ...mappedTeams])];
 
     res.status(201).json({ user: userData });
   } catch (error) {

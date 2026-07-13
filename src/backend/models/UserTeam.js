@@ -18,7 +18,7 @@ module.exports = (sequelize) => {
       field: 'user_id'
     },
     team: {
-      type: DataTypes.STRING(10),
+      type: DataTypes.STRING(100),
       allowNull: false,
       validate: {
         notEmpty: true
