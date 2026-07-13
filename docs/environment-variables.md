@@ -104,6 +104,17 @@ The LM that powers AI Suggestions (the `suggestion_generation` job): it compares
 | `KRT_COMPARISON_GEMINI_MODEL` | Gemini model name | `gemini-2.5-flash` | No |
 | `KRT_COMPARISON_API_TIMEOUT` | Request timeout (ms) | `300000` | No |
 
+## DAS Suggestions (Google Gemini — Availability Statement check)
+
+The LM that powers the DAS Suggestions shown on the `/availability` step (the `das_suggestions` job). It checks the Data/Code Availability Statement against the ASAP rulebook (see [background-modules.md → `das_suggestions`](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a per-rule verdict. **LM-only:** when disabled / no key, the frontend **falls back to the legacy in-browser rules** and Continue is not blocked.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `DAS_SUGGESTIONS_ENABLED` | Enable the LM DAS check. When `false`, the frontend uses the legacy hardcoded rules. | `false` | No |
+| `DAS_SUGGESTIONS_GEMINI_API_KEY` | Google Gemini API key | — | If enabled |
+| `DAS_SUGGESTIONS_GEMINI_MODEL` | Gemini model name | `gemini-2.5-flash` | No |
+| `DAS_SUGGESTIONS_API_TIMEOUT` | Request timeout (ms) | `120000` | No |
+
 ## DAS Extraction (Google Gemini)
 
 Reads the converted manuscript markdown (produced by Markdown Convert)

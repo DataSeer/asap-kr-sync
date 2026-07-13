@@ -95,6 +95,11 @@ const PIPELINE = [
     jobType: JOB_TYPES.SUGGESTION_GENERATION,
     dependsOn: [JOB_TYPES.PDF_ANALYSIS]
   }
+  // NOTE: DAS_SUGGESTIONS is intentionally NOT in the auto pipeline. It is a
+  // standalone, re-triggerable job started by the /availability view once the
+  // user has finished review (so the DAS is extracted and the KRT is final).
+  // Keeping it out of the pipeline avoids it sitting in `waiting` and blocking
+  // the earlier steps' "all processes finished" gate.
 ];
 
 // Map jobType to the queue name used by pg-boss — shared, derived map so it

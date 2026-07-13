@@ -400,6 +400,31 @@ recomputed on read).
 
 ---
 
+## DAS Suggestions
+
+The LM check of the **Data/Code Availability Statement** shown on the `/availability` step (the standalone
+`das_suggestions` job). It judges the DAS against the ASAP rulebook and returns a **per-rule verdict**. LM-only:
+when disabled / no key (or on failure), the frontend falls back to the legacy in-browser rules. See
+[background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)
+for the full rulebook (the 9 checks).
+
+### `GET /api/submissions/:id/das-suggestions`
+Get the latest DAS check status + verdicts. Author-accessible (unlike the raw `/jobs` payload).
+
+- **Returns**: `{ status, suggestions, meta }`
+  - `status`: the `das_suggestions` job status — `none` (never run) · `queued` · `processing` · `complete` · `failed`.
+  - `suggestions`: array of `{ ruleId, severity, title, message, recommendedText, applies, notApplicableReason }`
+    (empty when the LM produced nothing → the frontend renders the legacy rules instead).
+  - `meta`: `{ total, applicable, model, ... }` or `{ skipped: true, reason: 'lm_not_configured' }`.
+
+The `/availability` view shows a **loader** and **blocks Continue** while `status` is `queued`/`processing`.
+
+### `POST /api/submissions/:id/das-suggestions/regenerate`
+Re-run the DAS check (creates a fresh `das_suggestions` job). Called on first arrival at `/availability` and again
+whenever the author edits the DAS text. **Returns**: `{ queued: true, jobId }` (202).
+
+---
+
 ## Software Detection
 
 ### `GET /api/submissions/:id/software`

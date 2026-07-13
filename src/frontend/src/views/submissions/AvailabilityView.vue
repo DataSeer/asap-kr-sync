@@ -1,11 +1,12 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import dasSuggestionsService from '@/services/das-suggestions.service'
 
 const route = useRoute()
 const router = useRouter()
@@ -47,10 +48,63 @@ async function saveDAS() {
     })
     isEditingDAS.value = false
     notificationStore.success('Availability Statement updated')
+    // The DAS text changed → re-run the LM check against the new statement.
+    await regenerateDasSuggestions()
   } catch (error) {
     notificationStore.error('Failed to save Availability Statement')
   } finally {
     savingDAS.value = false
+  }
+}
+
+// ── LM DAS suggestions (background job) ───────────────────────────────
+// The DAS is checked against the ASAP rulebook by a background Gemini job. We
+// poll its status: while it runs we show a loader and block Continue; when it
+// finishes we render its per-rule verdicts. If the LM is disabled or failed we
+// fall back to the legacy in-browser rules (see `allRules` below).
+const RUNNING_STATUSES = ['waiting', 'queued', 'processing']
+const dasJobStatus = ref('none')
+const lmSuggestions = ref([])
+let pollTimer = null
+
+const isGeneratingSuggestions = computed(() => RUNNING_STATUSES.includes(dasJobStatus.value))
+const usingLmSuggestions = computed(() => dasJobStatus.value === 'complete' && lmSuggestions.value.length > 0)
+
+async function fetchDasSuggestions() {
+  try {
+    const data = await dasSuggestionsService.get(route.params.id)
+    dasJobStatus.value = data.status || 'none'
+    lmSuggestions.value = Array.isArray(data.suggestions) ? data.suggestions : []
+  } catch (error) {
+    // Treat a fetch error as terminal so the user isn't stuck — fall back.
+    dasJobStatus.value = 'failed'
+    lmSuggestions.value = []
+  }
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    await fetchDasSuggestions()
+    if (!RUNNING_STATUSES.includes(dasJobStatus.value)) stopPolling()
+  }, 3000)
+}
+
+async function regenerateDasSuggestions() {
+  try {
+    await dasSuggestionsService.regenerate(route.params.id)
+    dasJobStatus.value = 'queued'
+    lmSuggestions.value = []
+    startPolling()
+  } catch (error) {
+    // If we couldn't re-queue, keep whatever suggestions we already have.
   }
 }
 
@@ -74,7 +128,16 @@ onMounted(async () => {
   krtStore.clearKRT()
   await submissionStore.fetchSubmission(route.params.id)
   await krtStore.fetchKRT(route.params.id)
+  await fetchDasSuggestions()
+  if (dasJobStatus.value === 'none') {
+    // First arrival (the user just finished review) → run the DAS check now.
+    await regenerateDasSuggestions()
+  } else if (RUNNING_STATUSES.includes(dasJobStatus.value)) {
+    startPolling()
+  }
 })
+
+onUnmounted(stopPolling)
 
 watch(submission, (sub) => {
   if (sub) {
@@ -216,10 +279,14 @@ const allRules = computed(() => {
   return rules
 })
 
+// Source suggestions: the LM verdicts when the job produced them, else the
+// legacy in-browser rules (LM disabled / failed / not yet run).
+const baseSuggestions = computed(() => usingLmSuggestions.value ? lmSuggestions.value : allRules.value)
+
 // Filtered suggestions (only applicable ones, or all if showAllRules is true)
 // Always sort: applicable first, then N/A
 const asSuggestions = computed(() => {
-  let rules = showAllRules.value ? allRules.value : allRules.value.filter(r => r.applies)
+  let rules = showAllRules.value ? baseSuggestions.value : baseSuggestions.value.filter(r => r.applies)
   // Sort: applicable rules first, then N/A
   return [...rules].sort((a, b) => {
     if (a.applies && !b.applies) return -1
@@ -227,6 +294,12 @@ const asSuggestions = computed(() => {
     return 0
   })
 })
+
+// Continue is blocked while the DAS check is still running.
+const canGoNext = computed(() => !isGeneratingSuggestions.value)
+const nextBlockedReason = computed(() =>
+  isGeneratingSuggestions.value ? 'Generating availability suggestions… please wait.' : ''
+)
 
 // Current suggestion in carousel mode
 const currentSuggestion = computed(() => asSuggestions.value[currentSuggestionIndex.value] || null)
@@ -291,7 +364,8 @@ async function handleBack() {
       :help-items="helpItems"
       :show-navigation="true"
       :can-go-back="true"
-      :can-go-next="true"
+      :can-go-next="canGoNext"
+      :next-blocked-reason="nextBlockedReason"
       @go-back="handleBack"
       @go-next="handleNext"
     />
@@ -350,12 +424,12 @@ async function handleBack() {
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">
           Suggestions
-          <span class="text-sm font-normal text-gray-500 ml-2">
+          <span v-if="!isGeneratingSuggestions" class="text-sm font-normal text-gray-500 ml-2">
             {{ asSuggestions.filter(s => s.applies).length }} applicable
-            <span v-if="showAllRules"> / {{ allRules.length }} total</span>
+            <span v-if="showAllRules"> / {{ baseSuggestions.length }} total</span>
           </span>
         </h2>
-        <div class="flex items-center gap-4">
+        <div v-show="!isGeneratingSuggestions" class="flex items-center gap-4">
           <!-- View mode switch -->
           <div class="view-mode-switch">
             <button
@@ -391,8 +465,20 @@ async function handleBack() {
         </div>
       </div>
 
+      <!-- Loader while the LM check runs -->
+      <div v-if="isGeneratingSuggestions" class="das-loader">
+        <svg class="animate-spin h-6 w-6 text-primary-600" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <div>
+          <p class="das-loader-title">Analyzing the Availability Statement…</p>
+          <p class="das-loader-sub">Checking it against the ASAP rulebook. Please wait — this only takes a few seconds.</p>
+        </div>
+      </div>
+
       <!-- List View -->
-      <div v-if="asSuggestions.length > 0 && viewMode === 'list'" class="suggestions-list">
+      <div v-else-if="asSuggestions.length > 0 && viewMode === 'list'" class="suggestions-list">
         <div
           v-for="(suggestion, index) in asSuggestions"
           :key="index"
@@ -864,5 +950,27 @@ async function handleBack() {
 
 .carousel-dot-na:hover {
   background: #9ca3af;
+}
+
+.das-loader {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 1.25rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+}
+
+.das-loader-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.das-loader-sub {
+  font-size: 0.8125rem;
+  color: #6b7280;
+  margin-top: 0.125rem;
 }
 </style>

@@ -34,6 +34,7 @@ const materialsConfig = require('../../config/materials-detection-api');
 const protocolsConfig = require('../../config/protocols-detection-api');
 const pdfAnalysisConfig = require('../../config/pdf-analysis-api');
 const krtComparisonConfig = require('../../config/krt-comparison-api');
+const dasSuggestionsConfig = require('../../config/das-suggestions-api');
 
 /**
  * Per-job-type config readers. Each entry returns the live (env-time) state
@@ -86,6 +87,12 @@ const SERVICE_CFG = {
   // demo path: when the comparison API isn't configured the module reads 'off'.
   suggestion_generation: {
     isExternalEnabled: () => krtComparisonConfig.isConfigured(),
+    isDemoEnabled: () => false
+  },
+  // LM check of the DAS against the ASAP rulebook. LM-only; when not configured
+  // the module reads 'off' and the frontend falls back to legacy rules.
+  das_suggestions: {
+    isExternalEnabled: () => dasSuggestionsConfig.isConfigured(),
     isDemoEnabled: () => false
   }
 };
@@ -719,6 +726,42 @@ async function initializeWorkers() {
         if (submissionJob) await submissionJob.markFailed(error.message);
         await jobLogger?.flush();
         if (isFinalAttempt) await advancePipeline(submissionId, 'suggestion_generation', round);
+        throw error;
+      }
+    },
+    { concurrency: 1 }
+  );
+
+  // DAS suggestions: LM check of the Data/Code Availability Statement.
+  await jobQueue.registerHandler(
+    jobQueue.QUEUES.DAS_SUGGESTIONS,
+    async (data, pgBossJob) => {
+      const { processDasSuggestions } = require('../das-suggestions/das-suggestions.service');
+      const { submissionId, submissionJobId } = data;
+      const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
+      const { manuscriptId, round } = await loadSubmission(submissionId);
+      const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.DAS_SUGGESTIONS, pgBossJob);
+
+      try {
+        jobLogger?.log('start', 'Starting DAS suggestions', { isFinalAttempt });
+        const result = await processDasSuggestions(submissionId, jobLogger, { isFinalAttempt });
+        const applicable = result.data?.suggestions?.filter(s => s.applies).length || 0;
+        jobLogger?.log('complete', `DAS check complete: ${applicable} applicable`, { applicable });
+        await submissionJob?.markComplete({
+          status: { detected: applicable > 0 },
+          service: buildServiceSnapshot('das_suggestions', result),
+          counts: { total: result.data?.suggestions?.length || 0, unique: applicable },
+          timing: { totalMs: result.meta?.totalMs || 0 }
+        });
+        await jobLogger?.flush();
+        await advancePipeline(submissionId, 'das_suggestions', round);
+        return { success: true, submissionId, applicable };
+      } catch (error) {
+        jobLogger?.log('error', `DAS suggestions failed: ${error.message}`);
+        if (submissionJob) await submissionJob.markFailed(error.message);
+        await jobLogger?.flush();
+        if (isFinalAttempt) await advancePipeline(submissionId, 'das_suggestions', round);
         throw error;
       }
     },

@@ -24,6 +24,7 @@ const QUEUES = {
   PROTOCOLS_DETECTION: 'protocols-detection',
   IDENTIFIER_DETECTION: 'identifier-detection',
   SUGGESTION_GENERATION: 'suggestion-generation',
+  DAS_SUGGESTIONS: 'das-suggestions',
   EMAIL_NOTIFICATION: 'email-notification'
 };
 
@@ -140,6 +141,14 @@ const JOB_CONFIG = {
     apiTimeoutMs: parseInt(process.env.KRT_COMPARISON_API_TIMEOUT, 10) || 300000,
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
     typicalSeconds: 30,
+    retryLimit: 2,
+    retryDelay: 60
+  },
+  // LM check of the Data/Code Availability Statement against the ASAP rulebook.
+  [QUEUES.DAS_SUGGESTIONS]: {
+    apiTimeoutMs: parseInt(process.env.DAS_SUGGESTIONS_API_TIMEOUT, 10) || 120000,
+    get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 15,
     retryLimit: 2,
     retryDelay: 60
   }
