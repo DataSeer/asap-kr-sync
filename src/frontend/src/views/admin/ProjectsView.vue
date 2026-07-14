@@ -5,6 +5,7 @@
  * its PI/title and active flag, and drives the dashboard's project filter.
  */
 import { ref, computed, onMounted } from 'vue'
+import Papa from 'papaparse'
 import { useProjectsStore } from '@/stores/projects.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import SearchInput from '@/components/common/SearchInput.vue'
@@ -14,6 +15,9 @@ const notificationStore = useNotificationStore()
 
 const loading = ref(true)
 const search = ref('')
+const exporting = ref(false)
+const importing = ref(false)
+const fileInput = ref(null)
 
 const filteredProjects = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -44,6 +48,60 @@ async function fetchProjects() {
     notificationStore.error('Failed to load projects')
   } finally {
     loading.value = false
+  }
+}
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    const csv = await projectsStore.exportProjects()
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'projects.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to export projects')
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function handleImportFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = '' // allow re-selecting the same file
+  if (!file) return
+
+  const text = await file.text()
+  const { data } = Papa.parse(text, { header: true, skipEmptyLines: true, transformHeader: h => h.trim().toLowerCase() })
+  const rows = data
+    .map(r => ({
+      code: (r.code || '').toString().trim(),
+      piName: (r.piname ?? r.pi_name ?? r.pi ?? '').toString().trim(),
+      title: (r.title || '').toString().trim(),
+      active: (r.active ?? '').toString().trim()
+    }))
+    .filter(r => r.code)
+
+  if (rows.length === 0) {
+    notificationStore.error('No project rows found — the CSV needs a "code" column')
+    return
+  }
+  if (!confirm(`Import ${rows.length} project(s)? Existing codes will be updated.`)) return
+
+  importing.value = true
+  try {
+    const res = await projectsStore.importProjects(rows)
+    const parts = [`${res.created} created`, `${res.updated} updated`]
+    if (res.invalid?.length) parts.push(`${res.invalid.length} skipped`)
+    notificationStore.success(`Projects imported — ${parts.join(', ')}`)
+    await fetchProjects()
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to import projects')
+  } finally {
+    importing.value = false
   }
 }
 
@@ -112,7 +170,16 @@ async function handleDelete(project) {
   <div class="h-full flex flex-col">
     <div class="flex items-center justify-between mb-2 flex-shrink-0">
       <h1 class="text-2xl font-bold text-gray-900">Projects</h1>
-      <button class="btn-primary" @click="openCreateModal">Create Project</button>
+      <div class="flex items-center gap-2">
+        <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden" @change="handleImportFile" />
+        <button class="btn-secondary" :disabled="exporting" @click="handleExport">
+          {{ exporting ? 'Exporting…' : 'Export CSV' }}
+        </button>
+        <button class="btn-secondary" :disabled="importing" @click="fileInput?.click()">
+          {{ importing ? 'Importing…' : 'Import CSV' }}
+        </button>
+        <button class="btn-primary" @click="openCreateModal">Create Project</button>
+      </div>
     </div>
     <p class="text-sm text-gray-500 mb-6 flex-shrink-0">
       A project is a 2-letter grant code (the manuscript-ID prefix). It labels submissions and powers the

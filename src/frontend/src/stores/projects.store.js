@@ -59,6 +59,24 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
+  async function exportProjects() {
+    try {
+      return await projectsService.exportCsv()
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to export projects'
+      throw err
+    }
+  }
+
+  async function importProjects(rows) {
+    try {
+      return await projectsService.importCsv(rows)
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to import projects'
+      throw err
+    }
+  }
+
   return {
     projects,
     pagination,
@@ -67,6 +85,8 @@ export const useProjectsStore = defineStore('projects', () => {
     fetchProjects,
     createProject,
     updateProject,
-    deleteProject
+    deleteProject,
+    exportProjects,
+    importProjects
   }
 })

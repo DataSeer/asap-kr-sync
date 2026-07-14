@@ -17,6 +17,19 @@ router.use(authenticate);
 // GET /api/projects/codes - Active project codes (all authenticated users)
 router.get('/codes', projectsController.getCodes);
 
+// GET /api/projects/export - Download all projects as CSV (admin and ds_annotator)
+router.get('/export',
+  requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),
+  projectsController.exportCsv
+);
+
+// POST /api/projects/import - Upsert projects from parsed CSV rows (admin and ds_annotator)
+router.post('/import',
+  requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),
+  validateBody('projectsImport'),
+  projectsController.importCsv
+);
+
 // GET /api/projects - List projects (admin and ds_annotator only)
 router.get('/',
   requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),

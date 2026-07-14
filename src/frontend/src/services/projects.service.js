@@ -46,5 +46,20 @@ export default {
   async delete(code) {
     const response = await api.delete(`/projects/${code}`)
     return response.data
+  },
+
+  /** Download all projects as CSV text */
+  async exportCsv() {
+    const response = await api.get('/projects/export', { responseType: 'text' })
+    return response.data
+  },
+
+  /**
+   * Upsert projects from parsed CSV rows
+   * @param {Array<{code, piName?, title?, active?}>} projects
+   */
+  async importCsv(projects) {
+    const response = await api.post('/projects/import', { projects })
+    return response.data
   }
 }

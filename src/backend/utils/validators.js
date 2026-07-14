@@ -245,6 +245,12 @@ const requestSchemas = {
     active: Joi.boolean()
   }).min(1),
 
+  // Bulk import of projects from parsed CSV rows (upsert by code). Rows are
+  // validated per-row in the controller, so accept unknown/loose shapes here.
+  projectsImport: Joi.object({
+    projects: Joi.array().items(Joi.object().unknown(true)).min(1).max(10000).required()
+  }),
+
   // (team, email) roster used for automatic team assignment. Bulk import of
   // a pasted/CSV list; bounded to keep a single request reasonable. `team` is
   // a team name and must reference an existing team (checked in the controller).
