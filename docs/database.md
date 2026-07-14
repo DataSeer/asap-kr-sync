@@ -36,20 +36,54 @@ Team membership lives in the `user_teams` junction table — there is no per-use
 
 #### `teams`
 
+A team is a **lab, identified by its leader's name** (e.g. "Alessi", "Wood") —
+**not** the 2-letter code (that is a `project`, see below). The unique `code`
+column holds the team name (kept as the key so the FKs below reference it);
+`name` is an optional display label.
+
 | Column | Type | Notes |
 |--------|------|-------|
-| `id` | INTEGER (PK) | Auto-increment |
-| `code` | STRING | Unique 2-letter team code |
-| `name` | STRING | Team display name |
+| `id` | UUID (PK) | Auto-generated |
+| `code` | VARCHAR(100) | Unique — the team's key (holds the leader name) |
+| `name` | VARCHAR(100) | Optional display name |
 | `active` | BOOLEAN | Default `true` |
 
 #### `user_teams`
 
+Which users belong to which teams (many-to-many). There is no per-user `team`
+column.
+
 | Column | Type | Notes |
 |--------|------|-------|
-| `id` | INTEGER (PK) | Auto-increment |
-| `user_id` | UUID (FK) | References `users.id` |
-| `team` | STRING (FK) | References `teams.code` |
+| `id` | UUID (PK) | Auto-generated |
+| `user_id` | UUID (FK) | References `users.id` (cascade) |
+| `team` | VARCHAR(100) (FK) | References `teams.code`; unique on `(user_id, team)` |
+
+#### `team_emails`
+
+Admin-managed email→team roster (the **Team Email Assignment** page). Applied on
+login/registration to auto-assign a user to a team; an email need not have an
+account yet.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | Auto-generated |
+| `team` | VARCHAR(100) (FK) | References `teams.code` (cascade on delete/rename) |
+| `email` | VARCHAR(255) | Lowercased; unique on `(team, email)` |
+
+#### `projects`
+
+ASAP projects — the **2-letter grant codes** (WH, CS, …) that prefix a manuscript
+ID. Reference data only: it labels a submission (`submissions.project`) and powers
+the dashboard's project filter; it does **not** drive visibility (teams do).
+Managed on the **Projects** admin page (CRUD + CSV import/export).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `code` | VARCHAR(10) (PK) | The 2-letter grant code |
+| `pi_name` | VARCHAR(255) | Principal investigator (optional) |
+| `title` | TEXT | Grant title (optional) |
+| `active` | BOOLEAN | Default `true` |
 
 #### `submissions`
 
@@ -57,7 +91,7 @@ Team membership lives in the `user_teams` junction table — there is no per-use
 |--------|------|-------|
 | `id` | UUID (PK) | Auto-generated |
 | `user_id` | UUID (FK) | Owner — cascades on delete |
-| `team` | VARCHAR(2) | Auto-extracted from `manuscript_id`; not FK-validated |
+| `project` | VARCHAR(10) | 2-letter grant code auto-extracted from `manuscript_id`; not FK-validated. Filter/label only — does not drive visibility (owner's teams do). |
 | `title` | VARCHAR(500) | Required |
 | `manuscript_id` | VARCHAR(100) | Optional, validated against the ASAP pattern |
 | `data_availability_statement` | TEXT | User-edited DAS |

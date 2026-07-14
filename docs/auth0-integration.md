@@ -484,9 +484,8 @@ req.user = {
   email: 'user@...',
   name: 'Jane Doe',
   role: 'author',
-  team: 'WH',          // Legacy single team
-  teams: ['WH', 'JK'], // Multi-team array
-  isAuth0User: true     // From toJSON()
+  teams: ['Alessi', 'Wood'], // Team keys (lab leader names) from user_teams
+  isAuth0User: true          // From toJSON()
 }
 req.userId = 'uuid'
 ```

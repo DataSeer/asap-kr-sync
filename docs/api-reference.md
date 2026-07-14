@@ -9,7 +9,7 @@ Authentication is **cookie-based** since Phase 6: the backend sets three cookies
 ### `POST /api/auth/register`
 Create a new user account (local auth). Gated by `SIGNUP_ENABLED=true` (else 403).
 - **Rate limit**: 10 requests / 15 min
-- **Body**: `{ email, password, name, role?, team? }` — password ≥ 8 chars with at least one letter and digit; `team` required when `role=asap_pm`.
+- **Body**: `{ email, password, name }` — password ≥ 8 chars with at least one letter and digit. `role` and `team` are **not** accepted on self-signup (dropped by `stripUnknown`; role is forced to `author`). Roles and team membership are assigned only through the admin user-management endpoints.
 - **Returns**: `201 { message, user }`. Sets `asap_kr_session`, `asap_kr_refresh`, `asap_kr_csrf` cookies.
 - **CSRF**: exempt (bootstraps the CSRF cookie).
 
@@ -79,8 +79,12 @@ Delete a user. **admin only.** Self-deletion is blocked (400).
 
 ## Teams (admin / ds_annotator)
 
+A **team** is a lab keyed by its `code` (which holds the leader's name, e.g.
+"Alessi"). This is distinct from a **project** (a 2-letter grant code — see the
+Projects section).
+
 ### `GET /api/teams/codes`
-Get active team codes (all authenticated users).
+Get active team codes/keys (all authenticated users).
 
 ### `GET /api/teams`
 List all teams.
@@ -90,13 +94,63 @@ Get a team by ID.
 
 ### `POST /api/teams`
 Create a team.
-- **Body**: `{ code, name? }` — `code` is 1-32 chars matching `^[A-Z0-9_-]+$` (auto-uppercased); `name` is optional, max 255 chars.
+- **Body**: `{ code, name? }` — `code` is 1-100 chars (the team key / leader name); `name` is an optional display label, max 255 chars.
 
 ### `PATCH /api/teams/:id`
-Update a team.
+Update a team. **Body**: any of `{ code, name, active }` (at least one).
 
 ### `DELETE /api/teams/:id`
 Delete a team.
+
+### Team-email roster (auto-assignment)
+
+An admin-managed email→team roster (`team_emails`, surfaced as the **Team Email
+Assignment** page). On sign-in a user's teams are auto-derived from this list.
+All roster endpoints are **admin / ds_annotator / asap_pm**.
+
+#### `GET /api/teams/email-mappings`
+List `(id, team, email)` mappings. Query: `search?`, `team?`, `page?`, `limit?`.
+
+#### `GET /api/teams/email-mappings/export`
+Download the full roster as CSV (`team,email`), re-importable via the create endpoint.
+
+#### `POST /api/teams/email-mappings`
+Bulk-create mappings (used by CSV import).
+- **Body**: `{ mappings: [{ team, email }] }` — 1-2000 items; `email` lowercased and validated; `team` 1-100 chars. Duplicates on `(team, email)` are ignored. An email need not have an account yet.
+
+#### `DELETE /api/teams/email-mappings/:id`
+Delete a single mapping.
+
+---
+
+## Projects (admin / ds_annotator)
+
+A **project** is a 2-letter ASAP grant code (WH, CS, …) — the manuscript-ID
+prefix stored on `submissions.project`. Reference data that labels submissions
+and powers the dashboard's project filter; it does **not** affect visibility.
+
+### `GET /api/projects/codes`
+Active project codes (all authenticated users; for dropdowns).
+
+### `GET /api/projects`
+List projects. Query: `page?`, `limit?`, `active?`.
+
+### `POST /api/projects`
+Create a project. **Body**: `{ code, piName?, title?, active? }` — `code` must match `^[A-Z0-9]{2}$` (exactly 2 chars, auto-uppercased).
+
+### `PATCH /api/projects/:code`
+Update a project. **Body**: any of `{ piName, title, active }`.
+
+### `DELETE /api/projects/:code`
+Delete a project (removes the reference entry only).
+
+### `GET /api/projects/export`
+Download all projects as CSV (`code,piName,title,active`), re-importable via import.
+
+### `POST /api/projects/import`
+Upsert projects from parsed CSV rows.
+- **Body**: `{ projects: [{ code, piName?, title?, active? }] }` — 1-10000 rows. Existing codes are updated, new ones created; rows whose `code` isn't a valid 2-char code are skipped.
+- **Returns**: `{ created, updated, invalid[] }`.
 
 ---
 
@@ -113,18 +167,23 @@ Update profile (name, password change).
 ## Submissions
 
 ### `GET /api/submissions`
-List submissions. Filtered by role:
+List submissions. Filtered by role (visibility is owner-team based — see
+`roles-and-permissions.md`):
 - **author**: own submissions only
-- **asap_pm**: team-scoped (own teams; or `team IS NULL` if PM has no teams)
+- **asap_pm**: own, plus submissions whose **owner shares one of the PM's teams** (staff-owned excluded)
 - **admin/ds_annotator**: all
 
-**Query params**: `page` (default 1, max 100), `limit` (default 20, max 100), `sort` (`createdAt|updatedAt|title|status`, default `createdAt`), `order` (`ASC|DESC`, default `DESC`), `status` (comma-separated), `team` (comma-separated), `userId` (comma-separated), `visibility` (`visible|hidden|all`, default `visible`).
+**Query params**: `page` (default 1, max 100), `limit` (default 20, max 100), `sort` (`createdAt|updatedAt|title|status`, default `createdAt`), `order` (`ASC|DESC`, default `DESC`), `status` (comma-separated), `project` (comma-separated grant codes, e.g. `WH,ML` — filter/label only, never widens visibility), `userId` (comma-separated), `visibility` (`visible|hidden|all`, default `visible`).
 
 ### `GET /api/submissions/hidden`
 List submissions hidden by the current user.
 
 ### `GET /api/submissions/filter-options`
-Get available filter values (teams, users) for the current user's role.
+Get available filter values (distinct **projects** and users among visible submissions) for the current user's role.
+
+### `PATCH /api/submissions/:id/owner`
+Reassign a submission's owner. **admin, ds_annotator only.** After reassignment the submission follows the new owner's teams (used to hand a staff-uploaded PDF to the real author).
+- **Body**: `{ userId }` (UUID of the new owner).
 
 ### `POST /api/submissions`
 Create a submission.

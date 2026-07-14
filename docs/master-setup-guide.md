@@ -267,13 +267,15 @@ soft-deletes (history lives in the append-only change log).
 
 ### 6.2 Data model (current tables)
 
-Full ERD/columns: [database.md](./database.md). The 17 tables:
+Full ERD/columns: [database.md](./database.md). The core tables:
 
 | Table | Purpose |
 |-------|---------|
 | `users` | Accounts (email, bcrypt hash and/or `auth0_sub`, `role`). |
-| `teams` | Team catalog (UUID id, unique `code` VARCHAR(10), name, active). |
-| `user_teams` | Many-to-many join: which users belong to which team codes. |
+| `teams` | Team catalog — a team is a lab; unique `code` VARCHAR(100) holds the leader name (UUID id, name, active). |
+| `user_teams` | Many-to-many join: which users belong to which teams. |
+| `team_emails` | Admin-managed email→team roster; auto-assigns teams on sign-in. |
+| `projects` | ASAP grant codes (2-letter `code` PK, `pi_name`, `title`, active); labels submissions + dashboard filter. |
 | `submissions` | Central manuscript record; step-based `status`, `current_round`, `authors` (JSONB). |
 | `files` | Uploaded/generated artifacts (`s3_key`, type, version, round); immutable. |
 | `krt_data` | KRT rows; per-round, self-referential (`origin_row_id`) for round copy-forward. |

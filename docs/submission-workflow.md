@@ -479,7 +479,7 @@ flowchart TD
 The generated XLSX file (`ExcelExporter.js`) contains up to 4 sheets:
 
 1. **Summary** — a single overview sheet with three sections:
-   - *Submission* — manuscript ID, title, team, status, submitter, current round, created/updated, notes.
+   - *Submission* — manuscript ID, title, project (grant code), status, submitter, current round, created/updated, notes.
    - *Detected authors* — each detected author with their ORCID (from ORCID extraction).
    - *Data Availability Statement* — the final provided DAS and the AI-extracted DAS.
    - *KRT statistics* — total resources, new vs reuse, with/without identifier, with source, changes logged,

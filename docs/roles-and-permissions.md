@@ -17,19 +17,45 @@ purposes — the only difference is in *technical data display* (raw logs, raw
 job responses) which both still see today, until a stronger separation is
 needed.
 
+## Teams, projects & submission visibility
+
+A **team** is a lab, identified by its leader's name (e.g. "Alessi", "Wood").
+Users belong to one or more teams (`user_teams`). A **project** is the 2-letter
+grant code (WH, CS, …) extracted from the manuscript ID and stored on
+`submissions.project`; it is a **filter/label only** and does **not** affect who
+can see a submission.
+
+Visibility is derived from the submission's **owner's teams**
+(`middleware/team.middleware.js`):
+
+- **author** — only their own submissions.
+- **asap_pm** — their own, plus any submission whose **owner shares one of the
+  PM's teams**. (Two teams working the same project each see only their own
+  team's submissions, because ownership — not the project — drives visibility.)
+- **ds_annotator / admin** — all submissions.
+- **Staff-owned submissions are hidden from non-staff.** admins/ds_annotators
+  upload many PDFs for testing, so their own submissions never surface for
+  authors or PMs. Staff hand a document to the real user via **reassign owner**
+  (`PATCH /api/submissions/:id/owner`, admin/ds_annotator only), after which it
+  follows the new owner's teams.
+
+Team membership can be auto-assigned from an admin-managed email→team roster
+(`team_emails`, the **Team Email Assignment** page) applied on sign-in.
+
 ## Permission matrix
 
 | Capability | author | asap_pm | ds_annotator | admin |
 |---|---|---|---|---|
 | View own submissions | ✓ | ✓ | ✓ | ✓ |
-| View team submissions | — | ✓ | ✓ | ✓ |
+| View teammates' submissions (owner shares a team) | — | ✓ | ✓ | ✓ |
 | View all submissions | — | — | ✓ | ✓ |
 | Create submission | ✓ | ✓ | ✓ | ✓ |
-| Edit submission (metadata, KRT, PDF, suggestions) | own | team | all | all |
+| Edit submission (metadata, KRT, PDF, suggestions) | own | teammates' | all | all |
+| Reassign submission owner | — | — | ✓ | ✓ |
 | View / edit KRT QC & Optional flags | — | — | ✓ | ✓ |
-| Hide / unhide submission | own | team | all | all |
+| Hide / unhide submission | own | teammates' | all | all |
 | Delete submission (hard delete) | — | — | ✓ | ✓ |
-| Trigger AI analysis | own | team | all | all |
+| Trigger AI analysis | own | teammates' | all | all |
 | View job summary status (panel) | ✓ | ✓ | ✓ | ✓ |
 | View job internals (logs, raw responses, timestamps, queue config) | — | ✓ | ✓ | ✓ |
 | Restart / advance / retry jobs | — | — | ✓ | ✓ |
@@ -38,10 +64,11 @@ needed.
 | Edit non-admin users | — | — | ✓ | ✓ |
 | Create / edit admin users | — | — | — | ✓ |
 | Delete users | — | — | — | ✓ |
-| List teams | — | — | ✓ | ✓ |
-| Create / edit teams | — | — | ✓ | ✓ |
-| Delete teams (no submissions attached) | — | — | ✓ | ✓ |
+| List / create / edit teams (lab, by leader name) | — | — | ✓ | ✓ |
+| Delete teams (no users/submissions attached) | — | — | ✓ | ✓ |
 | Force-delete teams (with submissions attached) | — | — | — | ✓ |
+| Manage projects (grant codes) + CSV import/export | — | — | ✓ | ✓ |
+| Manage team-email roster (Team Email Assignment) + CSV import/export | — | ✓ | ✓ | ✓ |
 | Manage resource types | — | — | ✓ | ✓ |
 | Manage enrichment lists (software/datasets/materials/protocols) | — | — | ✓ | ✓ |
 | Manage validation rules | — | — | — | ✓ |
@@ -51,8 +78,11 @@ needed.
 ### Backend
 
 - **Submission scoping** — `src/backend/middleware/team.middleware.js`
-  - `canAccessSubmission` validates per-record access (owner / team / staff).
-  - `attachSubmissionFilter` builds the SQL `WHERE` clause for list endpoints.
+  - `canAccessSubmission` validates per-record access — author: own; asap_pm:
+    own or a submission whose owner shares one of the PM's teams (staff-owned
+    excluded); ds_annotator/admin: all.
+  - `attachSubmissionFilter` builds the SQL `WHERE` clause for list endpoints
+    (owner ∈ {self, teammates}, minus staff-owned for non-staff).
 - **Coarse role gates** — `src/backend/middleware/role.middleware.js`
   - `requireRole(...roles)`, `requireAdmin`, `canCreateSubmission`.
 - **Feature-specific gates** — `src/backend/middleware/feature-access.middleware.js`
@@ -72,6 +102,8 @@ needed.
   - Submission: `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`.
   - Jobs: `canViewJobInternals`, `canManageJobs`.
   - Users: `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`.
+  - Teams/projects: `canManageTeams`, `canManageTeamEmails` (admin/ds/pm). Owner
+    reassignment lives in `EditMetadataModal.vue`, gated on `isStaff`.
   - Reference data: `canManageResourceTypes`, `canManageEnrichments`, `canManageValidationRules`.
   - Aggregates: `isAdmin`, `isStaff`.
 - **Router guards** — `src/frontend/src/router/index.js` uses `meta.roles` per
