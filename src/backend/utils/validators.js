@@ -229,6 +229,12 @@ const requestSchemas = {
     active: Joi.boolean()
   }).min(1),
 
+  // Bulk import of teams from parsed CSV rows (upsert by code). Rows are
+  // validated per-row in the controller, so accept unknown/loose shapes here.
+  teamsImport: Joi.object({
+    teams: Joi.array().items(Joi.object().unknown(true)).min(1).max(10000).required()
+  }),
+
   // ── Admin: project (grant) management ─────────────────────────────
   // Project code: 2 alphanumeric chars, uppercased (the manuscript prefix).
   createProject: Joi.object({

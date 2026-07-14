@@ -8,7 +8,16 @@ const { NotFoundError, ConflictError, ValidationError } = require('../utils/erro
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
 const teamEmailService = require('../services/teams/team-email.service');
 const { ROLES } = require('../config/constants');
+const { escapeCsvField, stripCsvFormulaGuard } = require('../utils/csv');
 const logger = require('../utils/logger');
+
+const CSV_HEADERS = ['code', 'name', 'active'];
+
+/** Parse a CSV "active" cell into a boolean (blank → true, the common default). */
+function parseActive(v) {
+  if (v == null || String(v).trim() === '') return true;
+  return ['true', '1', 'yes', 'y', 'active'].includes(String(v).trim().toLowerCase());
+}
 
 /**
  * List all teams
@@ -195,6 +204,84 @@ async function deleteTeam(req, res, next) {
 }
 
 /**
+ * Export all teams as CSV (code, name, active). `code` holds the team key (the
+ * lab leader name). The file re-imports cleanly via importCsv.
+ * GET /api/teams/export
+ */
+async function exportCsv(req, res, next) {
+  try {
+    const teams = await Team.findAll({ order: [['code', 'ASC']], raw: true });
+    const rows = [CSV_HEADERS.join(',')];
+    for (const t of teams) {
+      rows.push([
+        escapeCsvField(t.code),
+        escapeCsvField(t.name),
+        escapeCsvField(t.active ? 'true' : 'false')
+      ].join(','));
+    }
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="teams.csv"');
+    res.send(rows.join('\n'));
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Import (upsert) teams from parsed CSV rows. Each row is matched by `code`
+ * (the team key): an existing team has its name/active updated, a new code is
+ * created. Blank codes are skipped and reported. The code is the immutable key,
+ * so import never renames a team (use the edit form for that).
+ * POST /api/teams/import  { teams: [{ code, name, active }] }
+ */
+async function importCsv(req, res, next) {
+  try {
+    const { teams } = req.validatedBody;
+    let created = 0;
+    let updated = 0;
+    const invalid = [];
+
+    for (const row of teams) {
+      // Accept `code` or its `team` alias (the roster/export uses "Team").
+      const code = stripCsvFormulaGuard(String(row.code != null ? row.code : (row.team || ''))).trim();
+      if (!code || code.length > 100) {
+        invalid.push(row.code || row.team || '(blank)');
+        continue;
+      }
+      const name = (() => {
+        const s = row.name == null ? '' : stripCsvFormulaGuard(String(row.name)).trim();
+        return s || null;
+      })();
+      const active = parseActive(row.active);
+
+      const existing = await Team.findOne({ where: { code } });
+      if (existing) {
+        existing.name = name;
+        existing.active = active;
+        await existing.save();
+        updated++;
+      } else {
+        await Team.create({ code, name, active });
+        created++;
+      }
+    }
+
+    if (created + updated === 0) {
+      return res.status(400).json({
+        error: 'No valid teams to import — each row needs a non-empty code (the team name).',
+        invalid
+      });
+    }
+
+    logger.info('Teams imported', { created, updated, invalid: invalid.length, importedBy: req.userId });
+
+    res.status(201).json({ created, updated, invalid });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * List (team, email) roster mappings
  * GET /api/teams/email-mappings?team=XX&email=foo
  */
@@ -345,6 +432,8 @@ module.exports = {
   create,
   update,
   delete: deleteTeam,
+  exportCsv,
+  importCsv,
   listEmailMappings,
   createEmailMappings,
   exportEmailMappings,

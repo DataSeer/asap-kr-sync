@@ -17,6 +17,19 @@ router.use(authenticate);
 // GET /api/teams/codes - Get active team codes (all authenticated users)
 router.get('/codes', teamsController.getCodes);
 
+// GET /api/teams/export - Download all teams as CSV (admin and ds_annotator)
+router.get('/export',
+  requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),
+  teamsController.exportCsv
+);
+
+// POST /api/teams/import - Upsert teams from parsed CSV rows (admin and ds_annotator)
+router.post('/import',
+  requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),
+  validateBody('teamsImport'),
+  teamsController.importCsv
+);
+
 // GET /api/teams - List teams (admin and ds_annotator only)
 router.get('/',
   requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),

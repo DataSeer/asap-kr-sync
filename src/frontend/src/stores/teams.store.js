@@ -148,6 +148,24 @@ export const useTeamsStore = defineStore('teams', () => {
     }
   }
 
+  async function exportTeams() {
+    try {
+      return await teamsService.exportCsv()
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to export teams'
+      throw err
+    }
+  }
+
+  async function importTeams(rows) {
+    try {
+      return await teamsService.importCsv(rows)
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to import teams'
+      throw err
+    }
+  }
+
   async function fetchEmailMappings(params = {}) {
     try {
       const response = await teamsService.listEmailMappings(params)
@@ -209,6 +227,8 @@ export const useTeamsStore = defineStore('teams', () => {
     createTeam,
     updateTeam,
     deleteTeam,
+    exportTeams,
+    importTeams,
     fetchEmailMappings,
     createEmailMappings,
     deleteEmailMapping,

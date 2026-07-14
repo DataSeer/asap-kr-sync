@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import Papa from 'papaparse'
 import { useTeamsStore } from '@/stores/teams.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import SearchInput from '@/components/common/SearchInput.vue'
@@ -9,6 +10,9 @@ const notificationStore = useNotificationStore()
 
 const loading = ref(true)
 const search = ref('')
+const exporting = ref(false)
+const importing = ref(false)
+const fileInput = ref(null)
 
 const filteredTeams = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -52,6 +56,59 @@ async function fetchTeams() {
 
 function formatDate(date) {
   return new Date(date).toLocaleDateString()
+}
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    const csv = await teamsStore.exportTeams()
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'teams.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to export teams')
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function handleImportFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = '' // allow re-selecting the same file
+  if (!file) return
+
+  const text = await file.text()
+  const { data } = Papa.parse(text, { header: true, skipEmptyLines: true, transformHeader: h => h.trim().toLowerCase() })
+  const rows = data
+    .map(r => ({
+      code: (r.code ?? r.team ?? '').toString().trim(),
+      name: (r.name || '').toString().trim(),
+      active: (r.active ?? '').toString().trim()
+    }))
+    .filter(r => r.code)
+
+  if (rows.length === 0) {
+    notificationStore.error('No team rows found — the CSV needs a "code" column')
+    return
+  }
+  if (!confirm(`Import ${rows.length} team(s)? Existing codes will be updated.`)) return
+
+  importing.value = true
+  try {
+    const res = await teamsStore.importTeams(rows)
+    const parts = [`${res.created} created`, `${res.updated} updated`]
+    if (res.invalid?.length) parts.push(`${res.invalid.length} skipped`)
+    notificationStore.success(`Teams imported — ${parts.join(', ')}`)
+    await fetchTeams()
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to import teams')
+  } finally {
+    importing.value = false
+  }
 }
 
 function openEditModal(team) {
@@ -136,9 +193,18 @@ async function handleCreateTeam() {
   <div class="h-full flex flex-col">
     <div class="flex items-center justify-between mb-6 flex-shrink-0">
       <h1 class="text-2xl font-bold text-gray-900">Teams</h1>
-      <button class="btn-primary" @click="openCreateModal">
-        Create Team
-      </button>
+      <div class="flex items-center gap-2">
+        <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden" @change="handleImportFile" />
+        <button class="btn-secondary" :disabled="exporting" @click="handleExport">
+          {{ exporting ? 'Exporting…' : 'Export CSV' }}
+        </button>
+        <button class="btn-secondary" :disabled="importing" @click="fileInput?.click()">
+          {{ importing ? 'Importing…' : 'Import CSV' }}
+        </button>
+        <button class="btn-primary" @click="openCreateModal">
+          Create Team
+        </button>
+      </div>
     </div>
 
     <div v-if="loading" class="flex-1 flex items-center justify-center py-12">

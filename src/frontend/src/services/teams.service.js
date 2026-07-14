@@ -59,6 +59,21 @@ export default {
     return response.data
   },
 
+  /** Download all teams as CSV text */
+  async exportCsv() {
+    const response = await api.get('/teams/export', { responseType: 'text' })
+    return response.data
+  },
+
+  /**
+   * Upsert teams from parsed CSV rows
+   * @param {Array<{code, name?, active?}>} teams
+   */
+  async importCsv(teams) {
+    const response = await api.post('/teams/import', { teams })
+    return response.data
+  },
+
   /**
    * List (team, email) roster mappings
    * @param {object} params - { page?, limit?, team?, email? }
