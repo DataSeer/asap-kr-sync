@@ -84,7 +84,8 @@ All wrapped in `AppLayout` (header + sidebar).
 | `/admin/enrichments` | EnrichmentListView | admin, ds_annotator |
 
 `TeamEmailsView` manages the email→team roster (auto team assignment) and
-`ProjectsView` manages the 2-letter grant codes; both offer CSV import/export.
+`ProjectsView` manages the 2-letter grant codes; `TeamsView`, `ProjectsView` and
+`TeamEmailsView` all offer CSV import/export.
 Data-table admin pages carry an in-table search box (client-side post-filter of
 the current page) and fill the remaining viewport height with an inner scroll.
 
@@ -142,7 +143,7 @@ Toast notification system with auto-dismiss.
 
 ### Other Stores
 
-- **Teams Store** (`teams.store.js`) — team CRUD with `activeTeams` computed; team-email roster list/create/delete/export
+- **Teams Store** (`teams.store.js`) — team CRUD with `activeTeams` computed; CSV `exportTeams`/`importTeams`; team-email roster list/create/delete/export
 - **Projects Store** (`projects.store.js`) — project (grant code) CRUD plus CSV `exportProjects`/`importProjects`
 - **Resource Types Store** (`resourceTypes.store.js`) — resource type CRUD
 - **App Config Store** (`appConfig.store.js`) — runtime configuration management
@@ -209,7 +210,7 @@ All API calls go through service modules in `src/frontend/src/services/`. Each s
 | `report.service.js` | `generate`, `list`, `getById`, `download` |
 | `file.service.js` | `download` |
 | `enrichment-list.service.js` | Single service backing every category — list (cross- or per-category), `getCounts`, `getById`, `create`, `update`, `remove`, `importEntries`, `exportCsv` |
-| `teams.service.js` | `list`, `getCodes`, `create`, `update`, `delete`, plus email-mappings `listEmailMappings`, `createEmailMappings`, `deleteEmailMapping`, `exportEmailMappings` |
+| `teams.service.js` | `list`, `getCodes`, `create`, `update`, `delete`, `exportCsv`, `importCsv`, plus email-mappings `listEmailMappings`, `createEmailMappings`, `deleteEmailMapping`, `exportEmailMappings` |
 | `projects.service.js` | `list`, `getCodes`, `create`, `update`, `delete`, `exportCsv`, `importCsv` |
 | `resourceTypes.service.js` | `list`, `getNames`, `create`, `update`, `delete`, `exportCsv`, `importEntries` |
 | `appConfig.service.js` | `list`, `get`, `save`, `delete` |

@@ -102,6 +102,14 @@ Update a team. **Body**: any of `{ code, name, active }` (at least one).
 ### `DELETE /api/teams/:id`
 Delete a team.
 
+### `GET /api/teams/export`
+Download all teams as CSV (`code,name,active`), re-importable via import.
+
+### `POST /api/teams/import`
+Upsert teams from parsed CSV rows.
+- **Body**: `{ teams: [{ code, name?, active? }] }` — 1-10000 rows. `code` is the team key (lab leader name, ≤100 chars) and accepts a `team` alias; existing codes are updated (name/active only — import never renames), new ones created; rows with a blank/too-long code are skipped.
+- **Returns**: `{ created, updated, invalid[] }`.
+
 ### Team-email roster (auto-assignment)
 
 An admin-managed email→team roster (`team_emails`, surfaced as the **Team Email
