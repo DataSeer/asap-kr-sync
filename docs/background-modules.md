@@ -387,9 +387,17 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   shows a **loader** and the **Continue button is blocked** until the job reaches a terminal state.
 - **Inputs:** the current DAS text (`submission.dataAvailabilityStatement`) + deterministic **KRT signals** computed
   from `KRTData` (`has_new_dataset`, `has_new_code`, `has_dataset/code/protocol/lab-material resources`). The LM
-  judges the DAS text; the KRT booleans are handed to it as ground truth.
-- **Persistence:** the per-rule verdicts are persisted on the job result (`result.data.suggestions`) and read via
+  judges the DAS text; the KRT booleans are handed to it as ground truth. Because a check like `no_new_code` fires
+  purely on `has_new_code` (a row that is **both** Software/code **and** marked `new`), a KRT whose only code rows
+  are `reuse` will correctly trigger the no-new-code checks regardless of the DAS wording.
+- **Persistence:** the per-rule verdicts are persisted on the job result (`result.data.suggestions`) — each with a
+  `reason` kept for **every** rule (applicable or not, so the UI's "More details" disclosure can explain both
+  flagged and passed checks) — alongside the KRT `signals` used (`result.data.signals`). Read via
   `GET /api/submissions/:id/das-suggestions`; re-run via `POST /api/submissions/:id/das-suggestions/regenerate`.
+  Pre-existing jobs (run before `signals` was persisted) return `signals: null` until the check is re-run.
+- **UI (`/availability`):** each LM-checked suggestion has a **"More details"** toggle showing the model's
+  per-rule reasoning (green-accented for passed checks), plus a section-level **"What the check saw"** panel
+  listing the KRT `signals` the model was given.
 - **Config:** `DAS_SUGGESTIONS_ENABLED`, `DAS_SUGGESTIONS_GEMINI_API_KEY/_MODEL`, `DAS_SUGGESTIONS_API_TIMEOUT`.
   **Prompt:** `data/prompts/das-suggestions.txt`.
 - **Key files:** `services/das-suggestions/das-suggestions.service.js`, `config/das-suggestions-api.js`,

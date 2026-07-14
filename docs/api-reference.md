@@ -478,10 +478,16 @@ for the full rulebook (the 9 checks).
 ### `GET /api/submissions/:id/das-suggestions`
 Get the latest DAS check status + verdicts. Author-accessible (unlike the raw `/jobs` payload).
 
-- **Returns**: `{ status, suggestions, meta }`
+- **Returns**: `{ status, suggestions, signals, meta }`
   - `status`: the `das_suggestions` job status — `none` (never run) · `queued` · `processing` · `complete` · `failed`.
-  - `suggestions`: array of `{ ruleId, severity, title, message, recommendedText, applies, notApplicableReason }`
-    (empty when the LM produced nothing → the frontend renders the legacy rules instead).
+  - `suggestions`: array of `{ ruleId, severity, title, message, recommendedText, applies, reason, notApplicableReason }`
+    (empty when the LM produced nothing → the frontend renders the legacy rules instead). `reason` is the LM's
+    per-rule justification, kept for **every** rule (applicable or not) so the UI can show a "More details"
+    disclosure on both flagged and passed checks; `notApplicableReason` mirrors it for passed rules (falling back
+    to the catalog reason when the LM omitted one).
+  - `signals`: the KRT summary booleans handed to the LM as ground truth — `{ has_new_dataset, has_new_code,
+    has_dataset_resources, has_code_resources, has_protocol_resources, has_lab_material_resources }` — or `null`
+    for pre-existing jobs / the legacy fallback. Surfaced in the view's "What the check saw" panel.
   - `meta`: `{ total, applicable, model, ... }` or `{ skipped: true, reason: 'lm_not_configured' }`.
 
 The `/availability` view shows a **loader** and **blocks Continue** while `status` is `queued`/`processing`.
