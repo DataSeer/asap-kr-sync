@@ -1100,6 +1100,23 @@ async function confirmMerge() {
   }
 }
 
+// Bulk-delete the selected rows (one transactional request on the backend).
+async function deleteSelected() {
+  const ids = Array.from(selectedRowIds.value)
+  if (ids.length === 0) return
+  if (!confirm(`Delete ${ids.length} selected row${ids.length > 1 ? 's' : ''}? This cannot be undone.`)) return
+  bulkSubmitting.value = true
+  try {
+    await krtStore.deleteRows(props.submissionId, ids)
+    notificationStore.success(`Deleted ${ids.length} row${ids.length > 1 ? 's' : ''}`)
+    clearBulkSelection()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Delete failed')
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
 // Combined rows + add-row suggestions in correct sort order
 // Suggestions appear at the position they would occupy after being accepted
 const interleavedAddSuggestions = computed(() => {
@@ -1689,6 +1706,7 @@ defineExpose({
         <template v-else>
           <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="openBulkEditCellsModal">Edit column…</button>
           <button v-if="selectedRowIds.size >= 2" class="btn-bulk" :disabled="bulkSubmitting" @click="openMergeModal">Merge…</button>
+          <button class="btn-bulk btn-bulk-danger" :disabled="bulkSubmitting" @click="deleteSelected">Delete selected</button>
         </template>
         <button class="btn-bulk btn-bulk-ghost" @click="clearBulkSelection">Clear</button>
       </div>

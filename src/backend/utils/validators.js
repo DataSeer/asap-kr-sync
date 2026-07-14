@@ -184,6 +184,12 @@ const requestSchemas = {
     source: Joi.string().valid(...CHANGE_SOURCES)
   }),
 
+  // Bulk-delete KRT rows (multi-select delete in the editor).
+  batchDeleteKrtRows: Joi.object({
+    rowIds: Joi.array().items(schemas.uuid.required()).min(1).max(1000).required(),
+    source: Joi.string().valid(...CHANGE_SOURCES)
+  }),
+
   // Process new version (new round)
   processNewVersion: Joi.object({
     hasNewKRT: Joi.boolean().required()

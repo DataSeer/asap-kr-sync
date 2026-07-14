@@ -376,6 +376,31 @@ export const useKRTStore = defineStore('krt', () => {
   }
 
   /**
+   * Bulk-delete several rows. Backend removes them in a single transaction;
+   * we then re-validate (which refetches rows + validation state).
+   * @param {string} submissionId
+   * @param {string[]} rowIds
+   */
+  async function deleteRows(submissionId, rowIds, source = 'manual') {
+    loading.value = true
+    error.value = null
+    try {
+      const response = await krtService.batchDeleteRows(submissionId, rowIds, { source })
+      // Drop from local state optimistically, then re-validate for the rest.
+      const idSet = new Set(rowIds)
+      rows.value = rows.value.filter(r => !idSet.has(r.id))
+      rowIds.forEach(id => { delete validationErrors.value[id] })
+      await validate(submissionId)
+      return response
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to delete rows'
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
    * Merge several rows into one (request G2). Backend deletes the originals
    * and creates the merged row in a single transaction; we then refetch.
    * @param {string} submissionId
@@ -507,6 +532,7 @@ export const useKRTStore = defineStore('krt', () => {
     batchUpdateCells,
     addRow,
     deleteRow,
+    deleteRows,
     mergeRows,
     validate,
     setEditingCell,

@@ -420,6 +420,62 @@ async function deleteRow(req, res, next) {
 }
 
 /**
+ * Bulk-delete KRT rows (multi-select delete in the editor).
+ * POST /api/submissions/:id/krt/batch-delete
+ * Body: { rowIds: string[], source? }
+ *
+ * Transactional (mirrors deleteRow for many rows): writes a delete_row
+ * ChangeLog per row, clears their ValidationResults, and destroys the rows
+ * together so a partial failure never leaves the table inconsistent. Only rows
+ * that genuinely belong to this submission/round are touched.
+ */
+async function batchDeleteRows(req, res, next) {
+  try {
+    const submissionId = req.params.id;
+    const round = req.submission.currentRound;
+    const { rowIds, source } = req.body;
+
+    const rows = await KRTData.findAll({ where: { id: rowIds, submissionId, round } });
+    if (rows.length === 0) {
+      throw new NotFoundError('KRT rows');
+    }
+
+    const ids = rows.map(r => r.id);
+    const step = statusToStep(req.submission.status);
+
+    await sequelize.transaction(async (t) => {
+      for (const row of rows) {
+        await ChangeLog.create({
+          submissionId,
+          userId: req.userId,
+          action: 'delete_row',
+          source: source || 'manual',
+          step,
+          round,
+          rowId: row.id,
+          description: `Deleted row: ${row.resourceName || ''}`,
+          metadata: {
+            resourceType: row.resourceType,
+            resourceName: row.resourceName,
+            source: row.source,
+            identifier: row.identifier,
+            newReuse: row.newReuse,
+            additionalInformation: row.additionalInformation
+          }
+        }, { transaction: t });
+      }
+      await ValidationResult.destroy({ where: { submissionId, rowId: ids }, transaction: t });
+      await KRTData.destroy({ where: { id: ids, submissionId, round }, transaction: t });
+    });
+
+    logger.info('KRT rows bulk-deleted', { submissionId, deleted: ids.length, userId: req.userId });
+    res.json({ message: `${ids.length} row(s) deleted`, deleted: ids.length });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Merge several KRT rows into one (request G2).
  * POST /api/submissions/:id/krt/merge
  * Body: { rowIds: string[], merged: { resourceType, resourceName, source,
@@ -543,6 +599,7 @@ module.exports = {
   batchUpdateCells,
   addRow,
   deleteRow,
+  batchDeleteRows,
   mergeRows,
   validate,
   download

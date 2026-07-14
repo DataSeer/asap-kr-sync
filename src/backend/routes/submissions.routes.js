@@ -175,6 +175,13 @@ router.post('/:id/krt/row',
   krtController.addRow
 );
 
+// POST /api/submissions/:id/krt/batch-delete - Bulk-delete selected KRT rows
+router.post('/:id/krt/batch-delete',
+  canAccessSubmission,
+  validateBody('batchDeleteKrtRows'),
+  krtController.batchDeleteRows
+);
+
 // DELETE /api/submissions/:id/krt/:rowId - Delete KRT row
 router.delete('/:id/krt/:rowId',
   canAccessSubmission,
