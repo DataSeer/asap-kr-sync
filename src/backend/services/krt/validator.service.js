@@ -198,7 +198,7 @@ async function validateRow(row, submissionId, clearExisting = true, resourceType
   errors.push(...resourceNameErrors);
 
   // Validate SOURCE
-  const sourceErrors = validateSource(row.source, row.id);
+  const sourceErrors = validateSource(row.source, row.id, { resourceType: row.resourceType, identifier: row.identifier });
   errors.push(...sourceErrors);
 
   // Validate IDENTIFIER
@@ -420,10 +420,36 @@ function validateResourceName(value, rowId) {
 /**
  * Validate SOURCE field
  */
-function validateSource(value, rowId) {
+/** A Software/code resource type (the only type the Source-optional rule covers). */
+function isSoftwareType(resourceType) {
+  const rt = (resourceType || '').toLowerCase();
+  return rt.includes('software') || rt.includes('code');
+}
+
+/**
+ * True when the IDENTIFIER cell carries a *real* identifier — i.e. any value
+ * that isn't blank, an escape hatch ("No identifier exists" / "Identifier
+ * pending"), or an N/A variant. Recognized or not, it counts as "provided".
+ */
+function hasRealIdentifier(identifier) {
+  const v = (identifier || '').trim().toLowerCase();
+  if (!v) return false;
+  if (v === 'no identifier exists' || v === 'identifier pending') return false;
+  if (isNAVariation(v)) return false;
+  return true;
+}
+
+function validateSource(value, rowId, { resourceType = '', identifier = '' } = {}) {
   const errors = [];
 
   if (!value || value.trim() === '') {
+    // Rule: a Software/code row that already carries an identifier (RRID, URL,
+    // DOI, …) doesn't need a Source — the identifier already locates it. Emit
+    // neither error nor warning so an empty Source never blocks the next step
+    // in that case. All other rows still require a Source.
+    if (isSoftwareType(resourceType) && hasRealIdentifier(identifier)) {
+      return errors;
+    }
     errors.push({
       rowId,
       columnName: 'SOURCE',
@@ -743,7 +769,7 @@ function validateRowValues(values = {}, resourceTypes = DEFAULT_RESOURCE_TYPES) 
   const errors = [];
   errors.push(...validateResourceType(values.resourceType, rowId, types));
   errors.push(...validateResourceName(values.resourceName, rowId));
-  errors.push(...validateSource(values.source, rowId));
+  errors.push(...validateSource(values.source, rowId, { resourceType: values.resourceType, identifier: values.identifier }));
   errors.push(...validateIdentifierValues({
     identifier: values.identifier, additionalInformation: values.additionalInformation, resourceType: values.resourceType
   }).map(e => ({ rowId, ...e })));
