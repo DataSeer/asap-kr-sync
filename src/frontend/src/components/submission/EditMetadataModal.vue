@@ -16,6 +16,7 @@ import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useAuthStore } from '@/stores/auth.store'
 import demosService from '@/services/demos.service'
+import api from '@/services/api'
 
 const props = defineProps({
   /** Whether the modal is visible */
@@ -38,6 +39,44 @@ const authStore = useAuthStore()
 
 // Demo lookup is admin-only, mirroring the "Use Demo Data" button on Create.
 const isAdmin = computed(() => authStore.isAdmin)
+
+// Owner reassignment is staff-only (admin / ds_annotator): they curate a
+// document, then hand it to the real user.
+const canReassign = computed(() => authStore.isStaff)
+const users = ref([])
+const usersLoading = ref(false)
+const selectedOwnerId = ref('')
+const reassigning = ref(false)
+const currentOwner = computed(() => props.submission?.user || null)
+
+async function loadUsers() {
+  if (users.value.length || usersLoading.value) return
+  usersLoading.value = true
+  try {
+    const response = await api.get('/users', { params: { limit: 500 } })
+    users.value = response.data.users || []
+  } catch {
+    users.value = []
+    notificationStore.error('Failed to load the user list')
+  } finally {
+    usersLoading.value = false
+  }
+}
+
+async function reassignOwner() {
+  if (!props.submission?.id || !selectedOwnerId.value) return
+  reassigning.value = true
+  try {
+    const updated = await submissionStore.reassignOwner(props.submission.id, selectedOwnerId.value)
+    notificationStore.success(`Owner changed to ${updated.user?.email || 'the selected user'}`)
+    emit('saved', updated)
+    closeModal()
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to reassign owner')
+  } finally {
+    reassigning.value = false
+  }
+}
 const demos = ref([])
 const demoLoading = ref(false)
 const demoSearchOpen = ref(false)
@@ -65,6 +104,8 @@ watch(() => [props.show, props.submission], ([show, submission]) => {
     originalDas.value = submission.dataAvailabilityStatement || ''
     demoSearchOpen.value = false
     demoQuery.value = ''
+    selectedOwnerId.value = submission.userId || ''
+    if (canReassign.value) loadUsers()
   }
 }, { immediate: true })
 
@@ -176,7 +217,7 @@ async function saveMetadata() {
       class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
       @click.self="closeModal"
     >
-      <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
+      <div class="bg-white rounded-lg shadow-xl w-2/3 min-w-[66%] mx-4 max-h-[90vh] overflow-hidden flex flex-col">
         <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <h3 class="text-lg font-medium">Edit Submission Metadata</h3>
           <button class="text-gray-400 hover:text-gray-600" @click="closeModal">
@@ -211,7 +252,7 @@ async function saveMetadata() {
               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="e.g., XX1-000000-001-org-X-1"
             />
-            <p class="text-xs text-gray-500 mt-1">Format: XX#-######-###-org-X-# (team auto-extracted from first 2 letters)</p>
+            <p class="text-xs text-gray-500 mt-1">Format: XX#-######-###-org-X-# (project auto-extracted from first 2 letters)</p>
 
             <!-- Admin-only: auto-fill the Manuscript ID from a matching demo -->
             <div v-if="isAdmin" class="mt-2">
@@ -277,6 +318,40 @@ async function saveMetadata() {
               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-vertical"
               placeholder="Optional notes about this submission..."
             ></textarea>
+          </div>
+
+          <!-- Owner reassignment (staff only) -->
+          <div v-if="canReassign" class="pt-4 border-t border-gray-200">
+            <label class="block text-sm font-medium text-gray-700 mb-1">
+              Owner
+            </label>
+            <p class="text-xs text-gray-500 mb-2">
+              Current owner:
+              <span class="font-medium text-gray-700">
+                {{ currentOwner ? (currentOwner.name || currentOwner.email) : 'Unknown' }}
+              </span>.
+              Reassign to hand this document to the correct user — they and their teammates will then see it.
+            </p>
+            <div class="flex items-center space-x-2">
+              <select
+                v-model="selectedOwnerId"
+                :disabled="usersLoading || reassigning"
+                class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                <option value="" disabled>{{ usersLoading ? 'Loading users…' : 'Select a user…' }}</option>
+                <option v-for="u in users" :key="u.id" :value="u.id">
+                  {{ u.name ? `${u.name} (${u.email})` : u.email }}<span v-if="u.role"> — {{ u.role }}</span>
+                </option>
+              </select>
+              <button
+                type="button"
+                class="btn-secondary whitespace-nowrap"
+                :disabled="reassigning || usersLoading || !selectedOwnerId || selectedOwnerId === submission.userId"
+                @click="reassignOwner"
+              >
+                {{ reassigning ? 'Reassigning…' : 'Reassign' }}
+              </button>
+            </div>
           </div>
         </div>
 

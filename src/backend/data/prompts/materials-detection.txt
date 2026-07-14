@@ -8,7 +8,17 @@ The input includes a block "AUTHOR-PROVIDED MATERIALS (KRT)": material rows from
 
 1. **SEED FIRST.** Emit one output row for every author-provided material. Never drop one. Seed its fields directly: canonical_name ← `name`; newReuse ← `role` (GENERATED→"new", REUSED→"reuse", default "reuse"); source ← `source` (the supplier/vendor/repository); identifier ← the entry's identifiers (catalog number, RRID, Addgene #, DOI, URL). Trust the author's values and never fabricate identifiers.
 2. **ENRICH FROM THE ARTICLE.** For each seeded material, look it up in the manuscript markdown and fill only MISSING fields — supplier/source, catalog number, RRID, or clone — when they are explicitly stated. On any conflict, keep the author's value.
-3. **ADD SPARINGLY.** You MAY add a material the authors omitted ONLY when it is unambiguously a KRT lab material AND clearly evidenced in the text (an explicit supplier + catalog/RRID, or an Addgene/repository identifier). When in doubt, do NOT add it.
+3. **ADD SPARINGLY.** You MAY add a material the authors omitted ONLY when it is unambiguously a KRT lab material AND clearly evidenced in the text (an explicit supplier + catalog/RRID, or an Addgene/repository identifier). When in doubt, do NOT add it. **Antibodies are the exception — see below.**
+
+## ANTIBODIES — CAPTURE THOROUGHLY (the one exception to "add sparingly")
+
+Antibodies are a core KRT material and the most commonly under-detected one, so detect EVERY antibody the authors used. Recognise an antibody from ANY of these cues in the text:
+- an `RRID:AB_…` token;
+- "anti-<target> antibody", "<target> antibody", or a named monoclonal/polyclonal;
+- a host species (rabbit / mouse / goat / rat / chicken …), a clone id, or a working dilution (e.g. 1:1000);
+- a vendor + catalog number.
+
+ADD an antibody whenever it is clearly used as a reagent, even if only SOME cues are present (e.g. target + host, or an `RRID:AB_…` alone) — do NOT require both a supplier AND a catalog number for antibodies. For seeded antibodies, keep the author's values and fill any missing RRID / catalog number / clone / source from the text. If no identifier can be found, STILL emit the antibody with `identifier` empty rather than dropping it — it is flagged downstream for the curator to verify. Do not invent identifiers.
 
 ## RESOURCE TYPES
 

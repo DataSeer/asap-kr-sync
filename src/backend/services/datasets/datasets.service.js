@@ -35,6 +35,7 @@ const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const CONSOLIDATION_PROMPT_FILE = path.join(PROMPTS_DIR, 'datasets-consolidation.txt');
@@ -60,7 +61,7 @@ function getConsolidationPrompt(override) {
   }
   if (!_consolidationPromptCache) {
     if (!hasConsolidationPrompt()) {
-      throw new Error(`Consolidation prompt file not found: ${CONSOLIDATION_PROMPT_FILE} — copy the .example file to enable datasets detection`);
+      throw new Error(`Consolidation prompt file not found: ${CONSOLIDATION_PROMPT_FILE} — this prompt is version-controlled; restore it from git to enable datasets detection`);
     }
     _consolidationPromptCache = fs.readFileSync(CONSOLIDATION_PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded datasets consolidation prompt', {
@@ -232,7 +233,7 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
   const prompt = systemPrompt + '\n\nINPUT:\n' + JSON.stringify(userPayload, null, 0);
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: datasetsConfig.model,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       // Force complete, valid JSON and give the full token budget to output:
@@ -243,7 +244,7 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
         maxOutputTokens: 32768,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    });
+    }, { label: 'datasets consolidation' });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (datasets consolidation) — output hit maxOutputTokens');

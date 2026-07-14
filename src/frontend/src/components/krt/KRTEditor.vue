@@ -1100,6 +1100,23 @@ async function confirmMerge() {
   }
 }
 
+// Bulk-delete the selected rows (one transactional request on the backend).
+async function deleteSelected() {
+  const ids = Array.from(selectedRowIds.value)
+  if (ids.length === 0) return
+  if (!confirm(`Delete ${ids.length} selected row${ids.length > 1 ? 's' : ''}? This cannot be undone.`)) return
+  bulkSubmitting.value = true
+  try {
+    await krtStore.deleteRows(props.submissionId, ids)
+    notificationStore.success(`Deleted ${ids.length} row${ids.length > 1 ? 's' : ''}`)
+    clearBulkSelection()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Delete failed')
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
 // Combined rows + add-row suggestions in correct sort order
 // Suggestions appear at the position they would occupy after being accepted
 const interleavedAddSuggestions = computed(() => {
@@ -1689,6 +1706,7 @@ defineExpose({
         <template v-else>
           <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="openBulkEditCellsModal">Edit column…</button>
           <button v-if="selectedRowIds.size >= 2" class="btn-bulk" :disabled="bulkSubmitting" @click="openMergeModal">Merge…</button>
+          <button class="btn-bulk btn-bulk-danger" :disabled="bulkSubmitting" @click="deleteSelected">Delete selected</button>
         </template>
         <button class="btn-bulk btn-bulk-ghost" @click="clearBulkSelection">Clear</button>
       </div>
@@ -1837,6 +1855,7 @@ defineExpose({
                   <span v-else class="cell-display">{{ suggestion.data?.resourceType || '' }}</span>
                   <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
                   <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
+                  <span v-if="suggestion.tier === 'needs_verification'" class="suggestion-source-badge source-needs-verification" :title="suggestion.tierReason || 'No identifier found — verify before adding'">Verify</span>
                 </div>
               </td>
               <!-- RESOURCE NAME -->
@@ -2125,8 +2144,14 @@ defineExpose({
                         <span :class="['tooltip-dot', error.severity === 'error' ? 'dot-error' : 'dot-warning']"></span>
                         <div class="tooltip-text">
                           <div class="tooltip-message">{{ error.message }}</div>
-                          <div v-if="error.suggestion" class="tooltip-suggestion">{{ error.suggestion }}</div>
+                          <!-- Only errors (blocking) show the prescriptive fix; warnings are
+                               advisory, so they just state what was found. -->
+                          <div v-if="error.suggestion && error.severity === 'error'" class="tooltip-suggestion">{{ error.suggestion }}</div>
                         </div>
+                      </div>
+                      <!-- All-warning cell: reassure it's an optional remark. -->
+                      <div v-if="!getCellErrors(row.id, col.key).some(e => e.severity === 'error')" class="tooltip-hint">
+                        Optional — you can leave this as-is.<template v-if="getCellErrors(row.id, col.key).some(e => e.type === 'invalid_format')"> Open the cell for the identifiers the app recognizes.</template>
                       </div>
                     </div>
                     <div class="tooltip-arrow"></div>
@@ -2280,6 +2305,7 @@ defineExpose({
                     <span v-else class="cell-display">{{ suggestion.data?.resourceType || '' }}</span>
                     <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
                     <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
+                    <span v-if="suggestion.tier === 'needs_verification'" class="suggestion-source-badge source-needs-verification" :title="suggestion.tierReason || 'No identifier found — verify before adding'">Verify</span>
                   </div>
                 </td>
                 <!-- RESOURCE NAME -->
@@ -2550,8 +2576,10 @@ defineExpose({
   color: #dc2626;
 }
 
+/* Warnings are non-blocking remarks — neutral gray (not amber) so they read
+   as optional notes, consistent with the cell edit modal. */
 .stat-warning {
-  color: #d97706;
+  color: #6b7280;
 }
 
 .stat-label {
@@ -2920,8 +2948,8 @@ tr:hover {
 }
 
 .row-warning > .col-row-num {
-  background: #fffbeb !important;
-  border-left: 3px solid #f59e0b;
+  background: #f9fafb !important;
+  border-left: 3px solid #9ca3af;
 }
 
 .row-suggestion > .col-row-num {
@@ -2936,8 +2964,8 @@ tr:hover {
 }
 
 .cell-warning {
-  background: #fef3c7 !important;
-  box-shadow: inset 0 0 0 1px #f59e0b;
+  background: #f3f4f6 !important;
+  box-shadow: inset 0 0 0 1px #9ca3af;
 }
 
 /* Row Number Content */
@@ -2972,7 +3000,7 @@ tr:hover {
 }
 
 .icon-warning {
-  color: #f59e0b;
+  color: #9ca3af;
 }
 
 /* Cell with tooltip needs relative positioning */
@@ -3099,7 +3127,7 @@ tr:hover {
 }
 
 .dot-warning {
-  background: #fbbf24;
+  background: #9ca3af;
 }
 
 .tooltip-column {
@@ -3512,6 +3540,11 @@ tr:hover {
 .source-update-krt {
   background: #e0e7ff;
   color: #3730a3;
+}
+
+.source-needs-verification {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .add-icon {

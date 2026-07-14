@@ -1,12 +1,26 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import Papa from 'papaparse'
 import { useTeamsStore } from '@/stores/teams.store'
 import { useNotificationStore } from '@/stores/notification.store'
+import SearchInput from '@/components/common/SearchInput.vue'
 
 const teamsStore = useTeamsStore()
 const notificationStore = useNotificationStore()
 
 const loading = ref(true)
+const search = ref('')
+const exporting = ref(false)
+const importing = ref(false)
+const fileInput = ref(null)
+
+const filteredTeams = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return teamsStore.teams
+  return teamsStore.teams.filter(t =>
+    (t.code || '').toLowerCase().includes(q) || (t.name || '').toLowerCase().includes(q)
+  )
+})
 const showEditModal = ref(false)
 const showCreateModal = ref(false)
 const editingTeam = ref(null)
@@ -42,6 +56,59 @@ async function fetchTeams() {
 
 function formatDate(date) {
   return new Date(date).toLocaleDateString()
+}
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    const csv = await teamsStore.exportTeams()
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'teams.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to export teams')
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function handleImportFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = '' // allow re-selecting the same file
+  if (!file) return
+
+  const text = await file.text()
+  const { data } = Papa.parse(text, { header: true, skipEmptyLines: true, transformHeader: h => h.trim().toLowerCase() })
+  const rows = data
+    .map(r => ({
+      code: (r.code ?? r.team ?? '').toString().trim(),
+      name: (r.name || '').toString().trim(),
+      active: (r.active ?? '').toString().trim()
+    }))
+    .filter(r => r.code)
+
+  if (rows.length === 0) {
+    notificationStore.error('No team rows found — the CSV needs a "code" column')
+    return
+  }
+  if (!confirm(`Import ${rows.length} team(s)? Existing codes will be updated.`)) return
+
+  importing.value = true
+  try {
+    const res = await teamsStore.importTeams(rows)
+    const parts = [`${res.created} created`, `${res.updated} updated`]
+    if (res.invalid?.length) parts.push(`${res.invalid.length} skipped`)
+    notificationStore.success(`Teams imported — ${parts.join(', ')}`)
+    await fetchTeams()
+  } catch (error) {
+    notificationStore.error(error.response?.data?.error || 'Failed to import teams')
+  } finally {
+    importing.value = false
+  }
 }
 
 function openEditModal(team) {
@@ -123,26 +190,40 @@ async function handleCreateTeam() {
 </script>
 
 <template>
-  <div>
-    <div class="flex items-center justify-between mb-6">
+  <div class="h-full flex flex-col">
+    <div class="flex items-center justify-between mb-6 flex-shrink-0">
       <h1 class="text-2xl font-bold text-gray-900">Teams</h1>
-      <button class="btn-primary" @click="openCreateModal">
-        Create Team
-      </button>
+      <div class="flex items-center gap-2">
+        <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden" @change="handleImportFile" />
+        <button class="btn-secondary" :disabled="exporting" @click="handleExport">
+          {{ exporting ? 'Exporting…' : 'Export CSV' }}
+        </button>
+        <button class="btn-secondary" :disabled="importing" @click="fileInput?.click()">
+          {{ importing ? 'Importing…' : 'Import CSV' }}
+        </button>
+        <button class="btn-primary" @click="openCreateModal">
+          Create Team
+        </button>
+      </div>
     </div>
 
-    <div v-if="loading" class="flex items-center justify-center py-12">
+    <div v-if="loading" class="flex-1 flex items-center justify-center py-12">
       <svg class="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
       </svg>
     </div>
 
-    <div v-else class="card overflow-hidden">
+    <div v-else class="card !p-0 flex-1 min-h-0 overflow-y-auto">
       <table class="min-w-full divide-y divide-gray-200">
-        <thead class="bg-gray-50">
+        <thead class="bg-gray-50 sticky top-0 z-10">
           <tr>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Code</th>
+            <th colspan="5" class="px-4 py-3 bg-white border-b border-gray-200">
+              <SearchInput v-model="search" full-width placeholder="Search teams…" />
+            </th>
+          </tr>
+          <tr>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Team</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
@@ -150,7 +231,7 @@ async function handleCreateTeam() {
           </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
-          <tr v-for="team in teamsStore.teams" :key="team.id" :class="{ 'bg-gray-50 opacity-60': !team.active }">
+          <tr v-for="team in filteredTeams" :key="team.id" :class="{ 'bg-gray-50 opacity-60': !team.active }">
             <td class="px-6 py-4 whitespace-nowrap">
               <div class="font-medium text-gray-900">{{ team.code }}</div>
             </td>
@@ -180,9 +261,9 @@ async function handleCreateTeam() {
               </button>
             </td>
           </tr>
-          <tr v-if="teamsStore.teams.length === 0">
+          <tr v-if="filteredTeams.length === 0">
             <td colspan="5" class="px-6 py-8 text-center text-gray-500">
-              No teams found. Create one to get started.
+              {{ search ? 'No teams match your search.' : 'No teams found. Create one to get started.' }}
             </td>
           </tr>
         </tbody>
@@ -199,16 +280,16 @@ async function handleCreateTeam() {
 
           <form class="space-y-4" @submit.prevent="handleSaveTeam">
             <div>
-              <label class="label">Code</label>
+              <label class="label">Team name</label>
               <input
                 v-model="editForm.code"
                 type="text"
-                class="input uppercase"
+                class="input"
                 required
-                maxlength="10"
-                placeholder="e.g., WH"
+                maxlength="100"
+                placeholder="e.g., Alessi"
               />
-              <p class="mt-1 text-xs text-gray-500">Team identifier (max 10 characters)</p>
+              <p class="mt-1 text-xs text-gray-500">Team name — the lab leader (e.g. Alessi)</p>
             </div>
 
             <div>
@@ -218,7 +299,7 @@ async function handleCreateTeam() {
                 type="text"
                 class="input"
                 maxlength="100"
-                placeholder="e.g., White Lab"
+                placeholder="e.g., Alessi Lab"
               />
               <p class="mt-1 text-xs text-gray-500">Descriptive name for the team</p>
             </div>
@@ -258,16 +339,16 @@ async function handleCreateTeam() {
 
           <form class="space-y-4" @submit.prevent="handleCreateTeam">
             <div>
-              <label class="label">Code</label>
+              <label class="label">Team name</label>
               <input
                 v-model="createForm.code"
                 type="text"
-                class="input uppercase"
+                class="input"
                 required
-                maxlength="10"
-                placeholder="e.g., WH"
+                maxlength="100"
+                placeholder="e.g., Alessi"
               />
-              <p class="mt-1 text-xs text-gray-500">Team identifier (max 10 characters)</p>
+              <p class="mt-1 text-xs text-gray-500">Team name — the lab leader (e.g. Alessi)</p>
             </div>
 
             <div>
@@ -277,7 +358,7 @@ async function handleCreateTeam() {
                 type="text"
                 class="input"
                 maxlength="100"
-                placeholder="e.g., White Lab"
+                placeholder="e.g., Alessi Lab"
               />
               <p class="mt-1 text-xs text-gray-500">Descriptive name for the team</p>
             </div>

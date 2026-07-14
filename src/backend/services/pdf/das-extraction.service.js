@@ -9,8 +9,7 @@
  *
  * Replaces the previous Modal-hosted llama fine-tune
  * (pdf-das-extractor-client.service.js). The prompt lives in
- * src/backend/data/prompts/das-extraction.txt; copy `.txt.example` and
- * customise to enable.
+ * src/backend/data/prompts/das-extraction.txt (public, version-controlled).
  *
  * No PDF handling here — by the time DAS extraction runs the Markdown
  * Convert job has already produced a markdown File on S3, and the caller
@@ -23,6 +22,7 @@ const { GoogleGenAI } = require('@google/genai');
 const dasConfig = require('../../config/das-extraction-api');
 const { ExternalServiceError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
+const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/das-extraction.txt');
 let _promptCache = null;
@@ -44,7 +44,7 @@ function getPrompt(override) {
   }
   if (!_promptCache) {
     if (!hasPrompt()) {
-      throw new Error(`Prompt file not found: ${PROMPT_FILE} — copy the .example file to enable DAS extraction`);
+      throw new Error(`Prompt file not found: ${PROMPT_FILE} — this prompt is version-controlled; restore it from git to enable DAS extraction`);
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded DAS extraction prompt', { file: PROMPT_FILE, length: _promptCache.length });
@@ -112,12 +112,12 @@ async function extractDAS(markdownText, { prompt } = {}) {
   const fullPrompt = `${resolvedPrompt}\n\nSection type: ${dasConfig.section}\n\nMANUSCRIPT:\n${markdownText}`;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: dasConfig.model,
       contents: [
         { role: 'user', parts: [{ text: fullPrompt }] }
       ]
-    });
+    }, { label: 'das-extraction' });
 
     const text = response.text;
     if (!text) {

@@ -529,8 +529,8 @@ function getCellClass(row, columnKey) {
           <dd class="font-medium">{{ submission?.manuscriptId }}</dd>
         </div>
         <div>
-          <dt class="text-sm text-gray-500">Team</dt>
-          <dd class="font-medium">{{ submission?.team || 'N/A' }}</dd>
+          <dt class="text-sm text-gray-500">Project</dt>
+          <dd class="font-medium">{{ submission?.project || 'N/A' }}</dd>
         </div>
         <div>
           <dt class="text-sm text-gray-500">Total Resources</dt>

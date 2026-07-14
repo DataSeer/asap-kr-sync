@@ -51,6 +51,28 @@ async function loadRejections(submissionId, round) {
 }
 
 /**
+ * Load the set of suggestion ids the user has already APPROVED (from the audit
+ * log). Approving applies the change to the KRT but doesn't touch the persisted
+ * suggestion list, so without this an approved suggestion would re-surface as
+ * "pending" on every reload (and could be applied twice). Both the single- and
+ * bulk-approve paths write a `approve_change` ChangeLog entry carrying
+ * `metadata.suggestionId`, so that's the durable record of the decision.
+ */
+async function loadApprovedIds(submissionId, round) {
+  const rows = await ChangeLog.findAll({
+    where: { submissionId, round, action: 'approve_change' },
+    attributes: ['metadata'],
+    raw: true
+  });
+  const ids = new Set();
+  for (const r of rows) {
+    const sid = r.metadata?.suggestionId;
+    if (sid) ids.add(sid);
+  }
+  return ids;
+}
+
+/**
  * Render a stored rejection in the suggestion shape ReviewView understands.
  */
 function rejectedRowToSuggestion(r) {
@@ -87,12 +109,25 @@ function rejectedRowToSuggestion(r) {
  */
 async function getAllSuggestions(submissionId, round) {
   const r = await resolveRound(submissionId, round);
-  const [persisted, rejections] = await Promise.all([
+  const [persisted, rejections, approvedIds] = await Promise.all([
     getPersistedSuggestions(submissionId, r),
-    loadRejections(submissionId, r)
+    loadRejections(submissionId, r),
+    loadApprovedIds(submissionId, r)
   ]);
-  const pending = persisted.filter(s => !rejections.rejectedIds.has(s.id));
-  return { suggestions: [...pending, ...rejections.rejectedSuggestions] };
+  // Split the persisted list by the user's saved decisions so accept/reject
+  // survive navigating away and back:
+  //   - rejected → shown from rejected_resources (status 'rejected')
+  //   - approved → same persisted object, marked 'approved' (already applied to
+  //     the KRT; kept visible as handled, never re-offered as pending)
+  //   - the rest → 'pending'
+  const pending = [];
+  const approved = [];
+  for (const s of persisted) {
+    if (rejections.rejectedIds.has(s.id)) continue; // rendered from rejected_resources below
+    if (approvedIds.has(s.id)) approved.push({ ...s, status: 'approved' });
+    else pending.push(s);
+  }
+  return { suggestions: [...pending, ...approved, ...rejections.rejectedSuggestions] };
 }
 
 /** Find a persisted suggestion by id for the current round. */

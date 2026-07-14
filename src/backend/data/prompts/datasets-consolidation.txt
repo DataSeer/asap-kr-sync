@@ -246,21 +246,24 @@ If unsure:
 
 ---
 
-#### 0. NO DEPOSITION IDENTIFIER → NOT A NEW DATASET (HARD GATE)
+#### 0. DEPOSITION IDENTIFIER GATE — with one narrow exception
 
-For any dataset you would CREATE (i.e. NOT an author KRT seed from Section 0), a real deposition identifier is REQUIRED. Create the record ONLY if the data explicitly provides one of:
+For any dataset you would CREATE (i.e. NOT an author KRT seed from Section 0), a real deposition identifier is normally REQUIRED. Create the record when the data explicitly provides one of:
 * a repository accession (e.g. GEO GSE/GSM, SRA SRR/SRP, ArrayExpress E-MTAB, PRIDE/ProteomeXchange PXD, dbGaP phs, EGA, MassIVE, BioStudies, PDB, …), OR
 * a DOI that resolves to a DATA repository (e.g. Zenodo, Figshare, Dryad), OR
 * an explicit download URL to the data.
 
-If none of these is present, DO NOT create the record. A bare mention of "… data" is not enough.
+EXCEPTION — the authors' OWN data, stated as deposited/available but with the identifier missing. Also create the record, with `accessions`/`dois`/`urls` LEFT EMPTY, when ALL hold: (1) `dataset_role` is GENERATED (the authors' own data, never REUSED); (2) it is a depositable type — sequencing/omics, proteomics/mass-spec, structural, or imaging (NOT an assay readout/measurement/sample, see below); and (3) the manuscript states or clearly implies it was deposited or made available, usually in the Data Availability Statement. These downstream carry an identifier-missing flag for the curator to verify, so surfacing them is safe; do NOT invent an identifier.
+
+If neither the identifier nor the exception applies, DO NOT create the record. A bare mention of "… data" is not enough.
 
 Experimental outputs and lab measurements are NOT datasets just because the manuscript reports producing them. NEVER create a dataset for:
 * assay readouts / measurements — e.g. "BCA assay data", "enzyme assay data", "fluorophore/fluorescence measurements", "qPCR / mtDNA quantification", "immunoblot data", "immunoprecipitation data", "catalytic activity data"
 * biological samples or specimens — e.g. "peripheral blood samples", "patient samples"
-* generic "… data" / "… profiling data" / "clinical and genetic data" mentions with no accession, DOI, or URL
+* generic "… data" / "… profiling data" / "clinical and genetic data" with no accession, DOI, or URL AND no clear deposition intent (the EXCEPTION overrides this only when all three of its conditions are met)
+* **cited-for-comparison datasets** — previously-published datasets/structures the authors merely reference to compare against (not data they generated or actively used as a resource). Even with an accession, a dataset that only appears as a comparison/background citation is NOT a resource for THIS manuscript's KRT.
 
-This gate does NOT apply to author KRT seeds (Section 0): keep every author dataset even if its identifier is missing or pending. It applies ONLY to datasets you would newly create.
+This gate — and its exception — do NOT apply to author KRT seeds (Section 0): keep every author dataset even if its identifier is missing or pending. They apply ONLY to datasets you would newly create.
 
 ---
 

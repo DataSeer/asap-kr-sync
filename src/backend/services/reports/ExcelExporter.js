@@ -94,7 +94,7 @@ class ExcelExporter extends ReportExporter {
     this.addKeyValueRows(sheet, [
       ['Manuscript ID', submission.manuscriptId || '—'],
       ['Title', submission.title || '—'],
-      ['Team', submission.team || '—'],
+      ['Project', submission.project || '—'],
       ['Status', submission.status || '—'],
       ['Submitted by', this.formatUser(submission.user)],
       ['Current round', submission.currentRound || 1],

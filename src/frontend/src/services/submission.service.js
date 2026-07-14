@@ -63,6 +63,17 @@ export default {
   },
 
   /**
+   * Reassign a submission to another owner (staff only)
+   * @param {string} id - The submission ID
+   * @param {string} userId - The new owner's user ID
+   * @returns {Promise<Object>} - { submission, user }
+   */
+  async reassignOwner(id, userId) {
+    const response = await api.patch(`/submissions/${id}/owner`, { userId })
+    return response.data
+  },
+
+  /**
    * Delete a submission
    * @param {string} id - The submission ID
    * @returns {Promise<Object>} - Deletion result

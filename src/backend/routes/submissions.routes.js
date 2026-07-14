@@ -16,6 +16,7 @@ const materialsController = require('../controllers/materials.controller');
 const protocolsController = require('../controllers/protocols.controller');
 const identifierDetectionController = require('../controllers/identifier-detection.controller');
 const suggestionController = require('../controllers/suggestion.controller');
+const dasSuggestionsController = require('../controllers/das-suggestions.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { canCreateSubmission, requireRole } = require('../middleware/role.middleware');
 const { ROLES } = require('../config/constants');
@@ -77,6 +78,27 @@ router.patch('/:id',
   canAccessSubmission,
   validateBody('updateSubmission'),
   submissionsController.update
+);
+
+// GET /api/submissions/:id/das-suggestions - LM check of the availability statement
+router.get('/:id/das-suggestions',
+  canAccessSubmission,
+  dasSuggestionsController.getDasSuggestions
+);
+
+// POST /api/submissions/:id/das-suggestions/regenerate - re-run the DAS check
+router.post('/:id/das-suggestions/regenerate',
+  canAccessSubmission,
+  dasSuggestionsController.regenerate
+);
+
+// PATCH /api/submissions/:id/owner - Reassign owner (admin and ds_annotator only).
+// canAccessSubmission loads req.submission (staff pass its checks).
+router.patch('/:id/owner',
+  requireRole(ROLES.ADMIN, ROLES.DS_ANNOTATOR),
+  canAccessSubmission,
+  validateBody('reassignOwner'),
+  submissionsController.reassignOwner
 );
 
 // DELETE /api/submissions/:id - Delete submission (admin and ds_annotator only)
@@ -151,6 +173,13 @@ router.post('/:id/krt/row',
   canAccessSubmission,
   validateBody('krtRow'),
   krtController.addRow
+);
+
+// POST /api/submissions/:id/krt/batch-delete - Bulk-delete selected KRT rows
+router.post('/:id/krt/batch-delete',
+  canAccessSubmission,
+  validateBody('batchDeleteKrtRows'),
+  krtController.batchDeleteRows
 );
 
 // DELETE /api/submissions/:id/krt/:rowId - Delete KRT row

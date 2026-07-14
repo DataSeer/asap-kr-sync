@@ -14,7 +14,8 @@
 
 Each background process is a `submission_jobs` row of a given `job_type` (`config/constants.js` → `JOB_TYPES`),
 run by a worker in `services/queue/workers.js`. Ten modules participate in the analysis pipeline (an eleventh,
-`report_generation`, is ad-hoc — see [submission-workflow.md](./submission-workflow.md)).
+`report_generation`, is ad-hoc; a twelfth, `das_suggestions`, is **standalone** — started from the `/availability`
+step rather than the auto pipeline; see §3.11 and [submission-workflow.md](./submission-workflow.md)).
 
 | Module (`job_type`) | What it finds | Engine | Depends on | Feeds |
 |---------------------|---------------|--------|-----------|-------|
@@ -28,8 +29,9 @@ run by a worker in `services/queue/workers.js`. Ten modules participate in the a
 | `orcid_extraction` | Authors + ORCIDs | GROBID → OpenAlex → ORCID API | — | `submission.authors` (not the KRT) |
 | `pdf_analysis` | The consolidated Generated KRT | Rule-based merge → **LM (Gemini)** consolidation, rule-based fallback | all detectors above | Suggestion Generation |
 | `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
+| `das_suggestions` | DAS vs the ASAP rulebook (per-rule verdict) | **LM (Gemini)** — LM-only, **legacy-rules fallback** | — *(standalone; started from `/availability`)* | the `/availability` suggestions list |
 
-Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)):
+Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)). `das_suggestions` is **not** shown — it is not in the auto pipeline (see §3.11):
 
 ```mermaid
 flowchart LR
@@ -370,6 +372,52 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   **Prompt:** `data/prompts/krt-comparison.txt`.
 - **Key files:** `services/suggestion/kr-comparison.service.js`, `config/krt-comparison-api.js`. *(The retired
   `services/pdf-analysis/diff-suggestions.service.js` remains in the repo but is no longer used in production.)*
+
+### 3.11 `das_suggestions` — Availability Statement check (DAS Suggestions)
+
+- **Purpose:** check the **Data/Code Availability Statement (DAS)** against ASAP's rulebook and return, per rule,
+  whether it **applies** (an issue to address) with a reason. Replaces the legacy hardcoded, client-side substring
+  rules with a Gemini call that judges the DAS **by meaning** (e.g. "no new data were generated" and "this study
+  did not produce primary data" both satisfy the no-new-data check).
+- **Engine:** **Google Gemini** — LM-only, **with a legacy-rules fallback.** When `DAS_SUGGESTIONS_ENABLED` is off
+  / no key (or the LM fails), the `/availability` view falls back to the same rules computed **in-browser**, and
+  **Continue is not blocked**.
+- **Not in the auto pipeline (standalone).** Started by the `/availability` step once the user has finished review
+  (so the DAS is extracted and the KRT is final), and **re-run when the DAS is edited**. While it runs, the step
+  shows a **loader** and the **Continue button is blocked** until the job reaches a terminal state.
+- **Inputs:** the current DAS text (`submission.dataAvailabilityStatement`) + deterministic **KRT signals** computed
+  from `KRTData` (`has_new_dataset`, `has_new_code`, `has_dataset/code/protocol/lab-material resources`). The LM
+  judges the DAS text; the KRT booleans are handed to it as ground truth. Because a check like `no_new_code` fires
+  purely on `has_new_code` (a row that is **both** Software/code **and** marked `new`), a KRT whose only code rows
+  are `reuse` will correctly trigger the no-new-code checks regardless of the DAS wording.
+- **Persistence:** the per-rule verdicts are persisted on the job result (`result.data.suggestions`) — each with a
+  `reason` kept for **every** rule (applicable or not, so the UI's "More details" disclosure can explain both
+  flagged and passed checks) — alongside the KRT `signals` used (`result.data.signals`). Read via
+  `GET /api/submissions/:id/das-suggestions`; re-run via `POST /api/submissions/:id/das-suggestions/regenerate`.
+  Pre-existing jobs (run before `signals` was persisted) return `signals: null` until the check is re-run.
+- **UI (`/availability`):** each LM-checked suggestion has a **"More details"** toggle showing the model's
+  per-rule reasoning (green-accented for passed checks), plus a section-level **"What the check saw"** panel
+  listing the KRT `signals` the model was given.
+- **Config:** `DAS_SUGGESTIONS_ENABLED`, `DAS_SUGGESTIONS_GEMINI_API_KEY/_MODEL`, `DAS_SUGGESTIONS_API_TIMEOUT`.
+  **Prompt:** `data/prompts/das-suggestions.txt`.
+- **Key files:** `services/das-suggestions/das-suggestions.service.js`, `config/das-suggestions-api.js`,
+  `controllers/das-suggestions.controller.js`, frontend `views/submissions/AvailabilityView.vue`.
+
+**The rulebook — all DAS Suggestions (9 checks).** Presentation (severity / title / message / recommended text) is
+fixed in `DAS_RULES` (`das-suggestions.service.js`); the LM only decides `applies` + a reason. A rule "applies" when
+the DAS has the described problem (i.e. the suggestion is shown to the author).
+
+| # | `rule_id` | Severity | Applies when… | Recommended text offered |
+|---|-----------|----------|---------------|--------------------------|
+| 1 | `no_new_dataset` | warning | the KRT has **no new dataset** row | *"No new primary data were collected in this study."* |
+| 2 | `no_new_code` | warning | the KRT has **no new code/software** row | *"No code was generated for this study; all data cleaning, preprocessing, analysis, and visualization was performed using [insert program name(s)]."* |
+| 3 | `datasets_not_mentioned` | info | the KRT has dataset resources but the DAS does not mention the data | — |
+| 4 | `code_not_mentioned` | info | the KRT has software/code resources but the DAS does not mention code/software | — |
+| 5 | `protocols_not_mentioned` | info | the KRT has protocol resources but the DAS does not mention protocols | — |
+| 6 | `materials_not_mentioned` | info | the KRT has lab-material resources but the DAS does not mention materials/reagents/resources | — |
+| 7 | `missing_no_data_statement` | warning | no new dataset **and** the DAS does not explicitly state that no new (primary) data were generated | *"No new primary data were collected in this study."* |
+| 8 | `missing_no_code_statement` | warning | no new code **and** the DAS does not explicitly state that no new code was generated | *"No code was generated for this study; all data cleaning, preprocessing, analysis, and visualization was performed using [insert program name(s)]."* |
+| 9 | `missing_krt_reference` | warning | the DAS does not indicate that a Key Resources Table (or equivalent — a Zenodo DOI / persistent identifier / referenced table) lists the study's outputs alongside their identifiers | *"The data, code, protocols, and key lab materials used and generated in this study are listed in a Key Resources Table alongside their persistent identifiers at [enter the Zenodo DOI or Table number]."* |
 
 ---
 

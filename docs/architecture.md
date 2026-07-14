@@ -33,7 +33,7 @@ asap-kr-sync/
 │   ├── backend/
 │   │   ├── config/                # Environment-based configuration modules
 │   │   ├── controllers/           # Route handlers (request → response)
-│   │   ├── data/                  # Local data (prompts/, demo-findings/) — gitignored except .example files
+│   │   ├── data/                  # prompts/ (public, version-controlled .txt) + demo-findings/ (gitignored)
 │   │   ├── middleware/            # Express middleware (auth, validation, CSRF, rate-limit, etc.)
 │   │   ├── models/                # Sequelize model definitions
 │   │   ├── routes/                # Express route definitions

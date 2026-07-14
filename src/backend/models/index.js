@@ -36,6 +36,8 @@ const SubmissionJob = require('./SubmissionJob')(sequelize);
 const EnrichmentListEntry = require('./EnrichmentListEntry')(sequelize);
 const RefreshToken = require('./RefreshToken')(sequelize);
 const RejectedResource = require('./RejectedResource')(sequelize);
+const TeamEmail = require('./TeamEmail')(sequelize);
+const Project = require('./Project')(sequelize);
 
 // Define associations
 // User -> UserTeams (one-to-many for multi-team support)
@@ -45,6 +47,10 @@ UserTeam.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 // Team -> UserTeams (one-to-many)
 Team.hasMany(UserTeam, { foreignKey: 'team', sourceKey: 'code', as: 'userTeams' });
 UserTeam.belongsTo(Team, { foreignKey: 'team', targetKey: 'code', as: 'team_info' });
+
+// Team -> TeamEmails (one-to-many, admin-managed email→team roster)
+Team.hasMany(TeamEmail, { foreignKey: 'team', sourceKey: 'code', as: 'teamEmails' });
+TeamEmail.belongsTo(Team, { foreignKey: 'team', targetKey: 'code', as: 'team_info' });
 
 // User -> Submissions (one-to-many)
 User.hasMany(Submission, { foreignKey: 'userId', as: 'submissions' });
@@ -123,5 +129,7 @@ module.exports = {
   SubmissionJob,
   EnrichmentListEntry,
   RefreshToken,
-  RejectedResource
+  RejectedResource,
+  TeamEmail,
+  Project
 };

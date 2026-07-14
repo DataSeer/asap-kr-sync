@@ -52,6 +52,26 @@ Each suggestion carries the real contributing detection module(s) (software/data
 
 ---
 
+## Google Gemini API (DAS Suggestions)
+
+Powers the standalone `das_suggestions` background job. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
+
+| Property | Value |
+|----------|-------|
+| **Config** | `src/backend/config/das-suggestions-api.js` |
+| **Service** | `src/backend/services/das-suggestions/das-suggestions.service.js` |
+| **Prompt** | `src/backend/data/prompts/das-suggestions.txt` |
+| **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
+| **Model** | `gemini-2.5-flash` (configurable via `DAS_SUGGESTIONS_GEMINI_MODEL`) |
+| **Auth** | API key (`DAS_SUGGESTIONS_GEMINI_API_KEY`) |
+| **Timeout** | 2 minutes (`DAS_SUGGESTIONS_API_TIMEOUT`) |
+| **Depends on** | Nothing in the pipeline — standalone; started from `/availability` (DAS already extracted, KRT final) |
+| **Disable** | `DAS_SUGGESTIONS_ENABLED=false` (frontend falls back to legacy in-browser rules) |
+
+The verdicts are **persisted** on the job result and read via `GET /api/submissions/:id/das-suggestions`. Re-run via `POST /api/submissions/:id/das-suggestions/regenerate` (on first arrival at `/availability` and whenever the DAS text is edited).
+
+---
+
 ## DAS Extraction (Google Gemini)
 
 Extracts the Data Availability Statement (or another section type) from the manuscript's converted markdown. Replaces the previous Modal-hosted Llama fine-tune endpoint.
@@ -60,7 +80,7 @@ Extracts the Data Availability Statement (or another section type) from the manu
 |----------|-------|
 | **Config** | `src/backend/config/das-extraction-api.js` |
 | **Client** | `src/backend/services/pdf/das-extraction.service.js` |
-| **Prompt** | `src/backend/data/prompts/das-extraction.txt` (copy from `.example`) |
+| **Prompt** | `src/backend/data/prompts/das-extraction.txt` (public, version-controlled) |
 | **Auth** | `DAS_EXTRACTION_GEMINI_API_KEY` |
 | **Model** | `DAS_EXTRACTION_GEMINI_MODEL` (default `gemini-2.5-flash`) |
 | **Timeout** | 2 minutes (`DAS_EXTRACTION_API_TIMEOUT`) |

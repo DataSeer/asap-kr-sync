@@ -42,7 +42,6 @@ module.exports = {
         password_hash: passwordHash,
         name: 'Admin User',
         role: 'admin',
-        team: null,
         created_at: new Date(),
         updated_at: new Date()
       },
@@ -52,7 +51,6 @@ module.exports = {
         password_hash: passwordHash,
         name: 'John Author',
         role: 'author',
-        team: null,
         created_at: new Date(),
         updated_at: new Date()
       },
@@ -62,7 +60,6 @@ module.exports = {
         password_hash: passwordHash,
         name: 'Jane PM',
         role: 'asap_pm',
-        team: 'WH',
         created_at: new Date(),
         updated_at: new Date()
       },
@@ -72,7 +69,6 @@ module.exports = {
         password_hash: passwordHash,
         name: 'Sam Annotator',
         role: 'ds_annotator',
-        team: null,
         created_at: new Date(),
         updated_at: new Date()
       }

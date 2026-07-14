@@ -43,6 +43,8 @@ export const useAuthStore = defineStore('auth', () => {
   const canManageUsers = computed(() => isStaff.value)
   const canViewUsers = computed(() => ['admin', 'ds_annotator', 'asap_pm'].includes(effectiveRole.value))
   const canManageTeams = computed(() => isStaff.value)
+  // Team-email roster: staff plus PMs, who maintain their own team's roster.
+  const canManageTeamEmails = computed(() => ['admin', 'ds_annotator', 'asap_pm'].includes(effectiveRole.value))
 
   // Submission lifecycle
   const canDeleteSubmission = computed(() => isStaff.value)
@@ -68,21 +70,18 @@ export const useAuthStore = defineStore('auth', () => {
   const canManageValidationRules = computed(() => effectiveRole.value === 'admin')
 
   /**
-   * Per-submission edit check. Authors edit only their own; PMs edit team
-   * submissions (including teamless ones if the PM has no teams); staff edit
-   * anything. Mirrors backend canAccessSubmission for write access.
+   * Per-submission edit check. Authors edit only their own; staff edit
+   * anything; a PM edits any submission they can see (the server only lists
+   * submissions whose owner shares one of the PM's teams, and re-enforces on
+   * write — the owner's teams aren't sent to the client to check here).
+   * Mirrors backend canAccessSubmission for write access.
    */
   function canEditSubmission(submission) {
     if (!user.value || !submission) return false
     const role = effectiveRole.value
     if (role === 'admin' || role === 'ds_annotator') return true
-    if (role === 'asap_pm') {
-      if (userTeams.value.length === 0) {
-        return submission.team === null || submission.team === undefined
-      }
-      return userTeams.value.includes(submission.team)
-    }
     if (role === 'author') return submission.userId === user.value.id
+    if (role === 'asap_pm') return true
     return false
   }
 
@@ -201,18 +200,14 @@ export const useAuthStore = defineStore('auth', () => {
     viewAsRole.value = null
   }
 
-  // Check if user can access a submission (uses effectiveRole for UI simulation)
+  // Check if user can access a submission (uses effectiveRole for UI
+  // simulation). Same as canEditSubmission: staff all; author own; a PM can
+  // access anything the server lists for them (owner shares one of their teams).
   function canAccessSubmission(submission) {
     if (!user.value) return false
     if (effectiveRole.value === 'admin' || effectiveRole.value === 'ds_annotator') return true
-    if (effectiveRole.value === 'asap_pm') {
-      // PM with no teams can only access submissions with no team
-      if (userTeams.value.length === 0) {
-        return submission.team === null || submission.team === undefined
-      }
-      return userTeams.value.includes(submission.team)
-    }
     if (effectiveRole.value === 'author') return submission.userId === user.value.id
+    if (effectiveRole.value === 'asap_pm') return true
     return false
   }
 
@@ -265,6 +260,7 @@ export const useAuthStore = defineStore('auth', () => {
     canManageUsers,
     canViewUsers,
     canManageTeams,
+    canManageTeamEmails,
     canDeleteSubmission,
     canHideSubmission,
     canViewJobInternals,

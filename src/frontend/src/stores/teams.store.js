@@ -6,6 +6,13 @@ export const useTeamsStore = defineStore('teams', () => {
   // State
   const teams = ref([])
   const teamCodes = ref([])
+  const emailMappings = ref([])
+  const emailMappingsPagination = ref({
+    page: 1,
+    limit: 50,
+    total: 0,
+    totalPages: 0
+  })
   const pagination = ref({
     page: 1,
     limit: 50,
@@ -141,10 +148,73 @@ export const useTeamsStore = defineStore('teams', () => {
     }
   }
 
+  async function exportTeams() {
+    try {
+      return await teamsService.exportCsv()
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to export teams'
+      throw err
+    }
+  }
+
+  async function importTeams(rows) {
+    try {
+      return await teamsService.importCsv(rows)
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to import teams'
+      throw err
+    }
+  }
+
+  async function fetchEmailMappings(params = {}) {
+    try {
+      const response = await teamsService.listEmailMappings(params)
+      emailMappings.value = response.mappings
+      emailMappingsPagination.value = response.pagination
+      return response
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to fetch email mappings'
+      throw err
+    }
+  }
+
+  async function createEmailMappings(mappings) {
+    try {
+      return await teamsService.createEmailMappings(mappings)
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to import email mappings'
+      throw err
+    }
+  }
+
+  async function deleteEmailMapping(id) {
+    try {
+      await teamsService.deleteEmailMapping(id)
+      const index = emailMappings.value.findIndex(m => m.id === id)
+      if (index !== -1) {
+        emailMappings.value.splice(index, 1)
+      }
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to delete email mapping'
+      throw err
+    }
+  }
+
+  async function exportEmailMappings() {
+    try {
+      return await teamsService.exportEmailMappings()
+    } catch (err) {
+      error.value = err.response?.data?.error || 'Failed to export email mappings'
+      throw err
+    }
+  }
+
   return {
     // State
     teams,
     teamCodes,
+    emailMappings,
+    emailMappingsPagination,
     pagination,
     loading,
     error,
@@ -156,6 +226,12 @@ export const useTeamsStore = defineStore('teams', () => {
     fetchTeamCodes,
     createTeam,
     updateTeam,
-    deleteTeam
+    deleteTeam,
+    exportTeams,
+    importTeams,
+    fetchEmailMappings,
+    createEmailMappings,
+    deleteEmailMapping,
+    exportEmailMappings
   }
 })

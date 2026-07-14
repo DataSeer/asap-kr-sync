@@ -388,22 +388,31 @@ flowchart TD
 - Displays the current DAS (extracted or user-edited)
 - **Edit button** opens an inline textarea for modifications
 - Save/Cancel buttons in edit mode
+- **Editing the DAS re-runs the check** (see below)
 
-### Availability Statement Recommendations
+### Availability Statement Recommendations (DAS Suggestions)
 
-A carousel or expanded list of smart rules that check the DAS against the KRT contents:
+The DAS is checked against the **ASAP rulebook** by the standalone **`das_suggestions`** background job — a Google
+Gemini call that judges the statement **semantically** (not by literal keyword matching). It runs on first arrival
+at this step (once review is done, so the DAS is extracted and the KRT is final) and re-runs whenever the DAS is
+edited. While it runs, the panel shows a **loader** and **Continue is blocked**. When the LM is disabled or fails,
+the view **falls back** to the same rules computed in-browser and Continue is **not** blocked.
 
-| Rule | Type | Triggered When |
-|------|------|----------------|
-| No new dataset | Warning | No "new" dataset resources in KRT |
-| No new code | Warning | No "new" code/software resources in KRT |
-| Dataset mention | Info | Has datasets but DAS doesn't mention "data" |
-| Software mention | Info | Has code/software but DAS doesn't mention "code"/"software" |
-| Protocol mention | Info | Has protocols but DAS doesn't mention "protocol" |
-| Lab material mention | Info | Has materials but DAS doesn't mention "material"/"reagent"/"resource" |
-| Explicit no-data statement | Warning | No new datasets and DAS doesn't state "no new data" |
-| Explicit no-code statement | Warning | No new code and DAS doesn't state "no new code" |
-| KRT reference | Warning | DAS doesn't reference KRT, Zenodo, DOI, or table number |
+The rulebook — all nine checks — with the exact `rule_id`s and recommended text is documented in
+[background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions).
+Quick reference:
+
+| Rule (`rule_id`) | Type | Applies when |
+|------------------|------|--------------|
+| `no_new_dataset` | Warning | No "new" dataset resources in the KRT |
+| `no_new_code` | Warning | No "new" code/software resources in the KRT |
+| `datasets_not_mentioned` | Info | Has datasets but the DAS doesn't refer to the data |
+| `code_not_mentioned` | Info | Has code/software but the DAS doesn't refer to code/software |
+| `protocols_not_mentioned` | Info | Has protocols but the DAS doesn't refer to protocols |
+| `materials_not_mentioned` | Info | Has materials but the DAS doesn't refer to materials/reagents |
+| `missing_no_data_statement` | Warning | No new datasets and the DAS doesn't explicitly state "no new data" |
+| `missing_no_code_statement` | Warning | No new code and the DAS doesn't explicitly state "no new code" |
+| `missing_krt_reference` | Warning | The DAS doesn't reference the KRT / a Zenodo DOI / a persistent identifier / a table |
 
 **For each applicable rule:**
 - Severity badge (warning/info)
@@ -418,7 +427,9 @@ A carousel or expanded list of smart rules that check the DAS against the KRT co
 
 ### Proceeding to Step 5
 
-**Conditions:** None — Continue is always enabled.
+**Conditions:** the DAS check must be **finished** — while the `das_suggestions` job is `queued`/`processing`,
+Continue is disabled with the tooltip *"Generating availability suggestions… please wait."* Once it reaches a
+terminal state (or the fallback rules are used), Continue is enabled.
 
 **On Continue:** Updates status to `step_report`, navigates to ReportView.
 
@@ -468,7 +479,7 @@ flowchart TD
 The generated XLSX file (`ExcelExporter.js`) contains up to 4 sheets:
 
 1. **Summary** — a single overview sheet with three sections:
-   - *Submission* — manuscript ID, title, team, status, submitter, current round, created/updated, notes.
+   - *Submission* — manuscript ID, title, project (grant code), status, submitter, current round, created/updated, notes.
    - *Detected authors* — each detected author with their ORCID (from ORCID extraction).
    - *Data Availability Statement* — the final provided DAS and the AI-extracted DAS.
    - *KRT statistics* — total resources, new vs reuse, with/without identifier, with source, changes logged,

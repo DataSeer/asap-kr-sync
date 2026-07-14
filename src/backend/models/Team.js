@@ -1,6 +1,10 @@
 /**
  * Team Model
- * Stores team codes and names for the application
+ * A team is a lab, identified by its leader's name (e.g. "Alessi", "Wood").
+ * Users belong to one or more teams; team membership drives submission
+ * visibility. The unique `code` column holds the team name (kept as the key
+ * so user_teams / team_emails FKs reference it); `name` is an optional label.
+ * (The 2-letter grant code lives in the separate `projects` table.)
  */
 
 const { DataTypes } = require('sequelize');
@@ -13,7 +17,7 @@ module.exports = (sequelize) => {
       primaryKey: true
     },
     code: {
-      type: DataTypes.STRING(10),
+      type: DataTypes.STRING(100),
       allowNull: false,
       unique: true,
       validate: {
@@ -42,7 +46,7 @@ module.exports = (sequelize) => {
   });
 
   /**
-   * Get all active team codes
+   * Get all active team names (stored in the `code` column).
    */
   Team.getActiveCodes = async function() {
     const teams = await this.findAll({

@@ -5,7 +5,7 @@
 const { Op } = require('sequelize');
 const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, sequelize } = require('../models');
 const { NotFoundError, ValidationError } = require('../utils/errors');
-const { extractTeamFromManuscriptId, parsePagination, buildPaginationMeta, statusToStep, buildS3Folder } = require('../utils/helpers');
+const { extractProjectFromManuscriptId, parsePagination, buildPaginationMeta, statusToStep, buildS3Folder } = require('../utils/helpers');
 const s3Service = require('../services/storage/s3.service');
 const parserService = require('../services/krt/parser.service');
 const krtService = require('../services/krt/krt.service');
@@ -18,7 +18,7 @@ const logger = require('../utils/logger');
  *
  * Query params:
  * - status: comma-separated list of statuses (e.g., "draft,step1,step2")
- * - team: comma-separated list of teams (e.g., "WH,ML")
+ * - project: comma-separated list of project (grant) codes (e.g., "WH,ML")
  * - userId: comma-separated list of user IDs (e.g., "1,2,3")
  * - page, limit: pagination
  * - sort, order: sorting
@@ -39,14 +39,24 @@ async function list(req, res, next) {
       }
     }
 
-    // Add optional team filter (supports comma-separated values)
-    if (req.query.team && !filter.team) {
-      const teams = req.query.team.split(',').map(t => t.trim()).filter(Boolean);
-      if (teams.length === 1) {
-        filter.team = teams[0];
-      } else if (teams.length > 1) {
-        filter.team = { [Op.in]: teams };
+    // Add optional project filter (supports comma-separated values). This is
+    // the "filter for clarity" dimension — it only narrows the role-scoped set.
+    if (req.query.project && !filter.project) {
+      const projects = req.query.project.split(',').map(p => p.trim().toUpperCase()).filter(Boolean);
+      if (projects.length === 1) {
+        filter.project = projects[0];
+      } else if (projects.length > 1) {
+        filter.project = { [Op.in]: projects };
       }
+    }
+
+    // Optional structured title filter (filters section). Single column, and
+    // debounced client-side, so the cost is bounded.
+    if (req.query.title && req.query.title.trim()) {
+      filter[Op.and] = [
+        ...(filter[Op.and] || []),
+        { title: { [Op.iLike]: `%${req.query.title.trim()}%` } }
+      ];
     }
 
     // Add optional userId filter (supports comma-separated values).
@@ -166,7 +176,7 @@ async function create(req, res, next) {
     //    If KRT persistence fails after submission creation (S3 outage,
     //    DB error), we clean up the submission so the user doesn't see an
     //    orphan record on the dashboard.
-    const team = manuscriptId ? await extractTeamFromManuscriptId(manuscriptId) : null;
+    const project = manuscriptId ? await extractProjectFromManuscriptId(manuscriptId) : null;
 
     // The KRT is uploaded as part of create now, so the submission is
     // already past the 'draft' phase (which historically meant "no files
@@ -177,7 +187,7 @@ async function create(req, res, next) {
       title,
       dataAvailabilityStatement,
       manuscriptId: manuscriptId || null,
-      team,
+      project,
       notes,
       status: 'step_krt'
     });
@@ -310,8 +320,8 @@ async function update(req, res, next) {
     if (dataAvailabilityStatement !== undefined) submission.dataAvailabilityStatement = dataAvailabilityStatement;
     if (manuscriptId !== undefined) {
       submission.manuscriptId = manuscriptId || null;
-      // Update team if manuscript ID changed
-      submission.team = manuscriptId ? await extractTeamFromManuscriptId(manuscriptId) : submission.team;
+      // Re-derive the project (grant) code if the manuscript ID changed.
+      submission.project = manuscriptId ? await extractProjectFromManuscriptId(manuscriptId) : submission.project;
     }
     if (notes !== undefined) submission.notes = notes;
 
@@ -355,6 +365,57 @@ async function update(req, res, next) {
     logger.info('Submission updated', { submissionId: submission.id, userId: req.userId });
 
     res.json({ submission });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Reassign a submission to another owner (staff only).
+ *
+ * Staff (admin / ds_annotator) upload and curate documents for testing, then
+ * hand them to the real user. Visibility follows the owner's teams, so simply
+ * changing the owner makes the document visible to that user and their
+ * teammates.
+ *
+ * PATCH /api/submissions/:id/owner  { userId }
+ */
+async function reassignOwner(req, res, next) {
+  try {
+    const submission = req.submission; // loaded + access-checked by middleware
+    const { userId: newOwnerId } = req.validatedBody;
+
+    if (newOwnerId === submission.userId) {
+      return res.status(400).json({ error: 'Submission already belongs to this user' });
+    }
+
+    const newOwner = await User.findByPk(newOwnerId, { attributes: ['id', 'name', 'email'] });
+    if (!newOwner) {
+      throw new NotFoundError('User');
+    }
+
+    const previousOwnerId = submission.userId;
+    submission.userId = newOwnerId;
+    await submission.save();
+
+    await ChangeLog.create({
+      submissionId: submission.id,
+      userId: req.userId,
+      action: 'edit',
+      description: `Owner reassigned to ${newOwner.email}`
+    });
+
+    logger.info('Submission owner reassigned', {
+      submissionId: submission.id,
+      previousOwnerId,
+      newOwnerId,
+      reassignedBy: req.userId
+    });
+
+    res.json({
+      submission,
+      user: { id: newOwner.id, name: newOwner.name, email: newOwner.email }
+    });
   } catch (error) {
     next(error);
   }
@@ -524,20 +585,20 @@ async function listHidden(req, res, next) {
 }
 
 /**
- * Get filter options (distinct teams and users with submissions)
+ * Get filter options (distinct projects and users with submissions)
  * GET /api/submissions/filter-options
  */
 async function getFilterOptions(req, res, next) {
   try {
     const filter = req.submissionFilter || {};
 
-    // Get distinct teams from submissions the user can access
-    const teamsResult = await Submission.findAll({
-      where: { ...filter, team: { [Op.not]: null } },
-      attributes: [[Submission.sequelize.fn('DISTINCT', Submission.sequelize.col('team')), 'team']],
+    // Get distinct projects from submissions the user can access
+    const projectsResult = await Submission.findAll({
+      where: { ...filter, project: { [Op.not]: null } },
+      attributes: [[Submission.sequelize.fn('DISTINCT', Submission.sequelize.col('project')), 'project']],
       raw: true
     });
-    const teams = teamsResult.map(r => r.team).filter(Boolean).sort();
+    const projects = projectsResult.map(r => r.project).filter(Boolean).sort();
 
     // Get users who have submissions the user can access
     const usersResult = await User.findAll({
@@ -554,7 +615,7 @@ async function getFilterOptions(req, res, next) {
     });
 
     res.json({
-      teams,
+      projects,
       users: usersResult.map(u => ({ id: u.id, name: u.name, email: u.email }))
     });
   } catch (error) {
@@ -762,6 +823,7 @@ module.exports = {
   create,
   getById,
   update,
+  reassignOwner,
   delete: deleteSubmission,
   getChanges,
   hideSubmission,

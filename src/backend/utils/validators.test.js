@@ -89,20 +89,20 @@ test('updateUser: partial update accepted', () => {
   assert.equal(v.name, 'New name');
 });
 
-// ── createTeam ────────────────────────────────────────────────────
-test('createTeam: code is uppercased + trimmed', () => {
-  const v = validate('createTeam', { code: '  ml1  ', name: 'Machine Learning' });
-  assert.equal(v.code, 'ML1');
-  assert.equal(v.name, 'Machine Learning');
+// ── createTeam (a team is a lab, keyed by leader name in `code`) ───
+test('createTeam: name is trimmed and NOT uppercased', () => {
+  const v = validate('createTeam', { code: '  Reck-Peterson  ', name: 'Reck-Peterson Lab' });
+  assert.equal(v.code, 'Reck-Peterson');
+  assert.equal(v.name, 'Reck-Peterson Lab');
 });
 
-test('createTeam: invalid code rejected', () => {
-  assertRejects('createTeam', { code: 'ml 1!', name: 'x' }, 'code');
+test('createTeam: empty name rejected', () => {
+  assertRejects('createTeam', { code: '   ', name: 'x' }, 'code');
 });
 
-test('createTeam: name optional', () => {
-  const v = validate('createTeam', { code: 'ML1' });
-  assert.equal(v.code, 'ML1');
+test('createTeam: label name optional', () => {
+  const v = validate('createTeam', { code: 'Alessi' });
+  assert.equal(v.code, 'Alessi');
 });
 
 // ── updateProfile ─────────────────────────────────────────────────

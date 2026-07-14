@@ -67,7 +67,7 @@ async function prompt(question) {
  * Tables to preserve during --reset --preserve-users.
  * These tables (and their migrations) will NOT be dropped.
  */
-const PRESERVED_TABLES = ['users', 'user_teams', 'teams'];
+const PRESERVED_TABLES = ['users', 'user_teams', 'teams', 'team_emails', 'projects'];
 
 /**
  * Migration files that should be marked as already run when preserving users.

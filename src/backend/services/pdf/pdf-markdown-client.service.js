@@ -17,6 +17,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const markdownConfig = require('../../config/pdf-markdown-api');
 const { ExternalServiceError } = require('../../utils/errors');
+const { retry, isTransientError } = require('../../utils/helpers');
 const logger = require('../../utils/logger');
 
 /**
@@ -120,11 +121,20 @@ async function convertViaModal(pdfBuffer, fileName) {
   }
 
   try {
-    const response = await axios.post(url, form, {
+    // Docling conversion is slow and the Modal endpoint can cold-start or briefly
+    // 503/time out; retry transient failures with backoff before giving up so a
+    // single blip doesn't fail the whole document. Deterministic errors (4xx,
+    // unexpected body) fall through immediately.
+    const response = await retry(() => axios.post(url, form, {
       headers,
       timeout: markdownConfig.timeout,
       maxContentLength: Infinity,
       maxBodyLength: Infinity
+    }), {
+      maxRetries: 3, delay: 2000, multiplier: 2, maxDelay: 20000, jitter: 500,
+      shouldRetry: isTransientError,
+      onRetry: (attempt, waitMs, error) =>
+        logger.warn('Modal/Docling transient error, retrying', { fileName, attempt, nextRetryMs: waitMs, error: error.message })
     });
 
     const data = response.data;

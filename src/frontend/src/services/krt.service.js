@@ -86,6 +86,18 @@ export default {
   },
 
   /**
+   * Bulk-delete selected rows (transactional on the backend).
+   * @param {string} submissionId - The submission ID
+   * @param {string[]} rowIds - The row UUIDs to delete
+   * @param {Object} options - { source? }
+   * @returns {Promise<Object>} - { message, deleted }
+   */
+  async batchDeleteRows(submissionId, rowIds, options = {}) {
+    const response = await api.post(`/submissions/${submissionId}/krt/batch-delete`, { rowIds, ...options })
+    return response.data
+  },
+
+  /**
    * Merge several rows into one (transactional on the backend).
    * @param {string} submissionId - The submission ID
    * @param {string[]} rowIds - The row UUIDs to merge

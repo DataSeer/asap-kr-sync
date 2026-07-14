@@ -81,8 +81,9 @@ keys at all, the app still runs and (by default) serves **demo data** so you can
 | `deploy/asap-kr-sync-{dev,prod}.service` | ✅ tracked | Production systemd units (the `docker run` command). |
 | `nginx/asap-kr-sync.conf` | ✅ tracked | Production reverse-proxy / TLS config. |
 
-> **`.txt` vs `.txt.example`:** the live `.txt` prompt is what the app loads; the `.txt.example` is the
-> reference template. Prompts are cached in-process at startup — **restart the backend after editing a prompt.**
+> **Prompts:** the detection/comparison prompts live at `src/backend/data/prompts/*.txt` and are **public and
+> version-controlled** — a single canonical set, no `.txt.example` templates and no copy step. Prompts are cached
+> in-process at startup — **restart the backend after editing a prompt.**
 
 ---
 
@@ -186,9 +187,10 @@ And one of two **outcome states** after a run:
 | **Identifier Detection** | `IDENTIFIER_DETECTION_` | **Local** scan of the Markdown against the curated `enrichment_list_entries` — no external call, no prompt. Recovers known RRIDs/DOIs/accessions the other detectors miss. Flags: `IDENTIFIER_DETECTION_ENABLED` (default on), `IDENTIFIER_DETECTION_CUT_AT_REFERENCES` (default on — truncate at the bibliography; set `false` for combined manuscript+supplemental PDFs). | uses the enrichment lists (§6.5) |
 | **PDF Analysis** | `PDF_ANALYSIS_ENABLED` + `KRT_GENERATION_` | **Generated KRT builder.** Rule-based merge (alias-aware; **auto-detects SOURCE from the identifier** — allowlist-only, DOI/accession outranks URL, ambiguous → blank), then an **LM (Gemini)** consolidates the candidates. **LM-primary with a rule-based fallback:** when `KRT_GENERATION_ENABLED` is off or the LM errors, the merged candidates are the Generated KRT. | `prompts/pdf-analysis-krt.txt` |
 | **AI Suggestions** | `KRT_COMPARISON_` | **Google Gemini** compares the author KRT vs the Generated KRT and emits per-resource decisions (add/skip/update/remove) with reasons. **LM-only — no fallback** (without it, no suggestions). Runs **last** (depends on PDF Analysis). | `prompts/krt-comparison.txt` |
+| **DAS Suggestions** | `DAS_SUGGESTIONS_` | **Google Gemini** checks the Data/Code Availability Statement against the ASAP rulebook (9 checks) and returns a per-rule verdict shown on `/availability`. **LM-only, but with a fallback:** without it, the frontend uses the legacy in-browser rules. **Standalone** — not in the auto pipeline; started from `/availability` (re-runs on DAS edit). | `prompts/das-suggestions.txt` |
 
-> So: **Gemini** powers DAS, datasets (pass 2), materials, protocols, the Generated-KRT consolidation
-> (KRT generation), and AI suggestions (KRT comparison). **LangExtract** is datasets pass 1 only.
+> So: **Gemini** powers DAS extraction, datasets (pass 2), materials, protocols, the Generated-KRT consolidation
+> (KRT generation), AI suggestions (KRT comparison), and the DAS suggestions check. **LangExtract** is datasets pass 1 only.
 > **Softcite/GROBID/OpenAlex/ORCID** are non-LLM HTTP services. **Identifier detection** is fully local, and
 > **PDF analysis** falls back to a local rule-based merge when its LM is off. To enable a Gemini module you set
 > `<MODULE>_ENABLED=true` **and** its `..._GEMINI_API_KEY`.
@@ -265,13 +267,15 @@ soft-deletes (history lives in the append-only change log).
 
 ### 6.2 Data model (current tables)
 
-Full ERD/columns: [database.md](./database.md). The 17 tables:
+Full ERD/columns: [database.md](./database.md). The core tables:
 
 | Table | Purpose |
 |-------|---------|
 | `users` | Accounts (email, bcrypt hash and/or `auth0_sub`, `role`). |
-| `teams` | Team catalog (UUID id, unique `code` VARCHAR(10), name, active). |
-| `user_teams` | Many-to-many join: which users belong to which team codes. |
+| `teams` | Team catalog — a team is a lab; unique `code` VARCHAR(100) holds the leader name (UUID id, name, active). |
+| `user_teams` | Many-to-many join: which users belong to which teams. |
+| `team_emails` | Admin-managed email→team roster; auto-assigns teams on sign-in. |
+| `projects` | ASAP grant codes (2-letter `code` PK, `pi_name`, `title`, active); labels submissions + dashboard filter. |
 | `submissions` | Central manuscript record; step-based `status`, `current_round`, `authors` (JSONB). |
 | `files` | Uploaded/generated artifacts (`s3_key`, type, version, round); immutable. |
 | `krt_data` | KRT rows; per-round, self-referential (`origin_row_id`) for round copy-forward. |
@@ -477,6 +481,7 @@ review suggestions → export the report. With all external modules off, demo da
 | A detection module always returns empty | It's **Off** or **Demo** without demo data for that manuscript, or `_ENABLED=true` but the API key/endpoint is wrong. Check the job's status pill + logs. |
 | Materials detection never produces results | Expected when the author KRT has **no material rows** — the module is author-seeded and skips extraction in that case. Otherwise check it's **On** and the Gemini key is set. |
 | AI Suggestions panel is empty | AI Suggestions is **LM-only** — set `KRT_COMPARISON_ENABLED=true` and `KRT_COMPARISON_GEMINI_API_KEY`. With no LM configured, no suggestions are produced. Use **Regenerate suggestions** after editing the KRT. |
+| DAS Suggestions always show the legacy checks / never a loader | The LM DAS check is off — set `DAS_SUGGESTIONS_ENABLED=true` and `DAS_SUGGESTIONS_GEMINI_API_KEY`. With no LM configured the `/availability` step falls back to the in-browser rules (and Continue is never blocked). |
 | No `debug` lines despite `LOG_LEVEL=debug` | The running prod image's env-file may not set it (the `docker run` doesn't pass `LOG_LEVEL`); set it in `/opt/asap-kr-sync-prod/.env` and restart. |
 | No `logs/app.log` file in prod | `NODE_ENV` isn't `production` in the env-file (file transport is prod-only). |
 | CORS / cookie auth failing | `FRONTEND_URL` / `API_BASE_URL` don't match the real origins. |

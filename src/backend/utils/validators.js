@@ -32,8 +32,11 @@ const schemas = {
   // Role validation
   role: Joi.string().valid(...Object.values(ROLES)),
 
-  // Team validation - dynamic, use getDynamicSchemas().team
-  team: Joi.string().uppercase(),
+  // Project (grant) code — 2 letters, uppercased. Filter dimension only.
+  project: Joi.string().uppercase(),
+
+  // Team name (lab leader), e.g. "Alessi", "Reck-Peterson". Not uppercased.
+  teamName: Joi.string().trim().min(1).max(100),
 
   // Manuscript ID validation - strict format: XX#-######-###-org-X-#
   // Example: XX1-000000-001-org-X-1
@@ -63,15 +66,17 @@ const schemas = {
  * @returns {Promise<object>} { team, resourceType }
  */
 async function getDynamicSchemas() {
-  const { getTeams, getResourceTypes } = require('../config/constants');
+  const { getProjects, getTeams, getResourceTypes } = require('../config/constants');
 
-  const [teams, resourceTypes] = await Promise.all([
+  const [projects, teams, resourceTypes] = await Promise.all([
+    getProjects(),
     getTeams(),
     getResourceTypes()
   ]);
 
   return {
-    team: Joi.string().valid(...teams).uppercase(),
+    project: Joi.string().valid(...projects).uppercase(),
+    team: Joi.string().valid(...teams),
     resourceType: Joi.string().valid(...resourceTypes)
   };
 }
@@ -120,6 +125,11 @@ const requestSchemas = {
     manuscriptId: schemas.manuscriptId.allow('', null),
     notes: Joi.string().trim().max(2000).allow('', null),
     status: schemas.submissionStatus
+  }),
+
+  // Staff-only: hand a submission to another user (see reassignOwner controller).
+  reassignOwner: Joi.object({
+    userId: schemas.uuid.required()
   }),
 
   // KRT row
@@ -174,6 +184,12 @@ const requestSchemas = {
     source: Joi.string().valid(...CHANGE_SOURCES)
   }),
 
+  // Bulk-delete KRT rows (multi-select delete in the editor).
+  batchDeleteKrtRows: Joi.object({
+    rowIds: Joi.array().items(schemas.uuid.required()).min(1).max(1000).required(),
+    source: Joi.string().valid(...CHANGE_SOURCES)
+  }),
+
   // Process new version (new round)
   processNewVersion: Joi.object({
     hasNewKRT: Joi.boolean().required()
@@ -186,7 +202,8 @@ const requestSchemas = {
     sort: Joi.string().valid('createdAt', 'updatedAt', 'title', 'status').default('createdAt'),
     order: Joi.string().valid('ASC', 'DESC').default('DESC'),
     status: schemas.submissionStatus,
-    team: schemas.team
+    project: schemas.project,
+    title: Joi.string().trim().max(200).allow('')
   }),
 
   // ── Admin: user management ────────────────────────────────────────
@@ -195,30 +212,66 @@ const requestSchemas = {
     password: schemas.password.required(),
     name: Joi.string().trim().min(2).max(100).required(),
     role: schemas.role.required(),
-    teams: Joi.array().items(schemas.team).max(50).default([])
+    teams: Joi.array().items(schemas.teamName).max(50).default([])
   }),
 
   updateUser: Joi.object({
     name: Joi.string().trim().min(2).max(100),
     role: schemas.role,
     password: schemas.password,
-    teams: Joi.array().items(schemas.team).max(50)
+    teams: Joi.array().items(schemas.teamName).max(50)
   }).min(1),
 
   // ── Admin: team management ────────────────────────────────────────
-  // Team code: alphanumeric + underscore/dash, 1-32 chars, normalised to uppercase.
+  // A team is a lab identified by its leader's name (stored as `code`).
   createTeam: Joi.object({
-    code: Joi.string().trim().uppercase().pattern(/^[A-Z0-9_-]{1,32}$/).required()
-      .messages({ 'string.pattern.base': 'Team code must be 1-32 chars, alphanumeric or _ -' }),
+    code: Joi.string().trim().min(1).max(100).required(),
     name: Joi.string().trim().max(255).allow('', null)
   }),
 
   updateTeam: Joi.object({
-    code: Joi.string().trim().uppercase().pattern(/^[A-Z0-9_-]{1,32}$/)
-      .messages({ 'string.pattern.base': 'Team code must be 1-32 chars, alphanumeric or _ -' }),
+    code: Joi.string().trim().min(1).max(100),
     name: Joi.string().trim().max(255).allow('', null),
     active: Joi.boolean()
   }).min(1),
+
+  // Bulk import of teams from parsed CSV rows (upsert by code). Rows are
+  // validated per-row in the controller, so accept unknown/loose shapes here.
+  teamsImport: Joi.object({
+    teams: Joi.array().items(Joi.object().unknown(true)).min(1).max(10000).required()
+  }),
+
+  // ── Admin: project (grant) management ─────────────────────────────
+  // Project code: 2 alphanumeric chars, uppercased (the manuscript prefix).
+  createProject: Joi.object({
+    code: Joi.string().trim().uppercase().pattern(/^[A-Z0-9]{2}$/).required()
+      .messages({ 'string.pattern.base': 'Project code must be exactly 2 letters/digits' }),
+    piName: Joi.string().trim().max(255).allow('', null),
+    title: Joi.string().trim().max(2000).allow('', null),
+    active: Joi.boolean()
+  }),
+
+  updateProject: Joi.object({
+    piName: Joi.string().trim().max(255).allow('', null),
+    title: Joi.string().trim().max(2000).allow('', null),
+    active: Joi.boolean()
+  }).min(1),
+
+  // Bulk import of projects from parsed CSV rows (upsert by code). Rows are
+  // validated per-row in the controller, so accept unknown/loose shapes here.
+  projectsImport: Joi.object({
+    projects: Joi.array().items(Joi.object().unknown(true)).min(1).max(10000).required()
+  }),
+
+  // (team, email) roster used for automatic team assignment. Bulk import of
+  // a pasted/CSV list; bounded to keep a single request reasonable. `team` is
+  // a team name and must reference an existing team (checked in the controller).
+  createTeamEmailMappings: Joi.object({
+    mappings: Joi.array().items(Joi.object({
+      team: Joi.string().trim().min(1).max(100).required(),
+      email: Joi.string().trim().lowercase().email().max(255).required()
+    })).min(1).max(2000).required()
+  }),
 
   // ── Profile (self-service) ────────────────────────────────────────
   // newPassword requires currentPassword (verified server-side).

@@ -48,6 +48,7 @@ module.exports = {
 
   // Async getters for dynamic configuration from database
   getTeams: () => getConfigService().getTeams(),
+  getProjects: () => getConfigService().getProjects(),
   getResourceTypes: () => getConfigService().getResourceTypes(),
   getValidationRules: () => getConfigService().getValidationRules(),
 
@@ -125,7 +126,10 @@ module.exports = {
     IDENTIFIER_DETECTION: 'identifier_detection',
     // LM-based comparison of the author KRT vs the Generated KRT that produces
     // the add/update/remove suggestions (runs after PDF_ANALYSIS; re-triggerable).
-    SUGGESTION_GENERATION: 'suggestion_generation'
+    SUGGESTION_GENERATION: 'suggestion_generation',
+    // LM-based check of the Data/Code Availability Statement against the ASAP
+    // rulebook (runs after PDF_ANALYSIS + once the KRT is finalized; re-triggerable).
+    DAS_SUGGESTIONS: 'das_suggestions'
   },
 
   // Job statuses (matches SubmissionJob ENUM)

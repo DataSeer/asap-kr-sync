@@ -77,9 +77,17 @@ All wrapped in `AppLayout` (header + sidebar).
 |------|------|---------------|
 | `/admin/users` | UsersView | admin, ds_annotator, asap_pm |
 | `/admin/teams` | TeamsView | admin, ds_annotator |
+| `/admin/team-emails` | TeamEmailsView | admin, ds_annotator, asap_pm |
+| `/admin/projects` | ProjectsView | admin, ds_annotator |
 | `/admin/krt-editor/resource-types` | ResourceTypesView | admin, ds_annotator |
 | `/admin/krt-editor/validation-rules` | AppConfigView | admin |
 | `/admin/enrichments` | EnrichmentListView | admin, ds_annotator |
+
+`TeamEmailsView` manages the email→team roster (auto team assignment) and
+`ProjectsView` manages the 2-letter grant codes; `TeamsView`, `ProjectsView` and
+`TeamEmailsView` all offer CSV import/export.
+Data-table admin pages carry an in-table search box (client-side post-filter of
+the current page) and fill the remaining viewport height with an inner scroll.
 
 The four curated lists (software, materials, datasets, protocols) are all managed by the single `EnrichmentListView`, with category tabs in the UI and a `?category=…` filter applied to the underlying `/api/enrichment-list` endpoint.
 
@@ -103,7 +111,7 @@ Manages authentication state and role-based permissions. Tokens are **not** in t
 
 **Key state:** `user`, `loading`, `error`, `viewAsRole` (admin role simulator).
 
-**Key computed:** `isAuthenticated`, `userRole`, `userTeams`, `isRealAdmin`, `effectiveRole` (respects `viewAsRole`), `isAuth0User`, `isAdmin`, `isStaff`, plus a family of capability flags that mirror the backend rules: `canCreateSubmission`, `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`, `canAccessSubmission(submission)`, `canManageUsers`, `canViewUsers`, `canManageTeams`, `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`, `canManageResourceTypes`, `canManageEnrichments`, `canManageValidationRules`, `canViewJobInternals`, `canManageJobs`.
+**Key computed:** `isAuthenticated`, `userRole`, `userTeams`, `isRealAdmin`, `effectiveRole` (respects `viewAsRole`), `isAuth0User`, `isAdmin`, `isStaff`, plus a family of capability flags that mirror the backend rules: `canCreateSubmission`, `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`, `canAccessSubmission(submission)`, `canManageUsers`, `canViewUsers`, `canManageTeams`, `canManageTeamEmails`, `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`, `canManageResourceTypes`, `canManageEnrichments`, `canManageValidationRules`, `canViewJobInternals`, `canManageJobs`.
 
 **Key actions:** `login(email, password)`, `auth0PasswordLogin(email, password)`, `register(...)`, `logout()` (redirects to `auth0LogoutUrl` when present), `fetchCurrentUser()`, `refreshAccessToken()`, `setAuth(user) / clearAuth()`, `setViewAsRole(role) / clearViewAsRole()`, `initialize()`.
 
@@ -135,7 +143,8 @@ Toast notification system with auto-dismiss.
 
 ### Other Stores
 
-- **Teams Store** (`teams.store.js`) — team CRUD with `activeTeams` computed
+- **Teams Store** (`teams.store.js`) — team CRUD with `activeTeams` computed; CSV `exportTeams`/`importTeams`; team-email roster list/create/delete/export
+- **Projects Store** (`projects.store.js`) — project (grant code) CRUD plus CSV `exportProjects`/`importProjects`
 - **Resource Types Store** (`resourceTypes.store.js`) — resource type CRUD
 - **App Config Store** (`appConfig.store.js`) — runtime configuration management
 
@@ -201,7 +210,8 @@ All API calls go through service modules in `src/frontend/src/services/`. Each s
 | `report.service.js` | `generate`, `list`, `getById`, `download` |
 | `file.service.js` | `download` |
 | `enrichment-list.service.js` | Single service backing every category — list (cross- or per-category), `getCounts`, `getById`, `create`, `update`, `remove`, `importEntries`, `exportCsv` |
-| `teams.service.js` | `list`, `getCodes`, `create`, `update`, `delete` |
+| `teams.service.js` | `list`, `getCodes`, `create`, `update`, `delete`, `exportCsv`, `importCsv`, plus email-mappings `listEmailMappings`, `createEmailMappings`, `deleteEmailMapping`, `exportEmailMappings` |
+| `projects.service.js` | `list`, `getCodes`, `create`, `update`, `delete`, `exportCsv`, `importCsv` |
 | `resourceTypes.service.js` | `list`, `getNames`, `create`, `update`, `delete`, `exportCsv`, `importEntries` |
 | `appConfig.service.js` | `list`, `get`, `save`, `delete` |
 | `config.service.js` | `getServiceStatus`, `getEnvironment` |

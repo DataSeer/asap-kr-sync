@@ -611,7 +611,7 @@ All edits are saved automatically — there is no manual save shortcut.
 
 ```
 1. Create Submission
-   └─> Enter Manuscript ID & Team
+   └─> Enter Manuscript ID (its 2-letter prefix is the project/grant code)
 
 2. Upload KRT
    └─> Fix any validation errors

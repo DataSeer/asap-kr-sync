@@ -74,6 +74,11 @@ export function useJobPoller(submissionId) {
       const data = await jobService.getJobs(id)
       const jobMap = {}
       for (const job of data.jobs) {
+        // `das_suggestions` is a standalone job owned by the /availability step
+        // (its own loader + poll). It must not enter the pipeline poller, or a
+        // queued/processing DAS check would count toward the KRT/PDF steps'
+        // "all processes finished" gate and block their Continue button.
+        if (job.jobType === 'das_suggestions') continue
         jobMap[job.jobType] = job
       }
 
