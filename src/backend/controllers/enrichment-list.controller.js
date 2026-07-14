@@ -416,14 +416,18 @@ async function exportCsv(req, res, next) {
 
     const csvRows = [CSV_HEADERS.join(',')];
     for (const e of entries) {
+      // `raw: true` returns rows keyed by the model's camelCase attribute names
+      // (resourceType, newReuse, …), NOT the snake_case DB columns — reading
+      // snake_case here silently exported those five fields blank, so the file
+      // couldn't be re-imported (every row was dropped for lacking a name/type).
       csvRows.push([
-        escapeCsvField(e.resource_type),
-        escapeCsvField(e.resource_name),
+        escapeCsvField(e.resourceType),
+        escapeCsvField(e.resourceName),
         escapeCsvField(e.source),
         escapeCsvField(e.identifier),
-        escapeCsvField(e.new_reuse),
-        escapeCsvField(e.additional_information),
-        escapeCsvField(e.suggested_entity),
+        escapeCsvField(e.newReuse),
+        escapeCsvField(e.additionalInformation),
+        escapeCsvField(e.suggestedEntity),
         escapeCsvField(JSON.stringify(e.tokens || []))
       ].join(','));
     }
