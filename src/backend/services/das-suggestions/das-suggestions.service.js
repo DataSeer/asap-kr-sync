@@ -181,6 +181,10 @@ function buildSuggestions(findings, signals = {}, dasText = '') {
   return DAS_RULES.map(rule => {
     const f = byId.get(rule.id);
     const applies = typeof f?.applies === 'boolean' ? f.applies : false;
+    // The LM's per-rule justification. Kept for EVERY rule (applicable or not)
+    // so the /availability "more details" view can explain each verdict; the
+    // green "check passed" box still reads it via notApplicableReason.
+    const lmReason = f?.reason != null && String(f.reason).trim() ? String(f.reason).trim() : null;
     return {
       ruleId: rule.id,
       severity: rule.severity,
@@ -188,7 +192,8 @@ function buildSuggestions(findings, signals = {}, dasText = '') {
       message: rule.message,
       recommendedText: rule.recommendedText || null,
       applies,
-      notApplicableReason: applies ? null : (f?.reason || rule.naReason || null)
+      reason: lmReason,
+      notApplicableReason: applies ? null : (lmReason || rule.naReason || null)
     };
   });
 }
@@ -249,7 +254,7 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
   });
 
   return {
-    data: { suggestions },
+    data: { suggestions, signals },
     status: 'done',
     source: 'external',
     meta: { total: suggestions.length, applicable, totalMs: Date.now() - start, model: dasSuggestionsConfig.model }
@@ -303,6 +308,7 @@ async function getPersistedDasSuggestions(submissionId, round) {
   return {
     status: job?.status || 'none',
     suggestions: job?.result?.data?.suggestions || [],
+    signals: job?.result?.data?.signals || null,
     meta: job?.result?.meta || null
   };
 }

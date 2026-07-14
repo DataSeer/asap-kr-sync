@@ -61,11 +61,13 @@ test('buildSuggestions: applies + reason come from the LM; presentation from cat
   const applied = out.find(o => o.ruleId === 'no_new_dataset');
   assert.equal(applied.applies, true);
   assert.equal(applied.notApplicableReason, null);
+  assert.equal(applied.reason, 'no new dataset in KRT'); // reason kept even when applicable
   assert.equal(applied.severity, 'warning');
   assert.ok(applied.recommendedText.includes('No new primary data'));
 
   const passed = out.find(o => o.ruleId === 'missing_krt_reference');
   assert.equal(passed.applies, false);
+  assert.equal(passed.reason, 'DAS cites the Zenodo DOI');
   assert.equal(passed.notApplicableReason, 'DAS cites the Zenodo DOI'); // LM reason wins
 });
 

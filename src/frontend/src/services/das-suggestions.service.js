@@ -10,7 +10,7 @@ export default {
   /**
    * Get the latest DAS-suggestions job status + suggestions.
    * @param {string} submissionId
-   * @returns {Promise<{ status: string, suggestions: object[], meta: object|null }>}
+   * @returns {Promise<{ status: string, suggestions: object[], signals: object|null, meta: object|null }>}
    */
   async get(submissionId) {
     const response = await api.get(`/submissions/${submissionId}/das-suggestions`)

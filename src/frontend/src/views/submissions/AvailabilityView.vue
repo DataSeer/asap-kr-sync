@@ -65,6 +65,11 @@ async function saveDAS() {
 const RUNNING_STATUSES = ['waiting', 'queued', 'processing']
 const dasJobStatus = ref('none')
 const lmSuggestions = ref([])
+// The booleans the LM was handed as KRT ground truth, and the run metadata
+// (model, timing). Surfaced under "more details" so the user can see exactly
+// what the check reasoned over.
+const lmSignals = ref(null)
+const lmMeta = ref(null)
 let pollTimer = null
 
 const isGeneratingSuggestions = computed(() => RUNNING_STATUSES.includes(dasJobStatus.value))
@@ -75,12 +80,51 @@ async function fetchDasSuggestions() {
     const data = await dasSuggestionsService.get(route.params.id)
     dasJobStatus.value = data.status || 'none'
     lmSuggestions.value = Array.isArray(data.suggestions) ? data.suggestions : []
+    lmSignals.value = data.signals || null
+    lmMeta.value = data.meta || null
   } catch (error) {
     // Treat a fetch error as terminal so the user isn't stuck — fall back.
     dasJobStatus.value = 'failed'
     lmSuggestions.value = []
+    lmSignals.value = null
+    lmMeta.value = null
   }
 }
+
+// Per-suggestion "more details" disclosure (shows the LM's reasoning). Keyed by
+// ruleId (LM) or title (legacy fallback) so it survives sort/filter reordering.
+const expandedDetails = ref(new Set())
+function detailKey(s) {
+  return s.ruleId || s.title
+}
+function toggleDetails(s) {
+  const key = detailKey(s)
+  const next = new Set(expandedDetails.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedDetails.value = next
+}
+function isDetailsOpen(s) {
+  return expandedDetails.value.has(detailKey(s))
+}
+
+// KRT summary the LM treated as ground truth, mapped to human labels. Only
+// meaningful when the LM produced the suggestions (not the legacy fallback).
+const SIGNAL_LABELS = {
+  has_new_dataset: 'New dataset in the KRT',
+  has_new_code: 'New code/software in the KRT',
+  has_dataset_resources: 'Any dataset resources',
+  has_code_resources: 'Any software/code resources',
+  has_protocol_resources: 'Any protocol resources',
+  has_lab_material_resources: 'Any lab-material resources'
+}
+const showSignals = ref(false)
+const signalRows = computed(() => {
+  if (!usingLmSuggestions.value || !lmSignals.value) return []
+  return Object.entries(SIGNAL_LABELS)
+    .filter(([key]) => key in lmSignals.value)
+    .map(([key, label]) => ({ key, label, value: !!lmSignals.value[key] }))
+})
 
 // Safety cap: don't poll (and don't block Continue) forever if the job stalls.
 const MAX_POLL_MS = 3 * 60 * 1000
@@ -476,6 +520,32 @@ async function handleBack() {
         </div>
       </div>
 
+      <!-- What the LM check saw: the KRT summary handed to it as ground truth.
+           This is the "more details" for the whole run — it explains why a rule
+           fired (e.g. "New code in the KRT: No" → the no-new-code checks apply). -->
+      <div v-if="!isGeneratingSuggestions && signalRows.length" class="signals-panel">
+        <button type="button" class="signals-toggle" @click="showSignals = !showSignals">
+          <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-90': showSignals }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+          </svg>
+          What the check saw in your Key Resources Table
+        </button>
+        <div v-if="showSignals" class="signals-body">
+          <div class="signals-grid">
+            <div v-for="row in signalRows" :key="row.key" class="signal-item">
+              <span :class="['signal-flag', row.value ? 'signal-yes' : 'signal-no']">{{ row.value ? 'Yes' : 'No' }}</span>
+              <span class="signal-label">{{ row.label }}</span>
+            </div>
+          </div>
+          <p class="signals-hint">
+            These booleans are computed from the finalized Key Resources Table and handed to the language model as
+            ground truth. A checklist item fires from these — e.g. if there is no row that is both Software/code and
+            marked “new”, the no-new-code checks apply regardless of the statement wording.
+            <span v-if="lmMeta?.model"> Checked by {{ lmMeta.model }}.</span>
+          </p>
+        </div>
+      </div>
+
       <!-- Loader while the LM check runs -->
       <div v-if="isGeneratingSuggestions" class="das-loader">
         <svg class="animate-spin h-6 w-6 text-primary-600" fill="none" viewBox="0 0 24 24">
@@ -502,8 +572,8 @@ async function handleBack() {
             <span class="suggestion-title" :class="{ 'text-gray-400': !suggestion.applies }">{{ suggestion.title }}</span>
           </div>
           <p class="suggestion-message" :class="{ 'text-gray-400': !suggestion.applies }">{{ suggestion.message }}</p>
-          <!-- Not applicable reason -->
-          <div v-if="!suggestion.applies && suggestion.notApplicableReason" class="not-applicable-reason">
+          <!-- Not applicable reason (legacy fallback only — LM results show it under "More details") -->
+          <div v-if="!suggestion.applies && suggestion.notApplicableReason && !suggestion.reason" class="not-applicable-reason">
             <svg class="w-4 h-4 text-green-500 mr-1.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
             </svg>
@@ -524,6 +594,16 @@ async function handleBack() {
               </button>
             </div>
           </div>
+          <!-- LM reasoning for this verdict (applicable or not) -->
+          <div v-if="suggestion.reason" class="details-section">
+            <button type="button" class="details-toggle" @click="toggleDetails(suggestion)">
+              {{ isDetailsOpen(suggestion) ? 'Hide details' : 'More details' }}
+            </button>
+            <div v-if="isDetailsOpen(suggestion)" class="details-body" :class="{ 'details-passed': !suggestion.applies }">
+              <div class="details-label">{{ suggestion.applies ? 'Why the check flagged this' : 'Why this check does not apply' }}</div>
+              <p class="details-reason">{{ suggestion.reason }}</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -540,8 +620,8 @@ async function handleBack() {
             <span class="suggestion-title" :class="{ 'text-gray-400': !currentSuggestion.applies }">{{ currentSuggestion.title }}</span>
           </div>
           <p class="suggestion-message" :class="{ 'text-gray-400': !currentSuggestion.applies }">{{ currentSuggestion.message }}</p>
-          <!-- Not applicable reason -->
-          <div v-if="!currentSuggestion.applies && currentSuggestion.notApplicableReason" class="not-applicable-reason">
+          <!-- Not applicable reason (legacy fallback only — LM results show it under "More details") -->
+          <div v-if="!currentSuggestion.applies && currentSuggestion.notApplicableReason && !currentSuggestion.reason" class="not-applicable-reason">
             <svg class="w-4 h-4 text-green-500 mr-1.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
             </svg>
@@ -560,6 +640,16 @@ async function handleBack() {
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                 </svg>
               </button>
+            </div>
+          </div>
+          <!-- LM reasoning for this verdict (applicable or not) -->
+          <div v-if="currentSuggestion.reason" class="details-section">
+            <button type="button" class="details-toggle" @click="toggleDetails(currentSuggestion)">
+              {{ isDetailsOpen(currentSuggestion) ? 'Hide details' : 'More details' }}
+            </button>
+            <div v-if="isDetailsOpen(currentSuggestion)" class="details-body" :class="{ 'details-passed': !currentSuggestion.applies }">
+              <div class="details-label">{{ currentSuggestion.applies ? 'Why the check flagged this' : 'Why this check does not apply' }}</div>
+              <p class="details-reason">{{ currentSuggestion.reason }}</p>
             </div>
           </div>
         </div>
@@ -961,6 +1051,132 @@ async function handleBack() {
 
 .carousel-dot-na:hover {
   background: #9ca3af;
+}
+
+/* Per-suggestion "more details" (LM reasoning) */
+.details-section {
+  margin-top: 0.625rem;
+}
+
+.details-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #2563eb;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.details-toggle:hover {
+  text-decoration: underline;
+}
+
+.details-body {
+  margin-top: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+}
+
+/* Passed (not-applicable) verdicts get a green accent */
+.details-body.details-passed {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.details-body.details-passed .details-label {
+  color: #059669;
+}
+
+.details-body.details-passed .details-reason {
+  color: #065f46;
+}
+
+.details-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin-bottom: 0.25rem;
+}
+
+.details-reason {
+  font-size: 0.8125rem;
+  color: #374151;
+  line-height: 1.5;
+}
+
+/* Section-level KRT signals panel */
+.signals-panel {
+  margin-bottom: 0.875rem;
+  padding: 0.625rem 0.75rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+}
+
+.signals-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #374151;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.signals-body {
+  margin-top: 0.625rem;
+}
+
+.signals-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.375rem 1rem;
+}
+
+.signal-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: #374151;
+}
+
+.signal-flag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.25rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.signal-yes {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.signal-no {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.signals-hint {
+  margin-top: 0.625rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+  line-height: 1.5;
 }
 
 .das-loader {
