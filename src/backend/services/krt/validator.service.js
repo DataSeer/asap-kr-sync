@@ -555,7 +555,7 @@ async function validateIdentifier(row, submissionId) {
         rowId: row.id,
         columnName: 'IDENTIFIER',
         errorType: 'invalid_format',
-        errorMessage: 'Identifier not recognized',
+        errorMessage: 'Identifier not recognized by the app',
         severity: VALIDATION_SEVERITY.WARNING,
         suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"'
       });
@@ -719,7 +719,7 @@ function validateIdentifierValues({ identifier = '', additionalInformation = '',
     const detectedKinds = getDetectedKinds(identifierExtracted);
     const allowedKinds = detectedKinds.filter(k => isKindAllowedFor(k, resourceType));
     if (detectedKinds.length === 0) {
-      errors.push({ columnName: 'IDENTIFIER', errorType: 'invalid_format', errorMessage: 'Identifier not recognized', severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"' });
+      errors.push({ columnName: 'IDENTIFIER', errorType: 'invalid_format', errorMessage: 'Identifier not recognized by the app', severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"' });
     } else if (allowedKinds.length === 0) {
       const detectedLabel = detectedKinds.map(k => IDENTIFIER_KIND_LABELS[k] || k).join(', ');
       errors.push({ columnName: 'IDENTIFIER', errorType: 'kind_not_accepted_for_type', errorMessage: resourceType ? `${detectedLabel} is not a typical identifier for "${resourceType}"` : `${detectedLabel} detected, but RESOURCE TYPE is missing`, severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Use a DOI, RRID, URL, or other identifier accepted for this resource type' });

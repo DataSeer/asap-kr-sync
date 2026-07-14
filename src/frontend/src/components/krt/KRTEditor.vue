@@ -2126,8 +2126,14 @@ defineExpose({
                         <span :class="['tooltip-dot', error.severity === 'error' ? 'dot-error' : 'dot-warning']"></span>
                         <div class="tooltip-text">
                           <div class="tooltip-message">{{ error.message }}</div>
-                          <div v-if="error.suggestion" class="tooltip-suggestion">{{ error.suggestion }}</div>
+                          <!-- Only errors (blocking) show the prescriptive fix; warnings are
+                               advisory, so they just state what was found. -->
+                          <div v-if="error.suggestion && error.severity === 'error'" class="tooltip-suggestion">{{ error.suggestion }}</div>
                         </div>
+                      </div>
+                      <!-- All-warning cell: reassure it's an optional remark. -->
+                      <div v-if="!getCellErrors(row.id, col.key).some(e => e.severity === 'error')" class="tooltip-hint">
+                        Optional — you can leave this as-is.<template v-if="getCellErrors(row.id, col.key).some(e => e.type === 'invalid_format')"> Open the cell for the identifiers the app recognizes.</template>
                       </div>
                     </div>
                     <div class="tooltip-arrow"></div>
@@ -2552,8 +2558,10 @@ defineExpose({
   color: #dc2626;
 }
 
+/* Warnings are non-blocking remarks — neutral gray (not amber) so they read
+   as optional notes, consistent with the cell edit modal. */
 .stat-warning {
-  color: #d97706;
+  color: #6b7280;
 }
 
 .stat-label {
@@ -2922,8 +2930,8 @@ tr:hover {
 }
 
 .row-warning > .col-row-num {
-  background: #fffbeb !important;
-  border-left: 3px solid #f59e0b;
+  background: #f9fafb !important;
+  border-left: 3px solid #9ca3af;
 }
 
 .row-suggestion > .col-row-num {
@@ -2938,8 +2946,8 @@ tr:hover {
 }
 
 .cell-warning {
-  background: #fef3c7 !important;
-  box-shadow: inset 0 0 0 1px #f59e0b;
+  background: #f3f4f6 !important;
+  box-shadow: inset 0 0 0 1px #9ca3af;
 }
 
 /* Row Number Content */
@@ -2974,7 +2982,7 @@ tr:hover {
 }
 
 .icon-warning {
-  color: #f59e0b;
+  color: #9ca3af;
 }
 
 /* Cell with tooltip needs relative positioning */
@@ -3101,7 +3109,7 @@ tr:hover {
 }
 
 .dot-warning {
-  background: #fbbf24;
+  background: #9ca3af;
 }
 
 .tooltip-column {

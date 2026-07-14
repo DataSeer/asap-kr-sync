@@ -58,6 +58,26 @@ const localValue = computed({
 const isEditingResourceType = computed(() => props.cell?.column === 'RESOURCE TYPE')
 const isEditingNewReuse = computed(() => props.cell?.column === 'NEW/REUSE')
 const isEditingIdentifier = computed(() => props.cell?.column === 'IDENTIFIER')
+
+// The "Identifier not recognized by the app" remark: an advisory warning raised
+// when the value doesn't match any format the app knows. The (?) explains what
+// the app recognizes so the user can decide to keep the value as-is.
+const hasUnrecognizedIdentifier = computed(() =>
+  props.issues.some(i => i.type === 'invalid_format' && i.severity === 'warning')
+)
+const showIdHelp = ref(false)
+// Identifier formats the app recognizes (kept in sync with the backend
+// validator's IDENTIFIER_KIND_LABELS). Advisory copy only — not validation.
+const RECOGNIZED_IDENTIFIERS = [
+  'DOI (e.g. 10.1038/nmeth.2019)',
+  'RRID (e.g. RRID:SCR_002285)',
+  'SCR code',
+  'URL',
+  'Catalog number',
+  'Accession IDs: GenBank, UniProt, PDB, EMDB, EMPIAR, BioStudies, Addgene, Cellosaurus',
+  'PMID',
+  'Oligonucleotide sequence'
+]
 async function setNoIdentifier() {
   emit('update:modelValue', 'No identifier exists')
   await nextTick()
@@ -94,6 +114,7 @@ watch(() => props.show, async (visible) => {
     // bleed into the next cell the user opens.
     showRejectReason.value = false
     rejectReasonText.value = ''
+    showIdHelp.value = false
     return
   }
   await nextTick()
@@ -208,11 +229,40 @@ function confirmReject() {
             <div v-for="(issue, idx) in issues" :key="idx" class="modal-issue">
               <span :class="['issue-dot', issue.severity === 'error' ? 'dot-error' : 'dot-warning']"></span>
               <span :class="['issue-message', issue.severity === 'error' ? 'issue-message-error' : 'issue-message-warning']">{{ issue.message }}</span>
+              <!-- (?) explaining what the app recognizes, next to the "not recognized" remark -->
+              <button
+                v-if="issue.type === 'invalid_format' && issue.severity === 'warning'"
+                type="button"
+                class="id-help-toggle"
+                :aria-expanded="showIdHelp"
+                title="Which identifiers does the app recognize?"
+                @click="showIdHelp = !showIdHelp"
+              >?</button>
+            </div>
+            <!-- Warnings are advisory: reassure the user they can move on. -->
+            <p v-if="!issues.some(i => i.severity === 'error')" class="modal-issues-note">
+              Optional — you can leave this as-is and continue.
+            </p>
+            <!-- Recognized-identifier reference (revealed by the (?) above) -->
+            <div v-if="hasUnrecognizedIdentifier && showIdHelp" class="id-help-panel">
+              <p class="id-help-intro">
+                The app couldn't match this value to an identifier format it recognizes, so it flags it as a remark —
+                if your identifier is valid, you can keep it as-is. These flags also help us extend what the app
+                recognizes over time.
+              </p>
+              <p class="id-help-heading">Recognized formats</p>
+              <ul class="id-help-list">
+                <li v-for="fmt in RECOGNIZED_IDENTIFIERS" :key="fmt">{{ fmt }}</li>
+              </ul>
+              <p class="id-help-escape">
+                No identifier to provide? Use <strong>No identifier exists</strong> or <strong>Identifier pending</strong>.
+              </p>
             </div>
           </div>
 
-          <!-- Identifier instructions with inline quick-fix links -->
-          <div v-if="isEditingIdentifier" class="identifier-instructions">
+          <!-- Identifier instructions with inline quick-fix links (only when the
+               field is empty — no need to re-explain the format for an existing value) -->
+          <div v-if="isEditingIdentifier && !String(localValue || '').trim()" class="identifier-instructions">
             <svg class="identifier-instructions-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
@@ -356,9 +406,77 @@ function confirmReject() {
   border: 1px solid #fca5a5;
 }
 
+/* Warnings are non-blocking remarks — a neutral gray "note" look (not amber
+   "caution") so users understand they can safely ignore them. */
 .modal-issues-warning {
-  background: #fef3c7;
-  border: 1px solid #fcd34d;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+}
+
+.modal-issues-note {
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin-top: 0.5rem;
+  padding-left: 1rem;
+}
+
+/* (?) help toggle next to the "not recognized" remark */
+.id-help-toggle {
+  flex-shrink: 0;
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-left: 0.375rem;
+  padding: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #6b7280;
+  background: #e5e7eb;
+  border: none;
+  border-radius: 9999px;
+  cursor: pointer;
+}
+
+.id-help-toggle:hover {
+  background: #d1d5db;
+  color: #374151;
+}
+
+.id-help-panel {
+  margin-top: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+}
+
+.id-help-intro {
+  font-size: 0.75rem;
+  color: #4b5563;
+  line-height: 1.5;
+}
+
+.id-help-heading {
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.id-help-list {
+  margin: 0.25rem 0 0;
+  padding-left: 1.1rem;
+  list-style: disc;
+  font-size: 0.75rem;
+  color: #374151;
+  line-height: 1.5;
+}
+
+.id-help-escape {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: #4b5563;
 }
 
 .modal-issue {
@@ -384,7 +502,7 @@ function confirmReject() {
 }
 
 .dot-warning {
-  background: #fbbf24;
+  background: #9ca3af;
 }
 
 .issue-message {
@@ -397,7 +515,7 @@ function confirmReject() {
 }
 
 .issue-message-warning {
-  color: #92400e;
+  color: #4b5563;
 }
 
 .issue-suggestion {
