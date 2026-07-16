@@ -11,8 +11,25 @@ const patterns = {
   // RRID patterns (e.g., RRID:AB_123456)
   rrid: /\bRRID:\s*([A-Za-z]+_[A-Za-z0-9]+)/gi,
 
+  // Bare RRIDs — authors frequently omit the "RRID:" prefix and write only the
+  // authority-scoped id (e.g. "AB_2617428"). We accept these, but ONLY for known
+  // RRID authority prefixes (antibody / cell-line / organism / plasmid / fly /
+  // fish registries) so arbitrary "word_word" tokens aren't treated as RRIDs.
+  bareRrid: /\b((?:AB|CVCL|IMSR|MGI|RGD|MMRRC|BDSC|DGRC|FBst|FBrf|ZFIN|ZIRC|WB|CGC|NXR|Addgene)_[A-Za-z0-9]+)\b/gi,
+
   // SCR codes (SciCrunch Research Resource Identifiers, e.g., SCR_016499)
   scr: /\b(SCR_\d+)\b/gi,
+
+  // CAS Registry Number for chemicals (e.g., 144-55-8): 2–7 digits, then 2
+  // digits, then a single check digit. Author KRTs often list these for
+  // Chemicals; they were previously rejected as unrecognized.
+  cas: /\b(\d{2,7}-\d{2}-\d)\b/g,
+
+  // Sequence / omics repository accessions that are NOT persistent identifiers
+  // on their own (e.g. PXD012345, GSE12345, SRR..., PRJNA..., E-MTAB-1234,
+  // SAMN..., phs001234). Recognized so the validator can advise authors to
+  // share the DOI or URL landing page rather than the bare accession.
+  accession: /\b(PXD\d{4,}|GSE\d{3,}|SRR\d{4,}|SRP\d{4,}|SRX\d{4,}|PRJNA\d{3,}|PRJEB\d{3,}|PRJDB\d{3,}|SAMN\d{4,}|SAMEA\d{4,}|E-[A-Z]{4}-\d+|phs\d{6})\b/g,
 
   // EMDB IDs (e.g., EMDB: 55203 or EMDB:55203)
   emdb: /\bEMDB:\s*(\d+)/gi,
@@ -66,6 +83,8 @@ function extractAll(text) {
       doi: null,
       rrid: null,
       scr: null,
+      cas: null,
+      accession: null,
       emdb: null,
       pdb: null,
       empiar: null,
@@ -85,6 +104,8 @@ function extractAll(text) {
     doi: extractDOI(text),
     rrid: extractRRID(text),
     scr: extractSCR(text),
+    cas: extractCAS(text),
+    accession: extractAccession(text),
     emdb: extractEMDB(text),
     pdb: extractPDB(text),
     empiar: extractEMPIAR(text),
@@ -159,6 +180,39 @@ function extractRRID(text) {
   patterns.rrid.lastIndex = 0; // Reset regex state
   if (match) {
     return `RRID:${match[1]}`;
+  }
+  // Accept authority-scoped ids written without the "RRID:" prefix
+  // (e.g. "AB_2617428"). Normalize to the canonical "RRID:..." form.
+  const bare = patterns.bareRrid.exec(text);
+  patterns.bareRrid.lastIndex = 0;
+  if (bare) {
+    return `RRID:${bare[1]}`;
+  }
+  return null;
+}
+
+/**
+ * Extract a CAS Registry Number (e.g. "144-55-8") from text.
+ * @param {string} text
+ * @returns {string|null}
+ */
+function extractCAS(text) {
+  const matches = text.match(patterns.cas);
+  if (matches && matches.length > 0) {
+    return matches[0];
+  }
+  return null;
+}
+
+/**
+ * Extract a repository accession (PXD, GSE, SRR, PRJNA, …) from text.
+ * @param {string} text
+ * @returns {string|null}
+ */
+function extractAccession(text) {
+  const matches = text.match(patterns.accession);
+  if (matches && matches.length > 0) {
+    return matches[0];
   }
   return null;
 }
@@ -268,7 +322,8 @@ function extractAddgene(text) {
 function extractCatalogNumber(text) {
   // Skip if we already found a more specific identifier
   if (extractDOI(text) || extractRRID(text) || extractSCR(text) ||
-      extractEMDB(text) || extractPDB(text) || extractEMPIAR(text)) {
+      extractEMDB(text) || extractPDB(text) || extractEMPIAR(text) ||
+      extractCAS(text) || extractAccession(text)) {
     return null;
   }
 
@@ -369,6 +424,8 @@ module.exports = {
   extractDOI,
   extractRRID,
   extractSCR,
+  extractCAS,
+  extractAccession,
   extractEMDB,
   extractPDB,
   extractEMPIAR,

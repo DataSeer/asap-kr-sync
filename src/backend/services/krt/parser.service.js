@@ -9,7 +9,12 @@ const { ValidationError } = require('../../utils/errors');
 const { KRT_COLUMNS } = require('../../config/constants');
 const { normalizeColumnName } = require('../../utils/helpers');
 const identifierExtractor = require('./identifier-extractor');
+const { normalizeResourceType, DEFAULT_RESOURCE_TYPES } = require('./validator.service');
 const logger = require('../../utils/logger');
+
+// Lowercased canonical resource-type labels, used to recognize author "header"
+// rows (a bare resource-type name entered as its own row).
+const CANONICAL_TYPE_LABELS = new Set(DEFAULT_RESOURCE_TYPES.map(t => t.toLowerCase()));
 
 /**
  * Parse KRT file based on file type
@@ -237,6 +242,14 @@ function normalizeRows(rows) {
       continue;
     }
 
+    // Skip "header" rows: authors sometimes enter a resource-type name as its
+    // own row (e.g. "Antibody") before listing the objects under it. These
+    // carry only a RESOURCE TYPE and import as empty Lab Material rows the
+    // curator has to delete by hand.
+    if (isResourceTypeHeaderRow(normalized)) {
+      continue;
+    }
+
     // Preprocess the row
     preprocessRow(normalized);
 
@@ -254,6 +267,25 @@ function normalizeRows(rows) {
 function isEmptyRow(row) {
   const dataColumns = ['RESOURCE TYPE', 'RESOURCE NAME', 'SOURCE', 'IDENTIFIER', 'ADDITIONAL INFORMATION'];
   return dataColumns.every(col => !row[col] || row[col].trim() === '');
+}
+
+/**
+ * Detect a "header" row: only RESOURCE TYPE is filled (name/source/identifier/
+ * additional-info all blank) AND that lone value is itself a resource-type label
+ * — either a canonical type or a recognized synonym. Such rows are section
+ * headers the author typed, not real resources, so they are dropped on ingest.
+ * A row with a real name but a blank type is NOT a header (it's an incomplete
+ * resource) and is kept.
+ * @param {object} row - Normalized row
+ * @returns {boolean}
+ */
+function isResourceTypeHeaderRow(row) {
+  const type = (row['RESOURCE TYPE'] || '').trim();
+  if (!type) return false;
+  const otherColumns = ['RESOURCE NAME', 'SOURCE', 'IDENTIFIER', 'ADDITIONAL INFORMATION'];
+  const othersEmpty = otherColumns.every(col => !row[col] || row[col].trim() === '');
+  if (!othersEmpty) return false;
+  return CANONICAL_TYPE_LABELS.has(type.toLowerCase()) || normalizeResourceType(type) !== null;
 }
 
 /**
@@ -332,6 +364,20 @@ function preprocessRow(row) {
     if (value === 'new' || value === 'n') {
       row['NEW/REUSE'] = 'new';
     } else if (value === 'reuse' || value === 'r' || value === 'reused') {
+      row['NEW/REUSE'] = 'reuse';
+    }
+  }
+
+  // Auto-convert the Software/code family to the canonical spelling. Authors
+  // almost always write "Software" or "Code"; rewriting these on import spares a
+  // needless validation prompt. Other synonyms are left for the curator to
+  // confirm via the suggestion flow.
+  if (normalizeResourceType(row['RESOURCE TYPE']) === 'Software/code') {
+    row['RESOURCE TYPE'] = 'Software/code';
+    // Default a blank NEW/REUSE to "reuse": authors listing existing tools
+    // rarely set this, and the original UI defaulted software to reuse. Only
+    // fill when empty — never override an explicit author value.
+    if (!row['NEW/REUSE'] || row['NEW/REUSE'].trim() === '') {
       row['NEW/REUSE'] = 'reuse';
     }
   }

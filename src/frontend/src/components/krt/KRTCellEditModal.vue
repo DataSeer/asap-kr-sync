@@ -58,6 +58,7 @@ const localValue = computed({
 const isEditingResourceType = computed(() => props.cell?.column === 'RESOURCE TYPE')
 const isEditingNewReuse = computed(() => props.cell?.column === 'NEW/REUSE')
 const isEditingIdentifier = computed(() => props.cell?.column === 'IDENTIFIER')
+const isEditingSource = computed(() => props.cell?.column === 'SOURCE')
 
 // The "Identifier not recognized by the app" remark: an advisory warning raised
 // when the value doesn't match any format the app knows. The (?) explains what
@@ -74,6 +75,7 @@ const RECOGNIZED_IDENTIFIERS = [
   'SCR code',
   'URL',
   'Catalog number',
+  'CAS Registry Number (e.g. 144-55-8)',
   'Accession IDs: GenBank, UniProt, PDB, EMDB, EMPIAR, BioStudies, Addgene, Cellosaurus',
   'PMID',
   'Oligonucleotide sequence'
@@ -90,11 +92,34 @@ async function setIdentifierPending() {
   emit('save')
 }
 
+// Quick-set Source to "None" — for when an RRID/identifier is shared but the
+// author has no URL to give for the Source column.
+async function setSourceNone() {
+  emit('update:modelValue', 'None')
+  await nextTick()
+  emit('save')
+}
+
 function close() {
   emit('close')
 }
 
+// N/A-style values that aren't allowed as an identifier. Kept in sync with the
+// backend validator's isNAVariation list.
+const NA_VARIATIONS = ['n/a', 'na', 'n.a.', 'n.a', 'not available', 'not applicable', 'none', '-', '--']
+function isNAVariation(value) {
+  return NA_VARIATIONS.includes(String(value || '').trim().toLowerCase())
+}
+
 function save() {
+  // On an Identifier cell, an N/A-style value ("None", "n/a", …) isn't a valid
+  // identifier — rather than reject it, silently normalize it to the accepted
+  // "No identifier exists" wording so the user isn't blocked by an error.
+  if (isEditingIdentifier.value && isNAVariation(localValue.value)) {
+    emit('update:modelValue', 'No identifier exists')
+    nextTick().then(() => emit('save'))
+    return
+  }
   emit('save')
 }
 
@@ -268,6 +293,17 @@ function confirmReject() {
             </svg>
             <p class="identifier-instructions-text">
               Provide a DOI, RRID, accession number, catalog number, or other persistent identifier. Otherwise, enter <button class="inline-quick-fix" @click="setNoIdentifier">No identifier exists</button> or <button class="inline-quick-fix" @click="setIdentifierPending">Identifier pending</button>.
+            </p>
+          </div>
+
+          <!-- Source quick-fill: when an identifier is shared but no URL exists,
+               the Source can be set to "None" in one click. -->
+          <div v-if="isEditingSource" class="identifier-instructions">
+            <svg class="identifier-instructions-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <p class="identifier-instructions-text">
+              No URL to share? Set Source to <button class="inline-quick-fix" @click="setSourceNone">None</button>.
             </p>
           </div>
 
