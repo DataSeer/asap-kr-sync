@@ -659,6 +659,17 @@ async function setQuickIdentifierPending(rowId, field) {
   }
 }
 
+// Quick set "None" for an empty Source cell — for when an identifier is shared
+// but there is no URL to give as the Source.
+async function setQuickSourceNone(rowId, field) {
+  try {
+    await krtStore.updateCell(props.submissionId, rowId, field, 'None')
+    notificationStore.success('Source set to "None"')
+  } catch (error) {
+    notificationStore.error('Failed to update cell')
+  }
+}
+
 async function downloadKRT(format) {
   showDownloadMenu.value = false
   downloading.value = true
@@ -2064,7 +2075,7 @@ defineExpose({
                   @mouseenter="handleCellMouseEnter(row.id, col.key)"
                   @mouseleave="handleCellMouseLeave"
                 >
-                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': col.key === 'IDENTIFIER' && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || ''">
+                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': (col.key === 'IDENTIFIER' || col.key === 'SOURCE') && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || ''">
                     <!-- G3: inline shortcut dropdown for RESOURCE TYPE / NEW/REUSE -->
                     <select
                       v-if="!readonly && INLINE_SHORTCUT_COLUMNS.has(col.key)"
@@ -2095,6 +2106,16 @@ defineExpose({
                         @click.stop="setQuickIdentifierPending(row.id, col.field)"
                       >
                         Pending
+                      </button>
+                    </div>
+                    <!-- Quick "None" button for an empty SOURCE cell -->
+                    <div v-if="col.key === 'SOURCE' && !row[col.key] && !readonly" class="identifier-quick-actions">
+                      <button
+                        class="btn-quick-id"
+                        title="Set Source to 'None' (no URL to share)"
+                        @click.stop="setQuickSourceNone(row.id, col.field)"
+                      >
+                        None
                       </button>
                     </div>
                     <!-- Cell indicators container - shows all applicable icons -->
