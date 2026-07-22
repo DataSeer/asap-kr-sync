@@ -1712,20 +1712,26 @@ defineExpose({
           </div>
         </button>
       </div>
-      <!-- Row order switch (#16): systematic (by resource type) vs input order. -->
-      <div class="order-switch-wrap" title="Row order in the table">
-        <span class="order-switch-caption">Order:</span>
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="rowOrder === 'systematic'"
-          class="order-switch"
-          :class="{ 'is-on': rowOrder === 'systematic' }"
-          @click="rowOrder = rowOrder === 'systematic' ? 'input' : 'systematic'"
-        >
-          <span class="order-switch-knob"></span>
-        </button>
-        <span class="order-switch-mode">{{ rowOrder === 'systematic' ? 'By resource type' : 'As submitted' }}</span>
+      <!-- Row order switch (#16): input order vs systematic (by resource type).
+           Segmented control — both options visible, the active one highlighted. -->
+      <div class="order-segmented" role="group" aria-label="Row order in the table" title="Row order in the table">
+        <span class="order-segmented-caption">Order:</span>
+        <div class="order-segmented-track">
+          <button
+            type="button"
+            class="order-segmented-btn"
+            :class="{ active: rowOrder === 'input' }"
+            :aria-pressed="rowOrder === 'input'"
+            @click="rowOrder = 'input'"
+          >As submitted</button>
+          <button
+            type="button"
+            class="order-segmented-btn"
+            :class="{ active: rowOrder === 'systematic' }"
+            :aria-pressed="rowOrder === 'systematic'"
+            @click="rowOrder = 'systematic'"
+          >By resource type</button>
+        </div>
       </div>
       <div class="search-wrapper">
         <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2698,8 +2704,8 @@ defineExpose({
   min-width: 0;
 }
 
-/* Row order switch */
-.order-switch-wrap {
+/* Row order switch (segmented control) */
+.order-segmented {
   display: flex;
   align-items: center;
   gap: 0.375rem;
@@ -2708,50 +2714,41 @@ defineExpose({
   margin-right: 0.5rem;
 }
 
-.order-switch-caption {
+.order-segmented-caption {
   font-size: 0.75rem;
   color: #6b7280;
   white-space: nowrap;
 }
 
-.order-switch {
-  position: relative;
-  width: 2.25rem;
-  height: 1.25rem;
+.order-segmented-track {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #d1d5db;
+  border-radius: 9999px;
+  background: #f3f4f6;
+}
+
+.order-segmented-btn {
   border: 0;
+  background: transparent;
+  padding: 0.2rem 0.7rem;
   border-radius: 9999px;
-  background: #d1d5db;
-  cursor: pointer;
-  padding: 0;
-  flex-shrink: 0;
-  transition: background-color 0.15s ease;
-}
-
-.order-switch.is-on {
-  background: #2563eb;
-}
-
-.order-switch-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 1rem;
-  height: 1rem;
-  border-radius: 9999px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-  transition: transform 0.15s ease;
-}
-
-.order-switch.is-on .order-switch-knob {
-  transform: translateX(1rem);
-}
-
-.order-switch-mode {
   font-size: 0.75rem;
-  color: #374151;
+  font-weight: 500;
+  color: #6b7280;
   white-space: nowrap;
-  min-width: 6.5rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.order-segmented-btn:hover:not(.active) {
+  color: #374151;
+}
+
+.order-segmented-btn.active {
+  background: #fff;
+  color: #1d4ed8;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 /* Search bar */
