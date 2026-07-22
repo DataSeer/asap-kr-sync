@@ -227,9 +227,26 @@ const reviewSuggestionsDone = computed(() => {
 // are no errors to fix. Also auto-satisfied when all processes finish with
 // zero errors (covers the no-suggestions path where the user never touched
 // anything in the KRT).
+// #11 (applies on the PDF step too): only RESOURCE TYPE errors block Continue —
+// each KRT item must be clearly identifiable for the PDF analysis. Every other
+// error (RESOURCE NAME / SOURCE / IDENTIFIER / NEW-REUSE) is non-blocking and is
+// either handled by the pipeline or acknowledged by the user.
+const resourceTypeErrorCount = computed(() => {
+  const ve = krtStore.validationErrors
+  let count = 0
+  for (const rowId of Object.keys(ve)) {
+    count += (ve[rowId] || []).filter(e => e.severity === 'error' && e.column === 'RESOURCE TYPE').length
+  }
+  return count
+})
+const otherErrorCount = computed(() => Math.max(0, krtStore.summary.totalErrors - resourceTypeErrorCount.value))
+
+// Acknowledge-and-continue modal for remaining non-resource-type errors.
+const showAckModal = ref(false)
+
 const validationDone = computed(() =>
   (analysisStatus.value === 'complete' || allProcessesFinished.value) &&
-  krtStore.summary.totalErrors === 0
+  resourceTypeErrorCount.value === 0
 )
 
 // Step help items
@@ -268,9 +285,9 @@ const nextBlockedReason = computed(() => {
     const n = pendingFindings.value.length
     return `Approve or reject ${n} remaining suggestion${n > 1 ? 's' : ''} before continuing`
   }
-  if (krtStore.summary.totalErrors > 0) {
-    const n = krtStore.summary.totalErrors
-    return `Fix ${n} error${n > 1 ? 's' : ''} in the KRT before continuing`
+  if (resourceTypeErrorCount.value > 0) {
+    const n = resourceTypeErrorCount.value
+    return `Fix ${n} resource type error${n > 1 ? 's' : ''} in the KRT before continuing — each item needs a correct Resource Type for the analysis`
   }
   return ''
 })
@@ -636,22 +653,37 @@ async function handleReject(finding, reason = '') {
 }
 
 async function handleNext() {
-  if (krtStore.summary.totalErrors > 0) {
-    notificationStore.warning('Please fix all KRT errors before proceeding')
-    return
-  }
   try {
-    // Re-validate KRT to get fresh error count
+    // Re-validate KRT to get fresh counts
     await krtStore.validate(route.params.id)
 
-    if (krtStore.summary.totalErrors > 0) {
-      notificationStore.warning('Validation found errors. Please fix them before proceeding.')
+    // Only resource-type errors are a hard block.
+    if (resourceTypeErrorCount.value > 0) {
+      notificationStore.warning('Please fix all resource type errors before proceeding')
       return
     }
 
-    // Update status to step_review
-    await submissionStore.updateSubmission(route.params.id, { status: 'step_review' })
-    router.push({ name: 'submission-review', params: { id: route.params.id } })
+    // Any other remaining errors require an explicit acknowledgement.
+    if (otherErrorCount.value > 0) {
+      showAckModal.value = true
+      return
+    }
+
+    await proceedToReview()
+  } catch (error) {
+    notificationStore.error('Failed to continue')
+  }
+}
+
+async function proceedToReview() {
+  await submissionStore.updateSubmission(route.params.id, { status: 'step_review' })
+  router.push({ name: 'submission-review', params: { id: route.params.id } })
+}
+
+async function acknowledgeAndProceed() {
+  showAckModal.value = false
+  try {
+    await proceedToReview()
   } catch (error) {
     notificationStore.error('Failed to continue')
   }
@@ -1062,6 +1094,40 @@ function scrollToFindingRow(finding) {
 
 <template>
   <div class="space-y-6">
+    <!-- Acknowledge-and-continue modal (#11): non-resource-type errors remain,
+         user chooses to proceed anyway. Resource-type errors never reach here. -->
+    <div v-if="showAckModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved issues?</h3>
+        </div>
+        <div class="px-6 py-4">
+          <p class="text-sm text-gray-600">
+            The Key Resources Table still has
+            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>
+            (resource types are all valid). You can proceed, but these issues will remain flagged.
+          </p>
+          <p class="mt-2 text-xs text-gray-500">
+            We recommend fixing them, but you may continue if you know they are acceptable.
+          </p>
+        </div>
+        <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end space-x-3 rounded-b-lg">
+          <button
+            class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            @click="showAckModal = false"
+          >
+            Go back and fix
+          </button>
+          <button
+            class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700"
+            @click="acknowledgeAndProceed"
+          >
+            Continue anyway
+          </button>
+        </div>
+      </div>
+    </div>
+
     <SubmissionHeader
       ref="submissionHeaderRef"
       :submission="submission"
