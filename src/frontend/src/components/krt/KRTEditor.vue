@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, inject } from 'vue'
 import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
@@ -60,7 +60,10 @@ const emit = defineEmits([
   'select-suggestion'
 ])
 
-const krtStore = useKRTStore()
+// The submission flow uses the real Pinia store; the standalone validation page
+// provides an in-memory store implementing the same contract via
+// `provide('krtStore', ...)`. Falling back keeps every existing usage unchanged.
+const krtStore = inject('krtStore', null) || useKRTStore()
 const notificationStore = useNotificationStore()
 const resourceTypesStore = useResourceTypesStore()
 const authStore = useAuthStore()
@@ -674,11 +677,17 @@ async function downloadKRT(format) {
   showDownloadMenu.value = false
   downloading.value = true
   try {
-    const blob = await krtService.download(props.submissionId, format)
+    // A local (standalone) store generates the file client-side with no
+    // submission; the real store hits the server download endpoint.
+    const blob = krtStore.download
+      ? await krtStore.download(props.submissionId, format)
+      : await krtService.download(props.submissionId, format)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `krt_${props.submissionId}.${format}`
+    a.download = krtStore.getExportFilename
+      ? krtStore.getExportFilename(format)
+      : `krt_${props.submissionId}.${format}`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -1352,40 +1361,34 @@ function rejectDeleteSuggestion(suggestion) {
 }
 
 // Scroll to a specific row in the table (handles both vertical and horizontal scrolling)
-function scrollToRow(rowId, columnKey = null) {
+async function scrollToRow(rowId, columnKey = null) {
   if (!tableContainer.value) return
 
-  const row = tableContainer.value.querySelector(`tr[data-row-id="${rowId}"]`)
-  if (row) {
-    // Get the scroll container
-    const scrollContainer = tableContainer.value.querySelector('.table-scroll')
-    if (!scrollContainer) {
-      row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    } else {
-      // Calculate vertical scroll position to center the row
-      const rowRect = row.getBoundingClientRect()
-      const containerRect = scrollContainer.getBoundingClientRect()
-      const targetScrollTop = scrollContainer.scrollTop + (rowRect.top - containerRect.top) - (containerRect.height / 2) + (rowRect.height / 2)
-
-      // If a column is specified, also scroll horizontally to center the cell
-      if (columnKey) {
-        const cell = row.querySelector(`td[data-column-key="${columnKey}"]`)
-        if (cell) {
-          const cellRect = cell.getBoundingClientRect()
-          const targetScrollLeft = scrollContainer.scrollLeft + (cellRect.left - containerRect.left) - (containerRect.width / 2) + (cellRect.width / 2)
-          scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), left: Math.max(0, targetScrollLeft), behavior: 'smooth' })
-        } else {
-          scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' })
-        }
-      } else {
-        scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' })
-      }
-    }
-
-    // Briefly highlight the row
-    row.classList.add('highlight-flash')
-    setTimeout(() => row.classList.remove('highlight-flash'), 2000)
+  // The target row may be filtered out of the active tab or hidden by an active
+  // search — in that case it isn't rendered and the lookup returns null. Reveal
+  // it via the "All" tab and clear the search, then wait for the re-render.
+  let row = tableContainer.value.querySelector(`tr[data-row-id="${rowId}"]`)
+  if (!row) {
+    if (activeTab.value !== 'all') switchTab('all')
+    if (searchQuery.value) searchQuery.value = ''
+    await nextTick()
+    row = tableContainer.value.querySelector(`tr[data-row-id="${rowId}"]`)
   }
+  if (!row) return
+
+  // Scroll every scrollable ancestor — the inner `.table-scroll` container AND
+  // the page/window — so the row is brought into view no matter where the page
+  // is currently scrolled. `scrollIntoView` cascades through all scroll
+  // containers; the previous manual `.table-scroll` scrollTo only moved the
+  // inner container and left the row off-screen whenever the table itself was
+  // scrolled out of the viewport. `inline: 'center'` also handles the
+  // horizontal centering on the target cell.
+  const target = (columnKey && row.querySelector(`td[data-column-key="${columnKey}"]`)) || row
+  target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+
+  // Briefly highlight the row
+  row.classList.add('highlight-flash')
+  setTimeout(() => row.classList.remove('highlight-flash'), 2000)
 }
 
 // Track current scroll position for cycling through errors/warnings/suggestions
@@ -1462,24 +1465,23 @@ function scrollToFirstSuggestion() {
 }
 
 // Scroll to an add-row suggestion by its suggestion ID
-function scrollToSuggestionRow(suggestionId) {
+async function scrollToSuggestionRow(suggestionId) {
   if (!tableContainer.value) return
 
-  const row = tableContainer.value.querySelector(`tr[data-suggestion-id="${suggestionId}"]`)
-  if (row) {
-    const scrollContainer = tableContainer.value.querySelector('.table-scroll')
-    if (!scrollContainer) {
-      row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    } else {
-      const rowRect = row.getBoundingClientRect()
-      const containerRect = scrollContainer.getBoundingClientRect()
-      const targetScrollTop = scrollContainer.scrollTop + (rowRect.top - containerRect.top) - (containerRect.height / 2) + (rowRect.height / 2)
-      scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' })
-    }
-
-    row.classList.add('highlight-flash')
-    setTimeout(() => row.classList.remove('highlight-flash'), 2000)
+  // Reveal the suggestion row if it's filtered out of the active tab / hidden
+  // by search, then scroll every ancestor (inner container + page) into view.
+  let row = tableContainer.value.querySelector(`tr[data-suggestion-id="${suggestionId}"]`)
+  if (!row) {
+    if (activeTab.value !== 'all') switchTab('all')
+    if (searchQuery.value) searchQuery.value = ''
+    await nextTick()
+    row = tableContainer.value.querySelector(`tr[data-suggestion-id="${suggestionId}"]`)
   }
+  if (!row) return
+
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  row.classList.add('highlight-flash')
+  setTimeout(() => row.classList.remove('highlight-flash'), 2000)
 }
 
 // Expose methods for parent components

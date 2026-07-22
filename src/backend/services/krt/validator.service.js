@@ -867,6 +867,55 @@ function validateRowValues(values = {}, resourceTypes = DEFAULT_RESOURCE_TYPES) 
   return errors;
 }
 
+/**
+ * Validate an array of KRT rows without a submission (stateless, no DB writes).
+ *
+ * Backs the standalone KRT-validation page: the caller holds every row
+ * client-side and nothing is persisted. Resource types come from the same DB
+ * source/cache the submission flow uses (loadResourceTypes), so results match
+ * the real editor. Output shape mirrors krt.controller.getData exactly, so the
+ * frontend can consume it with no translation.
+ *
+ * @param {Array<object>} rows - rows keyed by the uppercase KRT columns plus
+ *   `id` (and optional `isOptional`)
+ * @returns {Promise<{validationErrors: object, totalErrors: number, totalWarnings: number}>}
+ */
+async function validateKrtRows(rows = []) {
+  const resourceTypes = await loadResourceTypes();
+  const validationErrors = {};
+  let totalErrors = 0;
+  let totalWarnings = 0;
+
+  for (const row of rows) {
+    const issues = validateRowValues({
+      rowId: row.id,
+      resourceType: row['RESOURCE TYPE'],
+      resourceName: row['RESOURCE NAME'],
+      source: row['SOURCE'],
+      identifier: row['IDENTIFIER'],
+      newReuse: row['NEW/REUSE'],
+      additionalInformation: row['ADDITIONAL INFORMATION'],
+      isOptional: row.isOptional || false
+    }, resourceTypes);
+
+    if (issues.length > 0) {
+      validationErrors[row.id] = issues.map(issue => ({
+        column: issue.columnName,
+        type: issue.errorType,
+        message: issue.errorMessage,
+        severity: issue.severity,
+        suggestion: issue.suggestion,
+        suggestedValue: issue.suggestedValue || null,
+        autoFixable: !!issue.suggestedValue
+      }));
+      totalErrors += issues.filter(i => i.severity === 'error').length;
+      totalWarnings += issues.filter(i => i.severity === 'warning').length;
+    }
+  }
+
+  return { validationErrors, totalErrors, totalWarnings };
+}
+
 module.exports = {
   validateSubmission,
   validateRow,
@@ -880,5 +929,7 @@ module.exports = {
   // Pure, DB-free core for offline tooling (scripts/check-krt.js)
   validateRowValues,
   validateIdentifierValues,
+  // Stateless multi-row validation for the standalone validation page
+  validateKrtRows,
   DEFAULT_RESOURCE_TYPES
 };

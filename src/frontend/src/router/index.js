@@ -6,6 +6,7 @@ const LoginView = () => import('@/views/auth/LoginView.vue')
 const RegisterView = () => import('@/views/auth/RegisterView.vue')
 const DashboardView = () => import('@/views/dashboard/DashboardView.vue')
 const CreateSubmissionView = () => import('@/views/submissions/CreateSubmissionView.vue')
+const ValidateKRTView = () => import('@/views/tools/ValidateKRTView.vue')
 const SubmissionDetailView = () => import('@/views/submissions/SubmissionDetailView.vue')
 const KRTView = () => import('@/views/submissions/KRTView.vue')
 const PDFView = () => import('@/views/submissions/PDFView.vue')
@@ -55,6 +56,12 @@ const routes = [
         name: 'create-submission',
         component: CreateSubmissionView,
         meta: { roles: ['author', 'asap_pm', 'ds_annotator', 'admin'], title: 'New Submission' }
+      },
+      {
+        path: 'tools/validate-krt',
+        name: 'validate-krt',
+        component: ValidateKRTView,
+        meta: { roles: ['author', 'asap_pm', 'ds_annotator', 'admin'], title: 'Validate a KRT' }
       },
       {
         path: 'submissions/:id',
