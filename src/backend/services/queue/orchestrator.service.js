@@ -202,6 +202,21 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   // advances normally.
   if (!job || job.status !== 'waiting') return false;
 
+  // Propagate cancellation: a step whose dependency was cancelled can never run
+  // (a cancelled dep never becomes complete/failed). Mark it cancelled too,
+  // rather than leaving it 'waiting' forever — a stuck 'waiting' job would keep
+  // "all processes finished" false and block the Continue button downstream.
+  const hasCancelledDep = step.dependsOn.some(
+    depType => jobsByType.get(depType)?.status === 'cancelled'
+  );
+  if (hasCancelledDep) {
+    await job.markCancelled();
+    logger.info('Pipeline step cancelled: a dependency was cancelled', {
+      submissionId, jobType: step.jobType, triggeredBy
+    });
+    return false;
+  }
+
   // Check if ALL dependencies are in a terminal state
   const allDependenciesDone = step.dependsOn.every(depType => {
     const depJob = jobsByType.get(depType);
@@ -473,7 +488,10 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
         lock: t.LOCK.UPDATE
       });
       if (!job) continue;
-      if (job.status === 'queued' || job.status === 'processing') continue;
+      // Leave in-flight jobs alone, and don't revive a cancelled job to
+      // 'waiting' (that would strand it waiting on cancelled deps). Only
+      // terminal complete/failed downstream is reset to re-run.
+      if (job.status === 'queued' || job.status === 'processing' || job.status === 'cancelled') continue;
       job.status = 'waiting';
       job.pgBossJobId = null;
       await job.save({ transaction: t });

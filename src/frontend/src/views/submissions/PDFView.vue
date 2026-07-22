@@ -677,7 +677,14 @@ async function handleNext() {
 
 async function proceedToReview() {
   await submissionStore.updateSubmission(route.params.id, { status: 'step_review' })
-  router.push({ name: 'submission-review', params: { id: route.params.id } })
+  // Await the navigation and surface a failure — vue-router resolves (not
+  // rejects) with a failure object when a guard aborts/redirects, so a silent
+  // no-op here would look like "Continue does nothing".
+  const failure = await router.push({ name: 'submission-review', params: { id: route.params.id } })
+  if (failure) {
+    notificationStore.error('Could not open the review step — please try again.')
+    console.error('Navigation to submission-review failed:', failure)
+  }
 }
 
 async function acknowledgeAndProceed() {
