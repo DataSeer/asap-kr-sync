@@ -285,26 +285,19 @@ function defaultSort(a, b) {
   return typeA - typeB
 }
 
-// Within-tab sort: resource type first (so all Antibodies sit together).
-// Insertion order preserved within each type (stable sort, see above).
-function withinTabSort(a, b) {
-  const typeA = resourceTypesStore.getTypeSortOrder(a['RESOURCE TYPE'])
-  const typeB = resourceTypesStore.getTypeSortOrder(b['RESOURCE TYPE'])
-  return typeA - typeB
-}
-
-// Filtered rows based on active tab (with group + name ordering) + search
+// Filtered + ordered rows. Separation of concerns (#16): the TABS filter by
+// resource type (group), the SWITCH decides the order — 'By resource type'
+// (defaultSort: group + type, insertion order breaking ties) or 'As submitted'
+// (original store order, i.e. createdAt ASC). Search filters on top of both.
 const filteredRows = computed(() => {
-  let rows
-  if (activeTab.value === 'all') {
-    // 'input' order keeps the store order (backend returns rows by createdAt
-    // ASC, i.e. submission order); 'systematic' groups by resource type.
-    rows = rowOrder.value === 'input'
-      ? [...krtRows.value]
-      : [...krtRows.value].sort(defaultSort)
-  } else {
-    const inTab = krtRows.value.filter(row => getResourceGroup(row['RESOURCE TYPE']) === activeTab.value)
-    rows = rowOrder.value === 'input' ? inTab : inTab.sort(withinTabSort)
+  // Tab = filter only.
+  let rows = activeTab.value === 'all'
+    ? [...krtRows.value]
+    : krtRows.value.filter(row => getResourceGroup(row['RESOURCE TYPE']) === activeTab.value)
+
+  // Switch = sort. Applied the same way on every tab.
+  if (rowOrder.value === 'systematic') {
+    rows = [...rows].sort(defaultSort)
   }
 
   // Apply search filter
