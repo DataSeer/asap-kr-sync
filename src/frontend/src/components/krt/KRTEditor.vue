@@ -229,6 +229,11 @@ watch(() => props.modelValue, (newVal) => {
 const sortColumn = ref(null)
 const sortDirection = ref('asc')
 
+// Row ordering (#16): 'systematic' groups by resource type (Robert's default),
+// 'input' preserves the order the rows were submitted in (Michael's request).
+// An explicit column sort still overrides this. Default stays systematic.
+const rowOrder = ref('systematic')
+
 // Get group for a resource type (uses store data from DB)
 function getResourceGroup(resourceType) {
   return resourceTypesStore.getTabGroup(resourceType)
@@ -292,11 +297,14 @@ function withinTabSort(a, b) {
 const filteredRows = computed(() => {
   let rows
   if (activeTab.value === 'all') {
-    rows = [...krtRows.value].sort(defaultSort)
+    // 'input' order keeps the store order (backend returns rows by createdAt
+    // ASC, i.e. submission order); 'systematic' groups by resource type.
+    rows = rowOrder.value === 'input'
+      ? [...krtRows.value]
+      : [...krtRows.value].sort(defaultSort)
   } else {
-    rows = krtRows.value
-      .filter(row => getResourceGroup(row['RESOURCE TYPE']) === activeTab.value)
-      .sort(withinTabSort)
+    const inTab = krtRows.value.filter(row => getResourceGroup(row['RESOURCE TYPE']) === activeTab.value)
+    rows = rowOrder.value === 'input' ? inTab : inTab.sort(withinTabSort)
   }
 
   // Apply search filter
@@ -323,7 +331,9 @@ const sortedFilteredRows = computed(() => {
 
 // Every row in the whole KRT, in the same order the "All" tab shows them. Used
 // by the summary-bar error/warning locators so they cycle across all tabs.
-const allRowsInDisplayOrder = computed(() => [...krtRows.value].sort(defaultSort))
+const allRowsInDisplayOrder = computed(() =>
+  rowOrder.value === 'input' ? [...krtRows.value] : [...krtRows.value].sort(defaultSort)
+)
 
 // Tab hover-tooltip positioning. The leftmost tab (the first in tabGroups,
 // i.e. "All") is left-anchored so a wide tooltip doesn't spill past the card's
@@ -1690,6 +1700,14 @@ defineExpose({
           </div>
         </button>
       </div>
+      <!-- Row order toggle (#16): systematic (by resource type) vs input order. -->
+      <div class="order-wrapper" title="Row order in the table">
+        <label class="order-label" for="krt-row-order">Order</label>
+        <select id="krt-row-order" v-model="rowOrder" class="order-select">
+          <option value="systematic">By resource type</option>
+          <option value="input">As submitted</option>
+        </select>
+      </div>
       <div class="search-wrapper">
         <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -2659,6 +2677,32 @@ defineExpose({
   padding-bottom: 0;
   flex: 1;
   min-width: 0;
+}
+
+/* Row order toggle */
+.order-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-shrink: 0;
+  margin-bottom: 1px;
+  margin-right: 0.5rem;
+}
+
+.order-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.order-select {
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
 }
 
 /* Search bar */

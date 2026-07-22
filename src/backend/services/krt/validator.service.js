@@ -235,6 +235,9 @@ async function validateRow(row, submissionId, clearExisting = true, resourceType
   const identifierErrors = await validateIdentifier(row, submissionId);
   errors.push(...identifierErrors);
 
+  // Cross-field: protocols.io protocols must carry a DOI/URL (#2)
+  errors.push(...validateProtocolsIoIdentifier(row.source, row.identifier, row.id));
+
   // Validate NEW/REUSE
   const newReuseErrors = validateNewReuse(row.newReuse, row.id);
   errors.push(...newReuseErrors);
@@ -523,7 +526,7 @@ function validateSource(value, rowId, { resourceType = '', identifier = '' } = {
       errorType: 'required',
       errorMessage: 'Source is required',
       severity: VALIDATION_SEVERITY.ERROR,
-      suggestion: 'Examples: Zenodo, GitHub, AddGene, ATCC'
+      suggestion: 'Source is the repository or vendor name (e.g. Zenodo, GitHub, Addgene, ATCC) — put the DOI/URL in the Identifier column, not here'
     });
   }
 
@@ -863,8 +866,43 @@ function validateRowValues(values = {}, resourceTypes = DEFAULT_RESOURCE_TYPES) 
   errors.push(...validateIdentifierValues({
     identifier: values.identifier, additionalInformation: values.additionalInformation, resourceType: values.resourceType, isOptional: values.isOptional
   }).map(e => ({ rowId, ...e })));
+  errors.push(...validateProtocolsIoIdentifier(values.source, values.identifier, rowId));
   errors.push(...validateNewReuse(values.newReuse, rowId));
   return errors;
+}
+
+/**
+ * protocols.io rule (#2): when SOURCE points to protocols.io, the identifier
+ * must be a DOI or URL — not free text. This targets the case where an author
+ * replaces the protocol hyperlink with plain text, which used to pass silently.
+ *
+ * Only fires on a concrete, non-DOI/URL value. Empty identifiers and the
+ * accepted escape-hatch phrases ("Identifier pending" / "No identifier exists")
+ * are left to the standard identifier rules so we don't double-flag.
+ *
+ * @param {string} source
+ * @param {string} identifier
+ * @param {string|null} rowId
+ * @returns {Array} error objects (0 or 1)
+ */
+function validateProtocolsIoIdentifier(source, identifier, rowId = null) {
+  if (!String(source || '').toLowerCase().includes('protocols.io')) return [];
+
+  const value = String(identifier || '').trim();
+  if (!value) return []; // empty -> handled by the required-identifier rule
+  if (isNoIdentifierPhrase(value) || isNAVariation(value)) return [];
+
+  const hasDoiOrUrl = !!identifierExtractor.extractDOI(value) || !!identifierExtractor.extractURL(value);
+  if (hasDoiOrUrl) return [];
+
+  return [{
+    rowId,
+    columnName: 'IDENTIFIER',
+    errorType: 'protocols_io_requires_doi_url',
+    errorMessage: 'protocols.io protocols require a DOI or URL identifier',
+    severity: VALIDATION_SEVERITY.ERROR,
+    suggestion: 'Add the protocols.io DOI (e.g. 10.17504/...) or the full protocol URL'
+  }];
 }
 
 /**
