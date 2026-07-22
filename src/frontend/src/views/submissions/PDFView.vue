@@ -205,6 +205,14 @@ const anyProcessFinished = computed(() => {
   return list.some(j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled')
 })
 
+// True if any module in the current round was cancelled. Regenerating
+// suggestions is meaningless in this state (the Generated KRT the comparison
+// relies on may never have been produced), and it's the signal for offering a
+// "Re-run all" so the user can restart from a clean slate.
+const hasCancelledJobs = computed(() =>
+  Object.values(jobs.value || {}).some(j => j.status === 'cancelled')
+)
+
 // "Review suggestions" is satisfied when there are pending suggestions to
 // handle and they've all been handled — OR when all processes have finished
 // and there are no suggestions at all (nothing to review).
@@ -354,6 +362,10 @@ onUnmounted(() => {
 
 async function regenerateSuggestions() {
   if (regenerating.value) return
+  if (hasCancelledJobs.value) {
+    notificationStore.warning('Processing was cancelled — use "Re-run all" to restart before regenerating suggestions.')
+    return
+  }
   regenerating.value = true
   try {
     await suggestionService.regenerate(route.params.id)
@@ -1113,12 +1125,16 @@ function scrollToFindingRow(finding) {
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-medium text-gray-700">AI Suggestions</h3>
           <div class="flex items-center space-x-2">
-            <!-- Regenerate suggestions (re-runs only the LM comparison job) -->
+            <!-- Regenerate suggestions (re-runs only the LM comparison job).
+                 Disabled once anything was cancelled — the Generated KRT it
+                 compares against may never have been produced; use Re-run all. -->
             <button
-              :disabled="regenerating"
+              :disabled="regenerating || hasCancelledJobs"
               class="btn-secondary text-xs inline-flex items-center"
-              :class="{ 'opacity-50 cursor-not-allowed': regenerating }"
-              title="Regenerate AI suggestions by re-comparing your KRT with the generated KRT (does not re-run detection)"
+              :class="{ 'opacity-50 cursor-not-allowed': regenerating || hasCancelledJobs }"
+              :title="hasCancelledJobs
+                ? 'Processing was cancelled — use \'Re-run all\' to restart before regenerating suggestions'
+                : 'Regenerate AI suggestions by re-comparing your KRT with the generated KRT (does not re-run detection)'"
               @click="regenerateSuggestions"
             >
               <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1126,9 +1142,11 @@ function scrollToFindingRow(finding) {
               </svg>
               {{ regenerating ? 'Regenerating…' : 'Regenerate suggestions' }}
             </button>
-            <!-- Re-run Analysis button (shown after complete/failed) -->
+            <!-- Re-run Analysis button — shown once the pipeline is in a terminal
+                 state (complete / failed) OR anything was cancelled, so the user
+                 can always restart from a clean slate. -->
             <button
-              v-if="analysisStatus === 'complete' || analysisStatus === 'failed'"
+              v-if="analysisStatus === 'complete' || analysisStatus === 'failed' || hasCancelledJobs"
               :disabled="analyzing"
               class="btn-secondary text-xs inline-flex items-center"
               :class="{ 'opacity-50 cursor-not-allowed': analyzing }"

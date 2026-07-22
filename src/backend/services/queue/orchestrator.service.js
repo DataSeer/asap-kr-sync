@@ -194,18 +194,13 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
  */
 async function tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, triggeredBy) {
   const job = jobsByType.get(step.jobType);
+  // Only a job still 'waiting' can advance. A cancelled job is terminal (status
+  // 'cancelled', not 'waiting'), so it is never started here — that is what stops
+  // the pipeline after a cancel, without a separate run-level gate that would
+  // also block a later restart. A restart replaces the row with a fresh
+  // 'waiting'/'queued' one (getForSubmission returns the latest), which then
+  // advances normally.
   if (!job || job.status !== 'waiting') return false;
-
-  // Run-level cancel gate: once the user cancels, no further steps start — not
-  // from a finishing worker, the reconciler, or a status change. `jobsByType`
-  // already holds this round's jobs, so check it in-memory (no extra query).
-  const roundCancelled = Array.from(jobsByType.values()).some(j => j.status === 'cancelled');
-  if (roundCancelled) {
-    logger.debug('Pipeline step skipped: run was cancelled', {
-      submissionId, jobType: step.jobType, triggeredBy
-    });
-    return false;
-  }
 
   // Check if ALL dependencies are in a terminal state
   const allDependenciesDone = step.dependsOn.every(depType => {

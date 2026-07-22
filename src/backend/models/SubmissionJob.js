@@ -165,10 +165,12 @@ module.exports = (sequelize) => {
    * @returns {Promise<boolean>}
    */
   SubmissionJob.isRoundCancelled = async function(submissionId, round) {
-    const where = { submissionId, status: 'cancelled' };
-    if (round !== undefined) where.round = round;
-    const count = await SubmissionJob.count({ where });
-    return count > 0;
+    // Use the latest row per job type (getForSubmission dedupes newest-first) so
+    // the signal reflects the CURRENT state: a restart replaces a cancelled job
+    // with a fresh row, which must clear this flag even though the old cancelled
+    // row still exists in history.
+    const jobs = await SubmissionJob.getForSubmission(submissionId, round);
+    return jobs.some(j => j.status === 'cancelled');
   };
 
   /**

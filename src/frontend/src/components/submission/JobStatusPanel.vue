@@ -1294,7 +1294,8 @@ function canRestart(job) {
   // there's no source of data to retry against.
   if (getConfigPill(job) === 'off') return false
   return !restartingJobs.value.has(job.type) &&
-    (!job.status || job.status === 'complete' || job.status === 'failed' || job.status === 'pending_input')
+    (!job.status || job.status === 'complete' || job.status === 'failed' ||
+     job.status === 'pending_input' || job.status === 'cancelled')
 }
 
 async function handleRestart(type) {
