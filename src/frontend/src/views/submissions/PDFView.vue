@@ -387,11 +387,16 @@ async function regenerateSuggestions() {
   try {
     await suggestionService.regenerate(route.params.id)
     notificationStore.info('Regenerating suggestions… this can take up to a minute.')
+    // Re-fetch jobs so the re-queued suggestion_generation shows up (and the
+    // poller restarts), and reveal the panel so the user sees it running.
+    refreshJobs()
+    revealJobsPanel()
     let elapsed = 0
     const before = findings.value.length
     regeneratePollTimer = setInterval(async () => {
       elapsed += 5
       await refreshSuggestions()
+      refreshJobs()
       if (findings.value.length !== before || elapsed >= 75) {
         clearInterval(regeneratePollTimer)
         regeneratePollTimer = null
