@@ -438,6 +438,12 @@ router.post('/:id/processes/run',
   jobsController.runProcesses
 );
 
+// POST /api/submissions/:id/processes/cancel - Cancel all in-flight processing (#15)
+router.post('/:id/processes/cancel',
+  canAccessSubmission,
+  jobsController.cancelProcessing
+);
+
 // POST /api/submissions/:id/jobs/:jobType/advance - Manually advance a pending_input job (staff only)
 router.post('/:id/jobs/:jobType/advance',
   canAccessSubmission,

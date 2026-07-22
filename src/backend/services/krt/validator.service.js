@@ -33,12 +33,13 @@ const IDENTIFIER_KIND_ALLOWED_TYPES = {
   doi: '*',
   url: '*',
   // RRIDs are the strict identifier for most lab materials + software.
+  // TYPE_OTHER covers Tools / Instruments, which authors identify with RRIDs.
   rrid: [
     TYPE_ANTIBODY, TYPE_BACTERIAL, TYPE_VIRAL, TYPE_CHEM, TYPE_CCA,
-    TYPE_CELL_LINE, TYPE_ORGANISM, TYPE_RECOMB_DNA, TYPE_SOFTWARE
+    TYPE_CELL_LINE, TYPE_ORGANISM, TYPE_RECOMB_DNA, TYPE_SOFTWARE, TYPE_OTHER
   ],
-  // Domain-specific dataset registries.
-  scr:                 [TYPE_SOFTWARE],
+  // SCR codes identify software and tools/instruments (mapped to "Other").
+  scr:                 [TYPE_SOFTWARE, TYPE_OTHER],
   cellosaurus:         [TYPE_CELL_LINE],
   addgene:             [TYPE_RECOMB_DNA],
   emdb:                [TYPE_DATASET],
@@ -47,6 +48,11 @@ const IDENTIFIER_KIND_ALLOWED_TYPES = {
   genbank:             [TYPE_DATASET, TYPE_OLIGO],
   uniprot:             [TYPE_DATASET, TYPE_CHEM],
   pmid:                [TYPE_PROTOCOL],
+  // CAS Registry Numbers identify chemicals.
+  cas:                 [TYPE_CHEM],
+  // Repository accessions (PXD, GSE, …) are never accepted on their own — an
+  // empty allowed list means the validator always advises sharing a DOI/URL.
+  accession:           [],
   // Catalog numbers are lenient for purchaseable lab materials.
   catalogNumber: [
     TYPE_ANTIBODY, TYPE_BACTERIAL, TYPE_VIRAL, TYPE_BIO_SAMPLE, TYPE_CHEM,
@@ -60,6 +66,7 @@ const IDENTIFIER_KIND_ALLOWED_TYPES = {
 // Human labels for warning messages.
 const IDENTIFIER_KIND_LABELS = {
   doi: 'DOI', rrid: 'RRID', scr: 'SCR code', url: 'URL',
+  cas: 'CAS number', accession: 'Repository accession',
   cellosaurus: 'Cellosaurus ID', addgene: 'Addgene ID',
   emdb: 'EMDB ID', pdb: 'PDB ID', empiar: 'EMPIAR ID',
   genbank: 'GenBank accession', uniprot: 'UniProt ID', pmid: 'PMID',
@@ -78,6 +85,29 @@ function getDetectedKinds(extracted) {
   return Object.entries(extracted)
     .filter(([, v]) => v !== null && v !== undefined && v !== '')
     .map(([k]) => k);
+}
+
+/** True when the (possibly-synonym) resource type resolves to Chemical. */
+function isChemicalType(resourceType) {
+  return resourceType === TYPE_CHEM || normalizeResourceType(resourceType) === TYPE_CHEM;
+}
+
+/**
+ * Per-resource-type lenient identifier rule for Chemicals (ASAP request):
+ * vendor catalog codes for chemicals often don't fit the generic catalog-number
+ * rule (which needs ≥4 digits) — e.g. letters-only or letters+few-digits codes
+ * like "ab290", or a CAS-style value. For the Chemical type we accept any
+ * compact single-token code (optionally prefixed with a "Cat#" label) rather
+ * than flagging it as unrecognized.
+ */
+function looksLikeChemicalCatalog(value) {
+  let v = (value || '').trim();
+  // Drop a leading catalog label: "Cat#", "Cat. No.", "Catalog #", "Cat no:", …
+  v = v.replace(/^cat(?:alog)?\.?\s*(?:no\.?|number)?\s*[#:]?\s*/i, '').trim();
+  if (!v || v.length > 40) return false;
+  // A single compact code token — letters/digits + common catalog punctuation,
+  // no whitespace (so prose and multi-word values are still flagged).
+  return /^[A-Za-z0-9][A-Za-z0-9._#/-]*$/.test(v);
 }
 
 /**
@@ -205,6 +235,9 @@ async function validateRow(row, submissionId, clearExisting = true, resourceType
   const identifierErrors = await validateIdentifier(row, submissionId);
   errors.push(...identifierErrors);
 
+  // Cross-field: protocols.io protocols must carry a DOI/URL (#2)
+  errors.push(...validateProtocolsIoIdentifier(row.source, row.identifier, row.id));
+
   // Validate NEW/REUSE
   const newReuseErrors = validateNewReuse(row.newReuse, row.id);
   errors.push(...newReuseErrors);
@@ -243,8 +276,17 @@ function normalizeResourceType(value) {
     'chemical': 'Chemical, peptide, or recombinant protein',
     'chemicals': 'Chemical, peptide, or recombinant protein',
     'chemical, peptide, or recombinant protein': 'Chemical, peptide, or recombinant protein',
+    'biological reagent': 'Chemical, peptide, or recombinant protein',
+    'biological reagents': 'Chemical, peptide, or recombinant protein',
+    'peptide': 'Chemical, peptide, or recombinant protein',
+    'peptides': 'Chemical, peptide, or recombinant protein',
     'critical commercial assay': 'Critical commercial assay',
     'critical commercial assays': 'Critical commercial assay',
+    'commercial assay or kit': 'Critical commercial assay',
+    'commercial assay': 'Critical commercial assay',
+    'assay or kit': 'Critical commercial assay',
+    'assay kit': 'Critical commercial assay',
+    'kit': 'Critical commercial assay',
     'dataset': 'Dataset',
     'datasets': 'Dataset',
     'experimental model: cell line': 'Experimental model: Cell line',
@@ -285,7 +327,20 @@ function normalizeResourceType(value) {
     'virus strains': 'Viral vector',
     'virus': 'Viral vector',
     'plasmid': 'Recombinant DNA',
-    'plasmids': 'Recombinant DNA'
+    'plasmids': 'Recombinant DNA',
+    'bacteria': 'Bacterial strain',
+    // "Genetic reagent (Mus musculus)" and similar author labels denote an
+    // organism/strain in the ASAP KRTs reviewed.
+    'genetic reagent': 'Experimental model: Organism/strain',
+    'genetic reagent (mus musculus)': 'Experimental model: Organism/strain',
+    // Tools / Instruments / generic "Resource" have no dedicated canonical type;
+    // they map to "Other" (the UI's catch-all for tools and instruments).
+    'instrument': 'Other',
+    'instruments': 'Other',
+    'resource': 'Other',
+    'resources': 'Other',
+    'tool': 'Other',
+    'tools': 'Other'
   };
 
   return mappings[normalized] || null;
@@ -427,14 +482,29 @@ function isSoftwareType(resourceType) {
 }
 
 /**
+ * Accepted "no identifier to give" phrases. Besides the two canonical escape
+ * hatches, authors of Software rows often write "no RRID available" (an RRID is
+ * the expected identifier for software), which expresses the same intent and is
+ * accepted rather than flagged.
+ */
+function isNoIdentifierPhrase(value) {
+  const v = (value || '').trim().toLowerCase().replace(/\.+$/, '');
+  return v === 'no identifier exists' ||
+         v === 'identifier pending' ||
+         v === 'no rrid available' ||
+         v === 'no rrid';
+}
+
+/**
  * True when the IDENTIFIER cell carries a *real* identifier — i.e. any value
  * that isn't blank, an escape hatch ("No identifier exists" / "Identifier
- * pending"), or an N/A variant. Recognized or not, it counts as "provided".
+ * pending" / "No RRID available"), or an N/A variant. Recognized or not, it
+ * counts as "provided".
  */
 function hasRealIdentifier(identifier) {
   const v = (identifier || '').trim().toLowerCase();
   if (!v) return false;
-  if (v === 'no identifier exists' || v === 'identifier pending') return false;
+  if (isNoIdentifierPhrase(v)) return false;
   if (isNAVariation(v)) return false;
   return true;
 }
@@ -456,7 +526,7 @@ function validateSource(value, rowId, { resourceType = '', identifier = '' } = {
       errorType: 'required',
       errorMessage: 'Source is required',
       severity: VALIDATION_SEVERITY.ERROR,
-      suggestion: 'Examples: Zenodo, GitHub, AddGene, ATCC'
+      suggestion: 'Source is the repository or vendor name (e.g. Zenodo, GitHub, Addgene, ATCC) — put the DOI/URL in the Identifier column, not here'
     });
   }
 
@@ -485,22 +555,30 @@ async function validateIdentifier(row, submissionId) {
   const identifierValue = row.identifier || '';
   const additionalInfo = row.additionalInformation || '';
   const resourceType = row.resourceType || '';
+  // Rows the curator flagged Optional never require an identifier — an empty or
+  // N/A cell is expected, not an issue.
+  const isOptional = !!row.isOptional;
 
   // Accepted escape hatches.
   const trimmedLower = identifierValue.trim().toLowerCase();
-  if (trimmedLower === 'no identifier exists') {
-    row.parsedIdentifiers = { noIdentifier: true };
-    await row.save();
-    return errors;
-  }
   if (trimmedLower === 'identifier pending') {
     row.parsedIdentifiers = { identifierPending: true };
     await row.save();
     return errors;
   }
+  if (isNoIdentifierPhrase(identifierValue)) {
+    row.parsedIdentifiers = { noIdentifier: true };
+    await row.save();
+    return errors;
+  }
 
-  // Reject N/A variations — they are not allowed.
+  // Reject N/A variations — they are not allowed (unless the row is Optional).
   if (isNAVariation(identifierValue)) {
+    if (isOptional) {
+      row.parsedIdentifiers = {};
+      await row.save();
+      return errors;
+    }
     errors.push({
       rowId: row.id,
       columnName: 'IDENTIFIER',
@@ -560,7 +638,7 @@ async function validateIdentifier(row, submissionId) {
         severity: VALIDATION_SEVERITY.WARNING,
         suggestion: 'Move the identifier into the IDENTIFIER column'
       });
-    } else {
+    } else if (!isOptional) {
       errors.push({
         rowId: row.id,
         columnName: 'IDENTIFIER',
@@ -577,26 +655,38 @@ async function validateIdentifier(row, submissionId) {
     const allowedKinds = detectedKinds.filter(k => isKindAllowedFor(k, resourceType));
 
     if (detectedKinds.length === 0) {
-      errors.push({
-        rowId: row.id,
-        columnName: 'IDENTIFIER',
-        errorType: 'invalid_format',
-        errorMessage: 'Identifier not recognized by the app',
-        severity: VALIDATION_SEVERITY.WARNING,
-        suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"'
-      });
+      // Chemicals accept compact vendor catalog codes that the generic rules
+      // don't recognize (letters-only, letters+few-digits, CAS-style).
+      if (!(isChemicalType(resourceType) && looksLikeChemicalCatalog(identifierValue))) {
+        errors.push({
+          rowId: row.id,
+          columnName: 'IDENTIFIER',
+          errorType: 'invalid_format',
+          errorMessage: 'Identifier not recognized by the app',
+          severity: VALIDATION_SEVERITY.WARNING,
+          suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"'
+        });
+      }
     } else if (allowedKinds.length === 0) {
       // Kind detected, but not on the allowed list for this resource type.
       const detectedLabel = detectedKinds.map(k => IDENTIFIER_KIND_LABELS[k] || k).join(', ');
+      const isAccession = detectedKinds.includes('accession');
       errors.push({
         rowId: row.id,
         columnName: 'IDENTIFIER',
-        errorType: 'kind_not_accepted_for_type',
-        errorMessage: resourceType
-          ? `${detectedLabel} is not a typical identifier for "${resourceType}"`
-          : `${detectedLabel} detected, but RESOURCE TYPE is missing`,
+        // Repository accessions (PXD, GSE, …) get their own advisory message:
+        // they aren't persistent identifiers on their own, so we ask the author
+        // to share the DOI or URL of the record instead of just flagging.
+        errorType: isAccession ? 'accession_not_persistent' : 'kind_not_accepted_for_type',
+        errorMessage: isAccession
+          ? 'Repository accession is not accepted as an identifier on its own'
+          : (resourceType
+            ? `${detectedLabel} is not a typical identifier for "${resourceType}"`
+            : `${detectedLabel} detected, but RESOURCE TYPE is missing`),
         severity: VALIDATION_SEVERITY.WARNING,
-        suggestion: 'Use a DOI, RRID, URL, or other identifier accepted for this resource type'
+        suggestion: isAccession
+          ? 'Share the DOI or URL of the repository record (e.g. the dataset landing page) instead of the bare accession'
+          : 'Use a DOI, RRID, URL, or other identifier accepted for this resource type'
       });
     }
     // else: at least one detected kind is allowed — silent pass.
@@ -720,13 +810,13 @@ const DEFAULT_RESOURCE_TYPES = [
  * kind-extraction + allowed-per-type helpers as the DB path.
  * @returns {Array} error objects (without rowId)
  */
-function validateIdentifierValues({ identifier = '', additionalInformation = '', resourceType = '' } = {}) {
+function validateIdentifierValues({ identifier = '', additionalInformation = '', resourceType = '', isOptional = false } = {}) {
   const errors = [];
   const idVal = String(identifier || '');
-  const trimmedLower = idVal.trim().toLowerCase();
-  if (trimmedLower === 'no identifier exists' || trimmedLower === 'identifier pending') return errors;
+  if (isNoIdentifierPhrase(idVal)) return errors;
 
   if (isNAVariation(idVal)) {
+    if (isOptional) return errors;
     errors.push({ columnName: 'IDENTIFIER', errorType: 'na_not_allowed', errorMessage: `"${idVal.trim()}" is not allowed as an identifier`, severity: VALIDATION_SEVERITY.ERROR, suggestion: 'Provide a DOI, RRID, URL, catalog number, "No identifier exists" or "Identifier pending"' });
     return errors;
   }
@@ -738,17 +828,20 @@ function validateIdentifierValues({ identifier = '', additionalInformation = '',
     const allowedInAddl = getDetectedKinds(additionalExtracted).some(k => isKindAllowedFor(k, resourceType));
     if (allowedInAddl) {
       errors.push({ columnName: 'IDENTIFIER', errorType: 'missing_but_found', errorMessage: 'Identifier column is empty but identifier found in Additional Information', severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Move the identifier into the IDENTIFIER column' });
-    } else {
+    } else if (!isOptional) {
       errors.push({ columnName: 'IDENTIFIER', errorType: 'required', errorMessage: 'Identifier is required', severity: VALIDATION_SEVERITY.ERROR, suggestion: 'Provide a DOI, RRID, URL, catalog number, "No identifier exists" or "Identifier pending"' });
     }
   } else {
     const detectedKinds = getDetectedKinds(identifierExtracted);
     const allowedKinds = detectedKinds.filter(k => isKindAllowedFor(k, resourceType));
     if (detectedKinds.length === 0) {
-      errors.push({ columnName: 'IDENTIFIER', errorType: 'invalid_format', errorMessage: 'Identifier not recognized by the app', severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"' });
+      if (!(isChemicalType(resourceType) && looksLikeChemicalCatalog(idVal))) {
+        errors.push({ columnName: 'IDENTIFIER', errorType: 'invalid_format', errorMessage: 'Identifier not recognized by the app', severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"' });
+      }
     } else if (allowedKinds.length === 0) {
       const detectedLabel = detectedKinds.map(k => IDENTIFIER_KIND_LABELS[k] || k).join(', ');
-      errors.push({ columnName: 'IDENTIFIER', errorType: 'kind_not_accepted_for_type', errorMessage: resourceType ? `${detectedLabel} is not a typical identifier for "${resourceType}"` : `${detectedLabel} detected, but RESOURCE TYPE is missing`, severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Use a DOI, RRID, URL, or other identifier accepted for this resource type' });
+      const isAccession = detectedKinds.includes('accession');
+      errors.push({ columnName: 'IDENTIFIER', errorType: isAccession ? 'accession_not_persistent' : 'kind_not_accepted_for_type', errorMessage: isAccession ? 'Repository accession is not accepted as an identifier on its own' : (resourceType ? `${detectedLabel} is not a typical identifier for "${resourceType}"` : `${detectedLabel} detected, but RESOURCE TYPE is missing`), severity: VALIDATION_SEVERITY.WARNING, suggestion: isAccession ? 'Share the DOI or URL of the repository record (e.g. the dataset landing page) instead of the bare accession' : 'Use a DOI, RRID, URL, or other identifier accepted for this resource type' });
     }
   }
   return errors;
@@ -771,16 +864,101 @@ function validateRowValues(values = {}, resourceTypes = DEFAULT_RESOURCE_TYPES) 
   errors.push(...validateResourceName(values.resourceName, rowId));
   errors.push(...validateSource(values.source, rowId, { resourceType: values.resourceType, identifier: values.identifier }));
   errors.push(...validateIdentifierValues({
-    identifier: values.identifier, additionalInformation: values.additionalInformation, resourceType: values.resourceType
+    identifier: values.identifier, additionalInformation: values.additionalInformation, resourceType: values.resourceType, isOptional: values.isOptional
   }).map(e => ({ rowId, ...e })));
+  errors.push(...validateProtocolsIoIdentifier(values.source, values.identifier, rowId));
   errors.push(...validateNewReuse(values.newReuse, rowId));
   return errors;
+}
+
+/**
+ * protocols.io rule (#2): when SOURCE points to protocols.io, the identifier
+ * must be a DOI or URL — not free text. This targets the case where an author
+ * replaces the protocol hyperlink with plain text, which used to pass silently.
+ *
+ * Only fires on a concrete, non-DOI/URL value. Empty identifiers and the
+ * accepted escape-hatch phrases ("Identifier pending" / "No identifier exists")
+ * are left to the standard identifier rules so we don't double-flag.
+ *
+ * @param {string} source
+ * @param {string} identifier
+ * @param {string|null} rowId
+ * @returns {Array} error objects (0 or 1)
+ */
+function validateProtocolsIoIdentifier(source, identifier, rowId = null) {
+  if (!String(source || '').toLowerCase().includes('protocols.io')) return [];
+
+  const value = String(identifier || '').trim();
+  if (!value) return []; // empty -> handled by the required-identifier rule
+  if (isNoIdentifierPhrase(value) || isNAVariation(value)) return [];
+
+  const hasDoiOrUrl = !!identifierExtractor.extractDOI(value) || !!identifierExtractor.extractURL(value);
+  if (hasDoiOrUrl) return [];
+
+  return [{
+    rowId,
+    columnName: 'IDENTIFIER',
+    errorType: 'protocols_io_requires_doi_url',
+    errorMessage: 'protocols.io protocols require a DOI or URL identifier',
+    severity: VALIDATION_SEVERITY.ERROR,
+    suggestion: 'Add the protocols.io DOI (e.g. 10.17504/...) or the full protocol URL'
+  }];
+}
+
+/**
+ * Validate an array of KRT rows without a submission (stateless, no DB writes).
+ *
+ * Backs the standalone KRT-validation page: the caller holds every row
+ * client-side and nothing is persisted. Resource types come from the same DB
+ * source/cache the submission flow uses (loadResourceTypes), so results match
+ * the real editor. Output shape mirrors krt.controller.getData exactly, so the
+ * frontend can consume it with no translation.
+ *
+ * @param {Array<object>} rows - rows keyed by the uppercase KRT columns plus
+ *   `id` (and optional `isOptional`)
+ * @returns {Promise<{validationErrors: object, totalErrors: number, totalWarnings: number}>}
+ */
+async function validateKrtRows(rows = []) {
+  const resourceTypes = await loadResourceTypes();
+  const validationErrors = {};
+  let totalErrors = 0;
+  let totalWarnings = 0;
+
+  for (const row of rows) {
+    const issues = validateRowValues({
+      rowId: row.id,
+      resourceType: row['RESOURCE TYPE'],
+      resourceName: row['RESOURCE NAME'],
+      source: row['SOURCE'],
+      identifier: row['IDENTIFIER'],
+      newReuse: row['NEW/REUSE'],
+      additionalInformation: row['ADDITIONAL INFORMATION'],
+      isOptional: row.isOptional || false
+    }, resourceTypes);
+
+    if (issues.length > 0) {
+      validationErrors[row.id] = issues.map(issue => ({
+        column: issue.columnName,
+        type: issue.errorType,
+        message: issue.errorMessage,
+        severity: issue.severity,
+        suggestion: issue.suggestion,
+        suggestedValue: issue.suggestedValue || null,
+        autoFixable: !!issue.suggestedValue
+      }));
+      totalErrors += issues.filter(i => i.severity === 'error').length;
+      totalWarnings += issues.filter(i => i.severity === 'warning').length;
+    }
+  }
+
+  return { validationErrors, totalErrors, totalWarnings };
 }
 
 module.exports = {
   validateSubmission,
   validateRow,
   validateResourceType,
+  normalizeResourceType,
   validateResourceName,
   validateSource,
   validateIdentifier,
@@ -789,5 +967,7 @@ module.exports = {
   // Pure, DB-free core for offline tooling (scripts/check-krt.js)
   validateRowValues,
   validateIdentifierValues,
+  // Stateless multi-row validation for the standalone validation page
+  validateKrtRows,
   DEFAULT_RESOURCE_TYPES
 };

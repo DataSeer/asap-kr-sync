@@ -6,6 +6,16 @@ const MAX_POLL_MS = 30000
 const BACKOFF_FACTOR = 1.5
 const MAX_POLL_DURATION_MS = 20 * 60 * 1000 // 20 minutes — stop polling after this
 
+// 'cancelled' is a real terminal status (added via migration). Used to render
+// "Cancelled" and to treat cancelled jobs as finished, distinct from failures.
+export function isCancelledJob(job) {
+  return job?.status === 'cancelled'
+}
+// Terminal statuses: a job that will not change further.
+export function isTerminalStatus(status) {
+  return status === 'complete' || status === 'failed' || status === 'cancelled'
+}
+
 /**
  * Composable for polling background job status for a submission.
  * Fetches once on mount, then polls with exponential backoff while any job is running.
@@ -90,7 +100,9 @@ export function useJobPoller(submissionId) {
             if (job.status === 'complete' && completeCallbacks[type]) {
               completeCallbacks[type].forEach(cb => cb(job))
             }
-            if (job.status === 'failed' && failedCallbacks[type]) {
+            // Skip failure callbacks for a deliberate user cancel — it isn't an
+            // error, so we don't want the "analysis failed" toast to fire.
+            if (job.status === 'failed' && !isCancelledJob(job) && failedCallbacks[type]) {
               failedCallbacks[type].forEach(cb => cb(job))
             }
             if (job.status === 'pending_input' && pendingInputCallbacks[type]) {

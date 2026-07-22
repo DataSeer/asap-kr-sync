@@ -275,9 +275,44 @@ async function getKRTWithErrors(submissionId, round) {
   };
 }
 
+/**
+ * Build a downloadable KRT file (CSV/XLSX) straight from in-memory rows, with
+ * no submission or DB read. Backs the stateless validation page's download.
+ * @param {Array<object>} rows - rows keyed by the uppercase KRT columns
+ * @param {string} format - 'csv' | 'xlsx'
+ * @param {string} baseName - filename base (without extension)
+ * @returns {Promise<{buffer: Buffer, filename: string, mimeType: string}>}
+ */
+async function exportRows(rows = [], format = 'csv', baseName = 'krt') {
+  const data = rows.map(row => ({
+    'RESOURCE TYPE': row['RESOURCE TYPE'] ?? '',
+    'RESOURCE NAME': row['RESOURCE NAME'] ?? '',
+    'SOURCE': row['SOURCE'] ?? '',
+    'IDENTIFIER': row['IDENTIFIER'] ?? '',
+    'NEW/REUSE': row['NEW/REUSE'] ?? '',
+    'ADDITIONAL INFORMATION': row['ADDITIONAL INFORMATION'] ?? ''
+  }));
+
+  // Sanitize to a safe filename base — the value can originate from an uploaded
+  // file name, so strip a trailing extension (avoid "name.csv.csv") and anything
+  // that isn't a word char, dot or dash.
+  const safe = String(baseName || 'krt')
+    .replace(/\.(csv|xlsx)$/i, '')
+    .replace(/[^\w.-]+/g, '_')
+    .slice(0, 100) || 'krt';
+
+  if (format === 'xlsx') {
+    const result = await generateExcel(data, safe);
+    return { ...result, filename: `${safe}.xlsx` };
+  }
+  const result = generateCSV(data, safe);
+  return { ...result, filename: `${safe}.csv` };
+}
+
 module.exports = {
   uploadAndProcess,
   validateSubmission,
   generateDownload,
-  getKRTWithErrors
+  getKRTWithErrors,
+  exportRows
 };

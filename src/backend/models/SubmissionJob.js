@@ -27,7 +27,7 @@ module.exports = (sequelize) => {
       field: 'job_type'
     },
     status: {
-      type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed'),
+      type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed', 'cancelled'),
       allowNull: false,
       defaultValue: 'queued'
     },
@@ -116,6 +116,10 @@ module.exports = (sequelize) => {
     // Reload from DB to pick up any result changes made by the service
     // (the service may use a different instance via getLatest())
     await this.reload();
+    // Never resurrect a cancelled job: if the user cancelled this run while a
+    // worker had already dequeued this job, honor the cancel and drop the
+    // now-irrelevant result rather than flipping it back to 'complete'.
+    if (this.status === 'cancelled') return this;
     this.status = 'complete';
     if (result) {
       this.result = { ...(this.result || {}), ...result };
@@ -130,10 +134,43 @@ module.exports = (sequelize) => {
    * @param {string} errorMessage
    */
   SubmissionJob.prototype.markFailed = async function(errorMessage) {
+    // A job the user cancelled must stay cancelled even if the worker that was
+    // mid-flight ultimately errors — the failure is a consequence of the cancel,
+    // not a real error to surface or retry.
+    if (this.status === 'cancelled') return this;
     this.status = 'failed';
     this.errorMessage = errorMessage;
     this.completedAt = new Date();
     return this.save();
+  };
+
+  /**
+   * Mark a job as cancelled by the user (terminal). Only applied to jobs that
+   * had NOT started — a job already 'processing' is left to finish and record
+   * its real done/failed status (see the cancel controller).
+   */
+  SubmissionJob.prototype.markCancelled = async function() {
+    this.status = 'cancelled';
+    this.completedAt = new Date();
+    return this.save();
+  };
+
+  /**
+   * Was this (submission, round) cancelled by the user? True iff any of its jobs
+   * is in the terminal 'cancelled' state. This is the pipeline's run-level
+   * cancel signal: the orchestrator won't advance new steps and workers skip
+   * retries once it's true.
+   * @param {string} submissionId
+   * @param {number} round
+   * @returns {Promise<boolean>}
+   */
+  SubmissionJob.isRoundCancelled = async function(submissionId, round) {
+    // Use the latest row per job type (getForSubmission dedupes newest-first) so
+    // the signal reflects the CURRENT state: a restart replaces a cancelled job
+    // with a fresh row, which must clear this flag even though the old cancelled
+    // row still exists in history.
+    const jobs = await SubmissionJob.getForSubmission(submissionId, round);
+    return jobs.some(j => j.status === 'cancelled');
   };
 
   /**

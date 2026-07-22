@@ -152,5 +152,45 @@ export default {
       responseType: 'blob'
     })
     return response.data
+  },
+
+  /**
+   * Parse + validate a KRT file without creating a submission (stateless).
+   * Backs the standalone validation page — the server persists nothing.
+   * @param {File} file
+   * @returns {Promise<{rows: Array, validationErrors: Object, totalErrors: number, totalWarnings: number}>}
+   */
+  async parseFile(file) {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await api.post('/krt/parse', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000
+    })
+    return response.data
+  },
+
+  /**
+   * Re-validate an array of edited rows without persisting anything (stateless).
+   * @param {Array} rows - rows keyed by the uppercase KRT columns + `id`
+   * @returns {Promise<{rows: Array, validationErrors: Object, totalErrors: number, totalWarnings: number}>}
+   */
+  async validateRows(rows) {
+    const response = await api.post('/krt/validate', { rows })
+    return response.data
+  },
+
+  /**
+   * Build a downloadable KRT file from in-memory rows (stateless).
+   * @param {Array} rows
+   * @param {string} format - 'csv' | 'xlsx'
+   * @param {string} filename - base name (no extension)
+   * @returns {Promise<Blob>}
+   */
+  async exportRows(rows, format = 'csv', filename = 'krt-validated') {
+    const response = await api.post('/krt/export', { rows, format, filename }, {
+      responseType: 'blob'
+    })
+    return response.data
   }
 }

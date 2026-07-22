@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, inject } from 'vue'
 import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
@@ -23,6 +23,14 @@ const props = defineProps({
     default: false
   },
   krtFileUrl: {
+    type: String,
+    default: ''
+  },
+  /**
+   * Base name for downloaded files (#19). When set (e.g. the submission Title),
+   * downloads are named after it instead of the opaque submission id.
+   */
+  downloadName: {
     type: String,
     default: ''
   },
@@ -60,7 +68,10 @@ const emit = defineEmits([
   'select-suggestion'
 ])
 
-const krtStore = useKRTStore()
+// The submission flow uses the real Pinia store; the standalone validation page
+// provides an in-memory store implementing the same contract via
+// `provide('krtStore', ...)`. Falling back keeps every existing usage unchanged.
+const krtStore = inject('krtStore', null) || useKRTStore()
 const notificationStore = useNotificationStore()
 const resourceTypesStore = useResourceTypesStore()
 const authStore = useAuthStore()
@@ -218,6 +229,11 @@ watch(() => props.modelValue, (newVal) => {
 const sortColumn = ref(null)
 const sortDirection = ref('asc')
 
+// Row ordering (#16): 'systematic' groups by resource type (Robert's default),
+// 'input' preserves the order the rows were submitted in (Michael's request).
+// An explicit column sort still overrides this. Default stays systematic.
+const rowOrder = ref('systematic')
+
 // Get group for a resource type (uses store data from DB)
 function getResourceGroup(resourceType) {
   return resourceTypesStore.getTabGroup(resourceType)
@@ -269,23 +285,19 @@ function defaultSort(a, b) {
   return typeA - typeB
 }
 
-// Within-tab sort: resource type first (so all Antibodies sit together).
-// Insertion order preserved within each type (stable sort, see above).
-function withinTabSort(a, b) {
-  const typeA = resourceTypesStore.getTypeSortOrder(a['RESOURCE TYPE'])
-  const typeB = resourceTypesStore.getTypeSortOrder(b['RESOURCE TYPE'])
-  return typeA - typeB
-}
-
-// Filtered rows based on active tab (with group + name ordering) + search
+// Filtered + ordered rows. Separation of concerns (#16): the TABS filter by
+// resource type (group), the SWITCH decides the order — 'By resource type'
+// (defaultSort: group + type, insertion order breaking ties) or 'As submitted'
+// (original store order, i.e. createdAt ASC). Search filters on top of both.
 const filteredRows = computed(() => {
-  let rows
-  if (activeTab.value === 'all') {
-    rows = [...krtRows.value].sort(defaultSort)
-  } else {
-    rows = krtRows.value
-      .filter(row => getResourceGroup(row['RESOURCE TYPE']) === activeTab.value)
-      .sort(withinTabSort)
+  // Tab = filter only.
+  let rows = activeTab.value === 'all'
+    ? [...krtRows.value]
+    : krtRows.value.filter(row => getResourceGroup(row['RESOURCE TYPE']) === activeTab.value)
+
+  // Switch = sort. Applied the same way on every tab.
+  if (rowOrder.value === 'systematic') {
+    rows = [...rows].sort(defaultSort)
   }
 
   // Apply search filter
@@ -309,6 +321,22 @@ const sortedFilteredRows = computed(() => {
     return sortDirection.value === 'asc' ? cmp : -cmp
   })
 })
+
+// Every row in the whole KRT, in the same order the "All" tab shows them. Used
+// by the summary-bar error/warning locators so they cycle across all tabs.
+const allRowsInDisplayOrder = computed(() =>
+  rowOrder.value === 'input' ? [...krtRows.value] : [...krtRows.value].sort(defaultSort)
+)
+
+// Tab hover-tooltip positioning. The leftmost tab (the first in tabGroups,
+// i.e. "All") is left-anchored so a wide tooltip doesn't spill past the card's
+// left edge and get clipped (#20); every other tab stays centered.
+function tabTooltipStyle(tabKey) {
+  const isFirst = tabGroups[0]?.key === tabKey
+  return isFirst
+    ? { left: '0', transform: 'none', width: 'auto', minWidth: '160px' }
+    : { left: '50%', transform: 'translateX(-50%)', width: 'auto', minWidth: '160px' }
+}
 
 // Toggle column sort: asc -> desc -> reset
 function toggleSort(columnKey) {
@@ -336,40 +364,23 @@ function switchTab(tabKey) {
 
 // Display summary: shows tab-specific or global counts
 const displaySummary = computed(() => {
-  if (activeTab.value === 'all') {
-    return {
-      rows: krtRows.value.length,
-      errors: summary.value.totalErrors,
-      warnings: summary.value.totalWarnings,
-      suggestions: summary.value.totalSuggestions,
-      tabLabel: null
-    }
-  }
-
-  const tabRows = filteredRows.value
-  const tabRowIds = new Set(tabRows.map(r => r.id))
-
-  let errors = 0
-  let warnings = 0
-  for (const rowId of tabRowIds) {
-    const rowErrors = krtStore.validationErrors[rowId] || []
-    errors += rowErrors.filter(e => e.severity === 'error').length
-    warnings += rowErrors.filter(e => e.severity === 'warning').length
-  }
-
-  let suggestions = 0
-  for (const row of tabRows) {
-    suggestions += getRowSuggestions(row.id).length
-  }
-  suggestions += filteredAddRowSuggestions.value.length
-
-  const tabLabel = tabGroups.find(t => t.key === activeTab.value)?.label || null
+  // Error / warning / suggestion counts are always whole-KRT totals so the
+  // summary bar reads from the same source as the post-validate toast and the
+  // Continue gate (both global). Previously these were re-scoped to the active
+  // tab, which is why a "valid with 4 warnings" toast could sit above a header
+  // showing "0 warnings" on a tab with none (#17). Per-tab counts stay visible
+  // as the coloured dots/badges on each tab. `rows` stays tab-scoped because it
+  // describes the rows actually shown in the table below.
+  const tabRows = activeTab.value === 'all' ? krtRows.value : filteredRows.value
+  const tabLabel = activeTab.value === 'all'
+    ? null
+    : (tabGroups.find(t => t.key === activeTab.value)?.label || null)
 
   return {
     rows: tabRows.length,
-    errors,
-    warnings,
-    suggestions,
+    errors: summary.value.totalErrors,
+    warnings: summary.value.totalWarnings,
+    suggestions: summary.value.totalSuggestions,
     tabLabel
   }
 })
@@ -604,7 +615,8 @@ function startEdit(row, column, rowIndex) {
     displayIndex: rowIndex + 1,
     column: column.key,
     columnLabel: column.label,
-    field: column.field
+    field: column.field,
+    resourceType: row['RESOURCE TYPE'] || ''
   }
 
   // Get current value
@@ -659,15 +671,43 @@ async function setQuickIdentifierPending(rowId, field) {
   }
 }
 
+// Quick set "None" for an empty Source cell — for when an identifier is shared
+// but there is no URL to give as the Source.
+async function setQuickSourceNone(rowId, field) {
+  try {
+    await krtStore.updateCell(props.submissionId, rowId, field, 'None')
+    notificationStore.success('Source set to "None"')
+  } catch (error) {
+    notificationStore.error('Failed to update cell')
+  }
+}
+
+// Build a safe download base name (#19): prefer the provided Title, fall back
+// to the submission id. Strips characters that don't belong in a file name.
+function downloadBaseName() {
+  const raw = (props.downloadName || '').trim()
+  if (raw) {
+    const safe = raw.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 100)
+    if (safe) return safe
+  }
+  return `krt_${props.submissionId}`
+}
+
 async function downloadKRT(format) {
   showDownloadMenu.value = false
   downloading.value = true
   try {
-    const blob = await krtService.download(props.submissionId, format)
+    // A local (standalone) store generates the file client-side with no
+    // submission; the real store hits the server download endpoint.
+    const blob = krtStore.download
+      ? await krtStore.download(props.submissionId, format)
+      : await krtService.download(props.submissionId, format)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `krt_${props.submissionId}.${format}`
+    a.download = krtStore.getExportFilename
+      ? krtStore.getExportFilename(format)
+      : `${downloadBaseName()}.${format}`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -886,6 +926,17 @@ function toggleSelectAllVisibleRows() {
 
 async function bulkApproveSelected(overrideType = null) {
   if (selectedSuggestionIds.value.size === 0) return
+  // Guardrail (#7): approving a large batch in one click is easy to do without
+  // reviewing each item, so ask for explicit confirmation past a threshold.
+  const BULK_APPROVE_CONFIRM_THRESHOLD = 10
+  if (selectedSuggestionIds.value.size >= BULK_APPROVE_CONFIRM_THRESHOLD &&
+      typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    const ok = window.confirm(
+      `You're about to accept ${selectedSuggestionIds.value.size} suggestions at once. ` +
+      'Please make sure you have reviewed them. Continue?'
+    )
+    if (!ok) return
+  }
   bulkSubmitting.value = true
   try {
     // Build per-item payloads. Each suggestion can carry two kinds of edits:
@@ -1341,40 +1392,34 @@ function rejectDeleteSuggestion(suggestion) {
 }
 
 // Scroll to a specific row in the table (handles both vertical and horizontal scrolling)
-function scrollToRow(rowId, columnKey = null) {
+async function scrollToRow(rowId, columnKey = null) {
   if (!tableContainer.value) return
 
-  const row = tableContainer.value.querySelector(`tr[data-row-id="${rowId}"]`)
-  if (row) {
-    // Get the scroll container
-    const scrollContainer = tableContainer.value.querySelector('.table-scroll')
-    if (!scrollContainer) {
-      row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    } else {
-      // Calculate vertical scroll position to center the row
-      const rowRect = row.getBoundingClientRect()
-      const containerRect = scrollContainer.getBoundingClientRect()
-      const targetScrollTop = scrollContainer.scrollTop + (rowRect.top - containerRect.top) - (containerRect.height / 2) + (rowRect.height / 2)
-
-      // If a column is specified, also scroll horizontally to center the cell
-      if (columnKey) {
-        const cell = row.querySelector(`td[data-column-key="${columnKey}"]`)
-        if (cell) {
-          const cellRect = cell.getBoundingClientRect()
-          const targetScrollLeft = scrollContainer.scrollLeft + (cellRect.left - containerRect.left) - (containerRect.width / 2) + (cellRect.width / 2)
-          scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), left: Math.max(0, targetScrollLeft), behavior: 'smooth' })
-        } else {
-          scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' })
-        }
-      } else {
-        scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' })
-      }
-    }
-
-    // Briefly highlight the row
-    row.classList.add('highlight-flash')
-    setTimeout(() => row.classList.remove('highlight-flash'), 2000)
+  // The target row may be filtered out of the active tab or hidden by an active
+  // search — in that case it isn't rendered and the lookup returns null. Reveal
+  // it via the "All" tab and clear the search, then wait for the re-render.
+  let row = tableContainer.value.querySelector(`tr[data-row-id="${rowId}"]`)
+  if (!row) {
+    if (activeTab.value !== 'all') switchTab('all')
+    if (searchQuery.value) searchQuery.value = ''
+    await nextTick()
+    row = tableContainer.value.querySelector(`tr[data-row-id="${rowId}"]`)
   }
+  if (!row) return
+
+  // Scroll every scrollable ancestor — the inner `.table-scroll` container AND
+  // the page/window — so the row is brought into view no matter where the page
+  // is currently scrolled. `scrollIntoView` cascades through all scroll
+  // containers; the previous manual `.table-scroll` scrollTo only moved the
+  // inner container and left the row off-screen whenever the table itself was
+  // scrolled out of the viewport. `inline: 'center'` also handles the
+  // horizontal centering on the target cell.
+  const target = (columnKey && row.querySelector(`td[data-column-key="${columnKey}"]`)) || row
+  target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+
+  // Briefly highlight the row
+  row.classList.add('highlight-flash')
+  setTimeout(() => row.classList.remove('highlight-flash'), 2000)
 }
 
 // Track current scroll position for cycling through errors/warnings/suggestions
@@ -1391,7 +1436,10 @@ watch(() => krtStore.validationErrors, () => {
 // Scroll to next error in visible/display order (cycles through all errors)
 function scrollToFirstError() {
   const validationErrors = krtStore.validationErrors
-  const errorRows = sortedFilteredRows.value.filter(row => {
+  // Cycle through every error in the whole KRT (in display order), not just the
+  // active tab — the summary-bar count is global, and scrollToRow reveals rows
+  // on other tabs as needed.
+  const errorRows = allRowsInDisplayOrder.value.filter(row => {
     const errors = validationErrors[row.id] || []
     return errors.some(e => e.severity === 'error')
   })
@@ -1409,7 +1457,7 @@ function scrollToFirstError() {
 // Scroll to next warning in visible/display order (cycles through all warnings)
 function scrollToFirstWarning() {
   const validationErrors = krtStore.validationErrors
-  const warningRows = sortedFilteredRows.value.filter(row => {
+  const warningRows = allRowsInDisplayOrder.value.filter(row => {
     const errors = validationErrors[row.id] || []
     return errors.some(e => e.severity === 'warning')
   })
@@ -1451,24 +1499,23 @@ function scrollToFirstSuggestion() {
 }
 
 // Scroll to an add-row suggestion by its suggestion ID
-function scrollToSuggestionRow(suggestionId) {
+async function scrollToSuggestionRow(suggestionId) {
   if (!tableContainer.value) return
 
-  const row = tableContainer.value.querySelector(`tr[data-suggestion-id="${suggestionId}"]`)
-  if (row) {
-    const scrollContainer = tableContainer.value.querySelector('.table-scroll')
-    if (!scrollContainer) {
-      row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    } else {
-      const rowRect = row.getBoundingClientRect()
-      const containerRect = scrollContainer.getBoundingClientRect()
-      const targetScrollTop = scrollContainer.scrollTop + (rowRect.top - containerRect.top) - (containerRect.height / 2) + (rowRect.height / 2)
-      scrollContainer.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' })
-    }
-
-    row.classList.add('highlight-flash')
-    setTimeout(() => row.classList.remove('highlight-flash'), 2000)
+  // Reveal the suggestion row if it's filtered out of the active tab / hidden
+  // by search, then scroll every ancestor (inner container + page) into view.
+  let row = tableContainer.value.querySelector(`tr[data-suggestion-id="${suggestionId}"]`)
+  if (!row) {
+    if (activeTab.value !== 'all') switchTab('all')
+    if (searchQuery.value) searchQuery.value = ''
+    await nextTick()
+    row = tableContainer.value.querySelector(`tr[data-suggestion-id="${suggestionId}"]`)
   }
+  if (!row) return
+
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  row.classList.add('highlight-flash')
+  setTimeout(() => row.classList.remove('highlight-flash'), 2000)
 }
 
 // Expose methods for parent components
@@ -1641,8 +1688,10 @@ defineExpose({
             class="tab-error-dot"
             title="This tab contains errors"
           ></span>
-          <!-- Custom tooltip -->
-          <div v-if="activeTabTooltip === tab.key" class="tooltip below" style="left: 50%; transform: translateX(-50%); width: auto; min-width: 160px;">
+          <!-- Custom tooltip. Centered by default, but left-anchored on the
+               first (leftmost) tab so its left side isn't clipped off the card
+               edge (#20). -->
+          <div v-if="activeTabTooltip === tab.key" class="tooltip below" :style="tabTooltipStyle(tab.key)">
             <div class="tooltip-content" style="white-space: nowrap;">
               <div class="tooltip-item">
                 <span class="tooltip-dot" style="background: #6b7280;"></span>
@@ -1655,6 +1704,27 @@ defineExpose({
             </div>
           </div>
         </button>
+      </div>
+      <!-- Row order switch (#16): input order vs systematic (by resource type).
+           Segmented control — both options visible, the active one highlighted. -->
+      <div class="order-segmented" role="group" aria-label="Row order in the table" title="Row order in the table">
+        <span class="order-segmented-caption">Order:</span>
+        <div class="order-segmented-track">
+          <button
+            type="button"
+            class="order-segmented-btn"
+            :class="{ active: rowOrder === 'input' }"
+            :aria-pressed="rowOrder === 'input'"
+            @click="rowOrder = 'input'"
+          >As submitted</button>
+          <button
+            type="button"
+            class="order-segmented-btn"
+            :class="{ active: rowOrder === 'systematic' }"
+            :aria-pressed="rowOrder === 'systematic'"
+            @click="rowOrder = 'systematic'"
+          >By resource type</button>
+        </div>
       </div>
       <div class="search-wrapper">
         <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2064,7 +2134,7 @@ defineExpose({
                   @mouseenter="handleCellMouseEnter(row.id, col.key)"
                   @mouseleave="handleCellMouseLeave"
                 >
-                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': col.key === 'IDENTIFIER' && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || ''">
+                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': (col.key === 'IDENTIFIER' || col.key === 'SOURCE') && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || ''">
                     <!-- G3: inline shortcut dropdown for RESOURCE TYPE / NEW/REUSE -->
                     <select
                       v-if="!readonly && INLINE_SHORTCUT_COLUMNS.has(col.key)"
@@ -2095,6 +2165,16 @@ defineExpose({
                         @click.stop="setQuickIdentifierPending(row.id, col.field)"
                       >
                         Pending
+                      </button>
+                    </div>
+                    <!-- Quick "None" button for an empty SOURCE cell -->
+                    <div v-if="col.key === 'SOURCE' && !row[col.key] && !readonly" class="identifier-quick-actions">
+                      <button
+                        class="btn-quick-id"
+                        title="Set Source to 'None' (no URL to share)"
+                        @click.stop="setQuickSourceNone(row.id, col.field)"
+                      >
+                        None
                       </button>
                     </div>
                     <!-- Cell indicators container - shows all applicable icons -->
@@ -2615,6 +2695,53 @@ defineExpose({
   padding-bottom: 0;
   flex: 1;
   min-width: 0;
+}
+
+/* Row order switch (segmented control) */
+.order-segmented {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-shrink: 0;
+  margin-bottom: 1px;
+  margin-right: 0.5rem;
+}
+
+.order-segmented-caption {
+  font-size: 0.75rem;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.order-segmented-track {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #d1d5db;
+  border-radius: 9999px;
+  background: #f3f4f6;
+}
+
+.order-segmented-btn {
+  border: 0;
+  background: transparent;
+  padding: 0.2rem 0.7rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #6b7280;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.order-segmented-btn:hover:not(.active) {
+  color: #374151;
+}
+
+.order-segmented-btn.active {
+  background: #fff;
+  color: #1d4ed8;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 /* Search bar */

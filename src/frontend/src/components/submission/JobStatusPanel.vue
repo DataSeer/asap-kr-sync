@@ -15,12 +15,16 @@ import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import HighlightText from '@/components/submission/HighlightText.vue'
 import { useColumnResize } from '@/composables/useColumnResize'
+import { isCancelledJob } from '@/composables/useJobPoller'
 
 const emit = defineEmits(['edit-das'])
 const route = useRoute()
 
 const jobs = inject('submissionJobs', ref({}))
 const restartJobFn = inject('restartJob', null)
+// Cancel-processing action, provided by BackgroundProcesses (#15).
+const cancelProcessingFn = inject('cancelProcessing', null)
+const cancelling = ref(false)
 // Reactive counter incremented by parent (PDFView) to force-expand the panel
 // after meaningful events such as a fresh PDF upload.
 const expandJobsSignal = inject('expandJobsSignal', ref(0))
@@ -43,6 +47,23 @@ function toggleCollapsed() {
   localStorage.setItem('job-panel-collapsed', isCollapsed.value.toString())
 }
 
+async function handleCancelProcessing() {
+  if (!cancelProcessingFn || cancelling.value) return
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    const ok = window.confirm(
+      'Stop all background processing for this document? ' +
+      'Any running analysis will be cancelled — you can re-run it later.'
+    )
+    if (!ok) return
+  }
+  cancelling.value = true
+  try {
+    await cancelProcessingFn()
+  } finally {
+    cancelling.value = false
+  }
+}
+
 // Auto-expand when the parent signals an upload event. We don't persist this
 // to localStorage — it's a one-shot reveal, the user can collapse again.
 watch(expandJobsSignal, (val, prev) => {
@@ -58,10 +79,14 @@ const jobSummary = computed(() => {
   const complete = list.filter(j => j.status === 'complete').length
   const running = list.filter(j => j.status === 'queued' || j.status === 'processing').length
   const failed = list.filter(j => j.status === 'failed').length
+  const cancelled = list.filter(j => j.status === 'cancelled').length
   const pending = list.filter(j => j.status === 'pending_input').length
   const waiting = list.filter(j => j.status === 'waiting').length
   const total = list.length
-  return { complete, running, failed, pending, waiting, total }
+  // "done" for the X/total badge counts every resolved job — complete, failed
+  // or cancelled — so the badge reads full once nothing is left to run.
+  const done = complete + failed + cancelled
+  return { complete, running, failed, cancelled, pending, waiting, total, done }
 })
 
 // ── ETA computation ──────────────────────────────────────────────────
@@ -229,7 +254,7 @@ const jobList = computed(() => {
 function jobRemainingMs(job, which) {
   if (!job) return 0
   if (job.status === 'pending_input') return 0
-  if (job.status === 'complete' || job.status === 'failed') return 0
+  if (job.status === 'complete' || job.status === 'failed' || job.status === 'cancelled') return 0
 
   const budgetSec = which === 'typical' ? job.typicalSeconds : job.expireInSeconds
   if (!budgetSec) return 0
@@ -297,7 +322,7 @@ const anyPendingInput = computed(() => {
 const allDone = computed(() => {
   const list = Object.values(etaJobMap.value).filter(j => !!j?.status)
   if (list.length === 0) return false
-  return list.every(j => j.status === 'complete' || j.status === 'failed')
+  return list.every(j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled')
 })
 
 // Render the bar whenever there's anything to report — in-flight, waiting
@@ -345,7 +370,7 @@ function jobTypicalMs(job) {
   return (job?.typicalSeconds || 0) * 1000
 }
 function jobIsDone(job) {
-  return job?.status === 'complete' || job?.status === 'failed'
+  return job?.status === 'complete' || job?.status === 'failed' || job?.status === 'cancelled'
 }
 const etaProgress = computed(() => {
   const map = etaJobMap.value
@@ -428,6 +453,9 @@ function isSlowJob(job) {
 function getResultBadgeClass(job) {
   const slow = isSlowJob(job)
 
+  // A user-cancelled job is stored as 'failed' + sentinel — show it neutral,
+  // not as an error (#15).
+  if (isCancelledJob(job)) return { 'job-status-cancelled': true }
   if (job.status === 'waiting') return { 'job-status-waiting': true, 'job-status-slow': slow }
   if (job.status === 'pending_input') return { 'job-status-pending-input': true }
   if (job.status === 'queued' || job.status === 'processing') return { 'job-status-running': true, 'job-status-slow': slow }
@@ -452,6 +480,7 @@ function getResultBadgeClass(job) {
  */
 function getResultBadgeText(job) {
   if (!job.status) return 'Not started'
+  if (isCancelledJob(job)) return 'Cancelled'
   if (job.status === 'pending_input') return 'Needs input'
   if (job.status === 'waiting') return 'Waiting'
   if (job.status === 'queued') return 'Queued'
@@ -1265,7 +1294,8 @@ function canRestart(job) {
   // there's no source of data to retry against.
   if (getConfigPill(job) === 'off') return false
   return !restartingJobs.value.has(job.type) &&
-    (!job.status || job.status === 'complete' || job.status === 'failed' || job.status === 'pending_input')
+    (!job.status || job.status === 'complete' || job.status === 'failed' ||
+     job.status === 'pending_input' || job.status === 'cancelled')
 }
 
 async function handleRestart(type) {
@@ -1441,6 +1471,7 @@ function getStatusLabel(job) {
 
 function getStatusBadgeClass(job) {
   if (!job.status) return 'job-status-idle'
+  if (isCancelledJob(job)) return 'job-status-cancelled'
   if (job.status === 'complete') {
     return job.outcomeState === 'fail' ? 'job-status-failed' : 'job-status-complete'
   }
@@ -1547,8 +1578,11 @@ async function downloadMarkdownFile(fileId) {
           <span v-if="jobSummary.failed > 0" class="job-summary-badge job-status-failed">
             {{ jobSummary.failed }} failed
           </span>
+          <span v-if="jobSummary.cancelled > 0" class="job-summary-badge job-status-cancelled">
+            {{ jobSummary.cancelled }} cancelled
+          </span>
           <span class="job-summary-badge job-status-complete">
-            {{ jobSummary.complete }}/{{ jobSummary.total }} done
+            {{ jobSummary.done }}/{{ jobSummary.total }} done
           </span>
         </div>
       </div>
@@ -1572,6 +1606,18 @@ async function downloadMarkdownFile(fileId) {
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
           </svg>
           {{ isCollapsed ? 'More details' : 'Hide details' }}
+        </button>
+        <!-- Cancel switch (#15): abort a wrong document instead of waiting for
+             the whole pipeline to finish. Only while something is in flight. -->
+        <button
+          v-if="anyInFlight && cancelProcessingFn"
+          type="button"
+          class="job-status-cancel-btn"
+          :disabled="cancelling"
+          title="Stop all running background processes for this document"
+          @click="handleCancelProcessing"
+        >
+          {{ cancelling ? 'Cancelling…' : 'Cancel processing' }}
         </button>
       </div>
     </div>
@@ -2307,6 +2353,27 @@ async function downloadMarkdownFile(fileId) {
   color: #2563eb;
   cursor: pointer;
 }
+.job-status-cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: transparent;
+  border: 1px solid #fecaca;
+  border-radius: 0.375rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #b91c1c;
+  cursor: pointer;
+}
+.job-status-cancel-btn:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #f87171;
+}
+.job-status-cancel-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .job-status-eta-toggle:hover {
   color: #1d4ed8;
   text-decoration: underline;
@@ -2447,6 +2514,12 @@ async function downloadMarkdownFile(fileId) {
 .job-status-idle {
   background: #f3f4f6;
   color: #6b7280;
+}
+
+/* User-cancelled job (#15) — neutral slate, distinct from a red failure. */
+.job-status-cancelled {
+  background: #e5e7eb;
+  color: #4b5563;
 }
 
 .job-status-waiting {

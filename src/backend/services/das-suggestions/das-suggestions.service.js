@@ -286,7 +286,19 @@ async function processDasSuggestions(submissionId, jobLogger = null /*, opts */)
  * the auto pipeline, so there's no downstream to cascade-restart.
  */
 async function queueDasSuggestions(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+  const { SubmissionJob, Submission } = require('../../models');
+
+  // Nothing to check without a Data Availability Statement — this happens when
+  // the author never provided one or DAS extraction was cancelled. Don't queue
+  // the job; the caller reports "not queued" so the UI can explain why.
+  const submission = await Submission.findByPk(submissionId, {
+    attributes: ['dataAvailabilityStatement']
+  });
+  const das = (submission?.dataAvailabilityStatement || '').trim();
+  if (!das) {
+    logger.info('DAS suggestions skipped — no DAS provided', { submissionId, round });
+    return null;
+  }
 
   const job = await SubmissionJob.create({
     submissionId, jobType: JOB_TYPES.DAS_SUGGESTIONS, status: 'queued', round

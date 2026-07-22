@@ -22,6 +22,7 @@ import { ref, computed, provide, onMounted } from 'vue'
 import { useJobPoller } from '@/composables'
 import { useNotificationStore } from '@/stores/notification.store'
 import configService from '@/services/config.service'
+import jobService from '@/services/job.service'
 import pdfService from '@/services/pdf.service'
 import softwareService from '@/services/software.service'
 import orcidService from '@/services/orcid.service'
@@ -53,6 +54,22 @@ const {
 } = useJobPoller(computed(() => props.submissionId))
 
 provide('submissionJobs', jobs)
+
+// ── Cancel-processing action (#15) — provided to JobStatusPanel's button ──
+async function cancelProcessing() {
+  try {
+    const res = await jobService.cancelProcessing(props.submissionId)
+    if (res.cancelled > 0) {
+      notificationStore.info(res.message || 'Processing cancelled')
+    } else {
+      notificationStore.info('No running processes to cancel')
+    }
+    await refresh()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Failed to cancel processing')
+  }
+}
+provide('cancelProcessing', cancelProcessing)
 
 // ── Service status (which modules are enabled/disabled) ──────────────
 const serviceStatus = ref({})

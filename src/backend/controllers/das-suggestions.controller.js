@@ -33,6 +33,13 @@ async function getDasSuggestions(req, res, next) {
 async function regenerate(req, res, next) {
   try {
     const jobId = await dasSuggestionsService.queueDasSuggestions(req.params.id, resolveRound(req));
+    // No DAS to check → nothing queued (e.g. DAS extraction was cancelled).
+    if (!jobId) {
+      return res.status(200).json({
+        queued: false,
+        reason: 'No Data Availability Statement provided — nothing to check.'
+      });
+    }
     res.status(202).json({ queued: true, jobId });
   } catch (error) {
     next(error);

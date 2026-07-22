@@ -46,6 +46,13 @@ const batchFixSelectedValue = ref('')
 // Quick fixes carousel navigation
 const currentFixIndex = ref(0)
 
+// Collapse the Quick Fixes carousel (#12) to enlarge the KRT table, which
+// already surfaces every flagged cell. Persisted so the choice sticks.
+const showQuickFixes = ref(localStorage.getItem('krt-hide-quick-fixes') !== 'true')
+watch(showQuickFixes, (visible) => {
+  localStorage.setItem('krt-hide-quick-fixes', (!visible).toString())
+})
+
 // Map column keys to field names for API calls
 const columnKeyToField = {
   'RESOURCE TYPE': 'resource_type',
@@ -211,16 +218,35 @@ const helpItems = computed(() => [
 // Check if user can proceed to next step. Auto-init guarantees a KRT exists
 // (even if empty), so we gate only on validation errors.
 const hasKrt = computed(() => !!krtFile.value || krtRows.value.length > 0)
-const canProceed = computed(() => hasKrt.value && summary.value.totalErrors === 0)
+
+// #11 — RESOURCE TYPE errors always block (a correct type is required to
+// classify each item); any other error can be acknowledged and passed. Warnings
+// never block. So the Continue button is only hard-disabled by resource-type
+// errors; other errors route through the acknowledge modal in handleNext.
+const resourceTypeErrorCount = computed(() => {
+  const ve = krtStore.validationErrors
+  let count = 0
+  for (const rowId of Object.keys(ve)) {
+    count += (ve[rowId] || []).filter(e => e.severity === 'error' && e.column === 'RESOURCE TYPE').length
+  }
+  return count
+})
+const otherErrorCount = computed(() => Math.max(0, summary.value.totalErrors - resourceTypeErrorCount.value))
+
+const canProceed = computed(() => hasKrt.value && resourceTypeErrorCount.value === 0)
 const proceedBlockedReason = computed(() => {
   if (!hasKrt.value) {
     return 'Upload or create a Key Resources Table before continuing'
   }
-  if (summary.value.totalErrors > 0) {
-    return `Fix ${summary.value.totalErrors} error${summary.value.totalErrors > 1 ? 's' : ''} before continuing`
+  if (resourceTypeErrorCount.value > 0) {
+    const n = resourceTypeErrorCount.value
+    return `Fix ${n} resource type error${n > 1 ? 's' : ''} before continuing — each item needs a correct Resource Type to be classified`
   }
   return ''
 })
+
+// Acknowledge-and-continue modal (#11) for non-resource-type errors.
+const showAckModal = ref(false)
 
 /**
  * Wire job-completion side-effects into the shared BackgroundProcesses
@@ -385,23 +411,37 @@ async function handleValidate() {
 }
 
 async function handleNext() {
-  if (summary.value.totalErrors > 0) {
-    notificationStore.warning('Please fix all errors before proceeding')
-    return
-  }
   try {
-    // Run validation to refresh error count
+    // Refresh counts before deciding.
     await krtStore.validate(route.params.id)
 
-    // Check again after validation
-    if (summary.value.totalErrors > 0) {
-      notificationStore.warning('Validation found errors. Please fix them before proceeding.')
+    // Resource-type errors are a hard block.
+    if (resourceTypeErrorCount.value > 0) {
+      notificationStore.warning('Please fix all resource type errors before proceeding')
       return
     }
 
-    // Update status to step_pdf
-    await submissionStore.updateSubmission(route.params.id, { status: 'step_pdf' })
-    router.push({ name: 'submission-pdf', params: { id: route.params.id } })
+    // Any other remaining errors require an explicit acknowledgement.
+    if (otherErrorCount.value > 0) {
+      showAckModal.value = true
+      return
+    }
+
+    await proceedToNext()
+  } catch (error) {
+    notificationStore.error('Failed to continue')
+  }
+}
+
+async function proceedToNext() {
+  await submissionStore.updateSubmission(route.params.id, { status: 'step_pdf' })
+  router.push({ name: 'submission-pdf', params: { id: route.params.id } })
+}
+
+async function acknowledgeAndProceed() {
+  showAckModal.value = false
+  try {
+    await proceedToNext()
   } catch (error) {
     notificationStore.error('Failed to continue')
   }
@@ -615,13 +655,28 @@ function scrollToFirstWarning() {
 
     <!-- Quick Fixes Section - Carousel Navigation -->
     <div v-if="allQuickFixes.length > 0 || krtStore.validating" class="card">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-medium text-gray-700">Quick Fixes</h3>
-        <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">
-          {{ totalFixesCount }} remaining
-        </span>
+      <div class="flex items-center justify-between" :class="showQuickFixes ? 'mb-3' : 'mb-0'">
+        <div class="flex items-center gap-2">
+          <h3 class="text-sm font-medium text-gray-700">Quick Fixes</h3>
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+            {{ totalFixesCount }} remaining
+          </span>
+        </div>
+        <!-- Collapse control (#12): hide the one-by-one carousel to give the
+             table (which already highlights every flagged cell) more room. -->
+        <button
+          class="text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1"
+          :title="showQuickFixes ? 'Hide quick fixes to enlarge the table' : 'Show quick fixes'"
+          @click="showQuickFixes = !showQuickFixes"
+        >
+          <svg class="w-4 h-4 transition-transform" :class="{ '-rotate-90': !showQuickFixes }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+          {{ showQuickFixes ? 'Hide' : 'Show' }}
+        </button>
       </div>
 
+      <div v-show="showQuickFixes">
       <!-- Single item display -->
       <div v-if="currentFix" class="relative">
         <!-- Auto-fixable error -->
@@ -751,6 +806,41 @@ function scrollToFirstWarning() {
           </svg>
         </button>
       </div>
+      </div><!-- /v-show showQuickFixes -->
+    </div>
+
+    <!-- Acknowledge-and-continue modal (#11): non-resource-type errors remain,
+         user chooses to proceed anyway. Resource-type errors never reach here. -->
+    <div v-if="showAckModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved issues?</h3>
+        </div>
+        <div class="px-6 py-4">
+          <p class="text-sm text-gray-600">
+            This Key Resources Table still has
+            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>
+            (resource types are all valid). You can proceed, but these issues will remain flagged.
+          </p>
+          <p class="mt-2 text-xs text-gray-500">
+            We recommend fixing them, but you may continue if you know they are acceptable.
+          </p>
+        </div>
+        <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end space-x-3 rounded-b-lg">
+          <button
+            class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            @click="showAckModal = false"
+          >
+            Go back and fix
+          </button>
+          <button
+            class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700"
+            @click="acknowledgeAndProceed"
+          >
+            Continue anyway
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Batch Fix Modal -->
@@ -828,6 +918,7 @@ function scrollToFirstWarning() {
         :show-revalidate="true"
         :show-suggestions="false"
         :krt-file-url="krtFile?.s3Url"
+        :download-name="submission?.title || submission?.manuscriptId || ''"
         @revalidate="handleValidate"
       />
     </div>

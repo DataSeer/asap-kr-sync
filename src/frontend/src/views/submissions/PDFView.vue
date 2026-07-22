@@ -194,7 +194,7 @@ const allProcessesFinished = computed(() => {
     j.status === 'processing' || j.status === 'pending_input'
   )
   if (inFlight) return false
-  return list.every(j => j.status === 'complete' || j.status === 'failed')
+  return list.every(j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled')
 })
 
 // True as soon as at least one process has produced a final result. Used to
@@ -202,8 +202,16 @@ const allProcessesFinished = computed(() => {
 // slowest job to learn that nothing has been suggested yet.
 const anyProcessFinished = computed(() => {
   const list = Object.values(jobs.value || {})
-  return list.some(j => j.status === 'complete' || j.status === 'failed')
+  return list.some(j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled')
 })
+
+// True if any module in the current round was cancelled. Regenerating
+// suggestions is meaningless in this state (the Generated KRT the comparison
+// relies on may never have been produced), and it's the signal for offering a
+// "Re-run all" so the user can restart from a clean slate.
+const hasCancelledJobs = computed(() =>
+  Object.values(jobs.value || {}).some(j => j.status === 'cancelled')
+)
 
 // "Review suggestions" is satisfied when there are pending suggestions to
 // handle and they've all been handled — OR when all processes have finished
@@ -219,9 +227,26 @@ const reviewSuggestionsDone = computed(() => {
 // are no errors to fix. Also auto-satisfied when all processes finish with
 // zero errors (covers the no-suggestions path where the user never touched
 // anything in the KRT).
+// #11 (applies on the PDF step too): only RESOURCE TYPE errors block Continue —
+// each KRT item must be clearly identifiable for the PDF analysis. Every other
+// error (RESOURCE NAME / SOURCE / IDENTIFIER / NEW-REUSE) is non-blocking and is
+// either handled by the pipeline or acknowledged by the user.
+const resourceTypeErrorCount = computed(() => {
+  const ve = krtStore.validationErrors
+  let count = 0
+  for (const rowId of Object.keys(ve)) {
+    count += (ve[rowId] || []).filter(e => e.severity === 'error' && e.column === 'RESOURCE TYPE').length
+  }
+  return count
+})
+const otherErrorCount = computed(() => Math.max(0, krtStore.summary.totalErrors - resourceTypeErrorCount.value))
+
+// Acknowledge-and-continue modal for remaining non-resource-type errors.
+const showAckModal = ref(false)
+
 const validationDone = computed(() =>
   (analysisStatus.value === 'complete' || allProcessesFinished.value) &&
-  krtStore.summary.totalErrors === 0
+  resourceTypeErrorCount.value === 0
 )
 
 // Step help items
@@ -260,9 +285,9 @@ const nextBlockedReason = computed(() => {
     const n = pendingFindings.value.length
     return `Approve or reject ${n} remaining suggestion${n > 1 ? 's' : ''} before continuing`
   }
-  if (krtStore.summary.totalErrors > 0) {
-    const n = krtStore.summary.totalErrors
-    return `Fix ${n} error${n > 1 ? 's' : ''} in the KRT before continuing`
+  if (resourceTypeErrorCount.value > 0) {
+    const n = resourceTypeErrorCount.value
+    return `Fix ${n} resource type error${n > 1 ? 's' : ''} in the KRT before continuing — each item needs a correct Resource Type for the analysis`
   }
   return ''
 })
@@ -354,6 +379,10 @@ onUnmounted(() => {
 
 async function regenerateSuggestions() {
   if (regenerating.value) return
+  if (hasCancelledJobs.value) {
+    notificationStore.warning('Processing was cancelled — use "Re-run all" to restart before regenerating suggestions.')
+    return
+  }
   regenerating.value = true
   try {
     await suggestionService.regenerate(route.params.id)
@@ -624,22 +653,44 @@ async function handleReject(finding, reason = '') {
 }
 
 async function handleNext() {
-  if (krtStore.summary.totalErrors > 0) {
-    notificationStore.warning('Please fix all KRT errors before proceeding')
-    return
-  }
   try {
-    // Re-validate KRT to get fresh error count
+    // Re-validate KRT to get fresh counts
     await krtStore.validate(route.params.id)
 
-    if (krtStore.summary.totalErrors > 0) {
-      notificationStore.warning('Validation found errors. Please fix them before proceeding.')
+    // Only resource-type errors are a hard block.
+    if (resourceTypeErrorCount.value > 0) {
+      notificationStore.warning('Please fix all resource type errors before proceeding')
       return
     }
 
-    // Update status to step_review
-    await submissionStore.updateSubmission(route.params.id, { status: 'step_review' })
-    router.push({ name: 'submission-review', params: { id: route.params.id } })
+    // Any other remaining errors require an explicit acknowledgement.
+    if (otherErrorCount.value > 0) {
+      showAckModal.value = true
+      return
+    }
+
+    await proceedToReview()
+  } catch (error) {
+    notificationStore.error('Failed to continue')
+  }
+}
+
+async function proceedToReview() {
+  await submissionStore.updateSubmission(route.params.id, { status: 'step_review' })
+  // Await the navigation and surface a failure — vue-router resolves (not
+  // rejects) with a failure object when a guard aborts/redirects, so a silent
+  // no-op here would look like "Continue does nothing".
+  const failure = await router.push({ name: 'submission-review', params: { id: route.params.id } })
+  if (failure) {
+    notificationStore.error('Could not open the review step — please try again.')
+    console.error('Navigation to submission-review failed:', failure)
+  }
+}
+
+async function acknowledgeAndProceed() {
+  showAckModal.value = false
+  try {
+    await proceedToReview()
   } catch (error) {
     notificationStore.error('Failed to continue')
   }
@@ -1050,6 +1101,40 @@ function scrollToFindingRow(finding) {
 
 <template>
   <div class="space-y-6">
+    <!-- Acknowledge-and-continue modal (#11): non-resource-type errors remain,
+         user chooses to proceed anyway. Resource-type errors never reach here. -->
+    <div v-if="showAckModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved issues?</h3>
+        </div>
+        <div class="px-6 py-4">
+          <p class="text-sm text-gray-600">
+            The Key Resources Table still has
+            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>
+            (resource types are all valid). You can proceed, but these issues will remain flagged.
+          </p>
+          <p class="mt-2 text-xs text-gray-500">
+            We recommend fixing them, but you may continue if you know they are acceptable.
+          </p>
+        </div>
+        <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end space-x-3 rounded-b-lg">
+          <button
+            class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            @click="showAckModal = false"
+          >
+            Go back and fix
+          </button>
+          <button
+            class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700"
+            @click="acknowledgeAndProceed"
+          >
+            Continue anyway
+          </button>
+        </div>
+      </div>
+    </div>
+
     <SubmissionHeader
       ref="submissionHeaderRef"
       :submission="submission"
@@ -1113,12 +1198,16 @@ function scrollToFindingRow(finding) {
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-medium text-gray-700">AI Suggestions</h3>
           <div class="flex items-center space-x-2">
-            <!-- Regenerate suggestions (re-runs only the LM comparison job) -->
+            <!-- Regenerate suggestions (re-runs only the LM comparison job).
+                 Disabled once anything was cancelled — the Generated KRT it
+                 compares against may never have been produced; use Re-run all. -->
             <button
-              :disabled="regenerating"
+              :disabled="regenerating || hasCancelledJobs"
               class="btn-secondary text-xs inline-flex items-center"
-              :class="{ 'opacity-50 cursor-not-allowed': regenerating }"
-              title="Regenerate AI suggestions by re-comparing your KRT with the generated KRT (does not re-run detection)"
+              :class="{ 'opacity-50 cursor-not-allowed': regenerating || hasCancelledJobs }"
+              :title="hasCancelledJobs
+                ? 'Processing was cancelled — use \'Re-run all\' to restart before regenerating suggestions'
+                : 'Regenerate AI suggestions by re-comparing your KRT with the generated KRT (does not re-run detection)'"
               @click="regenerateSuggestions"
             >
               <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1126,9 +1215,11 @@ function scrollToFindingRow(finding) {
               </svg>
               {{ regenerating ? 'Regenerating…' : 'Regenerate suggestions' }}
             </button>
-            <!-- Re-run Analysis button (shown after complete/failed) -->
+            <!-- Re-run Analysis button — shown once the pipeline is in a terminal
+                 state (complete / failed) OR anything was cancelled, so the user
+                 can always restart from a clean slate. -->
             <button
-              v-if="analysisStatus === 'complete' || analysisStatus === 'failed'"
+              v-if="analysisStatus === 'complete' || analysisStatus === 'failed' || hasCancelledJobs"
               :disabled="analyzing"
               class="btn-secondary text-xs inline-flex items-center"
               :class="{ 'opacity-50 cursor-not-allowed': analyzing }"
@@ -1146,6 +1237,17 @@ function scrollToFindingRow(finding) {
               <span class="stats-total">{{ findings.length }}</span>
             </span>
           </div>
+        </div>
+
+        <!-- Disclaimer (#8): AI suggestions are candidates, not ground truth. -->
+        <div class="flex items-start gap-2 mb-3 px-3 py-2 rounded-md bg-blue-50 border border-blue-200 text-xs text-blue-800">
+          <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>
+            These are AI-generated suggestions of resources that <em>may</em> belong in your Key Resources Table.
+            They are potential additions and might not be part of your original KRT — please review each one before accepting.
+          </span>
         </div>
 
         <!-- Filter tabs -->
@@ -1177,6 +1279,11 @@ function scrollToFindingRow(finding) {
           </svg>
           <p class="text-sm font-medium text-gray-800">Analyzing the manuscript…</p>
           <p class="text-xs text-gray-500 mt-1">PDF analysis is running. Suggestions will appear here as they're generated.</p>
+          <!-- Progress bar (#9): an indeterminate bar so Step 2 shows analysis
+               progress in the suggestions header, matching the KRT-processing UX. -->
+          <div class="mx-auto mt-3 max-w-xs h-1.5 rounded-full bg-primary-100 overflow-hidden">
+            <div class="analysis-progress-bar h-full rounded-full bg-primary-500"></div>
+          </div>
         </div>
 
         <!-- No suggestions yet (at least one process completed; KRT may already cover everything) -->
@@ -1499,6 +1606,7 @@ function scrollToFindingRow(finding) {
           :submission-id="route.params.id"
           :show-revalidate="isAdmin"
           :krt-file-url="krtFile?.s3Url"
+          :download-name="submission?.title || submission?.manuscriptId || ''"
           :active-suggestion-id="currentSuggestion?.id || null"
           @revalidate="handleValidate"
           @suggestion-accepted="handleSuggestionAccepted"
@@ -1562,6 +1670,16 @@ function scrollToFindingRow(finding) {
 </template>
 
 <style scoped>
+/* Indeterminate progress bar for the manuscript-analysis loader (#9). */
+.analysis-progress-bar {
+  width: 40%;
+  animation: analysis-progress-slide 1.4s ease-in-out infinite;
+}
+@keyframes analysis-progress-slide {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+
 /* The sticky sub-header (.submission-sticky-bar, z:40) overlays the top of
    the scroll viewport — without scroll-margin-top, scrollIntoView({block:'start'})
    would put the AI Suggestions header directly under the sticky bar where
