@@ -929,7 +929,7 @@ function toggleSelectAllVisibleRows() {
 // requestBulkApprove, which shows a confirmation modal past this threshold
 // (shown to everyone — not role-gated). The "Approve with Resource Type…" flow
 // already has its own modal, so it calls bulkApproveSelected directly.
-const BULK_APPROVE_CONFIRM_THRESHOLD = 10
+const BULK_APPROVE_CONFIRM_THRESHOLD = 5
 const showBulkApproveConfirm = ref(false)
 
 function requestBulkApprove() {
