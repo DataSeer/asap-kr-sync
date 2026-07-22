@@ -194,7 +194,7 @@ const allProcessesFinished = computed(() => {
     j.status === 'processing' || j.status === 'pending_input'
   )
   if (inFlight) return false
-  return list.every(j => j.status === 'complete' || j.status === 'failed')
+  return list.every(j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled')
 })
 
 // True as soon as at least one process has produced a final result. Used to
@@ -202,7 +202,7 @@ const allProcessesFinished = computed(() => {
 // slowest job to learn that nothing has been suggested yet.
 const anyProcessFinished = computed(() => {
   const list = Object.values(jobs.value || {})
-  return list.some(j => j.status === 'complete' || j.status === 'failed')
+  return list.some(j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled')
 })
 
 // "Review suggestions" is satisfied when there are pending suggestions to

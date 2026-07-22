@@ -79,10 +79,14 @@ const jobSummary = computed(() => {
   const complete = list.filter(j => j.status === 'complete').length
   const running = list.filter(j => j.status === 'queued' || j.status === 'processing').length
   const failed = list.filter(j => j.status === 'failed').length
+  const cancelled = list.filter(j => j.status === 'cancelled').length
   const pending = list.filter(j => j.status === 'pending_input').length
   const waiting = list.filter(j => j.status === 'waiting').length
   const total = list.length
-  return { complete, running, failed, pending, waiting, total }
+  // "done" for the X/total badge counts every resolved job — complete, failed
+  // or cancelled — so the badge reads full once nothing is left to run.
+  const done = complete + failed + cancelled
+  return { complete, running, failed, cancelled, pending, waiting, total, done }
 })
 
 // ── ETA computation ──────────────────────────────────────────────────
@@ -250,7 +254,7 @@ const jobList = computed(() => {
 function jobRemainingMs(job, which) {
   if (!job) return 0
   if (job.status === 'pending_input') return 0
-  if (job.status === 'complete' || job.status === 'failed') return 0
+  if (job.status === 'complete' || job.status === 'failed' || job.status === 'cancelled') return 0
 
   const budgetSec = which === 'typical' ? job.typicalSeconds : job.expireInSeconds
   if (!budgetSec) return 0
@@ -318,7 +322,7 @@ const anyPendingInput = computed(() => {
 const allDone = computed(() => {
   const list = Object.values(etaJobMap.value).filter(j => !!j?.status)
   if (list.length === 0) return false
-  return list.every(j => j.status === 'complete' || j.status === 'failed')
+  return list.every(j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled')
 })
 
 // Render the bar whenever there's anything to report — in-flight, waiting
@@ -366,7 +370,7 @@ function jobTypicalMs(job) {
   return (job?.typicalSeconds || 0) * 1000
 }
 function jobIsDone(job) {
-  return job?.status === 'complete' || job?.status === 'failed'
+  return job?.status === 'complete' || job?.status === 'failed' || job?.status === 'cancelled'
 }
 const etaProgress = computed(() => {
   const map = etaJobMap.value
@@ -1573,8 +1577,11 @@ async function downloadMarkdownFile(fileId) {
           <span v-if="jobSummary.failed > 0" class="job-summary-badge job-status-failed">
             {{ jobSummary.failed }} failed
           </span>
+          <span v-if="jobSummary.cancelled > 0" class="job-summary-badge job-status-cancelled">
+            {{ jobSummary.cancelled }} cancelled
+          </span>
           <span class="job-summary-badge job-status-complete">
-            {{ jobSummary.complete }}/{{ jobSummary.total }} done
+            {{ jobSummary.done }}/{{ jobSummary.total }} done
           </span>
         </div>
       </div>

@@ -196,6 +196,17 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   const job = jobsByType.get(step.jobType);
   if (!job || job.status !== 'waiting') return false;
 
+  // Run-level cancel gate: once the user cancels, no further steps start — not
+  // from a finishing worker, the reconciler, or a status change. `jobsByType`
+  // already holds this round's jobs, so check it in-memory (no extra query).
+  const roundCancelled = Array.from(jobsByType.values()).some(j => j.status === 'cancelled');
+  if (roundCancelled) {
+    logger.debug('Pipeline step skipped: run was cancelled', {
+      submissionId, jobType: step.jobType, triggeredBy
+    });
+    return false;
+  }
+
   // Check if ALL dependencies are in a terminal state
   const allDependenciesDone = step.dependsOn.every(depType => {
     const depJob = jobsByType.get(depType);

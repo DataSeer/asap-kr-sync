@@ -14,8 +14,10 @@ const s3Service = require('../services/storage/s3.service');
 const { ROLES } = require('../config/constants');
 const logger = require('../utils/logger');
 
-// Statuses that represent an in-flight (cancellable) job.
-const ACTIVE_JOB_STATUSES = ['waiting', 'pending_input', 'queued', 'processing'];
+// Statuses of jobs that have NOT started yet — these can be truly cancelled
+// (they will never run). A 'processing' job is deliberately excluded: it is
+// already mid-flight and is left to finish and record its real status.
+const NOT_STARTED_STATUSES = ['waiting', 'pending_input', 'queued'];
 
 /**
  * Resolve the round number from ?round=N query param, or fall back to submission.currentRound.
@@ -165,12 +167,15 @@ async function cancelProcessing(req, res, next) {
     const round = resolveRound(req);
 
     const jobs = await SubmissionJob.getForSubmission(submission.id, round);
-    const active = jobs.filter(job => ACTIVE_JOB_STATUSES.includes(job.status));
+    const notStarted = jobs.filter(job => NOT_STARTED_STATUSES.includes(job.status));
+    const stillRunning = jobs.filter(job => job.status === 'processing');
 
     let cancelled = 0;
-    for (const job of active) {
-      // Stop the underlying queue job first so it doesn't keep running (or get
-      // picked up). Failure here is non-fatal — the job may already be gone.
+    for (const job of notStarted) {
+      // Remove the queued pg-boss job so no worker ever picks it up. Best-effort
+      // — a waiting/pending_input job has no pg-boss job yet, and a queued one
+      // may already be gone. Marking the row 'cancelled' is what actually stops
+      // it: the orchestrator refuses to (re-)enqueue a job in a cancelled run.
       const queueName = JOB_TYPE_TO_QUEUE[job.jobType];
       if (queueName && job.pgBossJobId) {
         try {
@@ -187,14 +192,23 @@ async function cancelProcessing(req, res, next) {
       cancelled += 1;
     }
 
+    // A module already running can't be interrupted — it finishes and records
+    // its real done/failed status. Marking siblings 'cancelled' above is enough
+    // to stop the pipeline from advancing past it and to skip its retries.
     logger.info('Processing cancelled by user', {
       submissionId: submission.id,
       round,
       cancelled,
+      stillRunning: stillRunning.length,
       userId: req.userId
     });
 
-    res.json({ message: `Cancelled ${cancelled} process${cancelled === 1 ? '' : 'es'}`, cancelled, round });
+    res.json({
+      message: `Cancelled ${cancelled} process${cancelled === 1 ? '' : 'es'}`,
+      cancelled,
+      stillRunning: stillRunning.length,
+      round
+    });
   } catch (error) {
     next(error);
   }

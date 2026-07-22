@@ -282,6 +282,28 @@ async function registerHandler(queueName, handler, options = {}) {
         retryCount: job.retrycount || 0,
         error: error.message
       });
+
+      // Retry-skip on user cancel: if the run was cancelled while this module
+      // was mid-flight, its failure is a consequence of the cancel. The handler
+      // has already recorded the job as failed (its real status); we must NOT
+      // rethrow, because a throw is what drives pg-boss to retry. Swallowing it
+      // makes the failure terminal immediately, with no retry.
+      try {
+        const submissionJobId = job.data?.submissionJobId;
+        if (submissionJobId) {
+          const { SubmissionJob } = require('../../models');
+          const sj = await SubmissionJob.findByPk(submissionJobId, { attributes: ['submissionId', 'round'] });
+          if (sj && await SubmissionJob.isRoundCancelled(sj.submissionId, sj.round)) {
+            logger.info('Job error suppressed after cancel — no retry', { queue: queueName, jobId: job.id });
+            return { cancelled: true };
+          }
+        }
+      } catch (checkErr) {
+        logger.warn('Cancel-check during job error failed; falling back to normal retry', {
+          queue: queueName, jobId: job.id, error: checkErr.message
+        });
+      }
+
       throw error;
     }
   });

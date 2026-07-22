@@ -6,13 +6,14 @@ const MAX_POLL_MS = 30000
 const BACKOFF_FACTOR = 1.5
 const MAX_POLL_DURATION_MS = 20 * 60 * 1000 // 20 minutes — stop polling after this
 
-// A user-cancelled job is recorded as 'failed' with this sentinel message (the
-// backend has no dedicated 'cancelled' status). Shared contract with
-// SubmissionJob.CANCELLED_MESSAGE — used to render "Cancelled" and to avoid
-// firing the "analysis failed" callbacks/toasts on a deliberate cancel.
-export const CANCELLED_MESSAGE = 'Cancelled by user'
+// 'cancelled' is a real terminal status (added via migration). Used to render
+// "Cancelled" and to treat cancelled jobs as finished, distinct from failures.
 export function isCancelledJob(job) {
-  return job?.status === 'failed' && job?.errorMessage === CANCELLED_MESSAGE
+  return job?.status === 'cancelled'
+}
+// Terminal statuses: a job that will not change further.
+export function isTerminalStatus(status) {
+  return status === 'complete' || status === 'failed' || status === 'cancelled'
 }
 
 /**
