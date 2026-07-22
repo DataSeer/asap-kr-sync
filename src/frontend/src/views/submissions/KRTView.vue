@@ -46,6 +46,13 @@ const batchFixSelectedValue = ref('')
 // Quick fixes carousel navigation
 const currentFixIndex = ref(0)
 
+// Collapse the Quick Fixes carousel (#12) to enlarge the KRT table, which
+// already surfaces every flagged cell. Persisted so the choice sticks.
+const showQuickFixes = ref(localStorage.getItem('krt-hide-quick-fixes') !== 'true')
+watch(showQuickFixes, (visible) => {
+  localStorage.setItem('krt-hide-quick-fixes', (!visible).toString())
+})
+
 // Map column keys to field names for API calls
 const columnKeyToField = {
   'RESOURCE TYPE': 'resource_type',
@@ -648,13 +655,28 @@ function scrollToFirstWarning() {
 
     <!-- Quick Fixes Section - Carousel Navigation -->
     <div v-if="allQuickFixes.length > 0 || krtStore.validating" class="card">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-medium text-gray-700">Quick Fixes</h3>
-        <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">
-          {{ totalFixesCount }} remaining
-        </span>
+      <div class="flex items-center justify-between" :class="showQuickFixes ? 'mb-3' : 'mb-0'">
+        <div class="flex items-center gap-2">
+          <h3 class="text-sm font-medium text-gray-700">Quick Fixes</h3>
+          <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+            {{ totalFixesCount }} remaining
+          </span>
+        </div>
+        <!-- Collapse control (#12): hide the one-by-one carousel to give the
+             table (which already highlights every flagged cell) more room. -->
+        <button
+          class="text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1"
+          :title="showQuickFixes ? 'Hide quick fixes to enlarge the table' : 'Show quick fixes'"
+          @click="showQuickFixes = !showQuickFixes"
+        >
+          <svg class="w-4 h-4 transition-transform" :class="{ '-rotate-90': !showQuickFixes }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+          {{ showQuickFixes ? 'Hide' : 'Show' }}
+        </button>
       </div>
 
+      <div v-show="showQuickFixes">
       <!-- Single item display -->
       <div v-if="currentFix" class="relative">
         <!-- Auto-fixable error -->
@@ -784,6 +806,7 @@ function scrollToFirstWarning() {
           </svg>
         </button>
       </div>
+      </div><!-- /v-show showQuickFixes -->
     </div>
 
     <!-- Acknowledge-and-continue modal (#11): non-resource-type errors remain,
