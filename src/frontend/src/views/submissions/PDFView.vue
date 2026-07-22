@@ -1148,6 +1148,17 @@ function scrollToFindingRow(finding) {
           </div>
         </div>
 
+        <!-- Disclaimer (#8): AI suggestions are candidates, not ground truth. -->
+        <div class="flex items-start gap-2 mb-3 px-3 py-2 rounded-md bg-blue-50 border border-blue-200 text-xs text-blue-800">
+          <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>
+            These are AI-generated suggestions of resources that <em>may</em> belong in your Key Resources Table.
+            They are potential additions and might not be part of your original KRT — please review each one before accepting.
+          </span>
+        </div>
+
         <!-- Filter tabs -->
         <div class="suggestion-tabs mb-3">
           <button
@@ -1177,6 +1188,11 @@ function scrollToFindingRow(finding) {
           </svg>
           <p class="text-sm font-medium text-gray-800">Analyzing the manuscript…</p>
           <p class="text-xs text-gray-500 mt-1">PDF analysis is running. Suggestions will appear here as they're generated.</p>
+          <!-- Progress bar (#9): an indeterminate bar so Step 2 shows analysis
+               progress in the suggestions header, matching the KRT-processing UX. -->
+          <div class="mx-auto mt-3 max-w-xs h-1.5 rounded-full bg-primary-100 overflow-hidden">
+            <div class="analysis-progress-bar h-full rounded-full bg-primary-500"></div>
+          </div>
         </div>
 
         <!-- No suggestions yet (at least one process completed; KRT may already cover everything) -->
@@ -1563,6 +1579,16 @@ function scrollToFindingRow(finding) {
 </template>
 
 <style scoped>
+/* Indeterminate progress bar for the manuscript-analysis loader (#9). */
+.analysis-progress-bar {
+  width: 40%;
+  animation: analysis-progress-slide 1.4s ease-in-out infinite;
+}
+@keyframes analysis-progress-slide {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+
 /* The sticky sub-header (.submission-sticky-bar, z:40) overlays the top of
    the scroll viewport — without scroll-margin-top, scrollIntoView({block:'start'})
    would put the AI Suggestions header directly under the sticky bar where

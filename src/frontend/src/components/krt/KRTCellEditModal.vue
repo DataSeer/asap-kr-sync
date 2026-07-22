@@ -60,6 +60,21 @@ const isEditingNewReuse = computed(() => props.cell?.column === 'NEW/REUSE')
 const isEditingIdentifier = computed(() => props.cell?.column === 'IDENTIFIER')
 const isEditingSource = computed(() => props.cell?.column === 'SOURCE')
 
+// Catalog/RRID-identified resource types (antibodies, chemicals, strains, cell
+// lines, …) are identified by an RRID or vendor catalog number, not a DOI/URL.
+// When editing an identifier for one of these, we say so explicitly (#3) so
+// users don't think a DOI/URL is required.
+const CATALOG_IDENTIFIED_TYPE_HINTS = [
+  'antibody', 'chemical', 'peptide', 'recombinant protein',
+  'bacterial strain', 'strain', 'cell line', 'viral vector',
+  'organism', 'recombinant dna', 'commercial assay', 'kit'
+]
+const isCatalogIdentifiedType = computed(() => {
+  const type = (props.cell?.resourceType || '').toLowerCase()
+  if (!type) return false
+  return CATALOG_IDENTIFIED_TYPE_HINTS.some(t => type.includes(t))
+})
+
 // The "Identifier not recognized by the app" remark: an advisory warning raised
 // when the value doesn't match any format the app knows. The (?) explains what
 // the app recognizes so the user can decide to keep the value as-is.
@@ -293,6 +308,17 @@ function confirmReject() {
             </svg>
             <p class="identifier-instructions-text">
               Provide a DOI, RRID, accession number, catalog number, or other persistent identifier. Otherwise, enter <button class="inline-quick-fix" @click="setNoIdentifier">No identifier exists</button> or <button class="inline-quick-fix" @click="setIdentifierPending">Identifier pending</button>.
+            </p>
+          </div>
+
+          <!-- Antibody/catalog hint (#3): these types are identified by an RRID
+               or vendor catalog number — a DOI/URL is not required. -->
+          <div v-if="isEditingIdentifier && isCatalogIdentifiedType" class="identifier-instructions">
+            <svg class="identifier-instructions-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <p class="identifier-instructions-text">
+              For this resource type, an <strong>RRID</strong> or vendor <strong>catalog number</strong> is expected — a DOI or URL is <strong>not required</strong>.
             </p>
           </div>
 

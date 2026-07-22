@@ -622,7 +622,8 @@ function startEdit(row, column, rowIndex) {
     displayIndex: rowIndex + 1,
     column: column.key,
     columnLabel: column.label,
-    field: column.field
+    field: column.field,
+    resourceType: row['RESOURCE TYPE'] || ''
   }
 
   // Get current value
@@ -932,6 +933,17 @@ function toggleSelectAllVisibleRows() {
 
 async function bulkApproveSelected(overrideType = null) {
   if (selectedSuggestionIds.value.size === 0) return
+  // Guardrail (#7): approving a large batch in one click is easy to do without
+  // reviewing each item, so ask for explicit confirmation past a threshold.
+  const BULK_APPROVE_CONFIRM_THRESHOLD = 10
+  if (selectedSuggestionIds.value.size >= BULK_APPROVE_CONFIRM_THRESHOLD &&
+      typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    const ok = window.confirm(
+      `You're about to accept ${selectedSuggestionIds.value.size} suggestions at once. ` +
+      'Please make sure you have reviewed them. Continue?'
+    )
+    if (!ok) return
+  }
   bulkSubmitting.value = true
   try {
     // Build per-item payloads. Each suggestion can carry two kinds of edits:
