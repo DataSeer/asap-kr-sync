@@ -924,19 +924,30 @@ function toggleSelectAllVisibleRows() {
   }
 }
 
+// Guardrail (#7): approving a large batch in one click is easy to do without
+// reviewing each item. The direct "Approve selected" button routes through
+// requestBulkApprove, which shows a confirmation modal past this threshold
+// (shown to everyone — not role-gated). The "Approve with Resource Type…" flow
+// already has its own modal, so it calls bulkApproveSelected directly.
+const BULK_APPROVE_CONFIRM_THRESHOLD = 10
+const showBulkApproveConfirm = ref(false)
+
+function requestBulkApprove() {
+  if (selectedSuggestionIds.value.size === 0) return
+  if (selectedSuggestionIds.value.size >= BULK_APPROVE_CONFIRM_THRESHOLD) {
+    showBulkApproveConfirm.value = true
+    return
+  }
+  bulkApproveSelected()
+}
+
+function confirmBulkApprove() {
+  showBulkApproveConfirm.value = false
+  bulkApproveSelected()
+}
+
 async function bulkApproveSelected(overrideType = null) {
   if (selectedSuggestionIds.value.size === 0) return
-  // Guardrail (#7): approving a large batch in one click is easy to do without
-  // reviewing each item, so ask for explicit confirmation past a threshold.
-  const BULK_APPROVE_CONFIRM_THRESHOLD = 10
-  if (selectedSuggestionIds.value.size >= BULK_APPROVE_CONFIRM_THRESHOLD &&
-      typeof window !== 'undefined' && typeof window.confirm === 'function') {
-    const ok = window.confirm(
-      `You're about to accept ${selectedSuggestionIds.value.size} suggestions at once. ` +
-      'Please make sure you have reviewed them. Continue?'
-    )
-    if (!ok) return
-  }
   bulkSubmitting.value = true
   try {
     // Build per-item payloads. Each suggestion can carry two kinds of edits:
@@ -1766,7 +1777,7 @@ defineExpose({
       </span>
       <div class="bulk-action-buttons">
         <template v-if="selectedSuggestionIds.size > 0">
-          <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="bulkApproveSelected()">
+          <button class="btn-bulk btn-bulk-primary" :disabled="bulkSubmitting" @click="requestBulkApprove()">
             <span v-if="bulkSubmitting">Working…</span>
             <span v-else>Approve selected</span>
           </button>
@@ -1779,6 +1790,37 @@ defineExpose({
           <button class="btn-bulk btn-bulk-danger" :disabled="bulkSubmitting" @click="deleteSelected">Delete selected</button>
         </template>
         <button class="btn-bulk btn-bulk-ghost" @click="clearBulkSelection">Clear</button>
+      </div>
+    </div>
+
+    <!-- Bulk-approve confirmation (#7 guardrail): shown to everyone when
+         approving a large batch (>= threshold) so suggestions aren't accepted
+         en masse without review. -->
+    <div v-if="showBulkApproveConfirm" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h3 class="text-lg font-medium text-gray-900">Accept {{ selectedSuggestionIds.size }} suggestions?</h3>
+        </div>
+        <div class="px-6 py-4">
+          <p class="text-sm text-gray-600">
+            You're about to accept <span class="font-medium">{{ selectedSuggestionIds.size }}</span> suggestions at once.
+            Please make sure you've reviewed them — accepted suggestions are added to your Key Resources Table.
+          </p>
+        </div>
+        <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end space-x-3 rounded-b-lg">
+          <button
+            class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            @click="showBulkApproveConfirm = false"
+          >
+            Cancel
+          </button>
+          <button
+            class="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700"
+            @click="confirmBulkApprove"
+          >
+            Accept all
+          </button>
+        </div>
       </div>
     </div>
 
