@@ -1499,6 +1499,7 @@ function scrollToFindingRow(finding) {
           :submission-id="route.params.id"
           :show-revalidate="isAdmin"
           :krt-file-url="krtFile?.s3Url"
+          :download-name="submission?.title || submission?.manuscriptId || ''"
           :active-suggestion-id="currentSuggestion?.id || null"
           @revalidate="handleValidate"
           @suggestion-accepted="handleSuggestionAccepted"

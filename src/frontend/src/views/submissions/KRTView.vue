@@ -828,6 +828,7 @@ function scrollToFirstWarning() {
         :show-revalidate="true"
         :show-suggestions="false"
         :krt-file-url="krtFile?.s3Url"
+        :download-name="submission?.title || submission?.manuscriptId || ''"
         @revalidate="handleValidate"
       />
     </div>

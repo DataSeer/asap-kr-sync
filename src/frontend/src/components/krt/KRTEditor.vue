@@ -26,6 +26,14 @@ const props = defineProps({
     type: String,
     default: ''
   },
+  /**
+   * Base name for downloaded files (#19). When set (e.g. the submission Title),
+   * downloads are named after it instead of the opaque submission id.
+   */
+  downloadName: {
+    type: String,
+    default: ''
+  },
   /** External tab control (for syncing with parent) */
   modelValue: {
     type: String,
@@ -313,6 +321,20 @@ const sortedFilteredRows = computed(() => {
   })
 })
 
+// Every row in the whole KRT, in the same order the "All" tab shows them. Used
+// by the summary-bar error/warning locators so they cycle across all tabs.
+const allRowsInDisplayOrder = computed(() => [...krtRows.value].sort(defaultSort))
+
+// Tab hover-tooltip positioning. The leftmost tab (the first in tabGroups,
+// i.e. "All") is left-anchored so a wide tooltip doesn't spill past the card's
+// left edge and get clipped (#20); every other tab stays centered.
+function tabTooltipStyle(tabKey) {
+  const isFirst = tabGroups[0]?.key === tabKey
+  return isFirst
+    ? { left: '0', transform: 'none', width: 'auto', minWidth: '160px' }
+    : { left: '50%', transform: 'translateX(-50%)', width: 'auto', minWidth: '160px' }
+}
+
 // Toggle column sort: asc -> desc -> reset
 function toggleSort(columnKey) {
   if (sortColumn.value === columnKey) {
@@ -339,40 +361,23 @@ function switchTab(tabKey) {
 
 // Display summary: shows tab-specific or global counts
 const displaySummary = computed(() => {
-  if (activeTab.value === 'all') {
-    return {
-      rows: krtRows.value.length,
-      errors: summary.value.totalErrors,
-      warnings: summary.value.totalWarnings,
-      suggestions: summary.value.totalSuggestions,
-      tabLabel: null
-    }
-  }
-
-  const tabRows = filteredRows.value
-  const tabRowIds = new Set(tabRows.map(r => r.id))
-
-  let errors = 0
-  let warnings = 0
-  for (const rowId of tabRowIds) {
-    const rowErrors = krtStore.validationErrors[rowId] || []
-    errors += rowErrors.filter(e => e.severity === 'error').length
-    warnings += rowErrors.filter(e => e.severity === 'warning').length
-  }
-
-  let suggestions = 0
-  for (const row of tabRows) {
-    suggestions += getRowSuggestions(row.id).length
-  }
-  suggestions += filteredAddRowSuggestions.value.length
-
-  const tabLabel = tabGroups.find(t => t.key === activeTab.value)?.label || null
+  // Error / warning / suggestion counts are always whole-KRT totals so the
+  // summary bar reads from the same source as the post-validate toast and the
+  // Continue gate (both global). Previously these were re-scoped to the active
+  // tab, which is why a "valid with 4 warnings" toast could sit above a header
+  // showing "0 warnings" on a tab with none (#17). Per-tab counts stay visible
+  // as the coloured dots/badges on each tab. `rows` stays tab-scoped because it
+  // describes the rows actually shown in the table below.
+  const tabRows = activeTab.value === 'all' ? krtRows.value : filteredRows.value
+  const tabLabel = activeTab.value === 'all'
+    ? null
+    : (tabGroups.find(t => t.key === activeTab.value)?.label || null)
 
   return {
     rows: tabRows.length,
-    errors,
-    warnings,
-    suggestions,
+    errors: summary.value.totalErrors,
+    warnings: summary.value.totalWarnings,
+    suggestions: summary.value.totalSuggestions,
     tabLabel
   }
 })
@@ -673,6 +678,17 @@ async function setQuickSourceNone(rowId, field) {
   }
 }
 
+// Build a safe download base name (#19): prefer the provided Title, fall back
+// to the submission id. Strips characters that don't belong in a file name.
+function downloadBaseName() {
+  const raw = (props.downloadName || '').trim()
+  if (raw) {
+    const safe = raw.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 100)
+    if (safe) return safe
+  }
+  return `krt_${props.submissionId}`
+}
+
 async function downloadKRT(format) {
   showDownloadMenu.value = false
   downloading.value = true
@@ -687,7 +703,7 @@ async function downloadKRT(format) {
     a.href = url
     a.download = krtStore.getExportFilename
       ? krtStore.getExportFilename(format)
-      : `krt_${props.submissionId}.${format}`
+      : `${downloadBaseName()}.${format}`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -1405,7 +1421,10 @@ watch(() => krtStore.validationErrors, () => {
 // Scroll to next error in visible/display order (cycles through all errors)
 function scrollToFirstError() {
   const validationErrors = krtStore.validationErrors
-  const errorRows = sortedFilteredRows.value.filter(row => {
+  // Cycle through every error in the whole KRT (in display order), not just the
+  // active tab — the summary-bar count is global, and scrollToRow reveals rows
+  // on other tabs as needed.
+  const errorRows = allRowsInDisplayOrder.value.filter(row => {
     const errors = validationErrors[row.id] || []
     return errors.some(e => e.severity === 'error')
   })
@@ -1423,7 +1442,7 @@ function scrollToFirstError() {
 // Scroll to next warning in visible/display order (cycles through all warnings)
 function scrollToFirstWarning() {
   const validationErrors = krtStore.validationErrors
-  const warningRows = sortedFilteredRows.value.filter(row => {
+  const warningRows = allRowsInDisplayOrder.value.filter(row => {
     const errors = validationErrors[row.id] || []
     return errors.some(e => e.severity === 'warning')
   })
@@ -1654,8 +1673,10 @@ defineExpose({
             class="tab-error-dot"
             title="This tab contains errors"
           ></span>
-          <!-- Custom tooltip -->
-          <div v-if="activeTabTooltip === tab.key" class="tooltip below" style="left: 50%; transform: translateX(-50%); width: auto; min-width: 160px;">
+          <!-- Custom tooltip. Centered by default, but left-anchored on the
+               first (leftmost) tab so its left side isn't clipped off the card
+               edge (#20). -->
+          <div v-if="activeTabTooltip === tab.key" class="tooltip below" :style="tabTooltipStyle(tab.key)">
             <div class="tooltip-content" style="white-space: nowrap;">
               <div class="tooltip-item">
                 <span class="tooltip-dot" style="background: #6b7280;"></span>
