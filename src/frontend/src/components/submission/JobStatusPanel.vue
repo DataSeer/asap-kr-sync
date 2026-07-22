@@ -15,12 +15,16 @@ import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import HighlightText from '@/components/submission/HighlightText.vue'
 import { useColumnResize } from '@/composables/useColumnResize'
+import { isCancelledJob } from '@/composables/useJobPoller'
 
 const emit = defineEmits(['edit-das'])
 const route = useRoute()
 
 const jobs = inject('submissionJobs', ref({}))
 const restartJobFn = inject('restartJob', null)
+// Cancel-processing action, provided by BackgroundProcesses (#15).
+const cancelProcessingFn = inject('cancelProcessing', null)
+const cancelling = ref(false)
 // Reactive counter incremented by parent (PDFView) to force-expand the panel
 // after meaningful events such as a fresh PDF upload.
 const expandJobsSignal = inject('expandJobsSignal', ref(0))
@@ -41,6 +45,23 @@ const isCollapsed = ref(localStorage.getItem('job-panel-collapsed') === 'true')
 function toggleCollapsed() {
   isCollapsed.value = !isCollapsed.value
   localStorage.setItem('job-panel-collapsed', isCollapsed.value.toString())
+}
+
+async function handleCancelProcessing() {
+  if (!cancelProcessingFn || cancelling.value) return
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    const ok = window.confirm(
+      'Stop all background processing for this document? ' +
+      'Any running analysis will be cancelled — you can re-run it later.'
+    )
+    if (!ok) return
+  }
+  cancelling.value = true
+  try {
+    await cancelProcessingFn()
+  } finally {
+    cancelling.value = false
+  }
 }
 
 // Auto-expand when the parent signals an upload event. We don't persist this
@@ -428,6 +449,9 @@ function isSlowJob(job) {
 function getResultBadgeClass(job) {
   const slow = isSlowJob(job)
 
+  // A user-cancelled job is stored as 'failed' + sentinel — show it neutral,
+  // not as an error (#15).
+  if (isCancelledJob(job)) return { 'job-status-cancelled': true }
   if (job.status === 'waiting') return { 'job-status-waiting': true, 'job-status-slow': slow }
   if (job.status === 'pending_input') return { 'job-status-pending-input': true }
   if (job.status === 'queued' || job.status === 'processing') return { 'job-status-running': true, 'job-status-slow': slow }
@@ -452,6 +476,7 @@ function getResultBadgeClass(job) {
  */
 function getResultBadgeText(job) {
   if (!job.status) return 'Not started'
+  if (isCancelledJob(job)) return 'Cancelled'
   if (job.status === 'pending_input') return 'Needs input'
   if (job.status === 'waiting') return 'Waiting'
   if (job.status === 'queued') return 'Queued'
@@ -1441,6 +1466,7 @@ function getStatusLabel(job) {
 
 function getStatusBadgeClass(job) {
   if (!job.status) return 'job-status-idle'
+  if (isCancelledJob(job)) return 'job-status-cancelled'
   if (job.status === 'complete') {
     return job.outcomeState === 'fail' ? 'job-status-failed' : 'job-status-complete'
   }
@@ -1572,6 +1598,18 @@ async function downloadMarkdownFile(fileId) {
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
           </svg>
           {{ isCollapsed ? 'More details' : 'Hide details' }}
+        </button>
+        <!-- Cancel switch (#15): abort a wrong document instead of waiting for
+             the whole pipeline to finish. Only while something is in flight. -->
+        <button
+          v-if="anyInFlight && cancelProcessingFn"
+          type="button"
+          class="job-status-cancel-btn"
+          :disabled="cancelling"
+          title="Stop all running background processes for this document"
+          @click="handleCancelProcessing"
+        >
+          {{ cancelling ? 'Cancelling…' : 'Cancel processing' }}
         </button>
       </div>
     </div>
@@ -2307,6 +2345,27 @@ async function downloadMarkdownFile(fileId) {
   color: #2563eb;
   cursor: pointer;
 }
+.job-status-cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: transparent;
+  border: 1px solid #fecaca;
+  border-radius: 0.375rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #b91c1c;
+  cursor: pointer;
+}
+.job-status-cancel-btn:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #f87171;
+}
+.job-status-cancel-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .job-status-eta-toggle:hover {
   color: #1d4ed8;
   text-decoration: underline;
@@ -2447,6 +2506,12 @@ async function downloadMarkdownFile(fileId) {
 .job-status-idle {
   background: #f3f4f6;
   color: #6b7280;
+}
+
+/* User-cancelled job (#15) — neutral slate, distinct from a red failure. */
+.job-status-cancelled {
+  background: #e5e7eb;
+  color: #4b5563;
 }
 
 .job-status-waiting {

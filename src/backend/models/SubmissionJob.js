@@ -137,6 +137,20 @@ module.exports = (sequelize) => {
   };
 
   /**
+   * Mark a job as cancelled by the user. There is no dedicated 'cancelled' enum
+   * value (the status type is a fixed Postgres ENUM), so we record it as a
+   * terminal 'failed' with a stable sentinel message. The frontend recognizes
+   * SubmissionJob.CANCELLED_MESSAGE to render it as "Cancelled" and to suppress
+   * the failure toast.
+   */
+  SubmissionJob.prototype.markCancelled = async function() {
+    this.status = 'failed';
+    this.errorMessage = SubmissionJob.CANCELLED_MESSAGE;
+    this.completedAt = new Date();
+    return this.save();
+  };
+
+  /**
    * Get latest job per job type for a submission + round
    * @param {string} submissionId
    * @param {number} round
@@ -182,6 +196,10 @@ module.exports = (sequelize) => {
       order: [['createdAt', 'DESC']]
     });
   };
+
+  // Stable sentinel written to errorMessage when a job is cancelled by the user
+  // (see markCancelled). Shared contract with the frontend, which matches on it.
+  SubmissionJob.CANCELLED_MESSAGE = 'Cancelled by user';
 
   return SubmissionJob;
 };

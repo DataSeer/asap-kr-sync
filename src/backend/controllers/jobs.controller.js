@@ -7,10 +7,15 @@
  */
 
 const { SubmissionJob } = require('../models');
-const { JOB_CONFIG, JOB_TYPE_TO_QUEUE } = require('../services/queue/job-queue.service');
+const jobQueue = require('../services/queue/job-queue.service');
+const { JOB_CONFIG, JOB_TYPE_TO_QUEUE } = jobQueue;
 const orchestrator = require('../services/queue/orchestrator.service');
 const s3Service = require('../services/storage/s3.service');
 const { ROLES } = require('../config/constants');
+const logger = require('../utils/logger');
+
+// Statuses that represent an in-flight (cancellable) job.
+const ACTIVE_JOB_STATUSES = ['waiting', 'pending_input', 'queued', 'processing'];
 
 /**
  * Resolve the round number from ?round=N query param, or fall back to submission.currentRound.
@@ -147,6 +152,55 @@ async function advanceJob(req, res, next) {
 }
 
 /**
+ * Cancel all in-flight background processing for a submission.
+ * POST /api/submissions/:id/processes/cancel?round=N
+ *
+ * Best-effort: cancels the underlying queue job (so a queued/running job stops)
+ * and marks each active SubmissionJob as cancelled. Lets a user abort a wrong
+ * document instead of waiting for the whole pipeline to finish (#15).
+ */
+async function cancelProcessing(req, res, next) {
+  try {
+    const submission = req.submission;
+    const round = resolveRound(req);
+
+    const jobs = await SubmissionJob.getForSubmission(submission.id, round);
+    const active = jobs.filter(job => ACTIVE_JOB_STATUSES.includes(job.status));
+
+    let cancelled = 0;
+    for (const job of active) {
+      // Stop the underlying queue job first so it doesn't keep running (or get
+      // picked up). Failure here is non-fatal — the job may already be gone.
+      const queueName = JOB_TYPE_TO_QUEUE[job.jobType];
+      if (queueName && job.pgBossJobId) {
+        try {
+          await jobQueue.cancelJob(queueName, job.pgBossJobId);
+        } catch (cancelErr) {
+          logger.warn('Cancel: queue cancel failed (continuing to mark job)', {
+            submissionId: submission.id,
+            jobType: job.jobType,
+            error: cancelErr.message
+          });
+        }
+      }
+      await job.markCancelled();
+      cancelled += 1;
+    }
+
+    logger.info('Processing cancelled by user', {
+      submissionId: submission.id,
+      round,
+      cancelled,
+      userId: req.userId
+    });
+
+    res.json({ message: `Cancelled ${cancelled} process${cancelled === 1 ? '' : 'es'}`, cancelled, round });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get a presigned download URL for a job's raw response file
  * GET /api/submissions/:id/jobs/:jobType/responses/:responseName?round=N
  */
@@ -177,5 +231,6 @@ module.exports = {
   getJobs,
   runProcesses,
   advanceJob,
+  cancelProcessing,
   getJobResponse
 };

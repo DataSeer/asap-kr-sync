@@ -31,6 +31,18 @@ export default {
   },
 
   /**
+   * Cancel all in-flight background processing for a submission (#15).
+   * @param {string} submissionId
+   * @param {number} [round]
+   * @returns {Promise<Object>} - { message, cancelled, round }
+   */
+  async cancelProcessing(submissionId, round = null) {
+    const params = round ? { round } : {}
+    const response = await api.post(`/submissions/${submissionId}/processes/cancel`, {}, { params })
+    return response.data
+  },
+
+  /**
    * Manually advance a pending_input job to queued
    * @param {string} submissionId
    * @param {string} jobType
