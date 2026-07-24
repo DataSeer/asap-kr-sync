@@ -32,7 +32,7 @@
     "exceljs": "^4.4.0",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
-    "fast-xml-parser": "^5.7.2",
+    "fast-xml-parser": "^5.10.1",
     "helmet": "^7.1.0",
     "joi": "^17.11.0",
     "jsonwebtoken": "^9.0.2",
