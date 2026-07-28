@@ -118,28 +118,37 @@ persisted), uploads the PDF so the background pipeline begins, and navigates to 
 - Validation runs automatically after upload and after edits
 - A Quick Fixes carousel shows auto-fixable errors with "Fix All" buttons
 - Batch Fix modal lets users select a correct value for multiple rows with the same error (e.g., invalid resource types); resource-type errors carry a machine-actionable `suggestedValue` that powers one-click bulk fixes (e.g. "Set 4 → Software/code")
+- See [KRT Validation Rules](./krt-validation-rules.md) for the full list of what triggers an error / warning / silent pass on each column
 
 ### Proceeding to Step 2
 
 ```mermaid
 flowchart TD
     A{KRT exists?} -->|No| B[Blocked: Upload or create a KRT]
-    A -->|Yes| C{Validation errors = 0?}
-    C -->|No| D[Blocked: Fix X errors]
-    C -->|Yes| E[Re-validate]
-    E --> F[Status → step_pdf]
-    F --> G[Navigate to PDFView]
+    A -->|Yes| C{RESOURCE TYPE errors = 0?}
+    C -->|No| D[Blocked: Fix N resource type errors]
+    C -->|Yes| E{Other errors remain?}
+    E -->|Yes| F[Acknowledge-and-continue modal]
+    E -->|No| G[Re-validate]
+    F --> G
+    G --> H[Status → step_pdf]
+    H --> I[Navigate to PDFView]
 ```
 
-**Conditions (all must be true):**
+**Conditions:**
 - A KRT has been uploaded or created (even if empty)
-- Total validation errors = 0
+- **RESOURCE TYPE errors = 0** — each item needs a correct Resource Type to be classified for the analysis
+
+Only RESOURCE TYPE errors hard-block Continue. Any other remaining errors (Resource Name, Source, Identifier,
+New/Reuse) are non-blocking: the user confirms via an acknowledge-and-continue modal and proceeds; they are handled
+downstream. Warnings never block. See [KRT Validation Rules](./krt-validation-rules.md#how-errors-gate-the-workflow).
 
 **Blocked reasons:**
 - "Upload or create a KRT before continuing" — no KRT exists
-- "Fix X error(s) before continuing" — validation errors remain
+- "Fix N resource type error(s) before continuing — each item needs a correct Resource Type to be classified"
 
-**On Continue:** Re-validates, updates status to `step_pdf`, navigates to PDFView.
+**On Continue:** Re-validates; RESOURCE TYPE errors block, other errors prompt the acknowledge modal; on confirm,
+updates status to `step_pdf` and navigates to PDFView.
 
 ---
 
@@ -309,12 +318,19 @@ flowchart TD
 
 **Conditions (all must be true):**
 - A PDF has been uploaded
-- No background jobs are in `pending_input` status (all must be complete, failed, or not started)
+- No background jobs are in `pending_input` status (all must be complete, failed, cancelled, or not started)
+- All AI suggestions have been approved or rejected
+- **RESOURCE TYPE errors = 0** (same gate as Step 1)
 
 **Blocked reasons:**
 - "Upload a PDF file first" — no PDF uploaded
 - "Wait for analysis to complete" — jobs still running
 - "Availability Statement required" — DAS extraction pending user input
+- "Approve or reject N remaining suggestion(s) before continuing"
+- "Fix N resource type error(s) in the KRT before continuing"
+
+As on Step 1, only RESOURCE TYPE errors hard-block; other KRT errors are non-blocking via the acknowledge-and-continue
+modal, and warnings never block. See [KRT Validation Rules](./krt-validation-rules.md#how-errors-gate-the-workflow).
 
 **On Continue:** Updates status to `step_review`, navigates to ReviewView.
 
