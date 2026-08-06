@@ -113,6 +113,13 @@ persisted), uploads the PDF so the background pipeline begins, and navigates to 
 - **Merge rows:** select ≥2 rows → modal to pick each column's value → one merged row replaces them (`POST /api/submissions/:id/krt/merge`)
 - **Resizable columns:** drag a header edge to resize; width is remembered per browser
 - **QC / Optional flags** (boolean) are shown and editable **only** for Administrator and DS Annotator roles; regular users (author, asap_pm) never see them
+- **Filter tabs** (one per resource-type group, with counts), a **row-order** control (*As submitted* / *By resource type*), **column sorting**, and a **search box**
+- **Quick actions on empty cells** — set IDENTIFIER to `No identifier exists` / `Identifier pending`, or SOURCE to `None`, in one click
+- **Download KRT** from the editor toolbar
+- ⚠️ **One automatic write:** when IDENTIFIER is empty and ADDITIONAL INFORMATION holds a value of a kind allowed for that resource type, the validator **silently moves it into IDENTIFIER** and saves the row
+
+> **Full editor reference:** [KRT Editor](./krt-editor.md) documents every feature of the table
+> component. The same component serves Steps 1 and 2; Step 3 uses a separate review-only table.
 
 **Fix validation errors:**
 - Validation runs automatically after upload and after edits
@@ -172,6 +179,29 @@ updates status to `step_pdf` and navigates to PDFView.
 
 **Load demo PDF:**
 - A dropdown offers 6 pre-built demo PDFs with pre-matched detection data
+
+**Review AI suggestions:**
+
+Once the pipeline finishes, the KRT Editor on this step shows the suggestions produced by the
+`suggestion_generation` job. Three kinds appear:
+
+- **Cell update** — a proposed new value for one cell
+- **Add row** — a proposed new resource, rendered as a row with accept / reject controls
+- **Delete row** — an existing row the AI proposes removing
+
+Each suggestion can carry badges: **In KRT** (already present — nothing to add), **Update** (matches
+an existing row, so accepting updates it in place), **Verify** (tier `needs_verification` — the
+detection has no identifier, so confirm before adding), plus the **contributing detection modules**
+that found it.
+
+Actions: accept, **edit the proposed values before accepting** (only changed fields are sent), or
+reject **with an optional free-text reason**. Bulk controls allow select-all-visible then *Approve
+selected* (confirmation prompt at **5 or more**), *Approve with Resource Type…*, *Reject selected*,
+*Edit column…*, *Merge…* (≥2 rows) and *Delete selected*.
+
+**Every suggestion must be accepted or rejected before Continue is enabled.**
+
+> **Full editor reference:** [KRT Editor](./krt-editor.md).
 
 ### Background Job Pipeline
 
@@ -361,9 +391,12 @@ modal, and warnings never block. See [KRT Validation Rules](./krt-validation-rul
 
 **Filter tabs:** All, Datasets, Software/code, Protocols, Key Lab Materials — each showing a resource count.
 
-**Show Changes toggle:**
+**"Show changes" toggle:**
 - ON: Shows color-coded changes with source tags
 - OFF: Shows final KRT data only
+
+**Clickable legend:** the `AI` / `Val` / `User` legend entries toggle the visibility of changes from
+that source, so a reviewer can isolate (for example) only the AI-driven changes.
 
 **Change history** (click any changed cell):
 - Original value (struck-through, red)
@@ -378,6 +411,10 @@ modal, and warnings never block. See [KRT Validation Rules](./krt-validation-rul
 - Click cells to inspect change history
 - **Continue** to approve the KRT
 - **Go Back** to return to Step 2
+
+> Step 3 renders its **own review-only table**, not the `KRTEditor` used on Steps 1 and 2 — the
+> search, quick actions, bulk operations and suggestion controls are not available here. See
+> [KRT Editor §5](./krt-editor.md#5-change-visualisation-step-3-reviewview).
 
 ### Proceeding to Step 4
 

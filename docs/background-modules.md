@@ -140,6 +140,43 @@ re-keyed by `dedupKey` and carries a `detectedBy` provenance array (the cross-de
 > [database.md → `krt_data`](./database.md#krt_data); the suggestion shapes are in
 > [api-reference.md → Suggestions](./api-reference.md#suggestions).
 
+### 2.1b Automatic transformations applied by the pipeline
+
+Everything below happens **without asking the user**. None of it is available in the KRT Editor —
+the editor validates and reports, but (with one exception noted at the end) never rewrites a cell on
+its own. Pipeline output reaches the author only as a *suggestion* they must accept or reject.
+
+| # | Transformation | Where | What it does |
+|---|---|---|---|
+| 1 | **SOURCE inference from identifier** | `merge-detections` → `identifier-normalize` | When **no** contributor supplied a SOURCE, names it from the identifier. Allowlist-only (repositories, accession namespaces, protocol venues); ambiguous → left blank. Never overwrites a supplied source. |
+| 2 | **Cross-detector merge** | `merge-detections` | Two items merge on same resource type **and** new/reuse **and** overlapping identifier tokens or matching names. Alias unions enable 3-way transitive merges. |
+| 3 | **Nameless-row folding** | `merge-detections` | A row with an empty RESOURCE NAME skips the new/reuse gate and matches against *every* identifier in the other row's field. Stops identifier-only contributors becoming blank duplicate suggestions. |
+| 4 | **In-detector dedup** | `dedupe-krt-items` | Collapses duplicates inside one detector's output before consolidation, using the same match engine. |
+| 5 | **Enrichment-list fill** | `identifier-detection` | A curated-list hit contributes that entry's SOURCE / IDENTIFIER / NEW-REUSE wholesale. |
+| 6 | **Published-protocol venue sweep** | `published-protocol-scanner` | List-free; recognizes protocol-publishing venues from the identifier shape alone and emits `Protocol` rows for ones nobody curated. |
+| 7 | **In-silico protocol filter** | `protocols.service.js` | Silently **drops** detected "protocols" that are computational/in-silico methods — ASAP wants those as Software/code. |
+| 8 | **References cutoff** | `known-identifier-scanner` | Truncates the scanned text at the first `References` / `Bibliography` heading so cited-paper DOIs don't become false positives. Toggleable; see the caveat in §3.7. |
+| 9 | **Resource-type canonicalisation** | `identifier-normalize` | `Code/Software` → `Software/code` at emission, so detector rows don't trip the validator. |
+| 10 | **Software version stripping** | `identifier-normalize` | `Fiji 2.9.0`, `ImageJ (RRID:…)`, `MATLAB R2019b` → bare stem, for name matching only. Never applied to datasets/materials, where trailing numbers can be meaningful. |
+| 11 | **Identifier normalisation** | `identifier-normalize` | Strips scheme/prefix noise (`https://`, `doi.org/`, `DOI:`, `RRID:`, `Cat#`) and type-tags tokens so a DOI can't collide with a catalog number. |
+| 12 | **ADDITIONAL INFORMATION concatenation** | `merge-detections` | Merges each contributor's context, de-duplicated line by line. |
+| 13 | **Confidence / relevance scoring** | every detector | `HIGH/MEDIUM/LOW` → 0.95 / 0.7 / 0.4, used for tie-breaking and field ownership. |
+| 14 | **Author-KRT seeding** | `author-krt-seeds` | The author's own rows are injected into the Protocols / Materials / Datasets prompts as authoritative base records so the LM enriches rather than re-derives. |
+| 15 | **Suggestion tiering** | `kr-comparison` | Marks identifier-less finds `needs_verification` so they surface with a **Verify** badge instead of being dropped. |
+
+**Never inferred, on purpose:**
+
+- **NEW/REUSE from an identifier.** A venue DOI proves *where* a protocol was published, never who
+  authored it — authors routinely deposit their own **new** protocol alongside the paper.
+- **A SOURCE that is merely plausible.** The allowlist returns `null` rather than guess; ambiguous
+  publisher prefixes (`10.1371/journal.*`, `10.1007/*`, `10.2144/*`) are deliberately excluded.
+- **Anything written directly into the author's KRT.** Suggestions require explicit acceptance; there
+  is no auto-accept anywhere in the codebase.
+
+> **The one exception on the editor side:** the validator moves a value from ADDITIONAL INFORMATION
+> into an empty IDENTIFIER when it is of a kind allowed for that resource type, and saves the row.
+> See [KRT Validation Rules](./krt-validation-rules.md) and [KRT Editor §3](./krt-editor.md).
+
 ### 2.2 Fail-soft: the On / Demo / Off + Done / Fail model
 
 Every detector wraps its work in **`runWithDemoFallback`** (`services/demo-fallback.service.js`), driven by two

@@ -236,7 +236,15 @@ A handful of admin views (notably `UsersView.vue`) call the `api` instance direc
   - **Inline shortcut dropdowns** — quick-pick dropdowns for Resource Type and New/Reuse directly in each row.
   - **One-click bulk fixes** — resource-type validation errors carrying a `suggestedValue` are grouped into bulk fixes (e.g. "Set 4 → Software/code").
   - **Resizable columns** — drag a header edge to resize; the width is remembered per browser.
+  - **Filter tabs / row order / search / column sorting** — tabs filter by resource-type group; a separate segmented control switches row order between *As submitted* and *By resource type*.
+  - **Quick actions on empty cells** — one-click `No identifier exists` / `Identifier pending` for IDENTIFIER, `None` for SOURCE.
+  - **Suggestion review** — accept, reject-with-reason, or **edit a suggested row's values before accepting** (only changed fields are sent). Badges: `In KRT`, `Update`, `Verify` (tier `needs_verification`), plus contributing detection modules from `mergedFrom`.
+  - **Bulk operations** — select-all-visible, then Approve selected (confirm modal at ≥5), Approve with Resource Type…, Reject selected, Edit column…, Merge…, Delete selected.
+  - **Jump-to navigation** — the error / warning / suggestion counters scroll to the first occurrence.
 - **KRTCellEditModal** — modal for editing cells with longer content
+
+> `KRTEditor` serves **Steps 1 and 2** only. Step 3 (`ReviewView`) renders its own review-only diff
+> table. Full feature reference: [KRT Editor](./krt-editor.md).
 
 ### Submission Workflow
 
