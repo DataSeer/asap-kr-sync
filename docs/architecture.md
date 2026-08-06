@@ -41,6 +41,7 @@ asap-kr-sync/
 │   │   │   ├── auth/              # Authentication (JWT, Auth0, refresh-token rotation)
 │   │   │   ├── datasets/          # Datasets detection (langextract + Google Gemini)
 │   │   │   ├── identifier-detection/  # Curated-list identifier scanner (DOIs, RRIDs, accessions, catalogs)
+│   │   │   │                          # + list-free published-protocol venue sweep
 │   │   │   ├── krt/               # KRT parsing, validation, identifiers, author-KRT seeding (shared by software/protocols/materials)
 │   │   │   ├── materials/         # Materials detection (Google Gemini)
 │   │   │   ├── orcid/             # ORCID extraction (GROBID, OpenAlex, ORCID API)

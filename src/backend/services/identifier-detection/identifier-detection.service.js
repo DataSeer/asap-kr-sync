@@ -4,9 +4,17 @@
  * Scans the post-conversion markdown for known identifiers (RRID/DOI/PID/URL/
  * catalog) using an in-memory index built from EnrichmentListEntry rows.
  *
+ * Two independent sweeps feed one output:
+ *   a. enrichment-list sweep — matches identifiers that were curated into an
+ *      EnrichmentListEntry. High precision, but blind to anything uncurated.
+ *   b. published-protocol sweep — recognizes protocol-publishing VENUES from
+ *      the identifier shape alone (no list involved), recovering protocol
+ *      DOIs/URLs nobody curated. See published-protocol-scanner.service.js.
+ *
  * Four-step pipeline (matches every other detection module):
  *   1. detectIdentifiers(md, index)         → raw scanner matches
  *   2. buildKrtItemsIdentifier(matches, md) → canonical KrtEntry[]
+ *      buildKrtItemsPublishedProtocol(…)    → canonical KrtEntry[] (sweep b)
  *   3. enrichIdentifiers(items)             → pass-through (the index entries
  *                                              already carry every field the
  *                                              enrichment list could fill in)
@@ -27,6 +35,7 @@ const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const knownIdentifierIndex = require('./known-identifier-index.service');
 const knownIdentifierScanner = require('./known-identifier-scanner.service');
+const publishedProtocolScanner = require('./published-protocol-scanner.service');
 const identifierConfig = require('../../config/identifier-detection-api');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
@@ -181,6 +190,44 @@ function buildKrtItemsIdentifier(matches, markdownText) {
 }
 
 /**
+ * Step 2b: published-protocol scanner matches → canonical KrtEntry[].
+ *
+ * These rows come from the venue catalog, not the enrichment list, so they
+ * carry an identifier and a SOURCE but no name and no new/reuse — see the
+ * module header of published-protocol-scanner.service.js for why neither is
+ * inferable from an identifier.
+ *
+ * Pure function.
+ *
+ * @param {object[]} matches - from publishedProtocolScanner.scanPublishedProtocols
+ * @param {string} markdownText
+ * @returns {object[]} KrtEntry[]
+ */
+function buildKrtItemsPublishedProtocol(matches, markdownText) {
+  if (!Array.isArray(matches)) return [];
+  return matches.map(m => ({
+    resourceType: 'Protocol',
+    resourceName: '',
+    identifier: m.identifier,
+    source: m.source,
+    newReuse: '',
+    origin: 'protocol-venue-scan',
+    // Allowlist-only venue match — as high-precision as an enrichment-list hit.
+    confidence: RELEVANCE_TO_CONFIDENCE.HIGH,
+    additionalInformation: '',
+    detectorMeta: {
+      relevance: 'HIGH',
+      matchedTypes: [m.type],
+      position: m.position,
+      catalogContext: null,
+      category: 'protocols',
+      venue: m.source,
+      context: snippetAt(markdownText, m.position, 80)
+    }
+  }));
+}
+
+/**
  * Step 3: enrichment pass-through.
  *
  * Identifier-scan's index is built directly from EnrichmentListEntry rows, so
@@ -265,9 +312,26 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     }))
   });
 
+  // 3b. Published-protocol sweep. List-free: recognizes protocol-publishing
+  // venues from the identifier shape alone, so it recovers protocol DOIs/URLs
+  // that were never curated into an enrichment list. Shares the references
+  // cutoff so both sweeps see exactly the same body text.
+  const protocolMatches = publishedProtocolScanner.scanPublishedProtocols(markdownText, {
+    cutoff: referencesCutoff
+  }).matches;
+  jobLogger?.log('protocol_venue_scan_done', 'Published-protocol scan complete', {
+    matchCount: protocolMatches.length,
+    venues: [...new Set(protocolMatches.map(p => p.source))]
+  });
+  await jobLogger?.saveRawResponse('published-protocol-scan', {
+    matchCount: protocolMatches.length,
+    matches: protocolMatches
+  });
+
   const krtItems = buildKrtItemsIdentifier(matches, markdownText);
   const { enriched } = enrichIdentifiers(krtItems);
-  const items = dedupeKrtItems(enriched, 'identifier-scan');
+  const protocolItems = buildKrtItemsPublishedProtocol(protocolMatches, markdownText);
+  const items = dedupeKrtItems([...enriched, ...protocolItems], 'identifier-scan');
 
   // Stats by relevance + category for the worker's job-summary panel.
   // Read from detectorMeta (canonical shape).
@@ -288,6 +352,7 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
       highRelevanceCount: byRelevance.HIGH,
       byRelevance,
       byCategory,
+      publishedProtocolCount: protocolMatches.length,
       indexStats: {
         byIdentifier: index.byIdentifier.size,
         byCatalog: index.byCatalog.size,
@@ -330,5 +395,6 @@ module.exports = {
   // Pipeline steps (pure, exported for benchmarks/tests)
   detectIdentifiers,
   buildKrtItemsIdentifier,
+  buildKrtItemsPublishedProtocol,
   enrichIdentifiers
 };

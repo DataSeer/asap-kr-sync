@@ -120,7 +120,43 @@ function toResource(item, source) {
  */
 function shouldMerge(primary, candidate) {
   if (normalizeResourceTypeKey(primary.resourceType) !== normalizeResourceTypeKey(candidate.resourceType)) return false;
-  if (primary.newReuse !== candidate.newReuse) return false;
+
+  // A NAMELESS row carries no independent identity — it is only ever "whatever
+  // resource this identifier points at". So when either side has no name, skip
+  // the new/reuse gate and let the identifier decide.
+  //
+  // This exists for identifier-only detectors that genuinely cannot know
+  // new/reuse — chiefly the published-protocol venue scan, where the DOI proves
+  // WHERE a protocol was published but not who authored it. Without this, such
+  // a row fails the strict newReuse equality below and surfaces as a second,
+  // blank-named "add" suggestion beside the real one.
+  //
+  // Two NAMED rows still never merge across different new/reuse values (that
+  // invariant is covered by its own test). And relaxing the gate here can only
+  // ever yield an IDENTIFIER-based merge: the name-set branch at the bottom
+  // requires a name on both sides, which is false by construction.
+  const eitherNameless = !normalizeName(candidate.resourceName) || primary._names.size === 0;
+  if (!eitherNameless && primary.newReuse !== candidate.newReuse) return false;
+
+  // Nameless rows additionally match against EVERY identifier in the primary's
+  // field, not just the first one extractIdentifierTokens indexed. Author and
+  // detector rows routinely carry a semicolon-joined DOI list ("Protein
+  // expression and purification" in the ASAP demo corpus carries twelve
+  // protocols.io DOIs); without this, an identifier-only row for the 2nd..12th
+  // DOI cannot see that it already belongs to that row and surfaces as a blank
+  // duplicate suggestion.
+  //
+  // Restricted to the nameless case ON PURPOSE. Applying it to named rows would
+  // over-merge genuinely distinct resources that happen to cite a DOI in
+  // common — in the same manuscript "Flow cytometry" and "Rapalog-induced
+  // chemical dimerization" share one protocols.io DOI and must stay two rows.
+  if (eitherNameless) {
+    const candIdParts = String(candidate.identifier ?? '').split(/[;,\s]+/);
+    for (const part of candIdParts) {
+      const partNorm = normalizeRawValue(part);
+      if (partNorm && primary._idParts.has(partNorm)) return true;
+    }
+  }
   // Identifier-token intersection
   const candTokens = extractIdentifierTokens(candidate.identifier);
   for (const tok of candTokens) {
@@ -141,6 +177,12 @@ function shouldMerge(primary, candidate) {
 function seedAliases(primary) {
   primary._idTokens = new Set();
   primary._idValues = new Set(); // opaque normalized identifier values
+  // EVERY identifier in the field, not just the first. extractIdentifierTokens
+  // returns only the first match per type, so a semicolon-joined field like
+  // "doi.org/A ; doi.org/B ; doi.org/C" indexes A and hides B and C. Consulted
+  // ONLY by the nameless rule in shouldMerge — see the comment there for why it
+  // must not widen matching for named rows.
+  primary._idParts = new Set();
   primary._names = new Set();
   absorbAliases(primary, primary);
 }
@@ -152,6 +194,10 @@ function absorbAliases(primary, other) {
   for (const tok of extractIdentifierTokens(other.identifier)) primary._idTokens.add(tok);
   const idNorm = normalizeRawValue(other.identifier);
   if (idNorm) primary._idValues.add(idNorm);
+  for (const part of String(other.identifier ?? '').split(/[;,\s]+/)) {
+    const partNorm = normalizeRawValue(part);
+    if (partNorm) primary._idParts.add(partNorm);
+  }
   const name = normalizeName(other.resourceName);
   if (name) primary._names.add(name);
 }
@@ -243,6 +289,11 @@ function mergeDetections(contributions) {
           // even when this candidate didn't win the field race.
           if (candidate.confidence > primary.confidence) primary.confidence = candidate.confidence;
         }
+        // Blank-fill new/reuse. Under the strict gate above this is a no-op
+        // (rows only merged when the values were already equal); it matters
+        // only for the nameless path, where an identifier-only primary must
+        // pick up the new/reuse its named contributor knows. Never overwrites.
+        if (!primary.newReuse && candidate.newReuse) primary.newReuse = candidate.newReuse;
         primary.additionalInformation = mergeAdditionalInfo(
           primary.additionalInformation, candidate.additionalInformation
         );

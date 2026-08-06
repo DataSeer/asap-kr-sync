@@ -295,9 +295,20 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 ### 3.7 `identifier_detection` — Known-identifier scan *(local; enabled by default)*
 
 - **Purpose:** recover known RRIDs, DOIs, accessions and catalog numbers the NER/LLM detectors miss.
-- **Engine:** a **pure local scanner** — no external API, no LLM, no prompt. It builds an in-memory index from the
-  curated `enrichment_list_entries` and scans the Markdown in a single pass. Enabled by default
+- **Engine:** a **pure local scanner** — no external API, no LLM, no prompt. Enabled by default
   (`demoEnabled: false` — no demo path); set `IDENTIFIER_DETECTION_ENABLED=false` to turn the module Off.
+  Two independent sweeps over the same Markdown feed one output:
+  - **(a) enrichment-list sweep** — builds an in-memory index from the curated `enrichment_list_entries` and
+    matches identifiers present in it. High precision, but blind to anything nobody curated.
+  - **(b) published-protocol sweep** — *list-free*. Recognizes protocol-publishing **venues** (protocols.io,
+    Nature Protocols, JoVE, Bio-protocol, STAR Protocols, MethodsX, Current Protocols, Cold Spring Harbor
+    Protocols, Protocol Exchange) from the identifier shape alone, so it recovers protocol DOIs/URLs that were
+    never curated. Emits `Protocol` rows carrying an IDENTIFIER and a SOURCE but **no RESOURCE NAME and no
+    NEW/REUSE** — neither is inferable from an identifier, and a venue DOI says *where* a protocol was published,
+    not who authored it (authors routinely deposit their own **new** protocol alongside the paper). The
+    consolidator folds these into the named row for the same identifier; see the nameless-row rule in
+    `merge-detections.service.js`. Allowlist-only: ambiguous prefixes (`10.1371/journal.*`, `10.1007/*`,
+    `10.2144/*`, legacy `10.21203/rs.*`) are deliberately **not** matched.
 - **Depends on:** `markdown_convert`. **Output:** **cross-category** `KrtEntry[]` (it can emit software / materials
   / datasets / protocols items in one pass) for PDF Analysis to consolidate.
 - **References cutoff:** by default the scanner **truncates the document at the first markdown heading matching
@@ -312,7 +323,10 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Config:** `IDENTIFIER_DETECTION_ENABLED` (default `true`), `IDENTIFIER_DETECTION_CUT_AT_REFERENCES`
   (default `true`) — see `config/identifier-detection-api.js`. Index caches after first load.
 - **Key files:** `services/identifier-detection/identifier-detection.service.js`,
-  `known-identifier-index.service.js`, `known-identifier-scanner.service.js`.
+  `known-identifier-index.service.js`, `known-identifier-scanner.service.js`,
+  `published-protocol-scanner.service.js`. The protocol-venue catalog itself lives in
+  `SOURCE_INFERENCE_RULES` (`services/pdf-analysis/identifier-normalize.service.js`, rows tagged
+  `venue: 'protocol'`) — one table, also used to auto-fill SOURCE during consolidation.
 
 ### 3.8 `orcid_extraction` — Authors & ORCIDs
 
@@ -344,8 +358,14 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   newReuse) with identifier-token / opaque-id / normalized-name matching; a per-resource union of aliases enables
   3-way transitive merges; `SOURCE_PRECEDENCE` lets the targeted detectors win display fields over the broad
   identifier scan. When a merged resource has **no** source, it **infers one from the identifier** (allowlist-only
-  — GitHub/Zenodo/GEO/etc.; a DOI/accession outranks a URL; ambiguous → blank). The Generated KRT is persisted to
-  `pdf_analysis.result.data.items` and uploaded to S3 as `generated-krt.json`.
+  — GitHub/Zenodo/GEO/protocol venues/etc.; a DOI/accession outranks a URL; ambiguous → blank). The Generated KRT
+  is persisted to `pdf_analysis.result.data.items` and uploaded to S3 as `generated-krt.json`.
+  - **Nameless rows** (empty RESOURCE NAME) are exempt from the newReuse equality check and match against *every*
+    identifier in the other row's field, not just the first one `extractIdentifierTokens` indexed. Identifier-only
+    contributors — the published-protocol venue sweep — cannot know a name or new/reuse, and author/detector rows
+    routinely carry semicolon-joined DOI lists; without this they surfaced as blank duplicate suggestions. The
+    relaxation is restricted to nameless rows on purpose: two **named** protocols citing one DOI in common must
+    stay two rows.
 - **Output:** consumed by the **Suggestion Generation** module (§3.10) to produce AI Suggestions.
 - **Config:** `PDF_ANALYSIS_ENABLED` (in-process gate); the LM step: `KRT_GENERATION_ENABLED`,
   `KRT_GENERATION_GEMINI_API_KEY/_MODEL`, `KRT_GENERATION_API_TIMEOUT`. **Prompt:** `data/prompts/pdf-analysis-krt.txt`.
