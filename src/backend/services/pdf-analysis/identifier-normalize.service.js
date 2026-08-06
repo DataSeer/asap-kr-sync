@@ -257,6 +257,24 @@ function canonicalResourceType(value) {
  *     by the conflict rule below (a string matching two distinct sources →
  *     null), so we never invent a worse answer than the user would.
  *
+ * Published-protocol venues follow the same rule. Three known protocol
+ * publishers are deliberately ABSENT from the table because their prefix is
+ * shared with non-protocol content, and the identifier alone cannot tell the
+ * two apart:
+ *   - PLOS Lab Protocols — 10.1371/journal.* is every PLOS article; only the
+ *     "lab protocol" article subtype qualifies.
+ *   - Springer Protocols — 10.1007/* and 10.1385/* are every Springer book
+ *     chapter; separating them needs the Springer Protocols ISBN allowlist.
+ *   - BioTechniques — 10.2144/* is all BioTechniques articles; needs
+ *     article-type metadata.
+ * Also absent: legacy Protocol Exchange DOIs under 10.21203/rs.[23]*, which is
+ * the generic ResearchSquare preprint range.
+ *
+ * A published-protocol identifier says WHERE a protocol was published — it says
+ * nothing about NEW/REUSE, and must not be used to infer it. Authors routinely
+ * deposit their own new protocol (protocols.io, Protocol Exchange) alongside
+ * the paper it belongs to, which is the "new" case.
+ *
  * Adding a source is a one-line entry here. `pattern` MUST NOT use the `g`
  * flag (we call .test() repeatedly and `g` is stateful).
  *
@@ -279,13 +297,37 @@ const SOURCE_INFERENCE_RULES = [
   { source: 'Dryad',             kind: 'url', pattern: /\bdatadryad\.org\//i },
   { source: 'figshare',          kind: 'url', pattern: /\bfigshare\.com\//i },
   { source: 'Open Science Framework', kind: 'url', pattern: /\bosf\.io\//i },
-  { source: 'protocols.io',      kind: 'url', pattern: /\bprotocols\.io\//i },
 
   // --- General-purpose data repositories (DOI prefix) ---
   { source: 'Zenodo',            kind: 'id',  pattern: /10\.5281\/zenodo\./i },
   { source: 'Dryad',             kind: 'id',  pattern: /10\.5061\/dryad\./i },
   { source: 'figshare',          kind: 'id',  pattern: /10\.6084\/m9\.figshare\./i },
-  { source: 'protocols.io',      kind: 'id',  pattern: /10\.17504\/protocols\.io\./i },
+
+  // --- Protocol publishing venues (URL host) ---
+  // See the "published protocol" block below the table for what is deliberately
+  // absent here and why.
+  { source: 'protocols.io',      venue: 'protocol', kind: 'url', pattern: /\bprotocols\.io\//i },
+  { source: 'JoVE',              venue: 'protocol', kind: 'url', pattern: /\bjove\.com\/(?:v|t|video|protocol)\//i },
+  { source: 'STAR Protocols',    venue: 'protocol', kind: 'url', pattern: /\b(?:cell|star-protocols)\.com\/star-protocols\//i },
+  { source: 'Bio-protocol',      venue: 'protocol', kind: 'url', pattern: /\bbio-protocol\.org\/(?:en\/)?(?:e\d|exchange)/i },
+  { source: 'Bio-protocol Preprint', venue: 'protocol', kind: 'url', pattern: /\bbio-protocol\.org\/(?:en\/)?[pl]\d/i },
+  { source: 'Current Protocols', venue: 'protocol', kind: 'url', pattern: /\bcurrentprotocols\.onlinelibrary\.wiley\.com\//i },
+  { source: 'Cold Spring Harbor Protocols', venue: 'protocol', kind: 'url', pattern: /\bcshprotocols\.cshlp\.org\//i },
+  { source: 'Nature Protocols',  venue: 'protocol', kind: 'url', pattern: /\bnature\.com\/articles\/(?:nprot|s41596)/i },
+  { source: 'Protocol Exchange', venue: 'protocol', kind: 'url', pattern: /\bprotocolexchange\.researchsquare\.com\/article\//i },
+
+  // --- Protocol publishing venues (DOI prefix) ---
+  { source: 'protocols.io',      venue: 'protocol', kind: 'id',  pattern: /10\.17504\/protocols\.io\./i },
+  { source: 'JoVE',              venue: 'protocol', kind: 'id',  pattern: /10\.3791\//i },
+  { source: 'STAR Protocols',    venue: 'protocol', kind: 'id',  pattern: /10\.1016\/j\.xpro/i },
+  { source: 'MethodsX',          venue: 'protocol', kind: 'id',  pattern: /10\.1016\/j\.mex/i },
+  { source: 'Bio-protocol',      venue: 'protocol', kind: 'id',  pattern: /10\.21769\/bio/i },
+  { source: 'Bio-protocol Preprint', venue: 'protocol', kind: 'id', pattern: /10\.21769\/[pl]/i },
+  { source: 'Current Protocols', venue: 'protocol', kind: 'id',  pattern: /10\.1002\/cpz1/i },
+  { source: 'Cold Spring Harbor Protocols', venue: 'protocol', kind: 'id', pattern: /10\.1101\/pdb\.prot/i },
+  // 'nport' is a real, misspelled-in-the-wild Nature Protocols DOI variant.
+  { source: 'Nature Protocols',  venue: 'protocol', kind: 'id',  pattern: /10\.1038\/(?:nprot|nport|s41596)/i },
+  { source: 'Protocol Exchange', venue: 'protocol', kind: 'id',  pattern: /10\.1038\/protex/i },
 
   // --- Sequence / omics archives (structured accession) ---
   { source: 'NCBI GEO',          kind: 'id',  pattern: /\bG(?:SE|SM|PL|DS)\d+\b/i },
@@ -340,6 +382,34 @@ function inferSourceFromIdentifier(identifier) {
   return urlSources.size === 1 ? [...urlSources][0] : null;
 }
 
+/**
+ * The subset of SOURCE_INFERENCE_RULES sources that are protocol-publishing
+ * venues, i.e. an identifier resolving to one of these IS a published protocol.
+ *
+ * Kept as a Set derived from the table rather than a second hand-maintained
+ * list: adding a venue row above automatically makes it a protocol venue here,
+ * so the two can't drift. Data/code repositories (GitHub, Zenodo, NCBI GEO, …)
+ * are deliberately excluded — a Zenodo DOI is not a protocol.
+ *
+ * `protocols.io` belongs here despite also being a general deposit target: its
+ * DOI prefix and URL host are protocol-exclusive.
+ */
+const PROTOCOL_VENUE_SOURCES = new Set(
+  SOURCE_INFERENCE_RULES.filter(r => r.venue === 'protocol').map(r => r.source)
+);
+
+/**
+ * True when `source` is a canonical protocol-publishing venue name as produced
+ * by inferSourceFromIdentifier. Exact match on the canonical spelling — callers
+ * should pass the inferred name, not free-typed user text.
+ *
+ * @param {string} source
+ * @returns {boolean}
+ */
+function isProtocolVenueSource(source) {
+  return PROTOCOL_VENUE_SOURCES.has(String(source ?? '').trim());
+}
+
 function computeDedupKey(resource) {
   const type = normalizeResourceTypeKey(resource.resourceType || resource.resource_type || '');
   const newReuse = String(resource.newReuse || resource.new_reuse || '').toLowerCase().trim();
@@ -370,6 +440,8 @@ module.exports = {
   normalizeResourceTypeKey,
   canonicalResourceType,
   inferSourceFromIdentifier,
+  isProtocolVenueSource,
+  PROTOCOL_VENUE_SOURCES,
   extractIdentifierTokens,
   identifiersMatch,
   namesMatch,
