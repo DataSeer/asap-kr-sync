@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const {
   mergeDetections,
   mergeAdditionalInfo,
+  applyVenueSource,
   normalizeResourceTypeKey
 } = require('./merge-detections.service');
 
@@ -184,6 +185,65 @@ test('two NAMED rows still never merge across different new/reuse', () => {
     })] }
   ]);
   assert.equal(r.length, 2);
+});
+
+// ---------- protocol venue outranks the detector's SOURCE (ticket #30 item 6) ----------
+
+test('applyVenueSource: demotes the detector wording into parentheses', () => {
+  assert.equal(applyVenueSource('protocols.io', 'Meyer et al., 2024'), 'protocols.io (Meyer et al., 2024)');
+  assert.equal(applyVenueSource('protocols.io', 'This paper'),         'protocols.io (This paper)');
+  assert.equal(applyVenueSource('JoVE', 'Journal of Visualized Experiments'),
+    'JoVE (Journal of Visualized Experiments)');
+});
+
+test('applyVenueSource: no echo when the detector already named the venue', () => {
+  assert.equal(applyVenueSource('protocols.io', 'protocols.io'), 'protocols.io');
+  assert.equal(applyVenueSource('protocols.io', 'Protocols.IO'),  'protocols.io');
+  assert.equal(applyVenueSource('protocols.io', ''),              'protocols.io');
+  assert.equal(applyVenueSource('protocols.io', '   '),           'protocols.io');
+});
+
+test('applyVenueSource: idempotent across repeated consolidations', () => {
+  // Consolidation re-runs on "Regenerate suggestions" — without this guard the
+  // parentheses would nest one level deeper every time.
+  const once  = applyVenueSource('protocols.io', 'Meyer et al., 2024');
+  const twice = applyVenueSource('protocols.io', once);
+  const three = applyVenueSource('protocols.io', twice);
+  assert.equal(twice, 'protocols.io (Meyer et al., 2024)');
+  assert.equal(three, 'protocols.io (Meyer et al., 2024)');
+});
+
+test('venue identifier overrides the SOURCE a detector supplied', () => {
+  const r = mergeDetections([
+    { source: 'protocols_detection', items: [itemAddRow({
+      resourceType: 'Protocol', resourceName: 'Organoid culture',
+      identifier: 'http://doi.org/10.17504/protocols.io.261ge8b9jg47/v2',
+      source: 'Meyer et al., 2024', newReuse: 'reuse'
+    })] }
+  ]);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].sourceUrl, 'protocols.io (Meyer et al., 2024)');
+});
+
+test('a NON-venue inferred source never overrides a detector SOURCE', () => {
+  // Data/code repositories keep the old behaviour: the detector wins.
+  const r = mergeDetections([
+    { source: 'software_detection', items: [itemAddRow({
+      resourceType: 'Software/code', resourceName: 'my-tool',
+      identifier: '10.5281/zenodo.123456', source: 'Lab website', newReuse: 'new'
+    })] }
+  ]);
+  assert.equal(r[0].sourceUrl, 'Lab website');
+});
+
+test('venue override still fills a blank SOURCE with the bare venue', () => {
+  const r = mergeDetections([
+    { source: 'protocols_detection', items: [itemAddRow({
+      resourceType: 'Protocol', resourceName: 'ChIP',
+      identifier: '10.1038/nprot.2009.97', source: '', newReuse: 'reuse'
+    })] }
+  ]);
+  assert.equal(r[0].sourceUrl, 'Nature Protocols');
 });
 
 test('different resourceType → NOT merged', () => {

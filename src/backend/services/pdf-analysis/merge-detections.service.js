@@ -21,6 +21,7 @@ const {
   extractIdentifierTokens,
   computeDedupKey,
   inferSourceFromIdentifier,
+  isProtocolVenueSource,
   normalizeName,
   normalizeRawValue,
   normalizeResourceTypeKey
@@ -203,6 +204,40 @@ function absorbAliases(primary, other) {
 }
 
 /**
+ * Combine a curated protocol VENUE with whatever SOURCE a detector proposed:
+ * the venue leads, the detector's wording is demoted into parentheses.
+ *
+ *   ('protocols.io',    'Meyer et al., 2024') → 'protocols.io (Meyer et al., 2024)'
+ *   ('JoVE', 'Journal of Visualized Experiments')
+ *                                            → 'JoVE (Journal of Visualized Experiments)'
+ *   ('protocols.io',    '')                  → 'protocols.io'
+ *   ('protocols.io',    'protocols.io')      → 'protocols.io'        (no echo)
+ *   ('protocols.io',    'protocols.io (X)')  → 'protocols.io (X)'    (idempotent)
+ *
+ * Idempotency is required, not cosmetic: consolidation re-runs whenever the
+ * user regenerates suggestions, and a naive implementation would nest the
+ * parentheses one level deeper on every pass.
+ *
+ * @param {string} venue    canonical venue name from the catalog
+ * @param {string} existing SOURCE proposed by a detector
+ * @returns {string}
+ */
+function applyVenueSource(venue, existing) {
+  const detector = String(existing ?? '').trim();
+  if (!detector) return venue;
+
+  const lcVenue = venue.toLowerCase();
+  const lcDetector = detector.toLowerCase();
+
+  // Detector already named the venue — nothing to demote.
+  if (lcDetector === lcVenue) return venue;
+  // Already in "Venue (…)" form from an earlier pass — leave it exactly as is.
+  if (lcDetector.startsWith(`${lcVenue} (`) && detector.endsWith(')')) return detector;
+
+  return `${venue} (${detector})`;
+}
+
+/**
  * Concatenate two additional_information fields, deduplicating by trimmed line.
  * Keeps the first occurrence's line wording when duplicate-detected.
  */
@@ -320,16 +355,31 @@ function mergeDetections(contributions) {
     }
   }
 
-  // Auto-detect SOURCE from the identifier when NO contributor supplied one.
-  // The merge loop above fills `sourceUrl` from any contributor that had a
-  // source, so an empty `sourceUrl` here means none did — only then do we
-  // infer (allowlist-only; ambiguous identifiers return null and leave it
-  // blank). This never overwrites a real detector-provided source, and the
-  // diff engine separately refuses to overwrite a user-filled SOURCE cell.
+  // Auto-detect SOURCE from the identifier (allowlist-only; ambiguous
+  // identifiers return null and leave it blank). Two regimes:
+  //
+  //   * No contributor supplied a source  → fill it, whatever the source kind.
+  //   * A contributor DID supply a source → normally left alone, EXCEPT when
+  //     the identifier resolves to a published-protocol VENUE. There the
+  //     curated catalog outranks the detector: a venue DOI is proof of where
+  //     the protocol was published, whereas the LM tends to write a citation
+  //     ("Meyer et al., 2024") or "This paper" into SOURCE. The venue becomes
+  //     the SOURCE and the detector's wording is demoted into parentheses
+  //     rather than discarded, so the curator keeps the context.
+  //
+  // Restricted to protocol venues on purpose: for data/code repositories a
+  // detector-supplied source is usually at least as good as the inferred one,
+  // and overriding it would be a much wider behavioural change.
+  //
+  // The diff engine separately refuses to overwrite a user-filled SOURCE cell,
+  // so this never fights a curator's own edit.
   for (const r of accepted) {
+    const inferred = inferSourceFromIdentifier(r.identifier);
+    if (!inferred) continue;
     if (!r.sourceUrl) {
-      const inferred = inferSourceFromIdentifier(r.identifier);
-      if (inferred) r.sourceUrl = inferred;
+      r.sourceUrl = inferred;
+    } else if (isProtocolVenueSource(inferred)) {
+      r.sourceUrl = applyVenueSource(inferred, r.sourceUrl);
     }
   }
 
@@ -364,6 +414,7 @@ module.exports = {
   toResource,
   shouldMerge,
   mergeAdditionalInfo,
+  applyVenueSource,
   normalizeResourceTypeKey,
   outranks,
   SOURCE_PRECEDENCE
