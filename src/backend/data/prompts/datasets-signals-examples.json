@@ -125,7 +125,7 @@
         "extracted_text": "Dataset | PD-related middle temporal gyrus snRNA-seq, original | ASAP Team Scherzer | zenodo.org/records/14270014 and phs004421.v1.p1 | new | ASAP CRN Cloud and dbGaP | ",
         "attributes":
         {
-          "dataset_name": "GTEx cortex snRNA-seq, 2 donors",
+          "dataset_name": "PD-related middle temporal gyrus snRNA-seq, original",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
           "source_type": "REPOSITORY",
@@ -140,7 +140,7 @@
         "extracted_text": "Dataset | PD-related middle temporal gyrus snRNA-seq, original | ASAP Team Scherzer | zenodo.org/records/14270014 and phs004421.v1.p1 | new | ASAP CRN Cloud and dbGaP | ",
         "attributes":
         {
-          "dataset_name": "GTEx cortex snRNA-seq, 2 donors",
+          "dataset_name": "PD-related middle temporal gyrus snRNA-seq, original",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
           "source_type": "REPOSITORY",

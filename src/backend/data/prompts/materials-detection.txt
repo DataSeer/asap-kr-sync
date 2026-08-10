@@ -8,7 +8,7 @@ The input includes a block "AUTHOR-PROVIDED MATERIALS (KRT)": material rows from
 
 1. **SEED FIRST.** Emit one output row for every author-provided material. Never drop one. Seed its fields directly: canonical_name ← `name`; newReuse ← `role` (GENERATED→"new", REUSED→"reuse", default "reuse"); source ← `source` (the supplier/vendor/repository); identifier ← the entry's identifiers (catalog number, RRID, Addgene #, DOI, URL). Trust the author's values and never fabricate identifiers.
 2. **ENRICH FROM THE ARTICLE.** For each seeded material, look it up in the manuscript markdown and fill only MISSING fields — supplier/source, catalog number, RRID, or clone — when they are explicitly stated. On any conflict, keep the author's value.
-3. **ADD SPARINGLY.** You MAY add a material the authors omitted ONLY when it is unambiguously a KRT lab material AND clearly evidenced in the text (an explicit supplier + catalog/RRID, or an Addgene/repository identifier). When in doubt, do NOT add it. **Antibodies are the exception — see below.**
+3. **ADD SPARINGLY.** You MAY add a material the authors omitted ONLY when it is unambiguously a KRT lab material (antibody, plasmid, cell line, organism) AND clearly evidenced in the text (an explicit supplier + catalog/RRID, or an Addgene/repository identifier). When in doubt, do NOT add it. **Antibodies are the exception — see below.**
 
 ## ANTIBODIES — CAPTURE THOROUGHLY (the one exception to "add sparingly")
 
@@ -51,7 +51,7 @@ Output the structured data inside a single ```json fenced code block:
       "resource_type": "one of the types above",
       "newReuse": "new" or "reuse",
       "source": "supplier/vendor/repository, empty string if unknown",
-      "identifier": "catalog #, RRID, or Addgene # if explicit; empty string otherwise",
+      "identifier": "catalog #, RRID, or Addgene # if explicit; empty string if unknown",
       "aliases": ["string"],
       "krt_relevance": "HIGH", "MEDIUM", or "LOW"
     }

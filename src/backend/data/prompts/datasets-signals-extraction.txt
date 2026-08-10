@@ -12,28 +12,63 @@ Extract a DATASET_ROW ONLY if at least one of the following is true:
 
 1. Clearly defined datasets:
 
-* genetic datasets (RNA-seq, metagenomics, read alignment, qRT-PCR, Sanger sequencing etc.)
+* genetic sequencing datasets (RNA-seq, metagenomics, transcriptomics, read alignment, qRT-PCR, Sanger sequencing, genotype etc.)
 * protein structures with PDB IDs
-* datasets deposited in repositories (NCBI BioProject, SRA, GEO, Zenodo, PRIDE, MassIVE, EMDB, PDB etc.)
+* proteomics, liquid chromatography followed by mass spectrometry (LC-MS/MS)
+* datasets deposited in repositories (NCBI BioProject, SRA, GEO, Zenodo, PRIDE, MassIVE, EMDB, PDB, ProteomeXchange, BioImage Archive, figshare etc.)
+* structured data files supporting results
 * supplementary datasets explicitly described as data (Source Data, Extended Data etc.)
-* patient clinical and human sensitive data
+* patient clinical and human subject table data
 
 2. Reused datasets:
 
 * reference genomes used for alignment
-* external datasets directly used as input data in the study (GP2, UK BioBank, GWAS etc.)
+* external datasets directly used as input data in the study (GP2, UK BioBank, GWAS, PPMI etc.)
 
 3. Explicitly recorded experimental measurement datasets:
 
 * cell counts, flow cytometry (FACS), fluorometry
-* assays (ELISA etc.)
-* fluorescence intensity, spectrometry
-* behavioral tasks
-* LC-MS (proteomics, lipidomics)
-* images (immunofluorescence, immunohistochemistry, microscopy, electron microscopy, MRI, CT, Western blots, immunoblots etc.)
-* video recordings
+* chromatography (HPLC, SEC etc.)
+* densitometry
+* assays (ELISA, BCA protein assay, Bradford, enzymatic assay etc.)
+* fluorescence intensity, spectrometry, absorbance
+* behavioral task measurements (rotarod, open field etc.)
+* mass spectrometry, lipidomics
+* microscopy images (brightfield, confocal, immunofluorescence, immunohistochemistry, electron microscopy, 2-photon imaging etc.)
+* electrophoresis images (Western blots, immunoblots, dot blots, SDS-PAGE etc.)
+* Magnetic Resonance Imaging (MRI), CT
+* fiber photometry
+* videos, webcam recordings
+* electrophysiology, whole-cell patch-clamp recordings, series resistance, current changes, amplitude
+* Fast-scan cyclic voltammetry (FSCV), voltammetry
+* quality control (mycoplasma contamination, RNA integrity, cell counts)
 * ONLY if clearly described as acquired, collected or recorded data
 * NOT if they are part of statistical analysis or derived metrics
+
+### Instruments are EVIDENCE, never the row itself
+
+A named instrument (Illumina / NextSeq, BD LSRFortessa, Axopatch or Axograph amplifiers,
+Orbitrap, Opera Phenix, FLIR camera etc.) is evidence that data of the corresponding type
+was RECORDED. Use it to decide that a dataset exists — then name the row for the DATA TYPE,
+never for the instrument.
+
+  "sequenced on a NextSeq 2000 (Illumina)"  → dataset_name "RNA-seq"     (NOT "NextSeq 2000")
+  "recorded on a BD LSRFortessa"            → dataset_name "Flow cytometry" (NOT "LSRFortessa")
+
+Do NOT emit a row for an instrument that is merely mentioned with no indication that data
+from it was collected in this study.
+
+### Recorded measurement vs. derived value
+
+Some items below appear close to the "derived data" exclusion. The test is whether the
+manuscript describes a MEASUREMENT BEING ACQUIRED, not a number being computed from one:
+
+* densitometry of blots, read alignment output, cell counts → EXTRACT when the text
+  describes them as measured/recorded/collected data that was retained.
+* log2 fold-changes, normalized values, ratios, statistics computed FROM those measurements
+  → DO NOT EXTRACT.
+
+When a sentence describes both, extract the measurement and ignore the computation.
 
 ---
 
@@ -71,10 +106,28 @@ You may also extract exact spans for:
 * Do NOT hallucinate identifiers or repositories
 * Do NOT over-generalize without evidence
 * If a dataset existed before this study (even if reprocessed or analyzed), classify it as REUSED
+* If an accession, DOI or URL is present, `repository` MUST be the repository that
+  identifier belongs to — not the wording used in the sentence. A row that says
+  "This paper" alongside `EMD-57672` has repository "EMDB"; alongside `GSE328400`,
+  "GEO"; alongside `10.5281/zenodo.X`, "Zenodo". Never invent a repository for an
+  identifier you do not recognise — leave it empty instead.
+
+### Extraction unit: ONE EXTRACTION PER EVIDENCE SPAN
+
+Emit a separate DATASET_ROW for **each distinct passage** that evidences a dataset,
+even when several passages refer to the SAME dataset. Each extraction must stay
+grounded in its own exact span.
+
+  A Methods sentence describing the sequencing run AND a KRT-style summary row for
+  the same GEO accession → TWO DATASET_ROW extractions, both named for that dataset.
+
+Do NOT try to merge duplicates yourself, and do NOT drop the weaker span: a later
+consolidation step reconciles them into one canonical record. Losing a span here
+loses evidence permanently.
 
 ---
 
 ## FINAL RULE
 
 When in doubt:
-→ Do NOT extract the item.
+→ SKIP the item instead of extracting it.
