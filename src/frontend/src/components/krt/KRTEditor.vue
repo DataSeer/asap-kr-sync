@@ -565,6 +565,28 @@ function hasCellSuggestion(rowId, columnKey) {
   return !!getCellSuggestion(rowId, columnKey)
 }
 
+/**
+ * The value an AI suggestion proposes for a cell that is currently EMPTY.
+ * Returns '' when the cell already has content, when there is no suggestion,
+ * or when the suggestion proposes an empty value — so the caller can use it
+ * directly as a v-if.
+ *
+ * Rendered in-cell as a greyed placeholder so a curator can see and accept the
+ * proposal without opening the suggestions UI (ASAP request, ticket #36).
+ */
+function cellSuggestionPlaceholder(rowId, columnKey) {
+  const row = krtRows.value.find(r => r.id === rowId)
+  if (row && row[columnKey]) return ''
+  const value = getCellSuggestion(rowId, columnKey)?.data?.newValue
+  return value == null || value === '' ? '' : String(value)
+}
+
+/** Accept the suggestion backing an in-cell placeholder. */
+async function acceptCellSuggestion(rowId, columnKey) {
+  const suggestion = getCellSuggestion(rowId, columnKey)
+  if (suggestion) await acceptSuggestion(suggestion)
+}
+
 function getRowSuggestions(rowId) {
   if (!props.showSuggestions) return []
   return krtStore.getRowSuggestions(rowId)
@@ -2176,7 +2198,7 @@ defineExpose({
                   @mouseenter="handleCellMouseEnter(row.id, col.key)"
                   @mouseleave="handleCellMouseLeave"
                 >
-                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': (col.key === 'IDENTIFIER' || col.key === 'SOURCE') && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || ''">
+                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': (col.key === 'IDENTIFIER' || col.key === 'SOURCE') && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || (cellSuggestionPlaceholder(row.id, col.key) ? `Suggested: ${cellSuggestionPlaceholder(row.id, col.key)}` : '')">
                     <!-- G3: inline shortcut dropdown for RESOURCE TYPE / NEW/REUSE -->
                     <select
                       v-if="!readonly && INLINE_SHORTCUT_COLUMNS.has(col.key)"
@@ -2190,7 +2212,14 @@ defineExpose({
                       <option v-for="opt in inlineShortcutOptions(col.key)" :key="opt" :value="opt">{{ opt }}</option>
                     </select>
                     <span v-else class="cell-text-content">
-                      {{ row[col.key] }}
+                      <template v-if="row[col.key]">{{ row[col.key] }}</template>
+                      <!-- Empty cell with a pending AI suggestion: show the
+                           proposed value as a greyed placeholder so it can be
+                           accepted without opening the suggestions UI. -->
+                      <span
+                        v-else-if="cellSuggestionPlaceholder(row.id, col.key)"
+                        class="cell-suggestion-placeholder"
+                      >{{ cellSuggestionPlaceholder(row.id, col.key) }}</span>
                     </span>
                     <!-- Quick identifier shortcut buttons for empty IDENTIFIER cells -->
                     <div v-if="col.key === 'IDENTIFIER' && !row[col.key] && !readonly" class="identifier-quick-actions">
@@ -2217,6 +2246,16 @@ defineExpose({
                         @click.stop="setQuickSourceNone(row.id, col.field)"
                       >
                         None
+                      </button>
+                    </div>
+                    <!-- Accept the suggested value shown as a placeholder -->
+                    <div v-if="!readonly && cellSuggestionPlaceholder(row.id, col.key)" class="suggestion-quick-action">
+                      <button
+                        class="btn-quick-suggestion"
+                        :title="`Use the suggested value: ${cellSuggestionPlaceholder(row.id, col.key)}`"
+                        @click.stop="acceptCellSuggestion(row.id, col.key)"
+                      >
+                        ✓ Use
                       </button>
                     </div>
                     <!-- Cell indicators container - shows all applicable icons -->
@@ -3415,6 +3454,43 @@ tr:hover {
   background: #e5e7eb;
   color: #374151;
   border-color: #9ca3af;
+}
+
+/* Suggested value rendered inside an otherwise-empty cell.
+   Deliberately muted and italic so it never reads as real KRT content — it is
+   a proposal until the curator accepts it. */
+.cell-suggestion-placeholder {
+  color: #9ca3af;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggestion-quick-action {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 0.25rem;
+}
+
+.btn-quick-suggestion {
+  padding: 0.125rem 0.375rem;
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-quick-suggestion:hover {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #93c5fd;
 }
 
 
