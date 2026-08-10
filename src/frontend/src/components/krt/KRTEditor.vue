@@ -252,6 +252,51 @@ const SOURCE_LABEL = {
   identifier_detection: 'ID'
 }
 
+// ── Provenance dialog (ticket #30 item 5) ────────────────────────────────────
+// "Where in the article does this come from?" Every detector already records an
+// evidence excerpt on `detectorMeta`, and the consolidator carries the
+// pre-dedup contributor under `mergedFrom[].originalItem`, so the sentence is
+// already on the client — it was simply never surfaced.
+//
+// Scope note: this shows the TEXT the detection was based on. Mapping it back
+// to coordinates in the PDF (e.g. sentence segmentation via GROBID) is
+// deliberately out of scope for now — see the ticket.
+const provenanceSuggestion = ref(null)
+
+/**
+ * Flatten a suggestion's contributors into displayable provenance entries.
+ * Falls back through the per-detector excerpt fields: protocols use
+ * `text_excerpt`, the others `context`, and Softcite software rows keep their
+ * blurb on `additionalInformation`.
+ */
+function provenanceEntries(suggestion) {
+  const contributors = Array.isArray(suggestion?.mergedFrom) ? suggestion.mergedFrom : []
+  return contributors.map((entry) => {
+    const item = entry?.originalItem || {}
+    const meta = item.detectorMeta || {}
+    const excerpt = meta.text_excerpt || meta.context || item.additionalInformation || ''
+    return {
+      module: entry?.source || item.origin || 'unknown',
+      confidence: typeof entry?.confidence === 'number' ? entry.confidence : null,
+      relevance: meta.relevance || null,
+      excerpt: String(excerpt).trim()
+    }
+  })
+}
+
+/** True when at least one contributor carries a usable excerpt. */
+function hasProvenance(suggestion) {
+  return provenanceEntries(suggestion).some(e => e.excerpt)
+}
+
+function openProvenance(suggestion) {
+  provenanceSuggestion.value = suggestion
+}
+
+function closeProvenance() {
+  provenanceSuggestion.value = null
+}
+
 /**
  * Return the unique detector sources that contributed to a suggestion. Reads
  * `mergedFrom` (post-consolidator) when available, else falls back to the
@@ -1945,7 +1990,9 @@ defineExpose({
                     v-for="src in getContributingSources(suggestion)"
                     :key="src"
                     class="suggestion-source-badge"
-                    :class="'source-' + src"
+                    :class="['source-' + src, { 'badge-clickable': hasProvenance(suggestion) }]"
+                    :title="hasProvenance(suggestion) ? 'Show where this comes from in the article' : (SOURCE_LABEL[src] || src)"
+                    @click.stop="hasProvenance(suggestion) && openProvenance(suggestion)"
                   >{{ SOURCE_LABEL[src] || src }}</span>
                   <!-- Same info indicator + tooltip the edit suggestions show
                        on existing rows, mirrored here so every suggestion has
@@ -2419,7 +2466,9 @@ defineExpose({
                       v-for="src in getContributingSources(suggestion)"
                       :key="src"
                       class="suggestion-source-badge"
-                      :class="'source-' + src"
+                      :class="['source-' + src, { 'badge-clickable': hasProvenance(suggestion) }]"
+                      :title="hasProvenance(suggestion) ? 'Show where this comes from in the article' : (SOURCE_LABEL[src] || src)"
+                      @click.stop="hasProvenance(suggestion) && openProvenance(suggestion)"
                     >{{ SOURCE_LABEL[src] || src }}</span>
                     <!-- Same info indicator + tooltip the edit suggestions show
                          on existing rows, mirrored here so every suggestion has
@@ -2577,6 +2626,60 @@ defineExpose({
             </button>
             <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-red-600 text-white hover:bg-red-700" @click="confirmRejectModal">
               Reject
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Provenance dialog: where in the article a suggestion comes from -->
+    <Teleport to="body">
+      <div v-if="provenanceSuggestion" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="closeProvenance">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-5 max-h-[80vh] overflow-y-auto">
+          <h3 class="text-sm font-semibold text-gray-900 mb-1">Where does this come from?</h3>
+          <p class="text-sm text-gray-500 mb-4">
+            {{ provenanceSuggestion.title || provenanceSuggestion.data?.resourceName || 'Suggestion' }}
+          </p>
+
+          <div v-if="provenanceSuggestion.reason" class="mb-4 rounded-md bg-blue-50 border border-blue-100 p-3">
+            <div class="text-xs font-semibold text-blue-800 mb-1">Why it was suggested</div>
+            <p class="text-sm text-blue-900">{{ provenanceSuggestion.reason }}</p>
+          </div>
+
+          <div class="text-xs font-semibold text-gray-700 mb-2">
+            Detected by {{ provenanceEntries(provenanceSuggestion).length }} module(s)
+          </div>
+
+          <div
+            v-for="(entry, idx) in provenanceEntries(provenanceSuggestion)"
+            :key="idx"
+            class="mb-3 rounded-md border border-gray-200 p-3"
+          >
+            <div class="flex items-center gap-2 mb-2">
+              <span class="suggestion-source-badge" :class="'source-' + entry.module">
+                {{ SOURCE_LABEL[entry.module] || entry.module }}
+              </span>
+              <span v-if="entry.relevance" class="text-xs text-gray-500">{{ entry.relevance }}</span>
+              <span v-if="entry.confidence !== null" class="text-xs text-gray-400 ml-auto">
+                {{ Math.round(entry.confidence * 100) }}%
+              </span>
+            </div>
+            <blockquote v-if="entry.excerpt" class="text-sm text-gray-700 italic border-l-2 border-gray-300 pl-3 whitespace-pre-wrap break-words">
+              {{ entry.excerpt }}
+            </blockquote>
+            <p v-else class="text-sm text-gray-400 italic">
+              This module reported no text excerpt.
+            </p>
+          </div>
+
+          <p class="text-xs text-gray-400 mt-4">
+            Excerpts are the passage each detector matched on. Jumping to the exact
+            location in the PDF is not available yet.
+          </p>
+
+          <div class="flex justify-end mt-4">
+            <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="closeProvenance">
+              Close
             </button>
           </div>
         </div>
@@ -3459,6 +3562,16 @@ tr:hover {
 /* Suggested value rendered inside an otherwise-empty cell.
    Deliberately muted and italic so it never reads as real KRT content — it is
    a proposal until the curator accepts it. */
+/* A module badge becomes a control when provenance is available for it. */
+.suggestion-source-badge.badge-clickable {
+  cursor: pointer;
+}
+
+.suggestion-source-badge.badge-clickable:hover {
+  filter: brightness(0.92);
+  text-decoration: underline;
+}
+
 .cell-suggestion-placeholder {
   color: #9ca3af;
   font-style: italic;
