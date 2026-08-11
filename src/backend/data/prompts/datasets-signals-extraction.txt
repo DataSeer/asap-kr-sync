@@ -25,26 +25,25 @@ Extract a DATASET_ROW ONLY if at least one of the following is true:
 * reference genomes used for alignment
 * external datasets directly used as input data in the study (GP2, UK BioBank, GWAS, PPMI etc.)
 
-3. Explicitly recorded experimental measurement datasets.
+3. Explicitly recorded experimental measurement datasets:
 
-   **The test is the RULE, not the technique.** Extract one ONLY when the text says the
-   measurement was actually acquired, collected or recorded in this study AND the resulting
-   data is a thing that could be shared. A technique named in passing is NOT a dataset.
-
-   * ONLY if clearly described as acquired, collected or recorded data
-   * NOT if it is part of a statistical analysis or a derived metric
-
-   The kinds of measurement that qualify, when that rule is met, include counts and
-   intensities (cell counts, flow cytometry/FACS, fluorometry, fluorescence intensity,
-   absorbance, densitometry), assays (ELISA, BCA, Bradford, enzymatic), chromatography and
-   mass spectrometry (HPLC, SEC, LC-MS/MS, lipidomics), imaging (microscopy of any
-   modality, electrophoresis/blot images, MRI, CT, fiber photometry, video recordings),
-   electrophysiology (patch-clamp recordings, FSCV/voltammetry), behavioural task
-   measurements (rotarod, open field), and quality-control measurements (mycoplasma
-   testing, RNA integrity).
-
-   This list is ILLUSTRATIVE, not a checklist to work through. Do not emit a row merely
-   because one of these words appears.
+* cell counts, flow cytometry (FACS), fluorometry
+* chromatography (HPLC, SEC etc.)
+* densitometry
+* assays (ELISA, BCA protein assay, Bradford, enzymatic assay etc.)
+* fluorescence intensity, spectrometry, absorbance
+* behavioral task measurements (rotarod, open field etc.)
+* mass spectrometry, lipidomics
+* microscopy images (brightfield, confocal, immunofluorescence, immunohistochemistry, electron microscopy, 2-photon imaging etc.)
+* electrophoresis images (Western blots, immunoblots, dot blots, SDS-PAGE etc.)
+* Magnetic Resonance Imaging (MRI), CT
+* fiber photometry
+* videos, webcam recordings
+* electrophysiology, whole-cell patch-clamp recordings, series resistance, current changes, amplitude
+* Fast-scan cyclic voltammetry (FSCV), voltammetry
+* quality control (mycoplasma contamination, RNA integrity, cell counts)
+* ONLY if clearly described as acquired, collected or recorded data
+* NOT if they are part of statistical analysis or derived metrics
 
 ### Instruments are EVIDENCE, never the row itself
 
