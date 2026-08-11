@@ -37,7 +37,7 @@ When the block is absent, extract protocols from the article as usual.
 
 ### What is NOT a protocol (EXCLUDE):
 - **Software, code, and packages of any kind.** Includes named tools (FastQC, Trimmomatic, DESeq2, Cell Ranger, ImageJ, MATLAB, R, Python libraries, custom scripts), bioinformatics steps invoked through a tool, statistical-analysis packages, and any "analysis" that in practice is just running a piece of software with parameters. These belong to Software/code, NOT Protocols. If the only "procedure" described is "we ran X with parameters Y" or "data were analyzed with Z", it's Software/code.
-- **In-silico / computational methods** (in silico docking, molecular dynamics simulations, Monte Carlo simulations, computational modeling, machine-learning model training/inference). These belong to Software/code, NOT Protocols.
+- **In-silico / computational methods / analyses** (in silico docking, molecular dynamics simulations, Monte Carlo simulations, computational modeling, machine-learning model training/inference). These belong to Software/code, NOT Protocols.
 - **Quantifications of any kind.**
 - **Data analyses and downstream computations.** Quantification, statistical analysis, differential expression, image analysis, scoring/normalization, and similar "we analyzed X to obtain Y" steps are NOT protocols — even when described in a Methods sub-heading. A protocol describes how DATA WAS GENERATED at the bench/instrument, not how it was analyzed afterward. When a section is primarily analysis, do NOT emit a protocol row for it.
 - Datasets and databases

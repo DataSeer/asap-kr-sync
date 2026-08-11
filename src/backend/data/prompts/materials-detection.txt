@@ -16,9 +16,28 @@ Antibodies are a core KRT material and the most commonly under-detected one, so 
 - an `RRID:AB_…` token;
 - "anti-<target> antibody", "<target> antibody", or a named monoclonal/polyclonal;
 - a host species (rabbit / mouse / goat / rat / chicken …), a clone id, or a working dilution (e.g. 1:1000);
-- a vendor + catalog number.
+- a vendor + catalog number;
+- mentions of: antibody, immunofluorescence, immunohistochemistry, Western blot, staining, immunostaining, incubation.
 
 ADD an antibody whenever it is clearly used as a reagent, even if only SOME cues are present (e.g. target + host, or an `RRID:AB_…` alone) — do NOT require both a supplier AND a catalog number for antibodies. For seeded antibodies, keep the author's values and fill any missing RRID / catalog number / clone / source from the text. If no identifier can be found, STILL emit the antibody with `identifier` empty rather than dropping it — it is flagged downstream for the curator to verify. Do not invent identifiers.
+
+## PLASMIDS
+
+Recognise a plasmid from ANY of these cues in the text:
+- an `RRID:Addgene_…` token;
+- mentions of: plasmids, cloning, vectors.
+
+## CELL LINES
+
+Recognise a cell line from ANY of these cues in the text:
+- an `RRID:CVCL_…` token;
+- mentions of: cell lines, cell cultures, transfection, American Type Culture Collection (ATCC).
+
+## ORGANISMS
+
+Recognise an organism from ANY of these cues in the text:
+- an `RRID:IMSR_JAX:…` token;
+- mentions of: mice, Institutional Animal Care and Use Committee (IACUC).
 
 ## RESOURCE TYPES
 
@@ -29,7 +48,7 @@ Classify each row's `resource_type` as one of: "Antibody", "Bacterial strain", "
 - Software, code, instruments, and instrument-control software.
 - Protocols and methods.
 - Datasets, databases, and accessions to data repositories (GEO, SRA, PRIDE, Zenodo…).
-- Generic chemicals/buffers with no supplier or catalog number, and equipment.
+- Generic reagents, chemicals/buffers with no supplier or catalog number, and equipment.
 
 ## FIELDS
 

@@ -12,11 +12,10 @@ Extract a DATASET_ROW ONLY if at least one of the following is true:
 
 1. Clearly defined datasets:
 
-* genetic sequencing datasets (RNA-seq, metagenomics, transcriptomics, read alignment, qRT-PCR, Sanger sequencing, genotype etc.)
+* genetic datasets (RNA-seq, metagenomics, transcriptomics, read alignment, qRT-PCR, Sanger sequencing, genotype etc.)
 * protein structures with PDB IDs
 * proteomics, liquid chromatography followed by mass spectrometry (LC-MS/MS)
 * datasets deposited in repositories (NCBI BioProject, SRA, GEO, Zenodo, PRIDE, MassIVE, EMDB, PDB, ProteomeXchange, BioImage Archive, figshare etc.)
-* structured data files supporting results
 * supplementary datasets explicitly described as data (Source Data, Extended Data etc.)
 * patient clinical and human subject table data
 
@@ -32,7 +31,7 @@ Extract a DATASET_ROW ONLY if at least one of the following is true:
 * densitometry
 * assays (ELISA, BCA protein assay, Bradford, enzymatic assay etc.)
 * fluorescence intensity, spectrometry, absorbance
-* behavioral task measurements (rotarod, open field etc.)
+* behavioral tasks (rotarod, open field etc.)
 * mass spectrometry, lipidomics
 * microscopy images (brightfield, confocal, immunofluorescence, immunohistochemistry, electron microscopy, 2-photon imaging etc.)
 * electrophoresis images (Western blots, immunoblots, dot blots, SDS-PAGE etc.)
@@ -130,4 +129,4 @@ loses evidence permanently.
 ## FINAL RULE
 
 When in doubt:
-→ SKIP the item instead of extracting it.
+→ Do NOT extract the item.
