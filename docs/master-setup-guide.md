@@ -207,7 +207,7 @@ flowchart LR
     UP --> MDC["Markdown Convert<br/>(Docling / MarkItDown)"]
     MDC --> DAS["DAS extraction<br/>(Gemini)"]
     MDC --> DS["Datasets<br/>(LangExtract → Gemini)"]
-    MDC --> MAT["Materials<br/>(Gemini — disabled by default)"]
+    MDC --> MAT["Materials<br/>(Gemini — author-seeded)"]
     MDC --> PR["Protocols<br/>(Gemini)"]
     MDC --> ID["Identifier scan<br/>(local)"]
     KRTV{{"KRT validated?"}} -.->|gate| DS
