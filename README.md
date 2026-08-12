@@ -60,7 +60,6 @@ See [Getting Started](./docs/getting-started.md) for full setup instructions.
 | Document | Description |
 |----------|-------------|
 | ⭐ [Master Setup Guide](./docs/master-setup-guide.md) | **Start here** — self-contained zero-to-deployed guide: config files, module workflow, DB structure, local + production deployment |
-| [Changelog](./CHANGELOG.md) | What changed in the app, in plain language, with commit references |
 | [Getting Started](./docs/getting-started.md) | Prerequisites, installation, configuration, running, npm scripts |
 | [Architecture](./docs/architecture.md) | System architecture, project structure, workflow overview |
 | [Database](./docs/database.md) | Schema, tables, columns, migrations |
