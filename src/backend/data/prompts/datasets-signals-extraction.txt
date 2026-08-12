@@ -100,6 +100,9 @@ You may also extract exact spans for:
 
 ## STRICT RULES
 
+* Extract one consolidated DATASET_ROW per unique dataset — except when the dataset
+  has two distinct deposits (two repositories, or two different identifiers), which
+  get one row each. See "Extraction unit" below.
 * DATASET_ROW.extraction_text MUST be exact substring
 * Supporting spans MUST be exact substrings
 * Do NOT hallucinate identifiers or repositories
@@ -111,18 +114,26 @@ You may also extract exact spans for:
   "GEO"; alongside `10.5281/zenodo.X`, "Zenodo". Never invent a repository for an
   identifier you do not recognise — leave it empty instead.
 
-### Extraction unit: ONE EXTRACTION PER EVIDENCE SPAN
+### Extraction unit: ONE DATASET_ROW PER UNIQUE DATASET *DEPOSIT*
 
-Emit a separate DATASET_ROW for **each distinct passage** that evidences a dataset,
-even when several passages refer to the SAME dataset. Each extraction must stay
-grounded in its own exact span.
+Emit **one consolidated DATASET_ROW per unique dataset**. When the same dataset is
+described in several passages — e.g. a Methods sentence about the sequencing run AND
+a KRT-style summary line for the same accession — that is still ONE row, not two.
+Ground it in the span that carries the identifying details (repository, accession,
+DOI or URL).
 
-  A Methods sentence describing the sequencing run AND a KRT-style summary row for
-  the same GEO accession → TWO DATASET_ROW extractions, both named for that dataset.
+  "…sequenced on a NextSeq 2000…" + "Dataset | GEO | This paper | GSE328400…"
+    → ONE row (repository GEO, accession GSE328400)
 
-Do NOT try to merge duplicates yourself, and do NOT drop the weaker span: a later
-consolidation step reconciles them into one canonical record. Losing a span here
-loses evidence permanently.
+**The one exception:** when a dataset has **two genuinely distinct deposits** — two
+repositories, or two different identifiers — emit **one row per deposit**. The
+attribute fields are single-valued, so a single row cannot carry both, and
+collapsing them would silently discard one identifier.
+
+  "…zenodo.org/records/14270014 and phs004421.v1.p1…"
+    → TWO rows: one (Zenodo, url=…14270014), one (dbGaP, accession=phs004421.v1.p1)
+
+Duplicate spans of the same deposit: merge. Distinct deposits: keep both.
 
 ---
 
