@@ -1,6 +1,17 @@
 # Design proposal — Grounding vs Discovery: KRT detection with or without an author table
 
-**Status:** proposal · **Branch:** `feat/krt-detection-two-modes` · **Created:** 2026-08-12
+**Status:** IMPLEMENTED on `feat/krt-detection-two-modes` (not merged to `dev`) · **Created:** 2026-08-12
+**Updated:** 2026-08-13 — built, measured, and compared against `dev`.
+
+> This document is the original PROPOSAL and is kept as the design record. Where
+> it says "today the author KRT is injected as seeds", that describes `dev`,
+> which is still true of `dev` — the seeding was removed only on this branch.
+>
+> For what was actually built and what it measured, see
+> `tmp/krt-detection-changes-summary.md` (what changed, all bugs found, the
+> dev-vs-branch head-to-head) and `tmp/krt-detection-evaluation.md` (why it was
+> measured that way, and an honest pro/con). Both are working documents kept out
+> of the tree deliberately.
 **Companion notes:** `tmp/suggestions-quality/DESIGN-rank-not-filter.md`, `tmp/suggestions-quality/IDEA-location-aware-krt.md`
 **Evidence base:** `tmp/krt-eval-2026-08/KRT-detection-evaluation-2026-08-10.md`, `AB-testing-results-2026-08-12.md`
 

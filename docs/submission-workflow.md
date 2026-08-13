@@ -316,7 +316,7 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 - **On complete:** Shows "X material(s) detected (Y high relevance)"
 
 #### Protocols Detection
-- Detects protocol mentions in the manuscript via Google Gemini, **seeded with the author's protocol rows as "Section 0"**
+- Detects protocol mentions in the manuscript via Google Gemini, **KRT-blind** *(formerly seeded with the author's protocol rows as "Section 0"**
 - **Depends on:** Markdown Convert (uses the markdown text as input, not the PDF)
 - **Gated on:** `krt_curated` — waits until the author validates the KRT, then advances automatically (see Datasets Detection)
 - **Prompt fixes:** don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations; exclude analyses; better new/reuse classification

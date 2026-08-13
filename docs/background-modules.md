@@ -679,6 +679,14 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   through). `read`/`approve`/`reject` operate on this persisted list; **accepting a `remove` deletes the KRT row**.
 - **Origins:** each suggestion carries the **real contributing detection module(s)**
   (software/datasets/materials/protocols/identifier) as origin badges — no longer a flat `krt_comparison` tag.
+- **Truncation is survivable, and used not to be.** This call ran with **no generation config at all** — the model
+  default token budget, while the prompt demands one decision per generated row. The largest tables truncated
+  first: the reply came back with an unterminated ```` ```json ```` fence, `JSON.parse` died on the backtick, the
+  parser returned `[]`, and the retry wrapper tried four more times. Measured on a 335-row KRT: 22 minutes, then
+  **zero** suggestions, with an empty panel and nothing to say anything had failed. It now sets
+  `maxOutputTokens` 65536 and `thinkingConfig.thinkingBudget: 0` (thinking otherwise eats the same budget),
+  handles an unterminated fence, and **salvages the decisions that completed before the cut**. Losing some
+  suggestions to truncation is a degradation; losing all of them silently is a failure.
 - **Config:** `KRT_COMPARISON_ENABLED`, `KRT_COMPARISON_GEMINI_API_KEY/_MODEL`, `KRT_COMPARISON_API_TIMEOUT`.
   **Prompt:** `data/prompts/krt-comparison.txt`.
 - **Key files:** `services/suggestion/kr-comparison.service.js`, `config/krt-comparison-api.js`. *(The retired
@@ -775,6 +783,30 @@ reviewer-facing workbooks to `tmp/batch-check/reports/`:
 
 It is **offline**: no LM calls, no database. Reports can be rebuilt, restyled or
 re-scoped without another run, which is the point of the split.
+
+**Comparing two pipelines.** Three more scripts exist for measuring one version
+of the pipeline against another — used to compare `dev` with
+`feat/krt-detection-two-modes`:
+
+| script | what it does | LM cost |
+|---|---|---|
+| `branch-suggestions.js` | fills in the AI suggestions for an existing run's artifacts (the batch runner stops at the Generated KRT) | 1 call per document |
+| `compare-dev-vs-branch.js` | prints the comparison: rows each pipeline ADDS beyond the author KRT, and how many of them the manuscript supports | none |
+| `build-dev-vs-branch-xlsx.js` | reviewer workbooks, both pipelines side by side, caveats sheet first | none |
+
+The scoring rule that makes the comparison meaningful: **both Generated KRTs
+contain every author row by construction** (both pipelines run
+`reconcileWithAuthorKrt`), so overlap with the author table is ~100% and tells
+you nothing. The comparison lives entirely in what each pipeline ADDS — and
+"more rows" is not automatically better, so every added row and every suggestion
+is checked against the same converted markdown with the same deterministic
+search, blind to which pipeline produced it.
+
+That check is a **floor, not a correctness measure**: it asks whether the
+resource is mentioned, which is necessary but not sufficient. Descriptive names
+("Proteomics data") score `no` on both sides even when the resource is
+discussed, so absolute rates understate both pipelines while the comparison
+between them stays fair.
 
 ---
 
