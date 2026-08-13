@@ -30,6 +30,7 @@ import datasetsService from '@/services/datasets.service'
 import materialsService from '@/services/materials.service'
 import protocolsService from '@/services/protocols.service'
 import identifierDetectionService from '@/services/identifier-detection.service'
+import krtGroundingService from '@/services/krt-grounding.service'
 import markdownService from '@/services/markdown.service'
 import suggestionService from '@/services/suggestion.service'
 import JobStatusPanel from './JobStatusPanel.vue'
@@ -131,6 +132,10 @@ provide('restartJob', async (jobType) => {
       case 'identifier_detection':
         await identifierDetectionService.triggerDetection(id)
         notificationStore.info('Identifier detection re-started')
+        break
+      case 'krt_grounding':
+        await krtGroundingService.triggerGrounding(id)
+        notificationStore.info('KRT grounding re-started')
         break
       case 'suggestion_generation':
         await suggestionService.regenerate(id)

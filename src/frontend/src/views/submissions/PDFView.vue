@@ -14,6 +14,7 @@ import protocolsService from '@/services/protocols.service'
 import suggestionService from '@/services/suggestion.service'
 import jobService from '@/services/job.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
+import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
 import { useAuthStore } from '@/stores/auth.store'
@@ -444,7 +445,9 @@ async function loadAuthors() {
 async function loadDatasets() {
   try {
     const data = await datasetsService.getMentions(route.params.id)
-    datasetItems.value = data?.items || []
+    // The endpoint returns { mentions, meta } — reading `.items` here always
+    // produced [], so these panels silently fell back to the job result.
+    datasetItems.value = data?.mentions || data?.items || []
   } catch {
     datasetItems.value = []
   }
@@ -453,7 +456,9 @@ async function loadDatasets() {
 async function loadMaterials() {
   try {
     const data = await materialsService.getMentions(route.params.id)
-    materialsItems.value = data?.items || []
+    // The endpoint returns { mentions, meta } — reading `.items` here always
+    // produced [], so these panels silently fell back to the job result.
+    materialsItems.value = data?.mentions || data?.items || []
   } catch {
     materialsItems.value = []
   }
@@ -462,7 +467,9 @@ async function loadMaterials() {
 async function loadProtocols() {
   try {
     const data = await protocolsService.getMentions(route.params.id)
-    protocolsItems.value = data?.items || []
+    // The endpoint returns { mentions, meta } — reading `.items` here always
+    // produced [], so these panels silently fell back to the job result.
+    protocolsItems.value = data?.mentions || data?.items || []
   } catch {
     protocolsItems.value = []
   }
@@ -1482,9 +1489,17 @@ function scrollToFindingRow(finding) {
           </div>
 
           <!-- Manuscript excerpt — always shown so the user can verify the
-               suggestion against the paper without an extra click. -->
+               suggestion against the paper without an extra click.
+               `evidence` is an OBJECT (quote + section + surrounding paragraph
+               with offsets); it used to be a plain string, so it is rendered by
+               EvidenceContext rather than interpolated. A legacy string result
+               still renders, via the fallback below. -->
           <div v-if="currentSuggestion.evidence || currentSuggestion.description || currentSuggestion.detail" class="suggestion-evidence">
-            <p v-if="currentSuggestion.evidence" class="suggestion-evidence-line">
+            <template v-if="currentSuggestion.evidence && typeof currentSuggestion.evidence === 'object'">
+              <span class="suggestion-evidence-label">Found in manuscript:</span>
+              <EvidenceContext :evidence="currentSuggestion.evidence" />
+            </template>
+            <p v-else-if="currentSuggestion.evidence" class="suggestion-evidence-line">
               <span class="suggestion-evidence-label">Found in manuscript:</span>
               <span class="italic">"{{ currentSuggestion.evidence }}"</span>
             </p>

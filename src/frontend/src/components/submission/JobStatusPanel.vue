@@ -14,6 +14,7 @@ import jobService from '@/services/job.service'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import HighlightText from '@/components/submission/HighlightText.vue'
+import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import { useColumnResize } from '@/composables/useColumnResize'
 import { isCancelledJob } from '@/composables/useJobPoller'
 
@@ -94,8 +95,11 @@ const jobSummary = computed(() => {
 // before this job can finish. Drives the cumulative remaining-time math
 // so siblings run in parallel and downstream jobs stack on top of upstreams.
 const ETA_DEPS = {
-  pdf_analysis: ['das_extraction', 'software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection'],
+  pdf_analysis: ['das_extraction', 'software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection', 'krt_grounding'],
+  krt_grounding: ['software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection'],
+  software_detection: ['markdown_convert'],
   datasets_detection: ['markdown_convert'],
+  materials_detection: ['markdown_convert'],
   protocols_detection: ['markdown_convert'],
   identifier_detection: ['markdown_convert']
 }
@@ -138,6 +142,8 @@ const ALL_JOB_TYPES = [
   { type: 'datasets_detection', label: 'Datasets Detection' },
   { type: 'protocols_detection', label: 'Protocols Detection' },
   { type: 'identifier_detection', label: 'Identifiers Detection' },
+  // Row 3: reconciliation + consolidation
+  { type: 'krt_grounding', label: 'KRT Grounding' },
   { type: 'pdf_analysis', label: 'PDF Analysis' },
   { type: 'suggestion_generation', label: 'AI Suggestions' }
 ]
@@ -146,7 +152,7 @@ const ALL_JOB_TYPES = [
 const showModal = ref(false)
 const modalContent = ref('')
 const modalItems = ref(null)
-const modalTableType = ref(null) // 'software' | 'resources' | 'authors' | null
+const modalTableType = ref(null) // 'software' | 'resources' | 'authors' | 'grounding' | 'suggestions' | 'pdf_analysis_krt' | null
 const modalLogs = ref([])
 const modalRawResponses = ref({})
 const modalJobType = ref(null)
@@ -559,6 +565,7 @@ const SOURCE_SHORT = {
   materials_detection: 'MAT',
   protocols_detection: 'PROT',
   identifier_detection: 'ID',
+  krt_grounding: 'GND',
   pdf_analysis: 'PDF'
 }
 // Label a row in the AI Suggestions summary — handles both decision objects
@@ -584,12 +591,17 @@ const SUGGESTION_ROW_COLUMNS = [
 // must match the table body's column order. Shared instance below namespaces the
 // keys so one localStorage entry holds every table's widths.
 const colResize = useColumnResize('jobModal.columnWidths')
+// Shared by every detection module's modal (software / datasets / materials /
+// protocols / identifier) so a user finds the same information in the same
+// place whichever module they open. Each item renders as TWO rows: these
+// columns, then a full-width context line underneath.
 const RESIZE_MENTIONS_COLS = [
   { key: 'resourceType', label: 'Resource Type', width: 120 },
   { key: 'resourceName', label: 'Resource Name', width: 240 },
   { key: 'source', label: 'Source', width: 170 },
   { key: 'identifier', label: 'Identifier', width: 170 },
   { key: 'newReuse', label: 'New/Reuse', width: 90 },
+  { key: 'evidence', label: 'Evidence', width: 170 },
   { key: 'additionalInformation', label: 'Additional Information', width: 220 }
 ]
 const RESIZE_PDF_COLS = [
@@ -704,8 +716,19 @@ function getDataSummary(job, r) {
     case 'software_detection': {
       const unique = r.counts?.unique || 0
       const enriched = r.counts?.enriched || 0
-      if (unique === 0) return 'No mentions'
-      return `${unique} unique mention${unique > 1 ? 's' : ''}${enriched > 0 ? `, ${enriched} enriched` : ''}`
+      const meta = job.result?.data?.meta || {}
+      // Two engines are unioned here, so say what each contributed — otherwise
+      // "5 unique mentions" hides whether the LM pass ran at all.
+      let engines = ''
+      if (meta.lmEnabled === false) {
+        engines = ' · Softcite only (LM pass off)'
+      } else if (meta.lmSkippedReason) {
+        engines = ` · Softcite only (LM ${meta.lmSkippedReason.replace(/_/g, ' ')})`
+      } else if (typeof meta.lmCount === 'number') {
+        engines = ` · Softcite ${meta.softciteCount ?? '?'} + LM ${meta.lmCount} before merge`
+      }
+      if (unique === 0) return `No mentions${engines}`
+      return `${unique} unique mention${unique > 1 ? 's' : ''}${enriched > 0 ? `, ${enriched} enriched` : ''}${engines}`
     }
     case 'orcid_extraction': {
       const authors = r.counts?.authors || 0
@@ -742,6 +765,23 @@ function getDataSummary(job, r) {
       const high = r.counts?.highRelevance || 0
       if (total === 0) return 'No identifiers'
       return `${total} match${total > 1 ? 'es' : ''}${high > 0 ? `, ${high} high relevance` : ''}`
+    }
+    case 'krt_grounding': {
+      const rows = r.counts?.authorRows || 0
+      const notDetected = r.counts?.notDetected || 0
+      const unmatched = r.counts?.unmatchedCandidates || 0
+      // No author KRT is a valid mode, not an empty result: say what the step
+      // did do, which is find candidates nobody has claimed yet.
+      if (rows === 0) return `No author KRT — ${unmatched} candidate${unmatched === 1 ? '' : 's'} found`
+      // Every verdict except `not_detected` means the row WAS located, so all
+      // three belong in the numerator — otherwise the parts don't sum to `rows`.
+      const partial = r.counts?.partial || 0
+      const found = (r.counts?.confirmed || 0) + (r.counts?.incomplete || 0) + partial
+      const parts = [`${found}/${rows} KRT row${rows === 1 ? '' : 's'} found in the manuscript`]
+      if (partial > 0) parts.push(`${partial} partial match${partial === 1 ? '' : 'es'}`)
+      if (notDetected > 0) parts.push(`${notDetected} not detected`)
+      if (unmatched > 0) parts.push(`${unmatched} unmatched candidate${unmatched === 1 ? '' : 's'}`)
+      return parts.join(', ')
     }
     case 'suggestion_generation': {
       const total = r.counts?.unique || r.counts?.total || 0
@@ -801,11 +841,13 @@ function getResultTitle(job) {
 function getWaitingFor(job) {
   const deps = {
     das_extraction: ['markdown_convert'],
-    pdf_analysis: ['das_extraction'],
+    pdf_analysis: ['das_extraction', 'krt_grounding'],
     datasets_detection: ['markdown_convert'],
     materials_detection: ['markdown_convert'],
     protocols_detection: ['markdown_convert'],
     identifier_detection: ['markdown_convert'],
+    software_detection: ['markdown_convert'],
+    krt_grounding: ['software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection'],
     suggestion_generation: ['pdf_analysis']
   }
   return deps[job.type] || []
@@ -960,6 +1002,14 @@ function openJobModal(job) {
     modalTableType.value = 'pdf_analysis_krt'
     const items = job.result?.data?.items || []
     modalItems.value = items.length ? items : null
+  } else if (job.type === 'krt_grounding') {
+    // Per-author-row reconciliation verdicts. A different shape from the
+    // detectors (outcomes about the author's rows, not detected resources), so
+    // it gets its own table rather than being forced into 'resources'.
+    modalContent.value = ''
+    modalTableType.value = 'grounding'
+    const outcomes = job.result?.data?.outcomes || []
+    modalItems.value = outcomes.length ? outcomes : null
   } else if (job.type === 'suggestion_generation') {
     // The LM comparison's full decision log (add/update/remove/skip) + reasons.
     // Falls back to the suggestion list for older results without decisions.
@@ -1128,9 +1178,121 @@ const modalTabCounts = computed(() => {
   return counts
 })
 
+/**
+ * Which detection engine(s) produced an item.
+ *
+ * Software detection unions two engines, and after dedupe a resource found by
+ * both collapses into ONE row whose contributors live in `mergedFrom`. Reading
+ * only the top-level `origin` would therefore under-report agreement — which is
+ * exactly the signal worth seeing.
+ */
+const ENGINE_LABELS = { softcite: 'Softcite', lm: 'LM' }
+const ENGINE_TITLES = {
+  softcite: 'Found by Softcite (name recognition over the PDF)',
+  lm: 'Found by the LM pass (identifiers, repo links, custom code — over the markdown)'
+}
+function itemEngines(item) {
+  if (modalTableType.value !== 'software') return []
+  const origins = new Set()
+  const add = (origin) => {
+    if (!origin) return
+    if (String(origin).includes('softcite')) origins.add('softcite')
+    if (String(origin).includes('software-lm')) origins.add('lm')
+  }
+  add(item.origin)
+  for (const contributor of item.mergedFrom || []) add(contributor?.originalItem?.origin)
+  return [...origins]
+}
+
+/** Columns for the grounding table — same two-row shape as the detectors. */
+const GROUNDING_COLS = [
+  { key: 'resourceType', label: 'Resource Type' },
+  { key: 'resourceName', label: "Author's row" },
+  { key: 'verdict', label: 'Verdict' },
+  { key: 'matchedBy', label: 'Matched by' },
+  { key: 'evidence', label: 'Evidence' },
+  { key: 'fills', label: 'Manuscript says' }
+]
+
+/** Human labels for a grounding verdict. */
+const GROUNDING_LABELS = {
+  confirmed: 'Found',
+  incomplete: 'Found — row incomplete',
+  // A weaker verdict than `confirmed`: the row's name contains (or is contained
+  // by) a detected resource's name. Enough to say the manuscript discusses it,
+  // not enough to treat the two as the same item — so no values are proposed.
+  partial: 'Partial name match',
+  not_detected: 'Not found in text'
+}
+const GROUNDING_CLASSES = {
+  confirmed: 'grounding-confirmed',
+  incomplete: 'grounding-incomplete',
+  // NOT `grounding-partial` — that class already badges a partially located
+  // evidence quote, which is a different thing from a partial name match.
+  partial: 'grounding-partial-match',
+  not_detected: 'grounding-not-detected'
+}
+function groundingLabel(o) { return GROUNDING_LABELS[o?.outcome] || o?.outcome || '—' }
+function groundingClass(o) { return GROUNDING_CLASSES[o?.outcome] || '' }
+/** How the row was matched — deterministic key, or the targeted LM search. */
+const MATCHED_BY_LABELS = {
+  lm_second_look: 'LM search',
+  partial_name: 'partial name'
+}
+function groundingMatchedBy(o) {
+  if (!o?.matchedBy) return '—'
+  return MATCHED_BY_LABELS[o.matchedBy] || o.matchedBy
+}
+/**
+ * What the manuscript says that the author's row does not.
+ *
+ * Two kinds, and the difference matters to a curator:
+ *   - a FILL   — the row's cell is empty and the paper supplies a value
+ *   - a CONFLICT — the row is filled and the paper disagrees
+ * Only fills become edit suggestions; a conflict is reported and left alone.
+ */
+function groundingFills(o) {
+  return Object.keys(o?.foundValues || {}).map(k => `${k}: ${o.foundValues[k]}`)
+}
+function groundingConflicts(o) {
+  return (o?.conflicts || []).map(c => ({
+    field: c.field,
+    text: `${c.field}: "${c.manuscriptValue}" — your row has "${c.authorValue}"`
+  }))
+}
+function groundingHasFindings(o) {
+  return groundingFills(o).length > 0 || groundingConflicts(o).length > 0
+}
+
+/**
+ * What the "Manuscript adds" cell says when there is nothing to add.
+ *
+ * An undifferentiated "—" is ambiguous between two opposite situations: the
+ * row is complete (good), or nothing in the manuscript matched it at all (the
+ * thing worth investigating). Spell out which.
+ */
+function groundingFillsEmptyLabel(o) {
+  if (o?.outcome === 'not_detected') return 'not matched'
+  return 'agrees'
+}
+function groundingFillsEmptyTitle(o) {
+  return o?.outcome === 'not_detected'
+    ? 'No candidate matched this row, so there is nothing to compare against.'
+    : 'The manuscript agrees with this row on every field, and adds nothing it lacks.'
+}
+
 // Mentions (software/datasets/materials/protocols), sorted in the KRT
 // editor's order, then type-filtered and searched across visible columns.
 const displayedModalItems = computed(() => {
+  if (modalTableType.value === 'grounding') {
+    const q = modalSearch.value.trim().toLowerCase()
+    const rows = modalItems.value || []
+    if (!q) return rows
+    return rows.filter(o => rowMatchesSearch([
+      o.resourceName, o.resourceType, groundingLabel(o), groundingMatchedBy(o),
+      o.evidence?.section, o.evidence?.quote, o.reason
+    ], q))
+  }
   if (modalTableType.value !== 'resources' && modalTableType.value !== 'software') {
     return modalItems.value || []
   }
@@ -1876,6 +2038,57 @@ async function downloadMarkdownFile(fileId) {
               <!-- Plain text content (DAS, markdown info) -->
               <p v-if="modalContent && !modalItems" class="job-modal-text">{{ modalContent }}</p>
               <!-- Mentions table (software, datasets, materials, protocols) -->
+              <!-- KRT Grounding: one row per AUTHOR KRT row, with the verdict.
+                   Not a detected-resources table — these are statements about
+                   the author's own rows, which are never modified. -->
+              <div v-if="modalItems && modalItems.length && modalTableType === 'grounding'" class="job-modal-table-wrapper">
+                <!-- Same two-row shape as the detection modules: a columns
+                     line, then a full-width context line. -->
+                <table class="job-modal-table">
+                  <thead>
+                    <tr>
+                      <th v-for="c in GROUNDING_COLS" :key="c.key">{{ c.label }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template v-for="(o, i) in displayedModalItems" :key="i">
+                      <tr>
+                        <td class="text-xs"><HighlightText :text="o.resourceType || ''" :query="modalSearch" /></td>
+                        <td class="font-medium"><HighlightText :text="o.resourceName || ''" :query="modalSearch" /></td>
+                        <td class="text-xs">
+                          <span class="grounding-badge" :class="groundingClass(o)" :title="o.reason || ''">{{ groundingLabel(o) }}</span>
+                        </td>
+                        <td class="text-xs">{{ groundingMatchedBy(o) }}</td>
+                        <td class="text-xs">
+                          <span v-if="o.evidence?.section" class="evidence-section-cell" :title="o.evidence.section">{{ o.evidence.section }}</span>
+                          <span v-else class="text-gray-300">—</span>
+                          <span v-if="o.evidence?.match === 'partial'" class="grounding-badge grounding-partial" title="Only the leading part of the quote was located">partial</span>
+                        </td>
+                        <td class="text-xs">
+                          <template v-if="groundingHasFindings(o)">
+                            <div v-for="(f, fi) in groundingFills(o)" :key="'f' + fi" class="grounding-fill" title="Your row leaves this empty; the manuscript supplies it. Offered as a suggestion.">
+                              {{ f }}
+                            </div>
+                            <div v-for="(c, ci) in groundingConflicts(o)" :key="'c' + ci" class="grounding-conflict" title="The manuscript disagrees with your row. Your value is kept — this is for you to check.">
+                              ⚠ {{ c.text }}
+                            </div>
+                          </template>
+                          <span v-else class="grounding-fill-empty" :title="groundingFillsEmptyTitle(o)">
+                            {{ groundingFillsEmptyLabel(o) }}
+                          </span>
+                        </td>
+                      </tr>
+                      <tr v-if="o.evidence?.quote" class="context-row">
+                        <td :colspan="GROUNDING_COLS.length" class="context-cell">
+                          <EvidenceContext :evidence="o.evidence" :show-section="false" />
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div v-if="!displayedModalItems.length" class="job-modal-filter-empty">No rows match the current filters.</div>
+              </div>
+
               <div v-if="modalItems && modalItems.length && (modalTableType === 'software' || modalTableType === 'resources')" class="job-modal-table-wrapper">
                 <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('mentions', RESIZE_MENTIONS_COLS)">
                   <thead>
@@ -1896,6 +2109,17 @@ async function downloadMarkdownFile(fileId) {
                         <td class="text-xs"><HighlightText :text="item.resourceType || item.resource_type || 'Software/code'" :query="modalSearch" /></td>
                         <td class="font-medium">
                           <HighlightText :text="getMentionName(item)" :query="modalSearch" />
+                          <!-- Which engine found this. Software runs Softcite
+                               (names in prose) and an optional LM pass
+                               (identifiers, repo links, custom code) unioned;
+                               without this the two were indistinguishable. -->
+                          <span
+                            v-for="engine in itemEngines(item)"
+                            :key="engine"
+                            class="engine-badge"
+                            :class="'engine-' + engine"
+                            :title="ENGINE_TITLES[engine]"
+                          >{{ ENGINE_LABELS[engine] }}</span>
                           <span
                             v-if="getEnrichmentMeta(item)?.matched"
                             class="enrichment-badge"
@@ -1925,13 +2149,35 @@ async function downloadMarkdownFile(fileId) {
                           </span>
                           <span v-else>—</span>
                         </td>
+                        <!-- Evidence: WHERE in the manuscript this came from.
+                             The section path is the compact form; the full
+                             passage is on the context line below. -->
+                        <td class="text-xs">
+                          <span v-if="item.evidence?.section" class="evidence-section-cell" :title="item.evidence.section">
+                            {{ item.evidence.section }}
+                          </span>
+                          <span v-else-if="item.evidence?.quote" class="text-gray-400">(no section)</span>
+                          <span v-else class="text-gray-300">—</span>
+                          <span
+                            v-if="item.evidence?.match === 'partial'"
+                            class="grounding-badge grounding-partial"
+                            title="Only the leading part of the quote was located in the manuscript"
+                          >partial</span>
+                        </td>
                         <td class="text-xs text-gray-500"><HighlightText :text="item.additionalInformation || item.additional_information" :query="modalSearch" /></td>
                       </tr>
-                      <tr v-if="item.detectorMeta?.context || item.context" class="context-row">
-                        <td colspan="6" class="context-cell">{{ item.detectorMeta?.context || item.context }}</td>
+                      <!-- Context line: full-width, one per item. Collapsed to
+                           the sentence, expandable to the paragraph. Falls back
+                           to the detector's raw context string for results
+                           produced before evidence grounding existed. -->
+                      <tr v-if="item.evidence?.quote || item.detectorMeta?.context || item.context" class="context-row">
+                        <td :colspan="RESIZE_MENTIONS_COLS.length" class="context-cell">
+                          <EvidenceContext v-if="item.evidence?.quote" :evidence="item.evidence" :show-section="false" />
+                          <template v-else>{{ item.detectorMeta?.context || item.context }}</template>
+                        </td>
                       </tr>
                       <tr v-if="expandedMergedRows.has(i) && getMergedFromCount(item) > 1" class="merged-from-row">
-                        <td colspan="6">
+                        <td :colspan="RESIZE_MENTIONS_COLS.length">
                           <div class="merged-from-title">Merged from {{ getMergedFromCount(item) }} pre-dedup mentions:</div>
                           <table class="merged-from-table">
                             <thead>
@@ -2811,6 +3057,13 @@ async function downloadMarkdownFile(fileId) {
   word-break: break-word;
 }
 
+/* An EvidenceContext inside the context line brings its own typography and
+   highlight; the cell's italic + muted colour would fight it. Reset there. */
+.context-cell :deep(.evidence-context) {
+  font-style: normal;
+  border-left-color: #d1d5db;
+}
+
 .job-modal-table-wrapper {
   max-height: 400px;
   overflow: auto;
@@ -3444,4 +3697,63 @@ async function downloadMarkdownFile(fileId) {
   opacity: 0;
 }
 
+
+.grounding-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.grounding-confirmed { background: #dcfce7; color: #15803d; }
+.grounding-incomplete { background: #fef3c7; color: #b45309; }
+.grounding-not-detected { background: #fee2e2; color: #b91c1c; }
+.grounding-partial { background: #e5e7eb; color: #4b5563; }
+/* Outcome verdict: located, but only by a partial name match. Blue reads as
+   "found, low confidence" rather than the grey of a degraded quote. */
+.grounding-partial-match { background: #dbeafe; color: #1d4ed8; }
+.job-modal-quote {
+  max-width: 26rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.engine-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: help;
+}
+.engine-softcite { background: #e0e7ff; color: #3730a3; }
+.engine-lm { background: #ede9fe; color: #6d28d9; }
+
+/* Evidence column: the section path, compact. The full passage lives on the
+   context line below, so this stays one line whatever the heading depth. */
+.evidence-section-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  color: #6b7280;
+}
+
+/* "Manuscript adds": a real fill is actionable, an empty one is explanatory. */
+.grounding-fill { color: #b45309; font-weight: 600; }
+.grounding-fill-empty { color: #9ca3af; font-style: italic; cursor: help; }
+
+/* A conflict is a warning, not an offer — visually distinct from a fill. */
+.grounding-conflict {
+  color: #b91c1c;
+  font-weight: 600;
+  cursor: help;
+  margin-top: 0.15rem;
+}
 </style>

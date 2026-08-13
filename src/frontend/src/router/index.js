@@ -20,6 +20,7 @@ const ProjectsView = () => import('@/views/admin/ProjectsView.vue')
 const ResourceTypesView = () => import('@/views/admin/ResourceTypesView.vue')
 const AppConfigView = () => import('@/views/admin/AppConfigView.vue')
 const EnrichmentListView = () => import('@/views/admin/EnrichmentListView.vue')
+const JobsView = () => import('@/views/admin/JobsView.vue')
 const ProfileView = () => import('@/views/profile/ProfileView.vue')
 const AppLayout = () => import('@/components/layout/AppLayout.vue')
 
@@ -116,6 +117,14 @@ const routes = [
         name: 'admin-team-emails',
         component: TeamEmailsView,
         meta: { roles: ['admin', 'ds_annotator', 'asap_pm'], title: 'Team Email Assignment' }
+      },
+      {
+        // Admin-only: this page lists and deletes jobs across every
+        // submission, including ones the viewer does not own.
+        path: 'admin/jobs',
+        name: 'admin-jobs',
+        component: JobsView,
+        meta: { roles: ['admin'], title: 'Processing Jobs' }
       },
       {
         path: 'admin/projects',

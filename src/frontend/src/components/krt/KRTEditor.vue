@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import api from '@/services/api'
 import krtService from '@/services/krt.service'
 import suggestionService from '@/services/suggestion.service'
+import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import KRTCellEditModal from './KRTCellEditModal.vue'
 
 const props = defineProps({
@@ -94,6 +95,13 @@ const tableContainer = ref(null)
 const activeTooltip = ref(null)
 const activeTabTooltip = ref(null)
 const searchQuery = ref('')
+
+/**
+ * Suggestion fields the search box matches on. The KRT columns are keyed by
+ * their display header ('RESOURCE NAME'); a suggestion carries the same values
+ * under camelCase keys on `data`, so the row predicate cannot be reused as-is.
+ */
+const SUGGESTION_SEARCH_FIELDS = ['resourceType', 'resourceName', 'source', 'identifier', 'newReuse']
 const activeCellTooltip = ref(null) // Format: "rowId-columnKey" for validation errors
 const activeSuggestionTooltip = ref(null) // Format: "rowId-columnKey" for AI suggestions
 const showEditModal = ref(false)
@@ -279,14 +287,17 @@ function provenanceEntries(suggestion) {
       module: entry?.source || item.origin || 'unknown',
       confidence: typeof entry?.confidence === 'number' ? entry.confidence : null,
       relevance: meta.relevance || null,
-      excerpt: String(excerpt).trim()
+      excerpt: String(excerpt).trim(),
+      // Where in the manuscript THIS contributor found it — quote, section and
+      // the surrounding paragraph, rendered by EvidenceContext.
+      evidence: item.evidence || null
     }
   })
 }
 
-/** True when at least one contributor carries a usable excerpt. */
+/** True when at least one contributor carries a usable excerpt or evidence. */
 function hasProvenance(suggestion) {
-  return provenanceEntries(suggestion).some(e => e.excerpt)
+  return provenanceEntries(suggestion).some(e => e.excerpt || e.evidence)
 }
 
 function openProvenance(suggestion) {
@@ -642,6 +653,14 @@ function hasRowSuggestion(rowId) {
 }
 
 /**
+ * Grounding verdict for one author row, or null when grounding has not run.
+ * Read-only: the badge it drives never changes the row.
+ */
+function rowGrounding(rowId) {
+  return krtStore.groundingByRowId[rowId] || null
+}
+
+/**
  * Unique detector sources across every pending edit suggestion attached
  * to this row. Drives the module badges rendered in the # cell so update
  * suggestions show the same origin chip as add suggestions.
@@ -911,12 +930,23 @@ const addRowSuggestions = computed(() => props.showSuggestions ? (krtStore.addRo
 // by resource name (case-insensitive). On the "all" tab we additionally group
 // by resource-type group order so each group's suggestions stay together.
 const filteredAddRowSuggestions = computed(() => {
-  const list = activeTab.value === 'all'
+  let list = activeTab.value === 'all'
     ? [...addRowSuggestions.value]
     : addRowSuggestions.value.filter(suggestion => {
         const resourceType = suggestion.data?.resourceType
         return getResourceGroup(resourceType) === activeTab.value
       })
+
+  // Apply the same search filter as the rows. Without this the search box hid
+  // matching rows but left every suggested add-row on screen, so a search that
+  // narrowed the table to one row still showed the full suggestion list
+  // interleaved around it.
+  const query = searchQuery.value.trim().toLowerCase()
+  if (query) {
+    list = list.filter(suggestion => SUGGESTION_SEARCH_FIELDS.some(
+      field => (suggestion.data?.[field] || '').toString().toLowerCase().includes(query)
+    ))
+  }
 
   return list.sort((a, b) => {
     const nameA = (a.data?.resourceName || '').toLowerCase()
@@ -1794,14 +1824,18 @@ defineExpose({
             :class="{ active: rowOrder === 'input' }"
             :aria-pressed="rowOrder === 'input'"
             @click="rowOrder = 'input'"
-          >As submitted</button>
+          >
+            As submitted
+          </button>
           <button
             type="button"
             class="order-segmented-btn"
             :class="{ active: rowOrder === 'systematic' }"
             :aria-pressed="rowOrder === 'systematic'"
             @click="rowOrder = 'systematic'"
-          >By resource type</button>
+          >
+            By resource type
+          </button>
         </div>
       </div>
       <div class="search-wrapper">
@@ -2137,6 +2171,16 @@ defineExpose({
                       class="tool-added-badge"
                       title="Added by AI from manuscript analysis"
                     >AI</span>
+                    <!-- Grounding verdict: this row could not be located in the
+                         manuscript. Purely informational — the author's row is
+                         authoritative and is never altered or removed because
+                         of it. It flags a possible citation gap for a human to
+                         judge. -->
+                    <span
+                      v-if="showSuggestions && rowGrounding(row.id)?.outcome === 'not_detected'"
+                      class="not-detected-badge"
+                      :title="rowGrounding(row.id)?.reason || 'Not found in the manuscript text — check the manuscript cites this resource. Your row is kept as-is.'"
+                    >Not in text</span>
                     <!-- Module badges for any update suggestions on this row.
                          Same chips that ADD suggestions show in the # cell,
                          so the origin column is consistent across both. -->
@@ -2646,6 +2690,13 @@ defineExpose({
             <p class="text-sm text-blue-900">{{ provenanceSuggestion.reason }}</p>
           </div>
 
+          <!-- The passage in the manuscript this came from. Collapsed to the
+               sentence; expandable to the full paragraph. -->
+          <div v-if="provenanceSuggestion.evidence" class="mb-4 rounded-md bg-gray-50 border border-gray-200 p-3">
+            <div class="text-xs font-semibold text-gray-700 mb-1">Where it appears in the manuscript</div>
+            <EvidenceContext :evidence="provenanceSuggestion.evidence" />
+          </div>
+
           <div class="text-xs font-semibold text-gray-700 mb-2">
             Detected by {{ provenanceEntries(provenanceSuggestion).length }} module(s)
           </div>
@@ -2664,7 +2715,13 @@ defineExpose({
                 {{ Math.round(entry.confidence * 100) }}%
               </span>
             </div>
-            <blockquote v-if="entry.excerpt" class="text-sm text-gray-700 italic border-l-2 border-gray-300 pl-3 whitespace-pre-wrap break-words">
+            <!-- A grounded evidence block is strictly better than the raw
+                 excerpt: it is verified against the manuscript and carries the
+                 section plus an expandable paragraph. Fall back to the excerpt
+                 for detectors that have no offsets (Softcite reads the PDF, not
+                 the markdown) and for results produced before grounding. -->
+            <EvidenceContext v-if="entry.evidence" :evidence="entry.evidence" />
+            <blockquote v-else-if="entry.excerpt" class="text-sm text-gray-700 italic border-l-2 border-gray-300 pl-3 whitespace-pre-wrap break-words">
               {{ entry.excerpt }}
             </blockquote>
             <p v-else class="text-sm text-gray-400 italic">
@@ -2770,7 +2827,7 @@ defineExpose({
             <label class="text-xs font-medium text-gray-600">{{ col.label }}</label>
             <div class="mt-1 space-y-1">
               <label v-for="(opt, i) in mergeOptions(col.key)" :key="i" class="flex items-center gap-2 text-sm cursor-pointer">
-                <input type="radio" :name="'merge-' + col.key" :value="opt" v-model="mergeChoices[col.key]" />
+                <input v-model="mergeChoices[col.key]" type="radio" :name="'merge-' + col.key" :value="opt" />
                 <span class="truncate" :class="{ 'text-gray-400 italic': opt === '' }">{{ opt === '' ? '(empty)' : opt }}</span>
               </label>
             </div>
@@ -3858,6 +3915,23 @@ tr:hover {
   white-space: nowrap;
   background: #dcfce7;
   color: #15803d;
+}
+
+/* Grounding: the manuscript never mentions this row. Amber, not red — it is
+   an observation for the curator, not an error in the author's table. */
+.not-detected-badge {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  background: #fef3c7;
+  color: #b45309;
+  cursor: help;
 }
 
 .source-software_detection {
