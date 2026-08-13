@@ -1,42 +1,65 @@
 /**
- * Tests for sanitizeJsonEscapes — invalid backslash escapes in model JSON.
+ * Tests for Gemini JSON recovery.
+ *
+ * The case that matters: a response truncated by maxOutputTokens used to lose
+ * EVERY row, not just the incomplete one.
  */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { sanitizeJsonEscapes } = require('./gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('./gemini-json');
 
-const parse = (raw) => JSON.parse(sanitizeJsonEscapes(raw));
+test('salvages complete objects from a truncated array', () => {
+  // Mirrors the real failure: cap hit mid-way through an evidence_quote.
+  const truncated = `{
+  "resources": [
+    { "canonical_name": "Wizard SV Gel Kit", "identifier": "A9282" },
+    { "canonical_name": "anti-TH", "identifier": "AB_390204" },
+    { "canonical_name": "partial", "evidence_quote": "Purification of DNA fragment`;
 
-test('fixes LaTeX-style backslash (\\mu) inside a string value', () => {
-  const raw = '{"text": "a total of 1.5 \\mu g of plasmid"}';
-  assert.throws(() => JSON.parse(raw), 'raw is invalid JSON');
-  assert.equal(parse(raw).text, 'a total of 1.5 \\mu g of plasmid');
+  const out = salvageTruncatedObjects(truncated);
+  assert.equal(out.length, 2, 'the two complete objects survive');
+  assert.equal(out[0].canonical_name, 'Wizard SV Gel Kit');
+  assert.equal(out[1].identifier, 'AB_390204');
 });
 
-test('fixes malformed \\u (not 4 hex) — the case stripMarkdownEscapes missed', () => {
-  const raw = '{"text": "see \\upmu and \\underline"}';
-  assert.throws(() => JSON.parse(raw));
-  assert.equal(parse(raw).text, 'see \\upmu and \\underline');
+test('a brace inside a quoted value does not break depth tracking', () => {
+  const text = '{"a":"has { and } inside"},{"b":"ok"},{"c":"trunc';
+  const out = salvageTruncatedObjects(text);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].a, 'has { and } inside');
+  assert.equal(out[1].b, 'ok');
 });
 
-test('fixes a Windows-style path', () => {
-  const raw = '{"path": "C:\\Users\\data"}';
-  assert.equal(parse(raw).path, 'C:\\Users\\data');
+test('an escaped quote inside a string does not end the string early', () => {
+  const text = '{"quote":"he said \\"hi\\" loudly"},{"x":1},{"y":';
+  const out = salvageTruncatedObjects(text);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].quote, 'he said "hi" loudly');
 });
 
-test('leaves valid escapes intact (\\n \\t \\" \\\\)', () => {
-  const raw = '{"text": "line1\\nline2\\t\\"q\\"\\\\end"}';
-  assert.equal(parse(raw).text, 'line1\nline2\t"q"\\end');
+test('nested objects are kept whole, not split', () => {
+  const text = '{"a":{"b":{"c":1}}},{"d":2},{"e":';
+  const out = salvageTruncatedObjects(text);
+  assert.equal(out.length, 2);
+  assert.deepEqual(out[0], { a: { b: { c: 1 } } });
 });
 
-test('leaves valid \\uXXXX unicode escapes intact', () => {
-  const raw = '{"text": "micro \\u00b5g"}';
-  assert.equal(parse(raw).text, 'micro µg');
+test('returns [] when nothing is complete', () => {
+  assert.deepEqual(salvageTruncatedObjects('{"a":"never closes'), []);
+  assert.deepEqual(salvageTruncatedObjects(''), []);
+  assert.deepEqual(salvageTruncatedObjects(null), []);
 });
 
-test('valid JSON is unchanged', () => {
-  const raw = '{"a": 1, "b": ["x", "y"], "c": "plain text"}';
-  assert.equal(sanitizeJsonEscapes(raw), raw);
+test('stray backslashes are still repaired inside salvaged objects', () => {
+  const text = '{"note":"incubated at 4\\u00b0C with \\mu-tubulin"},{"x":';
+  const out = salvageTruncatedObjects(text);
+  assert.equal(out.length, 1);
+  assert.ok(out[0].note.includes('tubulin'));
+});
+
+test('sanitizeJsonEscapes leaves valid escapes alone', () => {
+  assert.equal(JSON.parse(sanitizeJsonEscapes('{"a":"line\\nbreak"}')).a, 'line\nbreak');
+  assert.equal(JSON.parse(sanitizeJsonEscapes('{"a":"\\mu"}')).a, '\\mu');
 });

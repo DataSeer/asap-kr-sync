@@ -13,7 +13,7 @@ const krtGenConfig = require('../../config/krt-generation-api');
 const { computeDedupKey } = require('./identifier-normalize.service');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 
 function isConfigured() {
   return krtGenConfig.isConfigured();
@@ -100,7 +100,17 @@ function buildKrtFromLM(candidates, lmOutput) {
       resourceName: r.resourceName ?? refCandidates[0].resourceName ?? '',
       sourceUrl: r.source ?? refCandidates[0].sourceUrl ?? '',
       identifier: r.identifier ?? refCandidates[0].identifier ?? '',
-      newReuse: r.newReuse ?? refCandidates[0].newReuse ?? ''
+      newReuse: r.newReuse ?? refCandidates[0].newReuse ?? '',
+      // ADDITIONAL INFORMATION is a KRT column like any other, and
+      // mergeDetections does real work to build it (each contributor's context,
+      // de-duplicated line by line). Leaving it out of `base` dropped it from
+      // every item the LM placed, while the safety-net path below kept it — so
+      // one output table carried two different item shapes. Downstream,
+      // makeAddSuggestion reads it as the suggestion's `context`, so its
+      // absence emptied that hint in the UI on every LM-placed row.
+      additionalInformation: r.additionalInformation
+        ?? refCandidates.map((c) => c.additionalInformation).filter(Boolean).join('; ')
+        ?? ''
     };
     items.push({
       ...base,
@@ -143,16 +153,36 @@ function extractJsonBlock(text) {
   if (fenced.length) return fenced[fenced.length - 1][1].trim();
   const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
   if (plain.length) return plain[plain.length - 1][1].trim();
+  // An UNTERMINATED fence. Both patterns above require a closing fence, which
+  // a response truncated at the token limit never has — so the raw text came
+  // back still carrying its opener and JSON.parse died on the backtick. Take
+  // everything after the opener and let the salvage below recover whatever
+  // objects completed before the cut.
+  const opener = text.match(/```(?:json)?\s*\n?/);
+  if (opener) return text.slice(opener.index + opener[0].length).trim();
   return text.trim();
 }
 
 function parseLMResponse(text) {
+  const block = extractJsonBlock(text);
   try {
     // sanitizeJsonEscapes repairs unescaped backslashes in verbatim text
     // (LaTeX/units/paths), the same repair the detection modules apply.
-    const parsed = JSON.parse(sanitizeJsonEscapes(extractJsonBlock(text)));
+    const parsed = JSON.parse(sanitizeJsonEscapes(block));
     return { resources: parsed.resources || [], dropped: parsed.dropped || [] };
   } catch (err) {
+    // Truncation is the common failure, and returning nothing here is worse
+    // than it looks: buildKrtFromLM then places no resource, its safety net
+    // keeps every candidate, and the Generated KRT silently ships
+    // UNCONSOLIDATED — no dedup, no non-resource filtering — with only a log
+    // line to say so. The detection modules already salvage; this did not.
+    const salvaged = salvageTruncatedObjects(block);
+    if (salvaged.length > 0) {
+      logger.warn('KRT generation JSON was truncated — salvaged completed resources', {
+        error: err.message, salvaged: salvaged.length
+      });
+      return { resources: salvaged, dropped: [] };
+    }
     logger.error('Failed to parse KRT generation JSON', { error: err.message });
     return { resources: [], dropped: [] };
   }
@@ -167,7 +197,21 @@ async function callGeminiForKrt(candidates) {
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
   const response = await generateContentWithRetry(ai, {
     model: krtGenConfig.model,
-    contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
+    contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
+    // This call had NO generation config at all, so it ran on the model default
+    // token budget while every detection module asks for 65536. Consolidation
+    // emits one line per candidate, so the biggest pools — precisely the ones
+    // that most need deduplicating — truncated first. On a 335-row KRT the
+    // response was cut mid-object, the parse failed, and the Generated KRT
+    // silently shipped UNCONSOLIDATED via the safety net.
+    //
+    // thinkingBudget 0 for the same reason as the detectors: gemini-2.5-flash
+    // thinks by default and that thinking comes out of the same budget.
+    config: {
+      responseMimeType: 'application/json',
+      maxOutputTokens: 65536,
+      thinkingConfig: { thinkingBudget: 0 }
+    }
   }, {
     label: 'krt-generation',
     // With candidates to consolidate, a healthy response parses to at least one

@@ -54,7 +54,10 @@ function reconcileWithAuthorKrt(generatedKrt, authorRows) {
     if (isRepresented(row)) continue;
     const base = {
       resourceType: row.resourceType || '', resourceName: row.resourceName || '',
-      sourceUrl: row.source || '', identifier: row.identifier || '', newReuse: row.newReuse || ''
+      sourceUrl: row.source || '', identifier: row.identifier || '', newReuse: row.newReuse || '',
+      // Carry the author's own ADDITIONAL INFORMATION too. Omitting it made the
+      // Generated KRT's copy of an author row poorer than the row it came from.
+      additionalInformation: row.additionalInformation || ''
     };
     const carriedItem = {
       ...base,

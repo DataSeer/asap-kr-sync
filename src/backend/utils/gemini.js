@@ -29,6 +29,39 @@ const DEFAULTS = { maxRetries: 4, delay: 1000, multiplier: 2, maxDelay: 15000, j
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 /**
+ * Generation defaults applied to EVERY Gemini call in the app.
+ *
+ * `temperature: 0` — no call in this codebase had ever set a temperature, so
+ * they all ran at the API default of 1.0. Every task we use Gemini for is
+ * extraction, classification or judgement over a fixed document: there is one
+ * right answer and sampling variety is pure noise. It measurably was noise —
+ * `tmp/krt-eval-2026-08/AB-testing-results-2026-08-12.md` recorded the same
+ * prompt returning 34 rows on one run and 3 on another for one manuscript, a
+ * swing large enough to hide any real effect an A/B is trying to measure.
+ *
+ * Applied here rather than per service so a new call site cannot silently opt
+ * out by forgetting it — the mistake that produced this situation. A caller
+ * that genuinely wants sampling can still pass its own `config.temperature`.
+ *
+ * NOT set here: `thinkingConfig`. Thinking is a per-task tradeoff the detectors
+ * make deliberately (see commit 38a16db), so it stays at each call site.
+ */
+const DEFAULT_GENERATION_CONFIG = { temperature: 0 };
+
+/**
+ * Merge the app-wide generation defaults under the caller's own config, so an
+ * explicit per-call value always wins.
+ * @param {object} params - generateContent params ({ model, contents, config? })
+ * @returns {object} params with defaults applied
+ */
+function withDefaultGenerationConfig(params) {
+  return {
+    ...params,
+    config: { ...DEFAULT_GENERATION_CONFIG, ...(params?.config || {}) }
+  };
+}
+
+/**
  * Call Gemini `generateContent` with retry/backoff on transient transport
  * failures and (optionally) on empty/unparseable responses.
  * @param {object} ai - a GoogleGenAI instance
@@ -43,13 +76,14 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function generateContentWithRetry(ai, params, options = {}) {
   const { label = 'Gemini', validate = null, retry: retryOverrides = {} } = options;
   const cfg = { ...DEFAULTS, ...retryOverrides };
+  const callParams = withDefaultGenerationConfig(params);
 
   let lastResponse = null;
   for (let attempt = 1; attempt <= cfg.maxRetries; attempt++) {
     let response = null;
     let transientError = null;
     try {
-      response = await ai.models.generateContent(params);
+      response = await ai.models.generateContent(callParams);
     } catch (error) {
       // Non-transient (auth/bad-request) or last attempt → give up immediately.
       if (!isTransientError(error) || attempt === cfg.maxRetries) throw error;
@@ -76,4 +110,4 @@ async function generateContentWithRetry(ai, params, options = {}) {
   return lastResponse; // not reached in practice (loop returns/throws first)
 }
 
-module.exports = { generateContentWithRetry };
+module.exports = { generateContentWithRetry, withDefaultGenerationConfig, DEFAULT_GENERATION_CONFIG };
