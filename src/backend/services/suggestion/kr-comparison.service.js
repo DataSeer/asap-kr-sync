@@ -22,7 +22,7 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/krt-comparison.txt');
 let _promptCache = null;
@@ -295,18 +295,38 @@ function extractJsonBlock(text) {
   if (fenced.length) return fenced[fenced.length - 1][1].trim();
   const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
   if (plain.length) return plain[plain.length - 1][1].trim();
+  // An UNTERMINATED fence. Both patterns above require a closing fence,
+  // which a response truncated at the token limit never has — so the raw
+  // text came back still carrying its opener and JSON.parse died on the
+  // backtick. Take everything after the opener so the salvage below can
+  // recover the decisions that completed before the cut.
+  const opener = text.match(/```(?:json)?\s*\n?/);
+  if (opener) return text.slice(opener.index + opener[0].length).trim();
   return text.trim();
 }
 
 function parseLMResponse(text) {
+  const block = extractJsonBlock(text);
   try {
     // sanitizeJsonEscapes repairs the common malformation where the model quotes
     // verbatim text (LaTeX/units/paths) with unescaped backslashes — the same
     // repair the detection modules already apply.
-    const parsed = JSON.parse(sanitizeJsonEscapes(extractJsonBlock(text)));
+    const parsed = JSON.parse(sanitizeJsonEscapes(block));
     const list = parsed.decisions || parsed;
     return Array.isArray(list) ? list : [];
   } catch (err) {
+    // Returning [] here costs the user EVERY suggestion for the manuscript:
+    // the panel comes back empty with nothing to say anything went wrong. On a
+    // 335-row KRT this fired four times in a row and produced zero suggestions
+    // after 22 minutes of retries. Recover the decisions that completed before
+    // the response was cut, as the detection modules already do.
+    const salvaged = salvageTruncatedObjects(block).filter((d) => d && typeof d === 'object');
+    if (salvaged.length > 0) {
+      logger.warn('KRT comparison JSON was truncated — salvaged completed decisions', {
+        error: err.message, salvaged: salvaged.length
+      });
+      return salvaged;
+    }
     logger.error('Failed to parse KRT comparison JSON', { error: err.message });
     return [];
   }
@@ -324,7 +344,19 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
   try {
     const response = await generateContentWithRetry(ai, {
       model: krtComparisonConfig.model,
-      contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
+      contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
+      // This call had NO generation config, so it ran on the model's default
+      // token budget while demanding one decision per generated row. The
+      // biggest tables — the ones whose curators most need help — truncated
+      // first, the parse failed, and the user got an EMPTY suggestions panel.
+      //
+      // thinkingBudget 0 for the same reason as the detectors: gemini-2.5-flash
+      // thinks by default and that thinking comes out of the same budget.
+      config: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: 65536,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
     }, {
       label: 'kr-comparison',
       // When there is something to compare, a healthy response parses to at
