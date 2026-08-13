@@ -18,7 +18,10 @@ const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { mergeDetections } = require('./merge-detections.service');
 const { consolidateWithLM } = require('./krt-generation.service');
-const { normalizeName, identifiersMatch, computeDedupKey } = require('./identifier-normalize.service');
+const {
+  normalizeName, identifiersMatch, computeDedupKey,
+  stripSoftwareVersion, normalizeResourceTypeKey
+} = require('./identifier-normalize.service');
 const logger = require('../../utils/logger');
 
 /**
@@ -41,12 +44,32 @@ const logger = require('../../utils/logger');
  */
 function reconcileWithAuthorKrt(generatedKrt, authorRows) {
   const items = [...generatedKrt];
+
+  /**
+   * Is this author row already present in the Generated KRT?
+   *
+   * The two errors here are not symmetric. Saying "not represented" when it is
+   * costs a duplicate row — visible, harmless, a curator merges it. Saying
+   * "represented" when it is not costs the author's row its place in the
+   * Generated KRT, which breaks the guarantee that every author row survives.
+   * So this deliberately uses only the STRONG keys (identifier, exact name,
+   * and version-insensitive name for software) and never the grounding
+   * matcher's `partial_name` tier — a partial match is precisely the case where
+   * we do NOT know the two are the same item.
+   */
   const isRepresented = (row) => {
     const rn = normalizeName(row.resourceName);
-    return items.some(g =>
-      (g.identifier && row.identifier && identifiersMatch(g.identifier, row.identifier)) ||
-      (!!rn && normalizeName(g.resourceName) === rn)
-    );
+    const isSoftware = normalizeResourceTypeKey(row.resourceType || '') === 'software/code';
+    const rowStripped = isSoftware ? normalizeName(stripSoftwareVersion(row.resourceName)) : '';
+    return items.some((g) => {
+      if (g.identifier && row.identifier && identifiersMatch(g.identifier, row.identifier)) return true;
+      const gn = normalizeName(g.resourceName);
+      if (rn && gn === rn) return true;
+      // "Fiji 2.9.0" (author) is the same tool as "Fiji" (detected); without
+      // this the row was carried in a second time alongside its own detection.
+      if (rowStripped && normalizeName(stripSoftwareVersion(g.resourceName)) === rowStripped) return true;
+      return false;
+    });
   };
   const carried = [];
   for (const row of authorRows || []) {
@@ -54,7 +77,10 @@ function reconcileWithAuthorKrt(generatedKrt, authorRows) {
     if (isRepresented(row)) continue;
     const base = {
       resourceType: row.resourceType || '', resourceName: row.resourceName || '',
-      sourceUrl: row.source || '', identifier: row.identifier || '', newReuse: row.newReuse || ''
+      sourceUrl: row.source || '', identifier: row.identifier || '', newReuse: row.newReuse || '',
+      // Carry the author's own ADDITIONAL INFORMATION too. Omitting it made the
+      // Generated KRT's copy of an author row poorer than the row it came from.
+      additionalInformation: row.additionalInformation || ''
     };
     const carriedItem = {
       ...base,
@@ -139,7 +165,10 @@ async function buildGeneratedKrt(submission, jobLogger) {
   const consolidated = await consolidateWithLM(candidates, jobLogger);
   const { dropped, usedLM, rawResponse } = consolidated;
   if (rawResponse) {
-    await jobLogger?.saveRawResponse('krt-generation', rawResponse, { extension: '.md', mimeType: 'text/markdown' });
+    // .json, not .md: this is the model's JSON body (possibly still fenced),
+    // never prose. It was written as markdown, which made it look like a
+    // written analysis in the artifact list when it is the raw response.
+    await jobLogger?.saveRawResponse('krt-generation', rawResponse);
   }
 
   // Seed retention: guarantee every author KRT item survives into the Generated

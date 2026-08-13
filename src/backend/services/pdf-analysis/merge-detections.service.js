@@ -17,6 +17,7 @@
  * Pure function — no DB, no async, no I/O.
  */
 
+const { pickBestEvidence } = require('./evidence.service');
 const {
   extractIdentifierTokens,
   computeDedupKey,
@@ -284,6 +285,13 @@ function mergeDetections(contributions) {
       const r = toResource(item, source);
       // Drop entries without enough info to dedup or display.
       if (!r.resourceType || (!r.identifier && !r.resourceName)) continue;
+      // Detectors no longer discard an unverifiable claim — they tag it, so the
+      // claim survives for evaluation. The filtering happens HERE instead:
+      // `unsupported` means neither the quote nor the resource is in the text,
+      // which is not something to show a curator. `embellished` IS shown: the
+      // quote is not verbatim but the resource is genuinely present.
+      if (r.evidence && r.evidence.verification
+          && r.evidence.verification.status === 'unsupported') continue;
       r.detectedBy = []; // populated as we merge
       all.push(r);
     }
@@ -404,9 +412,15 @@ function mergeDetections(contributions) {
     newReuse: r.newReuse,
     additionalInformation: r.additionalInformation,
     confidence: r.confidence,
+    // The strongest manuscript evidence any contributor carried, lifted to the
+    // top level. It is reachable via detectedBy[].originalItem.evidence, but
+    // every consumer that wants to SHOW where a candidate came from would
+    // otherwise have to re-derive "best" for itself.
+    evidence: pickBestEvidence((r.detectedBy || []).map(c => c?.originalItem?.evidence)),
     detectedBy: r.detectedBy
   }));
 }
+
 
 module.exports = {
   mergeDetections,
