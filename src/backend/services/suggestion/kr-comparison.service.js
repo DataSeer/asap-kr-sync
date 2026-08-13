@@ -596,6 +596,10 @@ module.exports = {
   getPersistedSuggestions,
   getPersistedGroundings,
   compareKrts,
+  // Exported so an offline harness can reproduce the REAL suggestion path —
+  // buildSuggestionsFromLM WITH grounding outcomes. compareKrts alone omits the
+  // grounding-derived updates, which would under-report what the pipeline does.
+  callGeminiForComparison,
   // Pure helpers (exported for tests)
   buildSuggestionsFromLM
 };
