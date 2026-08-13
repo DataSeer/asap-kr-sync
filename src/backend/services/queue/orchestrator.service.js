@@ -43,10 +43,16 @@ const RECONCILE_GRACE_MS = 5 * 60 * 1000; // 5 minutes
  * and returns whether the gated step may start.
  */
 const GATES = {
-  // The author KRT feeds the seeded detectors (datasets/materials/protocols
-  // load author rows as LM seeds), so those must not run until the author has
-  // finished curating the KRT — i.e. the submission has moved past the KRT
-  // step. draft/step_krt = still curating.
+  // KRT_GROUNDING reconciles the author's KRT against what detection found, so
+  // it must not run until the author has finished curating that table — i.e.
+  // the submission has moved past the KRT step. draft/step_krt = still curating.
+  //
+  // Detection itself is NOT gated: it is KRT-blind and starts as soon as the
+  // markdown exists. It used to be gated because datasets/materials/protocols
+  // were seeded with the author's rows; removing the seeds removed the reason
+  // to wait, so results now arrive without the pipeline stalling on a KRT that
+  // may never come (the no-KRT mode). PDF_ANALYSIS inherits the gate through
+  // its dependency on KRT_GROUNDING.
   krt_curated: (submission) => !['draft', 'step_krt'].includes(submission.status)
 };
 const PIPELINE = [
@@ -54,24 +60,48 @@ const PIPELINE = [
   // the Modal Llama fine-tune that ate the PDF directly), so it depends on
   // MARKDOWN_CONVERT just like the other Gemini-based detectors.
   { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
-  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [] },
+  // Softcite reads the PDF and could start immediately, but the module's second
+  // engine — the LM pass — reads the converted markdown, and without this
+  // dependency it would race conversion and skip on nearly every run. Waiting
+  // costs nothing end-to-end: no step consumes software output until
+  // KRT_GROUNDING, which waits for the markdown-dependent detectors regardless.
+  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
   { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [] },
   { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [] },
-  // The three seeded detectors read the author KRT (seeds for the LM prompt),
-  // so they additionally gate on the author having validated the KRT step.
-  // Software/ORCID/DAS/identifier detection don't consume author KRT data and
-  // keep starting as early as their job dependencies allow.
-  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
-  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
-  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
+  // Every text detector is KRT-blind and starts as soon as the markdown exists.
+  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
+  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
+  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
   // Identifier detection scans the post-conversion markdown against the
   // curated enrichment list. Cross-category — produces software/materials/
   // datasets/protocols items in one pass and lets pdf-analysis consolidate.
   { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
   {
+    // Grounding reconciles the author's KRT against the candidate pool: for
+    // every author row it decides confirmed / incomplete / not_detected, and
+    // never mutates the row itself. Gated on the author having finished the
+    // KRT step; with no KRT at all it still runs and reports zero author rows,
+    // so the pipeline shape is identical in both modes.
+    jobType: JOB_TYPES.KRT_GROUNDING,
+    dependsOn: [
+      JOB_TYPES.SOFTWARE_DETECTION,
+      JOB_TYPES.DATASETS_DETECTION,
+      JOB_TYPES.MATERIALS_DETECTION,
+      JOB_TYPES.PROTOCOLS_DETECTION,
+      JOB_TYPES.IDENTIFIER_DETECTION
+    ],
+    gate: 'krt_curated'
+  },
+  {
     // PDF Analysis is the consolidator: it merges every detection's items
     // into the Generated KRT. So it depends on every detection that
     // contributes resources (DAS is kept as a soft gate via canAutoAdvance).
+    //
+    // It also depends on KRT_GROUNDING even though it does not read the
+    // outcomes itself: SUGGESTION_GENERATION does, and it reaches this table
+    // only through PDF_ANALYSIS. Ordering it here is what guarantees the
+    // grounding verdicts exist by the time suggestions are built — and it is
+    // how PDF_ANALYSIS inherits the krt_curated gate.
     jobType: JOB_TYPES.PDF_ANALYSIS,
     dependsOn: [
       JOB_TYPES.DAS_EXTRACTION,
@@ -79,7 +109,8 @@ const PIPELINE = [
       JOB_TYPES.DATASETS_DETECTION,
       JOB_TYPES.MATERIALS_DETECTION,
       JOB_TYPES.PROTOCOLS_DETECTION,
-      JOB_TYPES.IDENTIFIER_DETECTION
+      JOB_TYPES.IDENTIFIER_DETECTION,
+      JOB_TYPES.KRT_GROUNDING
     ],
     canAutoAdvance(dependencyJobs) {
       const dasJob = dependencyJobs.get(JOB_TYPES.DAS_EXTRACTION);

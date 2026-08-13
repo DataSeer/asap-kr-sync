@@ -16,6 +16,9 @@ const materialsConfig = require('../config/materials-detection-api');
 const protocolsConfig = require('../config/protocols-detection-api');
 const markdownConfig = require('../config/pdf-markdown-api');
 const krtComparisonConfig = require('../config/krt-comparison-api');
+const identifierDetectionConfig = require('../config/identifier-detection-api');
+const krtGroundingConfig = require('../config/krt-grounding-api');
+const softwareLmConfig = require('../config/software-detection-lm-api');
 
 const router = express.Router();
 
@@ -89,7 +92,13 @@ router.get('/services', (req, res) => {
       ),
       software_detection: entry(
         softciteConfig.isConfigured(),
-        process.env.SOFTWARE_DETECTION_DEMO_DATA_ENABLED !== 'false'
+        process.env.SOFTWARE_DETECTION_DEMO_DATA_ENABLED !== 'false',
+        {
+          subServices: {
+            softcite: { enabled: softciteConfig.isConfigured() },
+            lm_pass: { enabled: softwareLmConfig.isConfigured() }
+          }
+        }
       ),
       orcid_extraction: entry(
         grobidConfig.isConfigured(),
@@ -117,6 +126,25 @@ router.get('/services', (req, res) => {
       protocols_detection: entry(
         protocolsConfig.isConfigured(),
         process.env.PROTOCOLS_DETECTION_DEMO_DATA_ENABLED !== 'false'
+      ),
+      // Local scan — no external API and no demo path, so it is On whenever the
+      // module is not explicitly disabled. Without this entry the panel had no
+      // live state to read and showed "Off" until the job had run once and
+      // persisted its own snapshot.
+      identifier_detection: entry(
+        identifierDetectionConfig.isEnabled(),
+        false
+      ),
+      // The deterministic matcher always runs, so the module is always On; the
+      // LM second look is an optional enhancement, reported as a sub-service.
+      krt_grounding: entry(
+        true,
+        false,
+        {
+          subServices: {
+            second_look: { enabled: krtGroundingConfig.isConfigured() }
+          }
+        }
       ),
       // LM-only (no demo path): on when the KRT comparison API is configured.
       suggestion_generation: entry(

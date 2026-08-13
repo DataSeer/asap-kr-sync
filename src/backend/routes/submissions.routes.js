@@ -15,6 +15,7 @@ const markdownController = require('../controllers/markdown.controller');
 const materialsController = require('../controllers/materials.controller');
 const protocolsController = require('../controllers/protocols.controller');
 const identifierDetectionController = require('../controllers/identifier-detection.controller');
+const krtGroundingController = require('../controllers/krt-grounding.controller');
 const suggestionController = require('../controllers/suggestion.controller');
 const dasSuggestionsController = require('../controllers/das-suggestions.controller');
 const { authenticate } = require('../middleware/auth.middleware');
@@ -421,6 +422,21 @@ router.post('/:id/identifiers/detect',
   canAccessSubmission,
   lmApiLimiter,
   identifierDetectionController.triggerDetection
+);
+
+// ===== KRT Grounding =====
+
+// GET /api/submissions/:id/grounding - Per-author-row reconciliation outcomes
+router.get('/:id/grounding',
+  canAccessSubmission,
+  krtGroundingController.getGrounding
+);
+
+// POST /api/submissions/:id/grounding/regenerate - Re-run grounding
+router.post('/:id/grounding/regenerate',
+  canAccessSubmission,
+  lmApiLimiter,
+  krtGroundingController.triggerGrounding
 );
 
 // ===== Background Jobs =====

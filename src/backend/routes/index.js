@@ -15,6 +15,7 @@ const appConfigRoutes = require('./app-config.routes');
 const enrichmentListRoutes = require('./enrichment-list.routes');
 const demosRoutes = require('./demos.routes');
 const krtRoutes = require('./krt.routes');
+const jobAdminRoutes = require('./job-admin.routes');
 
 const router = express.Router();
 
@@ -31,6 +32,7 @@ router.use('/app-config', appConfigRoutes);
 router.use('/enrichment-list', enrichmentListRoutes);
 router.use('/demos', demosRoutes);
 router.use('/krt', krtRoutes);
+router.use('/admin/jobs', jobAdminRoutes);
 
 // API info endpoint
 router.get('/', (req, res) => {

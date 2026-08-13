@@ -9,6 +9,7 @@ const { extractProjectFromManuscriptId, parsePagination, buildPaginationMeta, st
 const s3Service = require('../services/storage/s3.service');
 const parserService = require('../services/krt/parser.service');
 const krtService = require('../services/krt/krt.service');
+const jobAdminService = require('../services/queue/job-admin.service');
 const { KRT_COLUMNS } = require('../config/constants');
 const logger = require('../utils/logger');
 
@@ -450,12 +451,28 @@ async function deleteSubmission(req, res, next) {
       });
     }
 
+    // Cancel any queued work BEFORE the cascade removes the job rows.
+    // `submission_jobs.submission_id` is ON DELETE CASCADE, but pg-boss keeps
+    // its own table with no foreign key to ours — so without this the queue
+    // entries outlive the submission, get picked up by a worker, fail with
+    // "Submission not found", and retry. Best-effort: a stranded queue entry is
+    // noisy, a half-deleted submission is not recoverable.
+    let cancelledJobs = 0;
+    try {
+      cancelledJobs = await jobAdminService.cancelQueuedJobsForSubmission(submission.id);
+    } catch (queueError) {
+      logger.error('Queue cleanup failed during submission delete', {
+        submissionId: submission.id, error: queueError.message
+      });
+    }
+
     await submission.destroy();
 
     logger.info('Submission deleted', {
       submissionId: req.params.id,
       userId: req.userId,
-      s3ObjectsDeleted: s3DeletedCount
+      s3ObjectsDeleted: s3DeletedCount,
+      cancelledJobs
     });
 
     res.json({ message: 'Submission deleted successfully' });

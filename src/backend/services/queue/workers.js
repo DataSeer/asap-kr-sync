@@ -83,6 +83,13 @@ const SERVICE_CFG = {
     isExternalEnabled: () => true,
     isDemoEnabled: () => false
   },
+  // Grounding's deterministic matcher always runs and has no demo path, so the
+  // module is permanently 'on'; the LM second look only enriches it. Without
+  // this entry the snapshot would read 'off' after the very first run.
+  krt_grounding: {
+    isExternalEnabled: () => true,
+    isDemoEnabled: () => false
+  },
   // LM comparison (author KRT vs Generated KRT) → suggestions. LM-only, so no
   // demo path: when the comparison API isn't configured the module reads 'off'.
   suggestion_generation: {
@@ -584,7 +591,11 @@ async function initializeWorkers() {
         throw error;
       }
     },
-    { concurrency: 1 }
+    // 2, matching the other Gemini-backed detectors. This module used to return
+    // instantly for any submission whose author listed no materials, so a
+    // single worker was plenty; now it always makes a real LM call (20-120s on
+    // a large manuscript) and one worker made the queue drain serially.
+    { concurrency: 2 }
   );
 
   // Protocols Detection Worker
@@ -689,6 +700,64 @@ async function initializeWorkers() {
         // dependents don't observe a transient failure as terminal.
         if (isFinalAttempt) {
           await advancePipeline(submissionId, 'identifier_detection', round);
+        }
+        throw error;
+      }
+    },
+    { concurrency: 2 }
+  );
+
+  // KRT Grounding: reconcile the author's KRT against the candidate pool.
+  await jobQueue.registerHandler(
+    jobQueue.QUEUES.KRT_GROUNDING,
+    async (data, pgBossJob) => {
+      const { processKrtGrounding } = require('../krt-grounding/krt-grounding.service');
+      const { submissionId, submissionJobId } = data;
+      const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
+      const { manuscriptId, round } = await loadSubmission(submissionId);
+      const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.KRT_GROUNDING, pgBossJob);
+
+      try {
+        jobLogger?.log('start', 'Starting KRT grounding', { isFinalAttempt });
+
+        const result = await processKrtGrounding(submissionId, jobLogger);
+        const m = result.data?.meta || {};
+        jobLogger?.log('grounding_complete', 'KRT grounding complete', {
+          mode: m.mode,
+          authorRows: m.authorRows || 0,
+          confirmed: m.confirmed || 0,
+          incomplete: m.incomplete || 0,
+          notDetected: m.notDetected || 0,
+          unmatchedCandidates: m.unmatchedCandidates || 0
+        });
+
+        await submissionJob?.markComplete({
+          // "Detected" here means the step produced a reconciliation, which it
+          // always does — including in no-KRT mode, where zero author rows is
+          // the correct answer rather than a failure.
+          status: { detected: true, mode: m.mode },
+          service: buildServiceSnapshot('krt_grounding', { status: 'done', source: 'internal' }),
+          counts: {
+            authorRows: m.authorRows || 0,
+            confirmed: m.confirmed || 0,
+            incomplete: m.incomplete || 0,
+            notDetected: m.notDetected || 0,
+            unmatchedCandidates: m.unmatchedCandidates || 0
+          },
+          timing: { totalMs: m.totalMs || 0 }
+        });
+        await jobLogger?.flush();
+        await advancePipeline(submissionId, 'krt_grounding', round);
+        return { success: true, submissionId, status: result.status };
+      } catch (error) {
+        jobLogger?.log('error', `KRT grounding failed: ${error.message}`);
+        if (submissionJob) await submissionJob.markFailed(error.message);
+        await jobLogger?.flush();
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'krt_grounding', round);
         }
         throw error;
       }

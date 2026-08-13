@@ -23,6 +23,7 @@ const QUEUES = {
   MATERIALS_DETECTION: 'materials-detection',
   PROTOCOLS_DETECTION: 'protocols-detection',
   IDENTIFIER_DETECTION: 'identifier-detection',
+  KRT_GROUNDING: 'krt-grounding',
   SUGGESTION_GENERATION: 'suggestion-generation',
   DAS_SUGGESTIONS: 'das-suggestions',
   EMAIL_NOTIFICATION: 'email-notification'
@@ -134,6 +135,15 @@ const JOB_CONFIG = {
     get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
     typicalSeconds: 5,
     retryLimit: 1,
+    retryDelay: 30
+  },
+  // Deterministic matching plus one batched LM pass over the author rows that
+  // matched nothing, so the timeout tracks the grounding LM call.
+  [QUEUES.KRT_GROUNDING]: {
+    apiTimeoutMs: Number(process.env.KRT_GROUNDING_API_TIMEOUT) || 180000,
+    get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 20,
+    retryLimit: 2,
     retryDelay: 30
   },
   // LM comparison of author KRT vs Generated KRT → suggestions.
@@ -283,6 +293,18 @@ async function registerHandler(queueName, handler, options = {}) {
         error: error.message
       });
 
+      // Retry-skip on a deleted submission. The submission (or its job row) is
+      // gone — pg-boss has no foreign key to our tables, so its queue entry
+      // outlived them. Retrying cannot help: nothing will bring the row back.
+      // Swallow it so the failure is terminal on the first attempt instead of
+      // logging the same "Submission not found" three times per orphan.
+      if (await isOrphanedByDeletion(job, error)) {
+        logger.info('Job error suppressed — its submission no longer exists, no retry', {
+          queue: queueName, jobId: job.id
+        });
+        return { orphaned: true };
+      }
+
       // Retry-skip on user cancel: if the run was cancelled while this module
       // was mid-flight, its failure is a consequence of the cancel. The handler
       // has already recorded the job as failed (its real status); we must NOT
@@ -327,6 +349,42 @@ async function getJobStatus(jobId) {
  * @param {string} jobId - Job ID
  * @returns {Promise<boolean>}
  */
+/**
+ * Did this job fail only because its submission was deleted underneath it?
+ *
+ * A deleted submission cascades away its `submission_jobs` rows, but pg-boss
+ * keeps its own table with no foreign key to ours, so the queue entry survives
+ * and fails on every attempt. That is permanent, not transient — retrying it
+ * just triples the log noise.
+ *
+ * Deliberately narrow: only a not-found error, and only when the submission is
+ * genuinely absent from the database. A transient DB outage that produced a
+ * different error still retries normally.
+ *
+ * @param {object} job - the pg-boss job ({ data })
+ * @param {Error} error - the error the handler threw
+ * @returns {Promise<boolean>}
+ */
+async function isOrphanedByDeletion(job, error) {
+  const looksNotFound = error?.code === 'NOT_FOUND'
+    || error?.statusCode === 404
+    || /not found/i.test(error?.message || '');
+  if (!looksNotFound) return false;
+
+  const submissionId = job?.data?.submissionId;
+  if (!submissionId) return false;
+
+  try {
+    const { Submission } = require('../../models');
+    const submission = await Submission.findByPk(submissionId, { attributes: ['id'] });
+    return !submission;
+  } catch {
+    // Can't confirm — fall through to the normal retry path rather than
+    // silently swallowing a real failure.
+    return false;
+  }
+}
+
 async function cancelJob(queueName, jobId) {
   const instance = getInstance();
   return instance.cancel(queueName, jobId);
