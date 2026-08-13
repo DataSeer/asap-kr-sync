@@ -158,11 +158,26 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   const signalMs = Date.now() - signalStartTime;
 
   const datasetNames = langextractClient.collectDatasetNames(extractions);
-  const extractedRows = langextractClient.buildExtractedRows(extractions);
+  const allRows = langextractClient.buildExtractedRows(extractions);
+
+  // Pass 1 is a GROUNDING stage, not just a recall stage: LangExtract aligns
+  // each extraction to a span of the article. Anything it could not align did
+  // not come from the article, so it must not reach consolidation, where it
+  // would be laundered into an ordinary-looking candidate row.
+  const { grounded: extractedRows, ungrounded } = langextractClient.partitionByGrounding(allRows);
 
   jobLogger?.log('extract_signals_done', 'Signal extraction complete', {
-    totalExtractions: extractions.length, datasetRowCount: extractedRows.length, durationMs: signalMs
+    totalExtractions: extractions.length,
+    datasetRowCount: extractedRows.length,
+    ungroundedDropped: ungrounded.length,
+    durationMs: signalMs
   });
+  if (ungrounded.length > 0) {
+    jobLogger?.log('extract_signals_ungrounded', 'Dropped signals not aligned to the article', {
+      count: ungrounded.length,
+      names: ungrounded.map((r) => r.attributes?.dataset_name).filter(Boolean).slice(0, 10)
+    });
+  }
   await jobLogger?.saveRawResponse('langextract-signals', extractions);
 
   // Empty result: still a valid External outcome (Done with 0 items).
@@ -485,7 +500,10 @@ async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExam
     examples: signalsExamples
   });
   const datasetNames = langextractClient.collectDatasetNames(extractions);
-  const extractedRows = langextractClient.buildExtractedRows(extractions);
+  // Same grounding gate as the job path — see the comment there.
+  const { grounded: extractedRows } = langextractClient.partitionByGrounding(
+    langextractClient.buildExtractedRows(extractions)
+  );
 
   if (extractedRows.length === 0) {
     return { resources: [], signalCount: extractions.length };
