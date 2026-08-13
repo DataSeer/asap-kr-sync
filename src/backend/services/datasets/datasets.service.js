@@ -182,7 +182,7 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   if (ungrounded.length > 0) {
     jobLogger?.log('extract_signals_ungrounded', 'Dropped signals not aligned to the article', {
       count: ungrounded.length,
-      names: ungrounded.map(r => r.attributes?.dataset_name).filter(Boolean).slice(0, 10)
+      names: ungrounded.map((r) => r.attributes?.dataset_name).filter(Boolean).slice(0, 10)
     });
   }
   await jobLogger?.saveRawResponse('langextract-signals', extractions);

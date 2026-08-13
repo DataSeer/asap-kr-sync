@@ -113,8 +113,17 @@ function buildKrtFromLM(candidates, lmOutput) {
       sourceUrl: r.source ?? refCandidates[0].sourceUrl ?? '',
       identifier: r.identifier ?? refCandidates[0].identifier ?? '',
       newReuse: r.newReuse ?? refCandidates[0].newReuse ?? '',
+      // ADDITIONAL INFORMATION is a KRT column like any other, and
+      // mergeDetections does real work to build it (each contributor's context,
+      // de-duplicated line by line). Leaving it out of `base` dropped it from
+      // every item the LM placed, while the safety-net path below kept it — so
+      // one output table carried two different item shapes. Downstream,
+      // makeAddSuggestion reads it as the suggestion's `context`, so its
+      // absence emptied that hint in the UI on every LM-placed row.
+      //
       // The LM's own value wins when it supplied one; otherwise keep what the
-      // detectors actually observed rather than emitting a blank column.
+      // detectors observed, merged line by line rather than concatenated, so a
+      // blurb two detectors both recorded is not repeated.
       additionalInformation: r.additionalInformation ?? mergedInfo ?? ''
     };
     items.push({
@@ -148,9 +157,15 @@ function buildKrtFromLM(candidates, lmOutput) {
   }
 
   // Safety net: keep any candidate the LM forgot to place.
+  //
+  // `evidence` is normalised rather than merely spread: the LM-placed path
+  // above always emits the key (possibly null), so a candidate that arrived
+  // without one would produce a row missing a field its neighbours have — one
+  // table with two shapes, which is the defect this file has already suffered
+  // twice.
   candidates.forEach((c, n) => {
     if (used.has(n)) return;
-    items.push({ ...c, reason: cleanReason(c.reason) || 'kept' });
+    items.push({ evidence: null, ...c, reason: cleanReason(c.reason) || 'kept' });
   });
 
   return { items, dropped };
