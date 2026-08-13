@@ -368,17 +368,14 @@ async function detectSeedIndependent(pdfBuffer, markdown, fileName, errors) {
 }
 
 /**
- * One full pass: seed-dependent detectors + merge + LM consolidation + LM
- * comparison. opts.materialsUnseeded runs the materials module article-only even
- * when there are no author material seeds (the app skips it — request D); used
- * by the empty pass (C) to measure cold-start material detection.
+ * One full pass: detectors + merge + LM consolidation + LM comparison.
+ *
+ * Detection is KRT-blind — the detectors take no author seeds, so every pass
+ * measures genuine discovery. (opts.materialsUnseeded is retained for call
+ * compatibility but is now a no-op: materials always runs.)
  */
 async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependent, errors, opts = {}) {
-  const byGroup = (g) => authorRows.filter(r => authorGroup(r.resourceType) === g);
-  const datasetSeeds = datasetsService.buildAuthorDatasetSeeds(byGroup('dataset'));
-  const protocolSeeds = buildAuthorSeeds(byGroup('protocol'));
-  const materialSeeds = buildAuthorSeeds(byGroup('material'));
-  const runMaterials = moduleEnabled('materials') && (materialSeeds.length > 0 || opts.materialsUnseeded);
+  const runMaterials = moduleEnabled('materials');
 
   // Seed-dependent detectors fan out concurrently, exactly as the app runs them
   // as independent parallel jobs; merge + LM consolidation below is the barrier.
@@ -387,17 +384,17 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
   const NONE = { items: [], raw: null };
   const [dsR, prR, maR] = await Promise.all([
     !moduleEnabled('datasets') ? Promise.resolve(NONE) : safe('datasets', async () => {
-      const r = await datasetsService.detectDatasets(markdown, { authorDatasets: datasetSeeds });
+      const r = await datasetsService.detectDatasets(markdown);
       return { items: dedupeKrtItems(datasetsService.buildKrtItemsDatasets(r.resources), 'datasets'), raw: r.rawResponse || null };
     }, errors, NONE),
     !moduleEnabled('protocols') ? Promise.resolve(NONE) : safe('protocols', async () => {
-      const r = await protocolsService.detectProtocols(markdown, { authorProtocols: protocolSeeds });
+      const r = await protocolsService.detectProtocols(markdown);
       return { items: dedupeKrtItems(protocolsService.buildKrtItemsProtocols(r.resources), 'protocols'), raw: r.rawResponse || null };
     }, errors, NONE),
-    // Materials is author-seeded only in the app (skipped when the author listed
-    // none); opts.materialsUnseeded forces it article-only for the empty pass.
+    // Materials is KRT-blind and always runs now (it used to be skipped
+    // entirely when the author listed no materials).
     !runMaterials ? Promise.resolve(NONE) : safe('materials', async () => {
-      const r = await materialsService.detectMaterials(markdown, { authorMaterials: materialSeeds });
+      const r = await materialsService.detectMaterials(markdown);
       return { items: dedupeKrtItems(materialsService.buildKrtItemsMaterials(r.resources), 'materials'), raw: r.rawResponse || null };
     }, errors, NONE)
   ]);
@@ -436,7 +433,10 @@ async function runPass(pdfBuffer, markdown, fileName, authorRows, seedIndependen
   // consolidation (+ what it dropped) and the LM comparison decisions, plus each
   // stage's raw LM response (written to .txt files by writeTrace).
   const trace = {
-    seeds: { datasets: datasetSeeds, protocols: protocolSeeds, materials: materialSeeds },
+    // Detection is KRT-blind, so there are no seeds to record. Kept as an
+    // explicit null rather than dropped, so an older trace and a new one stay
+    // visually comparable.
+    seeds: null,
     modules: {
       software:   { enabled: moduleEnabled('software'),   count: seedIndependent.software.length,   items: seedIndependent.software },
       identifier: { enabled: moduleEnabled('identifier'), count: seedIndependent.identifier.length, items: seedIndependent.identifier },

@@ -57,7 +57,12 @@ const VERSIONS = (versionsArg || process.env.COMPARE_VERSIONS || 'v1,v2,v3')
   .split(',').map((s) => s.trim()).filter(Boolean);
 // Versions whose consolidation is seeded from the author KRT (the author KRT
 // file when the demo provides one, otherwise the DS report).
-const SEEDED_VERSIONS = new Set(['v3']);
+// Detection is now KRT-blind: detectDatasets takes no author seeds, so every
+// prompt version is compared article-only. Left as an (empty) set rather than
+// ripped out, because comparing "seeded vs unseeded" is exactly the experiment
+// this harness would run if seeding is ever reconsidered — repopulate it and
+// restore the opts branch below.
+const SEEDED_VERSIONS = new Set();
 
 const pdfDir = path.resolve(positional[0] || 'src/frontend/public/demo-files');
 const resourcesDir = path.resolve(positional[1] || 'tmp/datasets-detection');
@@ -138,7 +143,6 @@ async function main() {
       for (const version of VERSIONS) {
         try {
           const opts = { ...resourcesByVersion[version] };
-          if (SEEDED_VERSIONS.has(version)) opts.authorDatasets = authorSeeds;
           const { resources, signalCount } = await datasetsService.detectDatasets(markdown, opts);
           const krt = dedupeKrtItems(datasetsService.buildKrtItemsDatasets(resources), 'datasets-gemini');
           const result = { signalCount, resourceCount: resources.length, krtCount: krt.length, krt };
