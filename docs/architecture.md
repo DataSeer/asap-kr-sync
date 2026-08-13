@@ -43,14 +43,15 @@ asap-kr-sync/
 │   │   │   ├── identifier-detection/  # Curated-list identifier scanner (DOIs, RRIDs, accessions, catalogs)
 │   │   │   │                          # + list-free published-protocol venue sweep
 │   │   │   ├── krt/               # KRT parsing, validation, identifiers, author-KRT seeding (shared by software/protocols/materials)
-│   │   │   ├── materials/         # Materials detection (Google Gemini)
+│   │   │   ├── krt-grounding/     # Author KRT ↔ manuscript reconciliation (deterministic + LM second look)
+│   │   │   ├── materials/         # Materials detection (Google Gemini, cue-driven)
 │   │   │   ├── orcid/             # ORCID extraction (GROBID, OpenAlex, ORCID API)
 │   │   │   ├── pdf/               # PDF processing, DAS extraction, markdown convert
 │   │   │   ├── pdf-analysis/      # Generated KRT builder — rule-based merge then LM (Gemini) consolidation, rule-based fallback
-│   │   │   ├── protocols/         # Protocols detection (Google Gemini, author-KRT seeded)
+│   │   │   ├── protocols/         # Protocols detection (Google Gemini, KRT-blind)
 │   │   │   ├── queue/             # Job queue (pg-boss), orchestrator, workers
 │   │   │   ├── reports/           # Excel report generation
-│   │   │   ├── software/          # Software detection (Softcite)
+│   │   │   ├── software/          # Software detection (Softcite + optional LM pass)
 │   │   │   ├── storage/           # S3 file operations
 │   │   │   ├── suggestion/        # AI Suggestions — LM (Gemini) author-KRT vs Generated-KRT comparison (suggestion_generation job)
 │   │   │   ├── enrichment-list.service.js  # Single shared service backing the four curated lists
@@ -155,27 +156,40 @@ Each step has a corresponding status, view, and set of operations. Users can nav
 
 ## Background Job Pipeline
 
-PDF upload triggers parallel background jobs via pg-boss. PDF Analysis builds the Generated KRT (rule-based merge then LM consolidation) once every detection job is terminal (gated by whether DAS was detected); Suggestion Generation then runs last to produce the AI Suggestions:
+PDF upload triggers parallel background jobs via pg-boss. The pipeline separates
+two jobs that used to be fused:
+
+- **Discovery** — five KRT-blind detectors answer *what resources does this
+  manuscript describe?* None of them sees the author's table.
+- **Grounding** — `krt_grounding` then answers *for each row the author wrote,
+  is it in the PDF, and does their row carry everything the PDF says about it?*
+
+Keeping them apart is what makes both answerable. A detector shown the author's
+KRT can only confirm it, and its recall becomes unmeasurable.
 
 ```mermaid
 graph TD
-    PDF[PDF Upload] --> SW[Software Detection]
+    PDF[PDF Upload] --> MD[Markdown Convert]
     PDF --> ORCID[ORCID Extraction]
-    PDF --> MD[Markdown Convert]
     MD --> DAS[DAS Extraction]
+    MD --> SW[Software Detection]
     MD --> DS[Datasets Detection]
     MD --> MAT[Materials Detection]
     MD --> PROT[Protocols Detection]
     MD --> ID[Identifier Detection]
-    KRTV{{KRT validated?}} -.->|gate: krt_curated| DS
-    KRTV -.->|gate| MAT
-    KRTV -.->|gate| PROT
+    SW --> KG[KRT Grounding]
+    DS --> KG
+    MAT --> KG
+    PROT --> KG
+    ID --> KG
+    KRTV{{KRT validated?}} -.->|gate: krt_curated| KG
     DAS --> PA[PDF Analysis]
     SW --> PA
     DS --> PA
     MAT --> PA
     PROT --> PA
     ID --> PA
+    KG --> PA
     PA --> SG[Suggestion Generation]
     ORCID --> SG
 
@@ -188,12 +202,33 @@ graph TD
     style MAT fill:#14b8a6,color:#fff
     style PROT fill:#f97316,color:#fff
     style ID fill:#a855f7,color:#fff
+    style KG fill:#0ea5e9,color:#fff
     style PA fill:#ef4444,color:#fff
     style SG fill:#db2777,color:#fff
     style KRTV fill:#6b7280,color:#fff
 ```
 
-**Datasets, Materials, and Protocols detection are seeded with the author's KRT rows**, so they gate on `krt_curated` (submission status past `step_krt`): they stay in `waiting` until the author validates the KRT, then advance automatically — no manual action. ORCID Extraction is intentionally **not** a contributor to PDF Analysis — its output lives on `submission.authors`, not in the Generated KRT. PDF Analysis auto-advances when DAS was detected; if DAS extraction fails, the job parks at `pending_input` until the user supplies a DAS manually and clicks Advance. **Suggestion Generation** (the AI Suggestions / KRT comparison) runs last, depending on PDF Analysis (which already gates on every KRT detector); it is LM-only, so with no LM configured no suggestions are produced.
+**Every detector is KRT-blind and starts as soon as the markdown exists.** The
+`krt_curated` gate sits on **KRT Grounding** — the only step that reads the
+author's table, and therefore the only one that needs it final. It holds in
+`waiting` until the submission moves past `step_krt`, then advances by itself.
+`pdf_analysis` and `suggestion_generation` inherit the gate through it.
+
+**Software Detection depends on Markdown Convert** even though Softcite reads the
+PDF: the module's optional LM pass reads the converted markdown, and without the
+dependency it would race conversion and skip on most runs.
+
+ORCID Extraction is intentionally **not** a contributor to PDF Analysis — its
+output lives on `submission.authors`, not in the Generated KRT. PDF Analysis
+auto-advances when DAS was detected; if DAS extraction fails, the job parks at
+`pending_input` until the user supplies a DAS manually and clicks Advance.
+**Suggestion Generation** runs last; it is LM-only, so with no LM configured no
+suggestions are produced.
+
+**Both modes, one pipeline.** With no author KRT, grounding still runs and
+reports zero author rows with every candidate unmatched (`meta.mode: 'no_krt'`).
+Nothing about the pipeline shape changes — the Generated KRT is then pure
+discovery.
 
 See [Background Jobs](./background-jobs.md) for details.
 

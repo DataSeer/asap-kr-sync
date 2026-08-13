@@ -83,20 +83,24 @@ PDF upload triggers a pipeline of parallel and dependent jobs:
 
 ```mermaid
 graph TD
-    PDF[PDF Upload] --> SW[Software Detection]
+    PDF[PDF Upload] --> MD[Markdown Convert]
     PDF --> ORCID[ORCID Extraction]
-    PDF --> MD[Markdown Convert]
 
     MD --> DAS[DAS Extraction]
+    MD --> SW[Software Detection]
     MD --> ID[Identifier Detection]
     MD --> DS[Datasets Detection]
     MD --> MAT[Materials Detection]
     MD --> PROT[Protocols Detection]
 
+    SW --> KG[KRT Grounding]
+    DS --> KG
+    MAT --> KG
+    PROT --> KG
+    ID --> KG
+
     KRTV{{KRT validated?<br/>status past step_krt}}
-    KRTV -.->|gate: krt_curated| DS
-    KRTV -.->|gate: krt_curated| MAT
-    KRTV -.->|gate: krt_curated| PROT
+    KRTV -.->|gate: krt_curated| KG
 
     DAS --> PA[PDF Analysis]
     SW --> PA
@@ -104,6 +108,7 @@ graph TD
     MAT --> PA
     PROT --> PA
     ID --> PA
+    KG --> PA
 
     PA --> SG[Suggestion Generation]
     ORCID --> SG
@@ -120,38 +125,51 @@ graph TD
     style MAT fill:#14b8a6,color:#fff
     style PROT fill:#f97316,color:#fff
     style ID fill:#a855f7,color:#fff
+    style KG fill:#0ea5e9,color:#fff
     style PA fill:#ef4444,color:#fff
     style SG fill:#db2777,color:#fff
     style PI fill:#6b7280,color:#fff
     style KRTV fill:#6b7280,color:#fff
 ```
 
-**KRT-validation gate.** Datasets, Materials, and Protocols detection seed the LM
-with the author's KRT rows, so running them against a still-draft KRT would feed
-the models unvalidated data. These three additionally **gate on `krt_curated`**
-(the submission status has moved past `draft`/`step_krt`): until the author
-validates the KRT, the jobs stay in `waiting` and the jobs API reports
-`waitingReason: 'krt_validation'`. Unlike the DAS `pending_input` gate, this
-needs **no manual action** — the jobs advance by themselves once the status
-changes. Software, ORCID, DAS, Markdown Convert, and Identifier detection are
-unaffected and still start as soon as their dependencies are met, so the
-expensive markdown conversion still overlaps with curation.
+**Every detector is KRT-blind.** Datasets, Materials, Protocols, Software and
+Identifier detection never see the author's KRT. They answer one question —
+*what resources does this manuscript describe?* — and answer it the same way
+whether the author supplied a KRT or not. This is what makes their output usable
+as evidence: a detector that had been shown the KRT could only confirm it.
 
-ORCID Extraction is intentionally **not** an input to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT. **Suggestion Generation** (AI Suggestions) runs last and depends on PDF Analysis, which already gates on every KRT detector. Because PDF Analysis and Suggestion Generation sit downstream of the three gated detectors, they inherit the KRT-validation gate transitively — the Generated KRT always diffs the curated KRT.
+**The KRT-validation gate sits on KRT Grounding**, not on the detectors. Grounding
+is the step that reads the author's KRT (as a *query* against the candidate pool,
+never as a seed), so it is the only one that needs the KRT to be final. Until the
+submission status moves past `draft`/`step_krt` the job stays in `waiting` and the
+jobs API reports `waitingReason: 'krt_validation'`. Unlike the DAS `pending_input`
+gate this needs **no manual action** — the job advances by itself once the status
+changes. With no author KRT at all, grounding still runs and reports zero author
+rows, so the pipeline shape is identical in both modes.
+
+**Software Detection depends on Markdown Convert** even though Softcite reads the
+PDF directly: the module's second engine — the optional LM pass — reads the
+converted markdown, and without the dependency it would race conversion and skip
+on nearly every run. This costs nothing end-to-end, because no downstream step
+consumes software output before KRT Grounding, which waits for the
+markdown-dependent detectors anyway.
+
+ORCID Extraction is intentionally **not** an input to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT. **PDF Analysis** depends on KRT Grounding even though it does not read the grounding outcomes itself: **Suggestion Generation** does, and it reaches the grounding results only through PDF Analysis. Ordering it this way is what guarantees the verdicts exist when suggestions are built, and it is how PDF Analysis inherits the `krt_curated` gate.
 
 ### Pipeline Definition
 
 | Job Type | Depends On | Submission-State Gate | Auto-Advance Condition |
 |----------|-----------|-----------------------|------------------------|
-| DAS Extraction | Markdown Convert | — | Always |
-| Software Detection | (none) | — | Always |
-| ORCID Extraction | (none) | — | Always |
 | Markdown Convert | (none) | — | Always |
+| ORCID Extraction | (none) | — | Always |
+| DAS Extraction | Markdown Convert | — | Always |
+| Software Detection | Markdown Convert | — | Always (Softcite reads the PDF; the LM pass reads the markdown) |
 | Identifier Detection | Markdown Convert | — | Always |
-| Datasets Detection | Markdown Convert | `krt_curated` | Always (falls back gracefully if markdown unavailable) |
-| Materials Detection | Markdown Convert | `krt_curated` | Always |
-| Protocols Detection | Markdown Convert | `krt_curated` | Always |
-| PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection | — (inherited transitively) | Only if DAS extraction `result.status.detected === true` |
+| Datasets Detection | Markdown Convert | — | Always (falls back gracefully if markdown unavailable) |
+| Materials Detection | Markdown Convert | — | Always |
+| Protocols Detection | Markdown Convert | — | Always |
+| KRT Grounding | Software + Datasets + Materials + Protocols + Identifier Detection | `krt_curated` | Always |
+| PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection + KRT Grounding | — (inherited transitively) | Only if DAS extraction `result.status.detected === true` |
 | Suggestion Generation | PDF Analysis | — (inherited transitively) | Always (runs last in the pipeline) |
 
 ### Pipeline Rules
@@ -340,3 +358,52 @@ The `useJobPoller` composable polls job status with exponential backoff:
 | `src/backend/controllers/jobs.controller.js` | API endpoints for job management |
 | `src/frontend/src/composables/useJobPoller.js` | Frontend polling with backoff |
 | `src/frontend/src/components/submission/JobStatusPanel.vue` | Job status display in UI |
+
+
+---
+
+## Job administration (admin UI)
+
+**Page:** `/admin/jobs` — "Processing Jobs" in the sidebar. **Admin role only.**
+
+The pipeline is fail-soft by design: a job that cannot progress parks in `waiting` rather than erroring, and
+pg-boss retries transient failures. That is correct for one submission and wrong in aggregate — over time the
+queue accumulates work that can never produce anything, while still occupying worker slots and making the
+per-submission panel look busy. This page names that backlog and lets an operator clear it.
+
+Every job is annotated with a **staleness verdict**:
+
+| Verdict | Meaning | Certainty |
+|---|---|---|
+| `orphaned` | The submission it belongs to no longer exists. | certain |
+| `superseded` | A newer run of the same step exists for this submission + round. | certain |
+| `stuck_waiting` | `waiting` for more than 6h — its dependencies are unlikely to complete. | heuristic |
+| `stale_active` | `queued`/`processing` for more than 2h — the worker holding it probably died. | heuristic |
+
+A **finished** job (`complete`/`failed`/`cancelled`) is history, not backlog, and is never flagged — unless its
+submission is gone.
+
+Two safety rules are enforced server-side, not just in the UI:
+
+1. **A running job is never touched implicitly.** `processing` means a worker holds it right now, so it is
+   excluded from selection and from every bulk action. Deleting one requires an explicit `?force=true`.
+2. **Deleting a row also cancels its pg-boss entry.** Otherwise the queue entry survives, fires later, finds
+   no `SubmissionJob`, and fails — turning a cleanup into a new source of noise.
+
+`Cancel` is the non-destructive alternative: the record is kept for audit, the queue entry is dropped, and the
+row moves to the terminal `cancelled` state so dependent steps stop waiting on it (see the cancellation
+propagation rule in the orchestrator).
+
+### API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/admin/jobs` | List jobs with staleness annotations (`status`, `jobType`, `submissionId`, `staleReason`, `limit`, `offset`) |
+| `GET` | `/api/admin/jobs/meta` | Filter vocabulary + staleness thresholds, so the UI never hardcodes a drifting list |
+| `POST` | `/api/admin/jobs/bulk-delete` | Delete a set of ids (`{ ids, force? }`) |
+| `POST` | `/api/admin/jobs/cleanup` | Delete everything matching a `staleReason` (or `'any'`) — **re-classified at call time**, so a job that started running since the page loaded is skipped |
+| `POST` | `/api/admin/jobs/:id/cancel` | Stop a job, keep the record |
+| `DELETE` | `/api/admin/jobs/:id` | Delete one job (`?force=true` to include a running one) |
+
+**Key files:** `services/queue/job-admin.service.js`, `controllers/job-admin.controller.js`,
+`routes/job-admin.routes.js`, frontend `views/admin/JobsView.vue` + `services/job-admin.service.js`.

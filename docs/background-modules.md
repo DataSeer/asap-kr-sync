@@ -21,10 +21,11 @@ step rather than the auto pipeline; see §3.11 and [submission-workflow.md](./su
 |---------------------|---------------|--------|-----------|-------|
 | `markdown_convert` | — (PDF → Markdown text) | Modal/Docling **or** local MarkItDown | — | the text detectors below |
 | `das_extraction` | Data Availability Statement | Google Gemini | `markdown_convert` | the PDF-Analysis gate |
-| `software_detection` | Software / code | Softcite (NER, not an LLM) | — | PDF Analysis |
-| `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` + gate `krt_curated` | PDF Analysis |
-| `materials_detection` | Lab materials / reagents | Google Gemini *(author-seeded; see §3.5)* | `markdown_convert` + gate `krt_curated` | PDF Analysis |
-| `protocols_detection` | Protocols | Google Gemini | `markdown_convert` + gate `krt_curated` | PDF Analysis |
+| `software_detection` | Software / code | Softcite (NER) **+ optional Gemini LM pass**, unioned | `markdown_convert` | PDF Analysis |
+| `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` | PDF Analysis |
+| `materials_detection` | Lab materials / reagents | Google Gemini (cue-driven, KRT-blind) | `markdown_convert` | PDF Analysis |
+| `protocols_detection` | Protocols | Google Gemini | `markdown_convert` | PDF Analysis |
+| `krt_grounding` | Author KRT ↔ manuscript reconciliation | Deterministic matcher + optional LM second look | every detector + gate `krt_curated` | Suggestion Generation |
 | `identifier_detection` | Known RRIDs / DOIs / accessions | **Local** scan of curated lists | `markdown_convert` | PDF Analysis |
 | `orcid_extraction` | Authors + ORCIDs | GROBID → OpenAlex → ORCID API | — | `submission.authors` (not the KRT) |
 | `pdf_analysis` | The consolidated Generated KRT | Rule-based merge → **LM (Gemini)** consolidation, rule-based fallback | all detectors above | Suggestion Generation |
@@ -35,34 +36,49 @@ Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./
 
 ```mermaid
 flowchart LR
-    UP(["PDF uploaded"]) --> SW["software_detection<br/>(Softcite)"]
-    UP --> OR["orcid_extraction<br/>(GROBID+OpenAlex+ORCID)"]
+    UP(["PDF uploaded"]) --> OR["orcid_extraction<br/>(GROBID+OpenAlex+ORCID)"]
     UP --> MDC["markdown_convert<br/>(Docling / MarkItDown)"]
     MDC --> DAS["das_extraction<br/>(Gemini)"]
+    MDC --> SW["software_detection<br/>(Softcite + optional LM)"]
     MDC --> DS["datasets_detection<br/>(LangExtract → Gemini)"]
-    MDC --> MAT["materials_detection<br/>(Gemini — author-seeded)"]
+    MDC --> MAT["materials_detection<br/>(Gemini — cue-driven)"]
     MDC --> PR["protocols_detection<br/>(Gemini)"]
     MDC --> ID["identifier_detection<br/>(local)"]
-    KRTV{{"KRT validated?<br/>(gate: krt_curated)"}} -.-> DS
-    KRTV -.-> MAT
-    KRTV -.-> PR
+    SW --> KG["krt_grounding<br/>(match + LM second look)"]
+    DS --> KG
+    MAT --> KG
+    PR --> KG
+    ID --> KG
+    KRTV{{"KRT validated?<br/>(gate: krt_curated)"}} -.-> KG
     SW --> PA["pdf_analysis<br/>(rule-merge → LM consolidate)"]
     MAT --> PA
     DAS --> PA
     DS --> PA
     PR --> PA
     ID --> PA
+    KG --> PA
+    KG --> GR(["grounding outcomes"])
     PA --> SG["suggestion_generation<br/>(LM — AI Suggestions)"]
+    GR --> SG
     SG --> SUG(["persisted suggestions"])
     PA --> GK(["Generated KRT"])
     OR --> AU(["submission.authors"])
 ```
 
-The **datasets**, **materials**, and **protocols** detectors seed the LM with the author's KRT rows, so beyond
-`markdown_convert` they gate on `krt_curated`: they hold in `waiting` (the panel shows *"Waiting for the Key
-Resources Table to be validated"*, `waitingReason: 'krt_validation'` from the jobs API) until the submission status
-moves past `step_krt`, then advance automatically with no manual step. `pdf_analysis` and `suggestion_generation`
-inherit the gate transitively.
+**Detection is KRT-blind.** No detector reads the author's table, so all of them start as soon as
+`markdown_convert` finishes. The author's rows enter one step later, at **`krt_grounding`** (§3.7b), which is the
+only module gated on `krt_curated`: it holds in `waiting` (the panel shows *"Waiting for the Key Resources Table to
+be validated"*, `waitingReason: 'krt_validation'` from the jobs API) until the submission status moves past
+`step_krt`, then advances automatically with no manual step. `pdf_analysis` and `suggestion_generation` inherit the
+gate transitively through it.
+
+> **Why the seeds went away.** `datasets`/`materials`/`protocols` used to be seeded with the author's KRT rows and
+> told to *"emit one row for every author-provided entry, never drop one"*. That fused two different jobs into one
+> call: the model could echo a seed it had never located in the text, and the output looked identical either way —
+> so the app could not answer whether an author row was actually supported by the PDF, while *"ADD SPARINGLY"* in
+> the same prompt suppressed discovery. Both eval runs had to be executed article-only to measure anything real.
+> Separating them (detection blind, reconciliation in `krt_grounding`) makes both jobs answerable. See
+> [design-krt-detection-two-modes.md](./design-krt-detection-two-modes.md).
 
 ---
 
@@ -70,14 +86,15 @@ inherit the gate transitively.
 
 Every detector is built the same way — learn this once and each module below is just the specifics.
 
-### 2.1 The three-stage detector contract
+### 2.1 The four-stage detector contract
 
 A detector turns its raw findings into the canonical **`KrtEntry`** shape (`services/pdf-analysis/krt-entry.js`)
 through three stages:
 
 1. **`detect(input)`** — call the engine (external API, LLM, or local scan) → raw output.
 2. **`buildKrtItems(raw)`** — map raw output to `KrtEntry[]` (canonical shape, not yet deduped).
-3. **`dedupeKrtItems(items)`** — collapse duplicates within this detector (reuses the same merge engine as PDF Analysis).
+3. **`attachEvidence(items, index)`** — ground every claim against the manuscript (see §2.1b).
+4. **`dedupeKrtItems(items)`** — collapse duplicates within this detector (reuses the same merge engine as PDF Analysis).
 
 > **No enrichment step.** Detectors no longer fill blanks from the curated enrichment lists — only the
 > **Identifier Detection** module (§3.7) consults the enrichment lists (as its data source, see §2.4).
@@ -140,7 +157,165 @@ re-keyed by `dedupKey` and carries a `detectedBy` provenance array (the cross-de
 > [database.md → `krt_data`](./database.md#krt_data); the suggestion shapes are in
 > [api-reference.md → Suggestions](./api-reference.md#suggestions).
 
-### 2.1b Automatic transformations applied by the pipeline
+### 2.1b The evidence contract
+
+Every `KrtEntry` carries an `evidence` block recording **both** what the detector claimed and
+what the manuscript actually supports. Those are two different things and must never share a
+field — once the model's claim is overwritten by the located text (or blanked), "how often does
+the model embellish?" becomes unanswerable, and no prompt change can be evaluated.
+
+```jsonc
+"evidence": {
+  // WHAT THE DOCUMENT SUPPORTS — empty/-1 when nothing was located
+  "quote":   "…text that occurs in the converted markdown…",
+  "offset":  14832,
+  "section": "Methods > Immunohistochemistry",
+  "match":   "exact",                       // 'exact' | 'partial' | null
+  "context": "…the surrounding paragraph…", // + quoteStart/quoteEnd/sentenceStart/sentenceEnd
+  "truncated": false,
+
+  // WHAT THE DETECTOR CLAIMED — verbatim, never modified, never blanked
+  "claimed": { "quote": "…", "identifier": "RRID:SCR_026874" },
+
+  // EVERY occurrence of this resource, not just the first
+  "mentions": [ { "offset": 14832, "section": "Methods", "via": "name" }, … ],
+
+  "verification": {
+    "status": "verified" | "embellished" | "unsupported",
+    "quoteVerbatim": true, "identifierInText": true, "nameInText": true
+  }
+}
+```
+
+**The three statuses**
+
+| Status | Meaning | What happens to it |
+|---|---|---|
+| `verified` | the claimed quote is literally in the markdown | kept |
+| `embellished` | the quote is **not** verbatim, but the RESOURCE is in the text (its identifier or name) | **kept**, flagged |
+| `unsupported` | neither the quote nor the resource is in the text | dropped at `mergeDetections` |
+
+`embellished` exists because of a measured behaviour: the model reads `broom` and `ab41489` from
+the manuscript and then writes back a quote carrying the matching `RRID:SCR_026874` /
+`RRID:AB_727049` **from its own knowledge**. Those RRIDs are real and correctly associated —
+only the quote is not verbatim. Discarding such rows was pure recall loss, so they now survive
+with the discrepancy recorded.
+
+**Nothing is discarded by a detector.** Detectors tag; `mergeDetections` filters. That keeps
+every claim available for evaluation while keeping `unsupported` rows out of the curator's view.
+
+**Matching is whitespace- and Unicode-insensitive.** The converter line-wraps sentences, and the
+corpus mixes MICRO SIGN with GREEK MU, contains mathematical-italic letters a model rewrites as
+ASCII, and 1000+ ellipses. Comparison therefore runs over an NFKD-folded, whitespace-collapsed
+projection, mapped back to real offsets.
+
+**Exempt from verification:** `identifier_detection` is grounded by construction (the scanner
+matched at a known offset). `software_detection` (Softcite) reads the PDF rather than the
+markdown, so its sentence is a real quote that may not be a byte-match — it is verified like any
+other claim and usually lands as `embellished` rather than being trusted blindly.
+
+### 2.1c Mentions vs detections vs contributors — three different groupings
+
+These are easy to conflate and mean different things:
+
+| Concept | Field | Produced by | Means |
+|---|---|---|---|
+| **Mention** | `evidence.mentions[]` | `evidence.service` (deterministic) | a place in the manuscript where this resource appears |
+| **Merged finding** | `mergedFrom[]` | `dedupeKrtItems` | two findings by the SAME detector that are one resource |
+| **Contributor** | `detectedBy[]` | `mergeDetections` | findings from DIFFERENT detectors that are one resource |
+
+A detector emits **one row per resource**, not one per mention — with a single `evidence_quote`.
+The exception is `identifier_detection`, which emits one row per identifier occurrence; those
+collapse at `dedupeKrtItems`, keeping each position in `mergedFrom`.
+
+`mentions[]` is computed afterwards, by searching the markdown for the resource's identifier and
+name. Ordering puts a **usage section ahead of the reference list**, which is what makes
+used-vs-cited decidable: a tool appearing only under *References* is cited, one in *Methods* is
+used. Before this existed, `indexOf` kept whichever occurrence came first and the rest were
+invisible.
+
+### 2.1d From PDF to Generated KRT — the whole chain
+
+Every stage, in order, with what it adds and where it can lose something.
+
+```
+ PDF ──► markdown_convert ──► markdown on S3 (every text detector reads THIS)
+                                  │
+      ┌───────────────────────────┴───────────────────────────┐
+      │  5 DETECTORS — all KRT-BLIND, all in parallel         │
+      │                                                       │
+      │  software    Softcite (PDF) + optional LM (markdown)  │
+      │  datasets    LangExtract signals → Gemini consolidate  │
+      │  materials   Gemini, cue-driven                        │
+      │  protocols   Gemini                                    │
+      │  identifier  local regex vs curated lists + venue sweep│
+      └───────────────────────────┬───────────────────────────┘
+                                  │  each detector, per item:
+                                  │   1. detect          → raw model/scanner output
+                                  │   2. buildKrtItems   → canonical KrtEntry
+                                  │   3. attachEvidence  → verify claim vs markdown,
+                                  │                        add mentions + status
+                                  │   4. dedupeKrtItems  → collapse within THIS detector
+                                  │                        (mergedFrom keeps contributors)
+                                  ▼
+                        persisted per job: result.data.items
+                                  │
+      ┌───────────────────────────┴───────────────────────────┐
+      │  krt_grounding            (gated on krt_curated)      │
+      │  author KRT × candidate pool                          │
+      │   • deterministic match: identifier → alias → name    │
+      │   • LM second look over the rows nothing matched      │
+      │     (every quote re-verified; an unlocatable one      │
+      │      changes nothing)                                 │
+      │   → per author row: confirmed / incomplete /          │
+      │                     partial / not_detected            │
+      │   → conflicts where the paper disagrees with the row  │
+      └───────────────────────────┬───────────────────────────┘
+                                  ▼
+      ┌───────────────────────────────────────────────────────┐
+      │  pdf_analysis — builds the GENERATED KRT              │
+      │                                                       │
+      │   a. mergeDetections   cross-detector merge; drops    │
+      │                        `unsupported`; detectedBy[]    │
+      │                        keeps provenance; infers       │
+      │                        SOURCE from the identifier     │
+      │   b. consolidateWithLM Gemini merges near-duplicates, │
+      │                        drops non-resources, gives a   │
+      │                        `reason` per kept/dropped line │
+      │                        (rule-based fallback if off)   │
+      │   c. reconcileWithAuthorKrt — every author row is     │
+      │                        guaranteed to survive          │
+      └───────────────────────────┬───────────────────────────┘
+                                  ▼
+              Generated KRT  (result.data.items + generated-krt.json on S3)
+                                  │
+      ┌───────────────────────────┴───────────────────────────┐
+      │  suggestion_generation                                │
+      │   author KRT × Generated KRT × grounding outcomes     │
+      │   → add / skip / update / remove, + grounding tags    │
+      └───────────────────────────────────────────────────────┘
+```
+
+**Where data can be lost, and what protects it**
+
+| Stage | Historic loss | Protection now |
+|---|---|---|
+| `attachEvidence` | dropped the whole row on an unverifiable quote | tags instead; `mergeDetections` filters |
+| `dedupeKrtItems` | silently dropped `evidence` (rebuild by field enumeration) | `pickBestEvidence` + `evidence-pipeline.test.js` |
+| `mergeDetections` | same | same |
+| `consolidateWithLM` | same — the LM returns only curated fields | evidence recovered from the merged `refs` |
+
+The last three rows are all the same defect: **a stage that rebuilds a resource from its
+contributors by enumerating fields loses anything nobody thought to enumerate.** It bit three
+separate stages before it was recognised as a class. `evidence-pipeline.test.js` now walks the
+whole chain and asserts evidence survives each hop — necessary because the symptom (a suggestion
+with no context in the UI) always surfaces far from the stage that caused it.
+
+**Ordering note.** `krt_grounding` runs *before* `pdf_analysis` and reads the raw detector items,
+not the Generated KRT. It reconciles against everything the detectors found, including candidates
+the LM consolidation later drops.
+
+### 2.1e Automatic transformations applied by the pipeline
 
 Everything below happens **without asking the user**. None of it is available in the KRT Editor —
 the editor validates and reports, but (with one exception noted at the end) never rewrites a cell on
@@ -161,7 +336,7 @@ its own. Pipeline output reaches the author only as a *suggestion* they must acc
 | 11 | **Identifier normalisation** | `identifier-normalize` | Strips scheme/prefix noise (`https://`, `doi.org/`, `DOI:`, `RRID:`, `Cat#`) and type-tags tokens so a DOI can't collide with a catalog number. |
 | 12 | **ADDITIONAL INFORMATION concatenation** | `merge-detections` | Merges each contributor's context, de-duplicated line by line. |
 | 13 | **Confidence / relevance scoring** | every detector | `HIGH/MEDIUM/LOW` → 0.95 / 0.7 / 0.4, used for tie-breaking and field ownership. |
-| 14 | **Author-KRT seeding** | `author-krt-seeds` | The author's own rows are injected into the Protocols / Materials / Datasets prompts as authoritative base records so the LM enriches rather than re-derives. |
+| 14 | **Author-row reconciliation** | `krt-grounding` | The author's rows are matched against the candidate pool *after* detection (identifier → alias → name → partial_name), never injected into a detection prompt. Author rows are never mutated — an unmatched row is tagged `not_detected`, not dropped or rewritten. |
 | 15 | **Suggestion tiering** | `kr-comparison` | Marks identifier-less finds `needs_verification` so they surface with a **Verify** badge instead of being dropped. |
 
 **Never inferred, on purpose:**
@@ -264,18 +439,35 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 ### 3.3 `software_detection` — Software / code
 
 - **Purpose:** detect software, tools, packages and their versions/URLs.
-- **Engine:** **Softcite** — a purpose-built academic NER service (**not** an LLM; deterministic, no token cost,
-  no prompt). Returns mentions with offsets and per-mention confidence.
-- **Depends on:** nothing (immediate). **Input:** the PDF (Softcite multipart field `input`).
+- **Engine — two, unioned:**
+  1. **Softcite** — a purpose-built academic NER service (**not** an LLM; deterministic, no token cost, no
+     prompt), reading the PDF. Recognises tool NAMES written in prose, with good precision.
+  2. **An optional Gemini LM pass** (`software-lm.service.js`) reading the converted markdown, cue-driven.
+     It covers what a name recogniser structurally cannot see: `RRID:SCR_…` tokens, GitHub/GitLab/PyPI/CRAN
+     links, packages named only in a parenthetical, and custom code promised in a data-availability
+     statement. Against the DS curators' reports Softcite alone scored **25% recall — the worst of any
+     module — and 253 of the 291 misses carried a machine-readable identifier in the text** (143 an
+     `RRID:SCR_`). Off by default (`SOFTWARE_DETECTION_LM_ENABLED=true` to enable).
+
+  The LM pass is **additive and fail-soft**: disabled, missing markdown, or an LM error all degrade to
+  Softcite-only rather than failing the module. Where both engines find the same tool, they collapse into one
+  row carrying both provenances — and that agreement is itself a confidence signal.
+- **Depends on:** `markdown_convert`. Softcite alone could start immediately, but the LM pass reads the
+  markdown and would otherwise race the conversion and skip on nearly every run. Waiting costs nothing
+  end-to-end: nothing consumes software output until `krt_grounding`, which waits for the markdown-dependent
+  detectors regardless. **Input:** the PDF (Softcite) + the Markdown (LM pass).
 - **How it works:** Softcite mentions → `KrtEntry[]` (resourceType `Software/code`) → deduped. A
   **post-processing** pass then: defaults software to **Reuse**; turns code (programming languages) into
   "`<Lang> code`" marked **New**; **excludes** instrument/acquisition software; and **de-duplicates against the
   author KRT ignoring version numbers / RRIDs** in the name.
 - **Config:** `SOFTCITE_API_ENABLED`, `SOFTCITE_API_BASE_URL`, `SOFTCITE_API_TIMEOUT`,
-  `SOFTWARE_DETECTION_DEMO_DATA_ENABLED`.
+  `SOFTWARE_DETECTION_DEMO_DATA_ENABLED`; LM pass: `SOFTWARE_DETECTION_LM_ENABLED`,
+  `SOFTWARE_DETECTION_GEMINI_API_KEY/_MODEL`, `SOFTWARE_DETECTION_API_TIMEOUT`.
+  **Prompt:** `data/prompts/software-detection.txt`.
 - **Demo:** `getDemoSoftwareMentions(manuscriptId)`.
 - **Key files:** `services/software/software.service.js`, `services/software/softcite-client.service.js`,
-  `config/softcite-api.js`.
+  `services/software/software-lm.service.js`, `config/softcite-api.js`,
+  `config/software-detection-lm-api.js`.
 
 ### 3.4 `datasets_detection` — Datasets (two-pass)
 
@@ -285,7 +477,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
      **grounded candidate signals** with source spans (high recall, reduces hallucination).
   2. **Google Gemini** consolidates those signals + the article: merges duplicate mentions, applies exclusion
      rules (no annotation tracks / preprints / literature-only refs), and classifies KRT relevance.
-- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (KRT-seeded, so it waits for KRT validation — see §1). **Input:** the Markdown (both passes).
+- **Depends on:** `markdown_convert`. **No KRT gate** — the detector is KRT-blind and starts as soon as the markdown exists (see §1). **Input:** the Markdown (both passes).
 - **Config:** `DATASETS_DETECTION_ENABLED`, `DATASETS_DETECTION_GEMINI_API_KEY/_MODEL`, `DATASETS_DETECTION_API_TIMEOUT`,
   `DATASETS_DETECTION_DEMO_DATA_ENABLED`, and the LangExtract tunables `DATASETS_LANGEXTRACT_MAX_WORKERS /
   _MAX_CHAR_BUFFER / _EXTRACTION_PASSES / _BATCH_LENGTH / _TIMEOUT`, `PYTHON_BIN`. **Prompts:** pass 1
@@ -295,39 +487,43 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Key files:** `services/datasets/datasets.service.js`, `services/datasets/langextract-client.service.js`,
   `python/datasets/extract-signals.py`, `config/datasets-detection-api.js`.
 
-### 3.5 `materials_detection` — Lab materials *(author-seeded, minimal)*
+### 3.5 `materials_detection` — Lab materials *(cue-driven)*
 
-- **Purpose:** detect antibodies, cell lines, reagents and other lab materials — grounded on the author's KRT.
-- **Engine:** **Google Gemini**, driven by a materials-detection prompt **seeded with the author's KRT material
-  rows** (via the shared `services/krt/author-krt-seeds.service.js`). The detector is intentionally minimal: it
-  **SKIPS extraction entirely when the author provided no materials** (no author material rows → no Gemini call).
-- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (KRT-seeded, so it waits for KRT validation — see §1). **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
+- **Purpose:** detect antibodies, cell lines, reagents, chemicals, strains and other lab materials from the manuscript alone.
+- **Engine:** **Google Gemini**, driven by a cue-driven materials-detection prompt: the model is told which *textual
+  cues* mark a material (a catalog number, an RRID, a vendor name, a clone ID, a concentration in a methods
+  sentence) rather than being handed a list to enrich. The prompt carries an explicit **"LISTS: ONE ROW PER ITEM"**
+  worked example, because the dominant failure mode was collapsing a comma-separated antibody list into a single row.
+- **Depends on:** `markdown_convert`. **No KRT gate** — the detector is KRT-blind and runs on every submission,
+  including ones with no author materials at all (see §1). **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
 - **Config:** `MATERIALS_DETECTION_ENABLED`, `MATERIALS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `MATERIALS_DETECTION_API_TIMEOUT`, `MATERIALS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
   `data/prompts/materials-detection.txt`.
 - **Demo:** `getDemoLabMaterialMentions(manuscriptId)`.
-- **Key files:** `services/materials/materials.service.js`, `services/krt/author-krt-seeds.service.js`,
-  `config/materials-detection-api.js`.
+- **Key files:** `services/materials/materials.service.js`, `config/materials-detection-api.js`.
 
 ### 3.6 `protocols_detection` — Protocols
 
 - **Purpose:** detect experimental protocol mentions.
 - **Engine:** **Google Gemini** over the Markdown, with a **post-filter** that reclassifies purely computational
   / in-silico "protocols" as software (`isInSilicoProtocol`) — encoding an ASAP domain rule in code. Parses
-  defensively (fenced-code stripping, markdown-escape repair). The prompt is **seeded with the author's protocol
-  rows as "Section 0"** (via the shared `services/krt/author-krt-seeds.service.js`). Recent prompt fixes: don't
+  defensively (fenced-code stripping, markdown-escape repair). The prompt's former "Section 0" — the author's own
+  protocol rows, injected as authoritative base records — **has been removed**; the detector now reads the
+  manuscript alone. Recent prompt fixes: don't
   pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations;
   exclude analyses; and improve new/reuse classification.
-- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (KRT-seeded, so it waits for KRT validation — see §1). **Output:** `KrtEntry[]` (Protocol).
+- **Depends on:** `markdown_convert`. **No KRT gate** — the detector is KRT-blind (see §1). **Output:** `KrtEntry[]` (Protocol).
 - **Config:** `PROTOCOLS_DETECTION_ENABLED`, `PROTOCOLS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `PROTOCOLS_DETECTION_API_TIMEOUT`, `PROTOCOLS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
   `data/prompts/protocols-detection.txt`.
 - **Demo:** `getDemoProtocolMentions(manuscriptId)`.
-- **Key files:** `services/protocols/protocols.service.js`, `services/krt/author-krt-seeds.service.js`,
-  `config/protocols-detection-api.js`.
+- **Key files:** `services/protocols/protocols.service.js`, `config/protocols-detection-api.js`.
 
-> **Author-KRT seeding (shared).** Software (§3.3), Protocols (§3.6) and Lab Materials (§3.5) all reuse the
-> shared `services/krt/author-krt-seeds.service.js` helper to ground the LM on the author's existing KRT rows.
+> **`services/krt/author-krt-seeds.service.js` is no longer on the detection path.** Software, Protocols, Materials
+> and Datasets all used to call it to inject the author's rows into their prompts. None do now. The module is kept
+> because the A/B harness `scripts/compare-datasets-prompts.js` still uses it to reproduce the seeded prompt and
+> measure it against the current one — it is eval scaffolding, not production code. Author rows now enter at
+> `krt_grounding` (§3.7b).
 
 ### 3.7 `identifier_detection` — Known-identifier scan *(local; enabled by default)*
 
@@ -364,6 +560,64 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   `published-protocol-scanner.service.js`. The protocol-venue catalog itself lives in
   `SOURCE_INFERENCE_RULES` (`services/pdf-analysis/identifier-normalize.service.js`, rows tagged
   `venue: 'protocol'`) — one table, also used to auto-fill SOURCE during consolidation.
+
+### 3.7b `krt_grounding` — Author KRT ↔ manuscript reconciliation
+
+- **Purpose:** answer, for every row the author wrote, *is it in the PDF, and does the row carry everything the
+  PDF says about it?* Emits one outcome per author row — `confirmed`, `incomplete`, `partial`, or `not_detected`.
+- **Engine:** a **deterministic matcher** (no external service) plus an **optional LM second look**. The matcher
+  runs a per-type key hierarchy, strongest first: **identifier → alias → name → partial_name**, because the
+  identifying field differs per type (an accession identifies a dataset, an RRID an antibody, a protocols.io DOI a
+  protocol, a version-stripped name a piece of software). Resource types must agree, except that a type-less
+  candidate — the identifier sweep, which genuinely cannot know the type — may match anything.
+- **`partial_name`, the weakest tier**, fires when one name occurs as a contiguous run of whole tokens inside the
+  other. Authors write the packaged construct (`AAV5.CaMKII.GCaMP6f.WPRE.SV40`) while the paper names the component
+  (`GCaMP6f`); strict equality misses every one of those, and in one demo manuscript that alone produced 0
+  confirmed rows out of 45 while `GCaMP6f` appeared in the text six times. Guarded against the obvious failure
+  modes: generic token runs (`cell line`) and lone short tokens (`GFP`) never match, and **a partial match never
+  contributes a fill or a conflict** — the bare protein's identifier is not the packaged virus's identifier. It
+  answers *"is this in the manuscript?"*, never *"what is its identifier?"*.
+- **Version stripping is software-only.** `stripSoftwareVersion` removes any trailing 1-4 digit number, which is
+  right for `Prism 9` and destructive for `Alexa Fluor 568` — that and `Alexa Fluor 488` both collapse to
+  `alexa fluor`. Ungated, the matcher confirmed an author's 568 antibody against a detected 488 one and offered to
+  fill in the wrong RRID. Both the row side and the candidate side now gate on resource type.
+- **Aliases come from three depths.** `mergeDetections` rebuilds a candidate without `detectorMeta`, so by the time
+  grounding runs the detector's aliases live inside `detectedBy[].originalItem`. Reading only the top level found
+  **0 of 444** candidates with aliases while 83 had them nested — the alias tier never fired once across 574 author
+  rows. `candidateNames` now looks at all three depths.
+- **Identifier tokens must survive the tokeniser.** Two defects made unrelated resources compare as equal:
+  `RRID:IMSR_JAX:000664` was captured as `imsr_jax` (the pattern stopped at the second colon), making every JAX
+  mouse strain identical to every other; and a case-insensitive GenBank pattern matched `s41592` inside
+  `10.1038/s41592-…`, so two unrelated DOIs shared a token. Both are fixed in `krt/identifier-extractor.js`; a
+  matcher is only ever as good as the tokens it compares.
+- **Conflicts ignore boilerplate.** The residual comparison that catches `strain code: 400` vs `001` used to treat
+  `https://`, `doi.org`, `#` and citation tails as real differences, so `#9091S; (RRID:AB_2687579)` vs
+  `9091S; RRID:AB_2687579` was reported as a conflict. 13 of 45 corpus conflicts were this. Boilerplate is now
+  stripped before comparing, and the case that justified the residual still fires.
+- **The second look** takes the rows nothing matched and asks the LM to find each one in the manuscript, returning
+  an exact quote. **Every returned quote is re-verified against the markdown here**, so a confident-sounding
+  hallucination changes nothing: an unverifiable quote leaves the row `not_detected`. This is the *right* use of
+  the author's table — as a search query, never as a seed.
+- **Depends on:** every detector, **gated on `krt_curated`**. **Output:** consumed by `suggestion_generation`.
+- **Fail-soft:** not wrapped in `runWithDemoFallback` — there is no external service to fall back *from*. The
+  matcher always runs; a failing/unconfigured second look degrades to "no second look" rather than failing the job.
+- **Both modes, one path.** With no author KRT there are simply zero rows to reconcile and every candidate is
+  reported as unmatched (`meta.mode: 'no_krt'`). Nothing about the pipeline shape changes.
+
+> **The author's data is never modified.** `not_detected` is a **tag**, not a deletion or a correction — it flags a
+> possible citation gap for a human to judge, and the row is kept exactly as written. `partial` is likewise
+> informational: located, but on a weak key, so nothing is proposed from it. `incomplete` proposes a fill
+> for an **empty** author cell only, and re-checks emptiness at suggestion-build time so a stale outcome can never
+> overwrite curated data. Acting on either stays a human decision in the suggestions UI.
+
+- **Config:** `KRT_GROUNDING_GEMINI_API_KEY/_MODEL`, `KRT_GROUNDING_API_TIMEOUT`,
+  `KRT_GROUNDING_SECOND_LOOK_ENABLED` (default on when a key is present).
+  **Prompt:** `data/prompts/krt-grounding-second-look.txt`.
+- **API:** `GET /api/submissions/:id/grounding`, `POST /api/submissions/:id/grounding/regenerate`.
+- **Key files:** `services/krt-grounding/krt-grounding.service.js`, `match-author-rows.service.js`,
+  `config/krt-grounding-api.js`, `controllers/krt-grounding.controller.js`.
+
+---
 
 ### 3.8 `orcid_extraction` — Authors & ORCIDs
 
@@ -478,6 +732,52 @@ the DAS has the described problem (i.e. the suggestion is shown to the author).
 
 ---
 
+## 3.9 Measuring the pipeline without a database or an LM bill
+
+Two scripts, deliberately split so the expensive half runs once and the cheap
+half runs as often as you like.
+
+**`scripts/batch-detection-check.js`** — runs the real pipeline end to end over
+the demo corpus by calling the pure stage functions directly. No
+`SubmissionJob`, no `krt_data`, no S3, so it is safe against a live environment.
+Markdown is cached under `tmp/batch-check/markdown/`, so re-runs skip the slow
+external conversion.
+
+The corpus covers **both modes**: manuscripts that ship an author KRT (where
+grounding can be scored) and manuscripts that do not (pure discovery, to be read
+by a human). A corpus of only KRT-bearing papers would hide half the product.
+
+It writes `tmp/batch-check/<name>-artifacts.json` per document containing the
+**full** candidate pool, author rows, per-row outcomes with `matchedBy`, the
+Generated KRT, and every detection with its evidence. Persisting artifacts
+rather than counts is what makes the next question free: an earlier run recorded
+`candidates: 102` and nothing else, so "how many of those misses would a better
+matcher catch?" could only be answered by paying for the whole run again.
+
+```bash
+node scripts/batch-detection-check.js                 # the default corpus
+node scripts/batch-detection-check.js --only <name>   # one document
+node scripts/batch-detection-check.js --max-mb 8      # skip oversized PDFs
+```
+
+Run it in the container (`docker compose run --rm --no-deps app-tools
+scripts/batch-detection-check.js`) so it picks up `.env` and can reach the
+services. Put `-e VAR=…` **before** the service name — after it, node's own `-e`
+flag swallows it and the container exits having done nothing.
+
+**`scripts/build-krt-report-xlsx.js`** — reads those artifacts and writes
+reviewer-facing workbooks to `tmp/batch-check/reports/`:
+
+| file | contents |
+|---|---|
+| `<name>.xlsx` | Overview · Generated KRT · Author KRT vs manuscript (per-row verdict, fills, conflicts) · Detections from all modules with located *and* claimed quotes · Dropped by consolidation |
+| `_SUMMARY.xlsx` | one row per document, an Author-vs-Generated diff, and every conflict |
+
+It is **offline**: no LM calls, no database. Reports can be rebuilt, restyled or
+re-scoped without another run, which is the point of the split.
+
+---
+
 ## 4. Adding a new detector module
 
 1. Add the `JOB_TYPE` (`config/constants.js`) and a `config/<x>-api.js` reading `<X>_ENABLED` /
@@ -497,7 +797,7 @@ the DAS has the described problem (i.e. the suggestion is shown to the author).
 |------|-------|
 | Shared | `services/demo-fallback.service.js` (On/Demo/Off + Done/Fail), `services/pdf-analysis/krt-entry.js` (KrtEntry shape), `services/demo-data.service.js` (demo getters) |
 | Orchestration | `services/queue/orchestrator.service.js` (PIPELINE), `services/queue/workers.js`, `services/queue/job-queue.service.js` — see [background-jobs.md](./background-jobs.md) |
-| Detectors | `services/{software,datasets,materials,protocols}/`, `services/identifier-detection/`, `services/orcid/`, `services/pdf/` (markdown + DAS), `services/krt/author-krt-seeds.service.js` (shared author-KRT seeding) |
+| Detectors | `services/{software,datasets,materials,protocols}/`, `services/identifier-detection/`, `services/orcid/`, `services/pdf/` (markdown + DAS), `services/krt/author-krt-seeds.service.js` (eval-only; see §3.6) |
 | Consolidation | `services/pdf-analysis/{pdf-analysis,merge-detections,krt-generation,identifier-normalize,dedupe-krt-items}.service.js` (`diff-suggestions.service.js` retired but kept) |
 | Suggestions | `services/suggestion/kr-comparison.service.js` (the LM-only AI Suggestions / `suggestion_generation` module) |
 | Config | `config/*-api.js` (incl. `krt-generation-api.js`, `krt-comparison-api.js`), `data/prompts/*.txt` (+ `.json`; incl. `pdf-analysis-krt.txt`, `krt-comparison.txt`), `enrichment_list_entries` (DB) |
