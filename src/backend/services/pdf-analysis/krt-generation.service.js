@@ -100,7 +100,17 @@ function buildKrtFromLM(candidates, lmOutput) {
       resourceName: r.resourceName ?? refCandidates[0].resourceName ?? '',
       sourceUrl: r.source ?? refCandidates[0].sourceUrl ?? '',
       identifier: r.identifier ?? refCandidates[0].identifier ?? '',
-      newReuse: r.newReuse ?? refCandidates[0].newReuse ?? ''
+      newReuse: r.newReuse ?? refCandidates[0].newReuse ?? '',
+      // ADDITIONAL INFORMATION is a KRT column like any other, and
+      // mergeDetections does real work to build it (each contributor's context,
+      // de-duplicated line by line). Leaving it out of `base` dropped it from
+      // every item the LM placed, while the safety-net path below kept it — so
+      // one output table carried two different item shapes. Downstream,
+      // makeAddSuggestion reads it as the suggestion's `context`, so its
+      // absence emptied that hint in the UI on every LM-placed row.
+      additionalInformation: r.additionalInformation
+        ?? refCandidates.map((c) => c.additionalInformation).filter(Boolean).join('; ')
+        ?? ''
     };
     items.push({
       ...base,
