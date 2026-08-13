@@ -80,3 +80,12 @@ src/frontend/public/demo-files/*
 src/backend/data/demo-findings/*
 !src/backend/data/demo-findings/.gitkeep
 !src/backend/data/demo-findings/README.md
+
+# Env backups. `.env` itself was ignored but variants like `.env.backup` were
+# not, so a blanket `git add` would have committed real credentials.
+.env.*
+!.env.example
+
+# Python bytecode from the langextract bridge
+__pycache__/
+*.pyc
