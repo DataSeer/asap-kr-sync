@@ -4,10 +4,15 @@
  * Detects protocol mentions via Google Gemini on the manuscript markdown.
  * Requires the MARKDOWN_CONVERT job to have completed first (markdown file).
  *
- * Three-step pipeline:
+ * Four-step pipeline:
  *   1. detectProtocols(md)                 → raw Gemini items (prompt-shape)
  *   2. buildKrtItemsProtocols(raw)         → canonical KrtEntry[]
- *   3. dedupeKrtItems(items, 'protocols')  → one entry per logical resource
+ *   3. attachEvidence(items, index)        → grounded; ungrounded rows discarded
+ *   4. dedupeKrtItems(items, 'protocols')  → one entry per logical resource
+ *
+ * Detection is KRT-blind: the author's own rows are NOT fed to the model. They
+ * are reconciled against this output later, by the krt_grounding module. See
+ * docs/design-krt-detection-two-modes.md.
  *
  * Note: the curated enrichment list is no longer applied here — only the
  * Identifier Detection module consults the enrichment lists now.
@@ -28,13 +33,11 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
-const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
+const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
-
-// KRT resource-type group for protocols (0=dataset, 1=software, 2=protocol, 3=lab_material).
-const PROTOCOL_GROUP = 2;
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const PROMPT_FILE = path.join(PROMPTS_DIR, 'protocols-detection.txt');
@@ -42,6 +45,12 @@ let _promptCache = null;
 
 // Same scale as identifier-detection.service.js — keeps confidence comparable
 // across detectors when the merger picks representative fields.
+// gemini-2.5-flash allows 65536 output tokens. This was 32768, which a
+// 133 KB manuscript exceeded mid-object: the JSON failed to parse and the
+// module recorded 0 resources after 124s of work. Thinking stays disabled
+// (commit 38a16db), so the whole budget goes to output.
+const MAX_OUTPUT_TOKENS = 65536;
+
 const RELEVANCE_TO_CONFIDENCE = { HIGH: 0.95, MEDIUM: 0.7, LOW: 0.4 };
 const DEFAULT_CONFIDENCE = 0.7;
 
@@ -143,23 +152,22 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   const markdownText = mdBuffer.toString('utf-8');
   jobLogger?.log('download_markdown_done', 'Markdown downloaded', { markdownLength: markdownText.length });
 
-  // Seed from the author's KRT protocol rows (empty when there is no KRT —
-  // article-only, unchanged behaviour). The prompt's Section 0 treats these as
-  // authoritative base records so the LM enriches/adds instead of re-deriving.
-  const authorProtocols = await loadAuthorSeeds(submissionId, round, PROTOCOL_GROUP);
-  if (authorProtocols.length > 0) {
-    jobLogger?.log('author_krt_seeds', 'Loaded author KRT protocol seeds', { count: authorProtocols.length });
-  }
+  // Detection is KRT-blind on purpose: the author's rows are reconciled against
+  // this output by the krt_grounding module, downstream. Seeding the prompt with
+  // them made the model echo seeds it had never located in the text, which made
+  // "did we actually find this in the manuscript?" unanswerable.
 
   // ── Step 1: detect (Gemini)
-  jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection', { authorSeedCount: authorProtocols.length });
+  jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection');
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForProtocols(markdownText, undefined, authorProtocols);
+  const { resources: rawItems, rawResponse } = await callGeminiForProtocols(markdownText);
   const geminiMs = Date.now() - geminiStartTime;
 
-  await jobLogger?.saveRawResponse('gemini-protocols-analysis', rawResponse || '', {
-    extension: '.md', mimeType: 'text/markdown'
-  });
+  // Only the parsed JSON is saved. There used to be a second
+  // `gemini-protocols-analysis.md` artifact alongside it, from when the model
+  // was expected to return prose around its JSON. It returns
+  // `responseMimeType: 'application/json'` now, so that file was a byte-for-byte
+  // duplicate of the .json under a misleading name.
   const extractedJson = stripMarkdownEscapes(extractJsonBlock(rawResponse));
   await jobLogger?.saveRawResponse('gemini-protocols', extractedJson || rawItems);
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
@@ -167,8 +175,16 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   // ── Step 2: buildKrtItems
   const krtItems = buildKrtItemsProtocols(rawItems);
 
-  // ── Step 3: dedupe
-  const items = dedupeKrtItems(krtItems, 'protocols-gemini');
+  // ── Step 3: ground every claim against the manuscript
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems, stats: evidenceStats } = attachEvidence(krtItems, evidenceIndex, {
+    label: 'protocols'
+  });
+  jobLogger?.log('evidence_grounding', 'Grounded protocol claims against the manuscript', evidenceStats);
+  await jobLogger?.saveRawResponse('evidence-grounding', { stats: evidenceStats, items: groundedItems });
+
+  // ── Step 4: dedupe
+  const items = dedupeKrtItems(groundedItems, 'protocols-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 
@@ -185,16 +201,10 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForProtocols(markdownText, promptOverride, authorProtocols = []) {
+async function callGeminiForProtocols(markdownText, promptOverride) {
   const ai = new GoogleGenAI({ apiKey: protocolsConfig.apiKey });
   const prompt = getPrompt(promptOverride);
-  // Author-provided protocols are injected before the article so the prompt's
-  // Section 0 can seed the output from them. Omitted entirely when empty so
-  // article-only runs are byte-for-byte unchanged.
-  const seedBlock = authorProtocols && authorProtocols.length > 0
-    ? '\n\n---\n\nAUTHOR-PROVIDED PROTOCOLS (KRT):\n\n' + JSON.stringify(authorProtocols, null, 2)
-    : '';
-  const fullPrompt = prompt + seedBlock + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
+  const fullPrompt = prompt + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -205,7 +215,7 @@ async function callGeminiForProtocols(markdownText, promptOverride, authorProtoc
       // long text_excerpts) that thinking ate the budget and truncated the JSON.
       config: {
         responseMimeType: 'application/json',
-        maxOutputTokens: 32768,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
     }, { label: 'protocols' });
@@ -265,6 +275,14 @@ function parseGeminiResponse(text) {
     logger.error('Failed to parse Gemini JSON response (protocols)', {
       error: error.message, preview: jsonStr.substring(0, 300)
     });
+    // A response cut off by maxOutputTokens ends mid-object, so the whole
+    // body fails to parse and every already-complete row would be lost.
+    // Recover those rather than returning nothing.
+    const salvaged = salvageTruncatedObjects(jsonStr);
+    if (salvaged.length > 0) {
+      logger.warn('Salvaged rows from a truncated Gemini response (protocols)', { count: salvaged.length });
+      return salvaged;
+    }
     return [];
   }
 }
@@ -277,13 +295,12 @@ function parseGeminiResponse(text) {
  * Step 1: hit Gemini on the markdown text and return the parsed resources
  * array. Pure-ish — no DB, no S3.
  * @param {string} markdownText
- * @param {{ prompt?: string, authorProtocols?: object[] }} [options] - `prompt`
- *   overrides the default detection prompt; `authorProtocols` seeds the prompt's
- *   Section 0 with the author's KRT protocol rows (empty by default).
+ * @param {{ prompt?: string }} [options] - `prompt` overrides the default
+ *   detection prompt (used by the prompt-comparison scripts).
  * @returns {Promise<{ resources: object[] }>}
  */
-async function detectProtocols(markdownText, { prompt, authorProtocols } = {}) {
-  const { resources, rawResponse } = await callGeminiForProtocols(markdownText, prompt, authorProtocols || []);
+async function detectProtocols(markdownText, { prompt } = {}) {
+  const { resources, rawResponse } = await callGeminiForProtocols(markdownText, prompt);
   return { resources, rawResponse };
 }
 
@@ -300,33 +317,20 @@ async function detectProtocols(markdownText, { prompt, authorProtocols } = {}) {
  */
 function buildKrtItemsProtocols(rawItems) {
   if (!Array.isArray(rawItems)) return [];
-  return rawItems
-    .filter(r => !isInSilicoProtocol(r))
-    .map(r => {
-      const resourceName = r.canonical_name || r.name || r.resourceName || '';
-      const resourceType = r.resource_type || r.resourceType || 'Protocol';
-      const relevance = r.krt_relevance || r.relevance || 'MEDIUM';
-      return {
-        resourceType,
-        resourceName,
-        identifier: r.identifier || '',
-        source: r.source || '',
-        newReuse: r.newReuse || r.new_reuse || '',
-        origin: 'protocols-gemini',
-        confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-        // text_excerpt is the prompt-provided ~200-char snippet describing the
-        // protocol use. Per ASAP request, do NOT push it into user-facing
-        // ADDITIONAL INFORMATION — only the internal team needs that context.
-        // Persisted on detectorMeta so the JobStatusPanel modal can still show it.
-        additionalInformation: '',
-        detectorMeta: {
-          relevance,
-          text_excerpt: r.text_excerpt || '',
-          context: r.additionalInformation || r.text_excerpt || '',
-          aliases: Array.isArray(r.aliases) ? r.aliases : []
-        }
-      };
-    });
+  // The in-silico filter runs BEFORE the shared mapping: an entry the ASAP
+  // rules class as Software/code should never become a Protocol KrtEntry.
+  return buildKrtItemsFromLM(rawItems.filter(r => !isInSilicoProtocol(r)), {
+    origin: 'protocols-gemini',
+    defaultResourceType: 'Protocol',
+    // `text_excerpt` is the prompt's ~200-char procedural snippet; the shared
+    // contract already reads it as the evidence quote (FIELD_ALIASES). It is
+    // also kept here because the panel surfaces it directly.
+    details: (r) => ({
+      text_excerpt: r.text_excerpt || '',
+      context: r.additionalInformation || r.text_excerpt || '',
+      section_heading: r.section_heading || ''
+    })
+  });
 }
 
 /**

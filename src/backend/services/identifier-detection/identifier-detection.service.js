@@ -38,6 +38,7 @@ const knownIdentifierScanner = require('./known-identifier-scanner.service');
 const publishedProtocolScanner = require('./published-protocol-scanner.service');
 const identifierConfig = require('../../config/identifier-detection-api');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
 
@@ -177,6 +178,15 @@ function buildKrtItemsIdentifier(matches, markdownText) {
       // ADDITIONAL INFORMATION. It's stored on detectorMeta.context for
       // internal review only.
       additionalInformation: '',
+      // Grounded by construction: the scanner matched this identifier at a
+      // known offset in the markdown, so the evidence is already resolved and
+      // attachEvidence only fills in the section.
+      evidence: {
+        quote: snippetAt(markdownText, m.position, 80),
+        offset: m.position,
+        section: '',
+        match: 'exact'
+      },
       detectorMeta: {
         relevance: m.relevance,
         matchedTypes: m.types,
@@ -215,6 +225,12 @@ function buildKrtItemsPublishedProtocol(matches, markdownText) {
     // Allowlist-only venue match — as high-precision as an enrichment-list hit.
     confidence: RELEVANCE_TO_CONFIDENCE.HIGH,
     additionalInformation: '',
+    evidence: {
+      quote: snippetAt(markdownText, m.position, 80),
+      offset: m.position,
+      section: '',
+      match: 'exact'
+    },
     detectorMeta: {
       relevance: 'HIGH',
       matchedTypes: [m.type],
@@ -331,7 +347,17 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
   const krtItems = buildKrtItemsIdentifier(matches, markdownText);
   const { enriched } = enrichIdentifiers(krtItems);
   const protocolItems = buildKrtItemsPublishedProtocol(protocolMatches, markdownText);
-  const items = dedupeKrtItems([...enriched, ...protocolItems], 'identifier-scan');
+
+  // These items are grounded by construction (the scanner matched at a real
+  // offset), so nothing can be dropped here — the pass only resolves the
+  // heading path for each hit, which downstream uses to tell an authors' own
+  // accession in Methods/Data-Availability from one cited in the Discussion.
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems } = attachEvidence([...enriched, ...protocolItems], evidenceIndex, {
+    drop: false,
+    label: 'identifier-scan'
+  });
+  const items = dedupeKrtItems(groundedItems, 'identifier-scan');
 
   // Stats by relevance + category for the worker's job-summary panel.
   // Read from detectorMeta (canonical shape).

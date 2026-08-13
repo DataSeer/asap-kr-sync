@@ -1,11 +1,23 @@
 /**
  * Software Detection Service
  *
- * Detects software/code mentions using Softcite.
+ * Detects software/code mentions using TWO engines, unioned:
  *
- * Three-step pipeline:
+ *   - Softcite — a purpose-built NER service reading the PDF. Recognises tool
+ *     NAMES written in prose. Good precision.
+ *   - An LM pass (software-lm.service.js) reading the converted markdown.
+ *     Covers what a name recogniser structurally cannot: `RRID:SCR_…` tokens,
+ *     GitHub/PyPI/CRAN links, packages named in a parenthetical, and custom
+ *     code promised in a data-availability statement. Measured against the DS
+ *     reports, 253 of 291 missed software rows carried such an identifier.
+ *
+ * The LM pass is additive and fail-soft: disabled, un-converted markdown, or an
+ * LM error all degrade to Softcite-only rather than failing the module.
+ *
+ * Pipeline:
  *   1. detectSoftware(pdfBuffer, fileName) → raw Softcite mentions
- *   2. buildKrtItemsSoftware(mentions)     → canonical KrtEntry[]
+ *   1b. runLmPass(...)                     → grounded LM KrtEntry[] (or none)
+ *   2. buildKrtItemsSoftware + policy      → canonical KrtEntry[] (both sources)
  *   3. dedupeKrtItems(items, 'software')   → one entry per logical resource
  *
  * Note: the curated enrichment list is no longer applied here — only the
@@ -23,6 +35,8 @@ const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
+const softwareLm = require('./software-lm.service');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const logger = require('../../utils/logger');
 
 /** Default when Softcite doesn't return a confidence value. */
@@ -116,22 +130,101 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
   });
   await jobLogger?.saveRawResponse('softcite-response', rawMentions);
 
-  // ── Step 2: buildKrtItems + policy (B1 default reuse, B3 drop instrument
-  //    software, B4 language → "<Lang> code" NEW)
-  const krtItems = applySoftwarePolicy(buildKrtItemsSoftware(rawMentions));
+  // ── Step 1b: detect (LM pass over the markdown, unioned with Softcite)
+  //
+  // Softcite reads NAMES in prose; it cannot see an `RRID:SCR_…`, a GitHub URL
+  // or "custom scripts available at …". Those were 253 of 291 measured misses.
+  // The LM pass covers them. It is additive: on failure, or when the markdown
+  // is not ready, Softcite's result stands on its own.
+  const lm = await runLmPass(submissionId, round, jobLogger);
 
-  // ── Step 3: dedupe
-  const items = dedupeKrtItems(krtItems, 'software-softcite');
+  // ── Step 2: buildKrtItems + policy (B1 default reuse, B3 drop instrument
+  //    software, B4 language → "<Lang> code" NEW). The policy is applied to
+  //    BOTH sources so the LM cannot smuggle in instrument software.
+  const krtItems = applySoftwarePolicy([
+    ...buildKrtItemsSoftware(rawMentions),
+    ...lm.items
+  ]);
+
+  // ── Step 3: dedupe — this is where a tool found by both engines collapses
+  //    into one row carrying both provenances.
+  const items = dedupeKrtItems(krtItems, 'software');
 
   return {
     items,
     meta: {
       rawMentionCount: rawMentions.length,
       uniqueCount: items.length,
+      softciteCount: krtItems.length - lm.items.length,
+      lmCount: lm.items.length,
+      lmEnabled: lm.enabled,
+      lmSkippedReason: lm.skippedReason,
+      lmMs: lm.durationMs,
+      evidenceStats: lm.evidenceStats,
       softciteMs,
       totalMs: Date.now() - startTime
     }
   };
+}
+
+/**
+ * Run the LM software pass, grounded against the manuscript markdown.
+ *
+ * Deliberately fail-soft: this pass is additive to Softcite, so anything that
+ * goes wrong (module disabled, markdown not converted yet, LM error) degrades
+ * to "Softcite only" rather than failing software detection altogether.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {object} [jobLogger]
+ * @returns {Promise<{items: object[], enabled: boolean, skippedReason: string|null, durationMs: number, evidenceStats: object|null}>}
+ */
+async function runLmPass(submissionId, round, jobLogger) {
+  const none = (skippedReason) => ({
+    items: [], enabled: softwareLm.isEnabled(), skippedReason, durationMs: 0, evidenceStats: null
+  });
+
+  if (!softwareLm.isEnabled()) return none('not_configured');
+
+  const { File } = require('../../models');
+  const mdFile = await File.findOne({
+    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
+    order: [['version', 'DESC']]
+  });
+  if (!mdFile) {
+    jobLogger?.log('software_lm_skipped', 'No markdown yet — Softcite-only for this run');
+    return none('no_markdown');
+  }
+
+  const started = Date.now();
+  try {
+    const markdownText = (await s3Service.downloadFile(mdFile.s3Key)).toString('utf-8');
+
+    jobLogger?.log('software_lm_start', 'Calling Gemini for the software LM pass', {
+      markdownLength: markdownText.length
+    });
+    const { resources, rawResponse } = await softwareLm.detectSoftwareLM(markdownText);
+    await jobLogger?.saveRawResponse('gemini-software', rawResponse || resources);
+
+    const built = softwareLm.buildKrtItemsSoftwareLM(resources);
+    const { items, stats } = attachEvidence(built, buildEvidenceIndex(markdownText), {
+      label: 'software-lm'
+    });
+    await jobLogger?.saveRawResponse('software-lm-evidence', { stats, items });
+
+    jobLogger?.log('software_lm_done', 'Software LM pass complete', {
+      returned: resources.length, grounded: items.length, ...stats, durationMs: Date.now() - started
+    });
+
+    return { items, enabled: true, skippedReason: null, durationMs: Date.now() - started, evidenceStats: stats };
+  } catch (error) {
+    // Additive pass — never sink the module with it.
+    logger.warn('Software LM pass failed; continuing with Softcite only', {
+      submissionId, error: error.message
+    });
+    jobLogger?.log('software_lm_error', `LM pass failed, continuing with Softcite only: ${error.message}`);
+    return { items: [], enabled: true, skippedReason: 'error', durationMs: Date.now() - started, evidenceStats: null };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -184,6 +277,14 @@ function buildKrtItemsSoftware(rawItems) {
       // facing ADDITIONAL INFORMATION. The blurb is preserved on
       // detectorMeta.context for the internal Softcite Detection panel.
       additionalInformation: '',
+      // Softcite reads the PDF, not the converted markdown, so its sentence is
+      // a real quote from the paper but not necessarily a byte-match against
+      // the markdown the other detectors are grounded on. It is recorded
+      // unresolved (offset -1, match null) rather than force-matched: the
+      // krt_grounding module runs its own search over the markdown when it
+      // needs to confirm a software row, so nothing depends on resolving it
+      // here — and this keeps software free of a markdown_convert dependency.
+      evidence: { quote: m.context || '', offset: -1, section: '', match: null },
       detectorMeta: {
         // Preserve the unnormalized Softcite name so the UI can show it if the
         // normalized form is less recognizable.

@@ -4,10 +4,17 @@
  * Detects lab material/reagent mentions via Google Gemini on the manuscript
  * markdown (same input as protocols/datasets; only software still reads the PDF).
  *
- * Three-step pipeline:
+ * Four-step pipeline:
  *   1. detectMaterials(markdownText)        → raw Gemini items (prompt-shape)
  *   2. buildKrtItemsMaterials(raw)          → canonical KrtEntry[]
- *   3. dedupeKrtItems(items, 'materials')   → one entry per logical resource
+ *   3. attachEvidence(items, index)         → grounded; ungrounded rows discarded
+ *   4. dedupeKrtItems(items, 'materials')   → one entry per logical resource
+ *
+ * Detection is KRT-blind and ALWAYS runs. It was previously author-seeded only
+ * — skipped outright when the author listed no materials — which left the
+ * module with no discovery capacity in the case that needs it most. The prompt
+ * now works from textual cues; the author's rows are reconciled against this
+ * output by the krt_grounding module. See docs/design-krt-detection-two-modes.md.
  *
  * Note: the curated enrichment list is no longer applied here — only the
  * Identifier Detection module consults the enrichment lists now.
@@ -26,17 +33,21 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
-const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
+const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
-
-// KRT resource-type group for lab materials (0=dataset, 1=software, 2=protocol, 3=lab_material).
-const MATERIAL_GROUP = 3;
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const PROMPT_FILE = path.join(PROMPTS_DIR, 'materials-detection.txt');
 let _promptCache = null;
+
+// gemini-2.5-flash allows 65536 output tokens. This was 32768, which a
+// 133 KB manuscript exceeded mid-object: the JSON failed to parse and the
+// module recorded 0 resources after 124s of work. Thinking stays disabled
+// (commit 38a16db), so the whole budget goes to output.
+const MAX_OUTPUT_TOKENS = 65536;
 
 const RELEVANCE_TO_CONFIDENCE = { HIGH: 0.95, MEDIUM: 0.7, LOW: 0.4 };
 const DEFAULT_CONFIDENCE = 0.7;
@@ -126,17 +137,11 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  // Materials detection is author-seeded only (request D): without author KRT
-  // material rows the prompt has nothing to ground on and tends to be noisy, so
-  // we skip the Gemini call entirely and return an empty result.
-  const authorMaterials = await loadAuthorSeeds(submissionId, round, MATERIAL_GROUP);
-  if (authorMaterials.length === 0) {
-    jobLogger?.log('materials_skipped', 'No author KRT materials — skipping materials detection');
-    return {
-      items: [],
-      meta: { totalCount: 0, uniqueCount: 0, highRelevanceCount: 0, skipped: true, reason: 'no_author_materials', totalMs: Date.now() - startTime }
-    };
-  }
+  // Materials detection is KRT-blind and always runs. It used to be skipped
+  // entirely when the author listed no materials, which gave the module zero
+  // discovery capacity in exactly the case that needs it most (no author KRT).
+  // The prompt now works from textual cues rather than from seeds, and the
+  // author's rows are reconciled against this output by krt_grounding.
 
   const mdFile = await File.findOne({
     where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
@@ -149,10 +154,10 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const markdownText = mdBuffer.toString('utf-8');
   jobLogger?.log('download_markdown_done', 'Markdown downloaded', { markdownLength: markdownText.length });
 
-  // ── Step 1: detect (Gemini), seeded from the author's KRT materials
-  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection', { authorSeedCount: authorMaterials.length });
+  // ── Step 1: detect (Gemini)
+  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection');
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(markdownText, undefined, authorMaterials);
+  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(markdownText);
   const geminiMs = Date.now() - geminiStartTime;
   await jobLogger?.saveRawResponse('gemini-materials', rawResponse || rawItems);
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
@@ -160,8 +165,16 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   // ── Step 2: buildKrtItems
   const krtItems = buildKrtItemsMaterials(rawItems);
 
-  // ── Step 3: dedupe
-  const items = dedupeKrtItems(krtItems, 'materials-gemini');
+  // ── Step 3: ground every claim against the manuscript
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems, stats: evidenceStats } = attachEvidence(krtItems, evidenceIndex, {
+    label: 'materials'
+  });
+  jobLogger?.log('evidence_grounding', 'Grounded material claims against the manuscript', evidenceStats);
+  await jobLogger?.saveRawResponse('evidence-grounding', { stats: evidenceStats, items: groundedItems });
+
+  // ── Step 4: dedupe
+  const items = dedupeKrtItems(groundedItems, 'materials-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 
@@ -178,15 +191,10 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForMaterials(markdownText, promptOverride, authorMaterials = []) {
+async function callGeminiForMaterials(markdownText, promptOverride) {
   const ai = new GoogleGenAI({ apiKey: materialsConfig.apiKey });
   const prompt = getPrompt(promptOverride);
-  // The prompt's Section 0 seeds from these. Omitted when empty so a custom
-  // prompt override can still be run article-only by callers/benchmarks.
-  const seedBlock = authorMaterials && authorMaterials.length > 0
-    ? '\n\n---\n\nAUTHOR-PROVIDED MATERIALS (KRT):\n\n' + JSON.stringify(authorMaterials, null, 2)
-    : '';
-  const fullPrompt = prompt + seedBlock + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
+  const fullPrompt = prompt + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -197,7 +205,7 @@ async function callGeminiForMaterials(markdownText, promptOverride, authorMateri
       // thinking ate the budget and truncated the JSON mid-object.
       config: {
         responseMimeType: 'application/json',
-        maxOutputTokens: 32768,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
     }, { label: 'materials' });
@@ -242,6 +250,14 @@ function parseGeminiResponse(text) {
     logger.error('Failed to parse Gemini JSON response (materials)', {
       error: error.message, preview: jsonStr.substring(0, 300)
     });
+    // A response cut off by maxOutputTokens ends mid-object, so the whole
+    // body fails to parse and every already-complete row would be lost.
+    // Recover those rather than returning nothing.
+    const salvaged = salvageTruncatedObjects(jsonStr);
+    if (salvaged.length > 0) {
+      logger.warn('Salvaged rows from a truncated Gemini response (materials)', { count: salvaged.length });
+      return salvaged;
+    }
     return [];
   }
 }
@@ -254,13 +270,12 @@ function parseGeminiResponse(text) {
  * Step 1: standalone Gemini call. Hits Gemini on the manuscript markdown and
  * returns the parsed resources array. No DB, no S3.
  * @param {string} markdownText - the full manuscript as markdown
- * @param {{ prompt?: string, authorMaterials?: object[] }} [options] - `prompt`
- *   overrides the default detection prompt; `authorMaterials` seeds the prompt's
- *   Section 0 with the author's KRT material rows (empty by default).
+ * @param {{ prompt?: string }} [options] - `prompt` overrides the default
+ *   detection prompt (used by the prompt-comparison scripts).
  * @returns {Promise<{ resources: object[], rawResponse?: string }>}
  */
-async function detectMaterials(markdownText, { prompt, authorMaterials } = {}) {
-  const { resources, rawResponse } = await callGeminiForMaterials(markdownText, prompt, authorMaterials || []);
+async function detectMaterials(markdownText, { prompt } = {}) {
+  const { resources, rawResponse } = await callGeminiForMaterials(markdownText, prompt);
   return { resources, rawResponse };
 }
 
@@ -273,31 +288,12 @@ async function detectMaterials(markdownText, { prompt, authorMaterials } = {}) {
  * @returns {object[]} KrtEntry[]
  */
 function buildKrtItemsMaterials(rawItems) {
-  if (!Array.isArray(rawItems)) return [];
-  return rawItems.map(r => {
-    const resourceName = r.canonical_name || r.name || r.resourceName || '';
-    const resourceType = r.resource_type || r.resourceType || 'Lab Material';
-    const relevance = r.krt_relevance || r.relevance || 'MEDIUM';
-    return {
-      resourceType,
-      resourceName,
-      identifier: r.identifier || '',
-      source: r.source || '',
-      newReuse: r.newReuse || r.new_reuse || '',
-      origin: 'materials-gemini',
-      confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-      // Leave ADDITIONAL INFORMATION empty for user-facing suggestions. The
-      // detector's contextual info (the "why we picked this") is stashed in
-      // detectorMeta.context for the internal team to inspect via the
-      // background-processes panel; we don't want to push it into the KRT
-      // where it competes with the user's own notes.
-      additionalInformation: '',
-      detectorMeta: {
-        relevance,
-        aliases: Array.isArray(r.aliases) ? r.aliases : [],
-        context: r.additionalInformation || ''
-      }
-    };
+  return buildKrtItemsFromLM(rawItems, {
+    origin: 'materials-gemini',
+    defaultResourceType: 'Lab Material',
+    // Materials carry no extras beyond the shared contract; the resource_type
+    // enum in the prompt already captures antibody/cell line/organism/etc.
+    details: (r) => ({ context: r.additionalInformation || '' })
   });
 }
 

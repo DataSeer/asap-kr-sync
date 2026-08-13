@@ -33,7 +33,10 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const { buildKrtItemFromLM } = require('../pdf-analysis/lm-resource.service');
+const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
+const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
@@ -41,8 +44,11 @@ const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const CONSOLIDATION_PROMPT_FILE = path.join(PROMPTS_DIR, 'datasets-consolidation.txt');
 let _consolidationPromptCache = null;
 
-const RELEVANCE_TO_CONFIDENCE = { HIGH: 0.95, MEDIUM: 0.7, LOW: 0.4 };
-const DEFAULT_CONFIDENCE = 0.7;
+// gemini-2.5-flash allows 65536 output tokens. This was 32768, which a
+// 133 KB manuscript exceeded mid-object: the JSON failed to parse and the
+// module recorded 0 resources after 124s of work. Thinking stays disabled
+// (commit 38a16db), so the whole budget goes to output.
+const MAX_OUTPUT_TOKENS = 65536;
 
 function hasConsolidationPrompt() {
   return fs.existsSync(CONSOLIDATION_PROMPT_FILE);
@@ -158,11 +164,27 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   const signalMs = Date.now() - signalStartTime;
 
   const datasetNames = langextractClient.collectDatasetNames(extractions);
-  const extractedRows = langextractClient.buildExtractedRows(extractions);
+  const allRows = langextractClient.buildExtractedRows(extractions);
+
+  // Pass 1 is a GROUNDING stage, not just a recall stage: LangExtract aligns
+  // each extraction to a span of the article. Anything it could not align did
+  // not come from the article — in practice, the few-shot examples echoed back
+  // out of the prompt. Those must not reach consolidation, where they would be
+  // laundered into ordinary-looking candidate rows.
+  const { grounded: extractedRows, ungrounded } = langextractClient.partitionByGrounding(allRows);
 
   jobLogger?.log('extract_signals_done', 'Signal extraction complete', {
-    totalExtractions: extractions.length, datasetRowCount: extractedRows.length, durationMs: signalMs
+    totalExtractions: extractions.length,
+    datasetRowCount: extractedRows.length,
+    ungroundedDropped: ungrounded.length,
+    durationMs: signalMs
   });
+  if (ungrounded.length > 0) {
+    jobLogger?.log('extract_signals_ungrounded', 'Dropped signals not aligned to the article', {
+      count: ungrounded.length,
+      names: ungrounded.map(r => r.attributes?.dataset_name).filter(Boolean).slice(0, 10)
+    });
+  }
   await jobLogger?.saveRawResponse('langextract-signals', extractions);
 
   // Empty result: still a valid External outcome (Done with 0 items).
@@ -176,18 +198,14 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
     };
   }
 
-  // Seed the consolidation from the author's KRT dataset rows (empty when the
-  // submission has no KRT — article-only, unchanged behaviour).
-  const authorDatasets = await loadAuthorDatasetSeeds(submissionId, round);
-  if (authorDatasets.length > 0) {
-    jobLogger?.log('author_krt_seeds', 'Loaded author KRT dataset seeds', { count: authorDatasets.length });
-  }
-
+  // Consolidation is KRT-blind: the author's rows are reconciled against this
+  // output by the krt_grounding module, downstream. See
+  // docs/design-krt-detection-two-modes.md.
   jobLogger?.log('consolidate_start', 'Starting Gemini consolidation', {
-    datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length, authorSeedCount: authorDatasets.length
+    datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length
   });
   const consolidationStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, undefined, authorDatasets);
+  const { resources: rawItems, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText);
   const consolidationMs = Date.now() - consolidationStartTime;
 
   const cleanedConsolidation = stripMarkdownFences(rawResponse);
@@ -196,8 +214,16 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   // ── Step 2: buildKrtItems
   const krtItems = buildKrtItemsDatasets(rawItems);
 
-  // ── Step 3: dedupe
-  const items = dedupeKrtItems(krtItems, 'datasets-gemini');
+  // ── Step 3: ground every claim against the manuscript
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems, stats: evidenceStats } = attachEvidence(krtItems, evidenceIndex, {
+    label: 'datasets'
+  });
+  jobLogger?.log('evidence_grounding', 'Grounded dataset claims against the manuscript', evidenceStats);
+  await jobLogger?.saveRawResponse('evidence-grounding', { stats: evidenceStats, items: groundedItems });
+
+  // ── Step 4: dedupe
+  const items = dedupeKrtItems(groundedItems, 'datasets-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
   jobLogger?.log('consolidate_done', 'Consolidation complete', {
@@ -216,15 +242,11 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   };
 }
 
-async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, promptOverride, authorDatasets = []) {
+async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, promptOverride) {
   const ai = new GoogleGenAI({ apiKey: datasetsConfig.apiKey });
   const systemPrompt = getConsolidationPrompt(promptOverride);
 
-  // `author_provided_datasets` is always present (empty when there is no author
-  // KRT). The v3 consolidation prompt seeds the output from it; older prompts
-  // (v1/v2) do not reference the key and simply ignore it.
   const userPayload = {
-    author_provided_datasets: authorDatasets,
     dataset_names: datasetNames,
     extracted_dataset_rows: extractedRows,
     full_article: markdownText
@@ -241,7 +263,7 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
       // thinking ate the budget and truncated the JSON mid-object.
       config: {
         responseMimeType: 'application/json',
-        maxOutputTokens: 32768,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
     }, { label: 'datasets consolidation' });
@@ -298,87 +320,6 @@ function joinIdentifiers(item) {
   return unique.join('; ');
 }
 
-const ACCESSION_PREFIX_RE = /^(PRJ|GSE|PXD|SRR|SRP|SRX|EGA|EGAS|EGAD|PDB|EMD|phs|GCA|GCF|E-|SAM)/i;
-
-/**
- * Split a free-text KRT identifier cell into accessions / DOIs / URLs so an
- * author seed matches the `author_provided_datasets` shape the consolidation
- * prompt expects. Never invents identifiers — only classifies what is present.
- * @param {string} text
- * @returns {{ accessions: string[], dois: string[], urls: string[] }}
- */
-function splitKrtIdentifiers(text) {
-  const accessions = [];
-  const dois = [];
-  const urls = [];
-  if (!text) return { accessions, dois, urls };
-
-  for (const token of String(text).split(/[\s;,]+/)) {
-    const t = token.trim().replace(/^[.,;]+|[.,;]+$/g, '');
-    if (!t) continue;
-    const low = t.toLowerCase();
-    if (low.startsWith('http://') || low.startsWith('https://') || low.startsWith('www.')) {
-      urls.push(t);
-    } else if (low.startsWith('10.') || low.includes('doi.org') || low.startsWith('doi:')) {
-      dois.push(t.replace(/^doi:/i, '').trim());
-    } else if (ACCESSION_PREFIX_RE.test(t) && /\d/.test(t)) {
-      // Require a digit so bare words like "PDB" or "EGA" are not treated as accessions.
-      accessions.push(t);
-    }
-  }
-  return { accessions, dois, urls };
-}
-
-/**
- * Map the author's KRT dataset rows (already filtered to dataset-type rows) into
- * the `author_provided_datasets` seed shape consumed by the v3 consolidation
- * prompt. Trusts the curator's values; rows without a resource name are dropped.
- * @param {object[]} krtRows - rows from krt_data ({ resourceName, source, identifier, newReuse, additionalInformation })
- * @returns {object[]}
- */
-function buildAuthorDatasetSeeds(krtRows) {
-  if (!Array.isArray(krtRows)) return [];
-  return krtRows
-    .map((row) => {
-      const name = (row.resourceName || '').trim();
-      if (!name) return null;
-      const ids = splitKrtIdentifiers(row.identifier);
-      // URLs sometimes live in the additional-information cell too.
-      const extraUrls = splitKrtIdentifiers(row.additionalInformation).urls;
-      const urls = [...new Set([...ids.urls, ...extraUrls])];
-      const reuse = String(row.newReuse || '').toLowerCase().startsWith('reuse');
-      return {
-        name,
-        role: reuse ? 'REUSED' : 'GENERATED',
-        source: row.source || '',
-        accessions: ids.accessions,
-        dois: ids.dois,
-        urls,
-        additional_info: row.additionalInformation || ''
-      };
-    })
-    .filter(Boolean);
-}
-
-/**
- * Load the author KRT dataset seeds for a submission/round: read krt_data and
- * keep the rows the curator typed as a dataset (resource-type group 0). Returns
- * an empty array when the submission has no KRT, so the consolidation runs
- * article-only exactly as before.
- * @param {string} submissionId
- * @param {number} round
- * @returns {Promise<object[]>}
- */
-async function loadAuthorDatasetSeeds(submissionId, round) {
-  const { KRTData } = require('../../models');
-  const { getResourceTypeGroupOrder } = require('../../config/constants');
-  const rows = await KRTData.findAll({ where: { submissionId, round } });
-  if (rows.length === 0) return [];
-  const groupOrder = await getResourceTypeGroupOrder();
-  const datasetRows = rows.filter((row) => groupOrder[row.resourceType] === 0);
-  return buildAuthorDatasetSeeds(datasetRows);
-}
-
 /**
  * Convert one consolidated Gemini item (or legacy demo item, which already
  * carries the post-transform shape) into a canonical KrtEntry.
@@ -386,54 +327,6 @@ async function loadAuthorDatasetSeeds(submissionId, round) {
  * Pure function. Returns null if the item lacks a canonical_name (matches the
  * pre-refactor behavior of `parseGeminiResponse`, which dropped these).
  */
-function transformConsolidatedItem(item) {
-  if (!item || typeof item !== 'object') return null;
-  const resourceName = item.canonical_name || item.resourceName || item.name || '';
-  if (!resourceName) return null;
-
-  // Sub-type (e.g. "Microarray") becomes additionalInformation. Pre-refactor
-  // datasets used `Type: ${subType}`; preserve that exact wording so the
-  // consolidator output diffs cleanly.
-  const subType = (item.subtype || item.resource_subtype || '').toString().trim() ||
-                  // Legacy demo items already collapsed subType into resource_type;
-                  // if resource_type is NOT 'Dataset' we treat it as the subtype.
-                  ((item.resource_type && item.resource_type !== 'Dataset') ? item.resource_type : '');
-  const additionalInformation = subType ? `Type: ${subType}` : (item.additionalInformation || '');
-
-  // Identifier: legacy items already have it joined; raw Gemini items have
-  // accessions/dois/urls separately. joinIdentifiers handles both shapes.
-  const identifier = item.identifier && !Array.isArray(item.identifier)
-    ? item.identifier
-    : joinIdentifiers(item);
-
-  const newReuse = item.newReuse || item.new_reuse || mapDatasetRole(item.dataset_role);
-  const source = (item.repository || item.source || '').toString().trim();
-  const relevance = item.krt_relevance || item.relevance || 'MEDIUM';
-
-  return {
-    resourceType: 'Dataset',
-    resourceName,
-    identifier,
-    source,
-    newReuse,
-    origin: 'datasets-gemini',
-    confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-    // Leave ADDITIONAL INFORMATION empty for user-facing suggestions. The
-    // dataset subtype + any detector-supplied notes are persisted on
-    // detectorMeta for internal inspection only.
-    additionalInformation: '',
-    detectorMeta: {
-      relevance,
-      subtype: subType || '',
-      accessions: Array.isArray(item.accessions) ? item.accessions : [],
-      dois:       Array.isArray(item.dois)       ? item.dois       : [],
-      urls:       Array.isArray(item.urls)       ? item.urls       : [],
-      datasetRole: item.dataset_role || '',
-      context: additionalInformation
-    }
-  };
-}
-
 function parseGeminiResponse(text) {
   const jsonStr = sanitizeJsonEscapes(stripMarkdownFences(text));
 
@@ -454,45 +347,84 @@ function parseGeminiResponse(text) {
     logger.error('Failed to parse Gemini consolidation JSON response', {
       error: error.message, preview: jsonStr.substring(0, 300)
     });
+    // A response cut off by maxOutputTokens ends mid-object, so the whole body
+    // fails to parse and every already-complete row would be lost. Recover
+    // those rather than returning nothing.
+    const salvaged = salvageTruncatedObjects(jsonStr);
+    if (salvaged.length > 0) {
+      logger.warn('Salvaged rows from a truncated Gemini response (datasets)', { count: salvaged.length });
+      return salvaged;
+    }
     return [];
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pipeline steps (pure-ish, exported)
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Step 1: standalone two-pass detection. Runs langextract + Gemini and
- * returns the raw consolidation items (no canonical transform yet). No DB,
- * no S3.
+ * Step 1: standalone two-pass detection. Runs langextract + Gemini and returns
+ * the raw consolidation items (no canonical transform yet). No DB, no S3.
+ *
  * @param {string} markdownText
- * @returns {Promise<{ resources: object[], signalCount: number }>}
- */
-/**
- * @param {string} markdownText
- * @param {{ prompt?: string, signalsPrompt?: string, signalsExamples?: string|object, authorDatasets?: object[] }} [options]
+ * @param {{ prompt?: string, signalsPrompt?: string, signalsExamples?: string|object }} [options]
  *   `prompt` overrides the Gemini consolidation prompt; `signalsPrompt` and
  *   `signalsExamples` override the langextract signal-extraction prompt and its
  *   few-shot examples JSON (all default to the committed file contents).
- *   `authorDatasets` seeds the consolidation with the author's KRT dataset rows
- *   (empty by default — the v3 prompt uses them, older prompts ignore them).
  * @returns {Promise<{ resources: object[], signalCount: number }>}
  */
-async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples, authorDatasets } = {}) {
+async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples } = {}) {
   const extractions = await langextractClient.extractSignals(markdownText, {
     prompt: signalsPrompt,
     examples: signalsExamples
   });
   const datasetNames = langextractClient.collectDatasetNames(extractions);
-  const extractedRows = langextractClient.buildExtractedRows(extractions);
+  // Same grounding gate as the job path — see the comment there.
+  const { grounded: extractedRows } = langextractClient.partitionByGrounding(
+    langextractClient.buildExtractedRows(extractions)
+  );
 
   if (extractedRows.length === 0) {
     return { resources: [], signalCount: extractions.length };
   }
 
-  const { resources, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt, authorDatasets || []);
+  const { resources, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt);
   return { resources, signalCount: extractedRows.length, rawResponse };
+}
+
+function transformConsolidatedItem(item) {
+  if (!item || typeof item !== 'object') return null;
+
+  // Sub-type (e.g. "Microarray") becomes the stored context. Pre-refactor
+  // datasets used `Type: ${subType}`; preserve that exact wording so the
+  // consolidator output diffs cleanly.
+  const subType = (item.subtype || item.resource_subtype || '').toString().trim()
+    // Legacy demo items collapsed subType into resource_type; if resource_type
+    // is NOT 'Dataset' we treat it as the subtype.
+    || ((item.resource_type && item.resource_type !== 'Dataset') ? item.resource_type : '');
+  const context = subType ? `Type: ${subType}` : (item.additionalInformation || '');
+
+  const entry = buildKrtItemFromLM(item, {
+    origin: 'datasets-gemini',
+    defaultResourceType: 'Dataset',
+    details: (raw) => ({
+      subtype: subType || '',
+      accessions: Array.isArray(raw.accessions) ? raw.accessions : [],
+      dois: Array.isArray(raw.dois) ? raw.dois : [],
+      urls: Array.isArray(raw.urls) ? raw.urls : [],
+      datasetRole: raw.dataset_role || '',
+      context
+    })
+  });
+  if (!entry) return null;
+
+  // Datasets are always typed as Dataset regardless of the sub-type the model
+  // reported, and their identifier may arrive split across accessions/dois/urls
+  // rather than as one string.
+  entry.resourceType = 'Dataset';
+  entry.identifier = (item.identifier && !Array.isArray(item.identifier))
+    ? item.identifier
+    : joinIdentifiers(item);
+  entry.source = (item.repository || item.source || '').toString().trim();
+  entry.newReuse = item.newReuse || item.new_reuse || mapDatasetRole(item.dataset_role);
+  return entry;
 }
 
 /**
@@ -540,6 +472,10 @@ module.exports = {
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectDatasets,
   buildKrtItemsDatasets,
-  buildAuthorDatasetSeeds,
+  // Author-KRT helpers. These used to be a byte-for-byte copy of the shared
+  // implementation living here as well; detection no longer consumes seeds, so
+  // they are re-exported from the one source of truth for the dev scripts and
+  // tests that still call them through this module.
+  buildAuthorDatasetSeeds: buildAuthorSeeds,
   splitKrtIdentifiers
 };
