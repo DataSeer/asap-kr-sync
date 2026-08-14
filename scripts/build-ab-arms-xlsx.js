@@ -28,10 +28,12 @@ const { buildEvidenceIndex, findAllOccurrences } =
   require(path.join(ROOT, 'src/backend/services/pdf-analysis/evidence.service'));
 
 const ARMS = ['A', 'B', 'C'];
+// Labelled by DESIGN rather than by branch name: these workbooks are shared
+// outside the repo, where "dev prompts" and "branch prompts" mean nothing.
 const LABEL = {
-  A: 'A — branch prompts, no seed',
-  B: 'B — dev prompts + full author KRT',
-  C: 'C — dev prompts + verified-only seed'
+  A: 'A — separated (no seed)',
+  B: 'B — fused (full author KRT)',
+  C: 'C — fused (verified-only seed)'
 };
 const TINT = { A: 'FFE3EEFB', B: 'FFF3F0FA', C: 'FFE7F6E7', no: 'FFFBE4E4' };
 const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
@@ -69,26 +71,30 @@ function supportedFactory(index) {
 }
 
 const CAVEATS = [
+  ['The question',
+    'Is it better to generate the KRT and check the author\'s KRT as ONE fused process (the current design, which seeds the author\'s rows into the detection prompts) or as TWO separate ones?'],
   ['What this compares',
-    'Three arms of the SAME pipeline over the same 11 manuscripts. The engine is identical in every arm — same evidence verification, merge, consolidation and matcher. Only the detection prompts and the seeding change, which is what makes the differences attributable.'],
+    'Three arms of the SAME pipeline over the same 11 manuscripts. The engine is identical in every arm — same evidence verification, merge, consolidation, matcher, token budgets and parsing. Only the detection prompts and the seeding change, which is what makes the differences attributable.'],
   ['The arms',
-    'A = this branch\'s prompts, no seed. B = dev\'s prompts + the full author KRT as seed. C = dev\'s prompts + the author KRT filtered to rows whose name or identifier actually occurs in the manuscript.'],
+    'A = separated design, the model never sees the author KRT. B = fused design seeded with the FULL author KRT (1048 rows). C = fused design seeded only with author rows whose name or identifier actually occurs in the manuscript (573 rows).'],
   ['READ THIS BEFORE THE NUMBERS',
-    'Arm B confirms far more author rows than A (793 vs 472). That looks decisive and is largely MISATTRIBUTION — see the anchoring column. Do not quote the confirmation counts without it.'],
+    'Arm B confirms far more author rows than A (793 vs 472). That looks decisive and is largely MISATTRIBUTION — see the anchoring column. Corrected for anchoring the real gap is ~7%, not 68%. Do not quote the confirmation counts without the anchored ones.'],
   ['Anchored confirmations',
-    'Of the author rows an arm confirmed, how many have their OWN name or identifier in the manuscript. A and C: 85%. B: 59%. The unanchored ones rest on a quote that verified as real text but is not demonstrably about that resource.'],
+    'Of the author rows an arm confirmed, how many have their OWN name or identifier in the manuscript. A and C: 85%. B: 59%. The unanchored ones rest on a quote that verified as real text but is not demonstrably about that resource — typically a neighbouring sentence about a different resource.'],
   ['Why "echo" reads 0 everywhere',
-    'Echo counts author-row detections whose quote failed to verify. It is 0 in all three arms — the seeded model does not fabricate quotes. But a quote verifies if that SENTENCE exists, not if it is ABOUT that resource. Echo alone would have produced the wrong conclusion; the anchoring test is what exposed it.'],
-  ['Discovery',
-    'Items found that are NOT author rows. Seeding cannot inflate this, so it is the cleanest cross-arm measure. Seeding costs 39% of it (1570 -> 963).'],
+    'Echo counts author-row detections whose quote failed to verify. It is 0 in all three arms — neither design fabricates quotes. But a quote verifies if that SENTENCE exists, not if it is ABOUT that resource. Echo alone would have produced the wrong conclusion; the anchoring test is what exposed it.'],
+  ['Discovery — the solid result',
+    'Items found that are NOT author rows: what the author missed. Seeding cannot inflate it, so it compares cleanly. Seeding costs 39% of it (1570 -> 963), and arm A beat arm B on ALL 11 of 11 manuscripts — a paired sign test gives p ~ 0.001. This conclusion does not depend on repeat runs.'],
+  ['Arm C is NOT yet proven',
+    'Arm C looks best on quality (highest precision at 80%, anchoring restored to 85%, 140 discovery recovered over B). But it beat arm B on discovery in only 9 of 11 manuscripts (p = 0.065). Promising lead, not a settled result — confirming it needs repeat runs that have not been done.'],
   ['"Supported" is a floor, not correctness',
-    'It asks whether the resource is MENTIONED — necessary, not sufficient. Descriptive names ("Proteomics data") score no in every arm even when the resource is discussed, so absolute rates understate all three equally.'],
+    'It asks whether the resource is MENTIONED — necessary, not sufficient. Descriptive names ("Proteomics data", "Human GRCh38 reference genome") score no in every arm even when the resource is discussed, so absolute rates understate all three equally while the comparison between them stays fair.'],
   ['What this does NOT settle',
-    'Arm A also uses different prompts, so A-vs-B is prompts AND seeding together. Only B-vs-C is clean: those two differ solely in which rows were seeded.'],
+    'Arm A also uses different prompts, so A-vs-B is prompts AND seeding together. Only B-vs-C isolates seeding alone — and that is the comparison that did not reach significance. Also: nothing here is measured against external ground truth; every figure is self-referential.'],
   ['Run-to-run variance',
-    'Re-running arm A on one document gave 117 then 95 detections (~22%); arm B gave 80 then 81 (~1%). Arms were interleaved per document to control for this. Per-document differences under roughly a quarter are not distinguishable from noise.'],
-  ['Deviation recorded',
-    'dev\'s prompts were given an evidence_quote field so the engine could verify them at all; without a claimed quote every item is labelled "embellished" and the metric becomes meaningless. dev\'s datasets seeds normally go in a JSON payload field — here they are appended as a labelled block, same information, different placement.']
+    'Re-running arm A on one document gave 117 then 95 detections (~22%); arm B gave 80 then 81 (~1%). So the fused design is genuinely more reproducible. But that is n=2 on ONE document, on raw detection count (the noisiest metric). Arms were interleaved per document to control for drift. Per-document differences under roughly a quarter are not distinguishable from noise.'],
+  ['Deviations recorded',
+    'The fused prompts were given an evidence_quote field so the engine could verify them at all; without a claimed quote every item is unverifiable and the metric becomes meaningless (a planned change to those prompts regardless). Dataset seeds normally go in a structured payload field — here they are appended as a labelled block: same information, different placement. temperature 0 was applied throughout and does NOT remove the variance above.']
 ];
 
 (async () => {
