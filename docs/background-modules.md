@@ -808,6 +808,36 @@ resource is mentioned, which is necessary but not sufficient. Descriptive names
 discussed, so absolute rates understate both pipelines while the comparison
 between them stays fair.
 
+**Isolating one variable.** Comparing two branches bundles every change between
+them and therefore attributes nothing. A second set of scripts holds the
+**engine constant** — identical evidence verification, merge, consolidation and
+matcher — and varies only the detection prompts and whether the author KRT is
+seeded into them, which is what makes a difference attributable:
+
+| script | what it does | LM cost |
+|---|---|---|
+| `evaluate-pipelines.js` | scores all three stages — detections, suggestions, and the final KRT with every suggestion auto-accepted | none |
+| `ab-prompt-arms.js` | runs the arms interleaved per document (A: branch prompts, no seed · B: dev prompts + full author KRT · C: dev prompts + the author KRT filtered to rows found in the manuscript) | full pipeline per arm per document |
+| `analyze-ab-arms.js` | prints discovery, echo, grounding and anchored confirmations; excludes any document missing an arm | none |
+| `build-ab-arms-xlsx.js` | reviewer workbooks, three arms side by side, caveats sheet first → `tmp/ab-arms-reports/` | none |
+
+Two metrics matter here and they are not interchangeable. **Discovery** counts
+items that are *not* author rows; seeding cannot inflate it, so it compares
+cleanly across arms. **Anchored confirmation** asks whether a confirmed author
+row's own name or identifier occurs in the manuscript — strictly more than the
+`echo` metric, which only asks whether the model's quote verifies. A quote
+verifies if that *sentence* exists, not if it is *about* that resource, so echo
+read 0 in every arm while anchoring separated them 85% / 59% / 85%. Echo alone
+would have produced the wrong conclusion.
+
+Interleaving the arms per document is not cosmetic: re-running one arm on one
+document swung ~22% in detection count (117 → 95). Per-document differences
+below roughly a quarter are not distinguishable from run-to-run LM variance.
+
+Output directories differ by writer. `tmp/ab-arms/` is written by the pipeline
+running in the container (root-owned); the workbooks therefore go to a sibling,
+`tmp/ab-arms-reports/`, which the host user can write.
+
 ---
 
 ## 4. Adding a new detector module
