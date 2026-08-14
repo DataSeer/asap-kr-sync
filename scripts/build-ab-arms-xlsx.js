@@ -17,12 +17,20 @@ const path = require('path');
 const ExcelJS = require('exceljs');
 
 const ROOT = path.join(__dirname, '..');
-const IN = path.join(ROOT, 'tmp/ab-arms');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');
-// NOT inside tmp/ab-arms: that directory is created by the container running as
-// root, so the host user cannot write into it. A sibling keeps this runnable
-// without sudo.
-const OUT = path.join(ROOT, 'tmp/ab-arms-reports');
+// NOT inside tmp/ab-arms: those directories are created by the container running
+// as root, so the host user cannot write into them. A sibling keeps this
+// runnable without sudo.
+const OUT_ROOT = path.join(ROOT, 'tmp/ab-arms-reports');
+
+// Each run gets its own input directory and its own set of workbooks, so a
+// reviewer can open one document for one run without the two being merged.
+// run0 (a malformed materials prompt) is deliberately absent — it is archived
+// but excluded from every figure.
+const RUNS = {
+  1: path.join(ROOT, 'tmp/ab-arms-run1'),
+  2: path.join(ROOT, 'tmp/ab-arms')
+};
 
 const { buildEvidenceIndex, findAllOccurrences } =
   require(path.join(ROOT, 'src/backend/services/pdf-analysis/evidence.service'));
@@ -78,27 +86,30 @@ const CAVEATS = [
   ['The arms',
     'A = separated design, the model never sees the author KRT. B = fused design seeded with the FULL author KRT (1048 rows). C = fused design seeded only with author rows whose name or identifier actually occurs in the manuscript (573 rows).'],
   ['READ THIS BEFORE THE NUMBERS',
-    'Arm B confirms far more author rows than A (796 vs 469). That looks decisive and is largely MISATTRIBUTION — see the anchoring column. Corrected for anchoring the real gap is ~7%, not 70%. Do not quote the confirmation counts without the anchored ones.'],
+    'Arm B confirms far more author rows than A (about 70% more in both runs). That looks decisive and is largely MISATTRIBUTION — see the anchoring column. Corrected for anchoring the real gap is ~7%, not 70%. Do not quote the confirmation counts without the anchored ones.'],
   ['Anchored confirmations',
-    'Of the author rows an arm confirmed, how many have their OWN name or identifier in the manuscript. A and C: 85-86%. B: 58%. The unanchored ones rest on a quote that verified as real text but is not demonstrably about that resource — typically a neighbouring sentence about a different resource.'],
+    'Of the author rows an arm confirmed, how many have their OWN name or identifier in the manuscript. A: 83-85%. C: 86-87%. B: 56-58%. The unanchored ones rest on a quote that verified as real text but is not demonstrably about that resource — typically a neighbouring sentence about a different resource.'],
   ['Why "echo" reads 0 everywhere',
     'Echo counts author-row detections whose quote failed to verify. It is 0 in all three arms — neither design fabricates quotes. But a quote verifies if that SENTENCE exists, not if it is ABOUT that resource. Echo alone would have produced the wrong conclusion; the anchoring test is what exposed it.'],
   ['Discovery — the solid result',
-    'Items found that are NOT author rows: what the author missed. Seeding cannot inflate it, so it compares cleanly. Seeding costs 36% of it (1539 -> 983), and arm A beat arm B on ALL 11 of 11 manuscripts (paired sign test p ~ 0.001). NOTE: the separated materials prompt covers 9 resource categories where the fused one covers 4, which inflates this. Counting only categories BOTH prompts cover: -23%, still 11 of 11. Quote -23%.'],
-  ['Arm C — now supported by two runs',
-    'Arm C looks best on quality (highest precision at 80%, anchoring 86%, 196 discovery recovered over B). It beat arm B on discovery in 10 of 11 manuscripts (p = 0.012) in this run, and 9 of 11 in an earlier independent run — so it replicates. Treat as supported but not as strongly as the discovery result.'],
+    'Items found that are NOT author rows: what the author missed. Seeding cannot inflate it, so it compares cleanly. Seeding costs 35% of it, and arm A beat arm B on 21 of 22 document-runs across two independent runs (pooled sign test p ~ 1e-5). NOTE: the separated materials prompt covers 9 resource categories where the fused one covers 4, which inflates this. Counting only categories BOTH prompts cover: -24%, still 21 of 22. Quote -24%.'],
+  ['Arm C — promising, not proven',
+    'Arm C looks best on quality (highest precision at 78-80%, anchoring 86-87%, 165-196 discovery recovered over B). Pooled over both runs it beat arm B on discovery in 18 of 22 document-runs (p = 0.004) — but the runs disagree taken separately: 10 of 11 in run 1, only 8 of 11 in run 2. Promising, not proven.'],
   ['"Supported" is a floor, not correctness',
     'It asks whether the resource is MENTIONED — necessary, not sufficient. Descriptive names ("Proteomics data", "Human GRCh38 reference genome") score no in every arm even when the resource is discussed, so absolute rates understate all three equally while the comparison between them stays fair.'],
   ['What this does NOT settle',
     'Arm A also uses different prompts, so A-vs-B is prompts AND seeding together (see the note in "Discovery" about resource-category coverage). Only B-vs-C isolates seeding alone. Also: nothing here is measured against external ground truth — every figure is self-referential, measuring the app against the authors\' own tables, not against a curator\'s verdict on what the KRT should contain.'],
   ['Run-to-run variance',
-    'Measured properly by running the whole experiment TWICE. Corpus totals are very stable: discovery moved -2.0% (A), +2.1% (B), +6.9% (C) between runs. Per-document spread: median ~9% for every arm, worst case 13-31%. An earlier claim that the fused design was markedly more reproducible rested on n=2 and is NOT supported — A and B are equally stable. Per-document differences under ~20% are not distinguishable from noise; corpus totals are reliable.'],
+    'Measured by running the whole experiment TWICE on identical prompts — see _RUN_VARIANCE.xlsx. Corpus totals are very stable: discovery moved -2% (A), 0% (B), -2% (C) between runs. Per-document spread: median 5% (A), 10% (B), 8% (C); worst case 32-41%. An earlier claim that the fused design was markedly more reproducible rested on n=2 and is NOT supported — if anything the separated arm is the more stable. A SINGLE-DOCUMENT difference below ~30% means nothing; corpus aggregates are what to rely on.'],
   ['Deviations recorded',
     'The fused prompts were given an evidence_quote field so the engine could verify them at all; without a claimed quote every item is unverifiable and the metric becomes meaningless (a planned change to those prompts regardless). Dataset seeds normally go in a structured payload field — here they are appended as a labelled block: same information, different placement. temperature 0 was applied throughout and does NOT remove the variance above.']
 ];
 
-(async () => {
-  if (!fs.existsSync(IN)) { console.error('No arm results found.'); process.exit(1); }
+/** Build the workbooks for one run. */
+async function buildRun(run) {
+  const IN = RUNS[run];
+  const OUT = path.join(OUT_ROOT, `run${run}`);
+  if (!fs.existsSync(IN)) { console.error(`run ${run}: no results at ${path.relative(ROOT, IN)}`); return null; }
   const byDoc = new Map();
   for (const f of fs.readdirSync(IN).filter((x) => x.endsWith('.json'))) {
     const a = JSON.parse(fs.readFileSync(path.join(IN, f), 'utf-8'));
@@ -120,7 +131,7 @@ const CAVEATS = [
     const byName = new Map(authorRows.map((r) => [norm(r.resourceName), r]));
 
     const wb = new ExcelJS.Workbook();
-    wb.creator = 'asap-kr-sync A/B/C prompt arms';
+    wb.creator = `asap-kr-sync A/B/C prompt arms — run ${run}`;
     addSheet(wb, 'READ ME — caveats',
       [{ header: 'Topic', key: 't', width: 34 }, { header: 'What you need to know', key: 'd', width: 108 }],
       CAVEATS.map(([t, d]) => ({ t, d })));
@@ -209,7 +220,7 @@ const CAVEATS = [
   }
 
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'asap-kr-sync A/B/C prompt arms';
+  wb.creator = `asap-kr-sync A/B/C prompt arms — run ${run}`;
   addSheet(wb, 'READ ME — caveats',
     [{ header: 'Topic', key: 't', width: 34 }, { header: 'What you need to know', key: 'd', width: 108 }],
     CAVEATS.map(([t, d]) => ({ t, d })));
@@ -231,7 +242,88 @@ const CAVEATS = [
   ], allRows, (r) => (r.inManuscript === 'no' ? 'no' : r.arm));
   await wb.xlsx.writeFile(path.join(OUT, '_ARMS_SUMMARY.xlsx'));
 
-  console.log(`written to ${path.relative(ROOT, OUT)}/`);
-  console.log(`  ${docs.length} per-document workbooks + _ARMS_SUMMARY.xlsx`);
-  console.log(`  detection rows across all arms: ${allRows.length}`);
+  console.log(`run ${run}: ${docs.length} per-document workbooks + _ARMS_SUMMARY.xlsx -> ${path.relative(ROOT, OUT)}/`);
+  return summary;
+}
+
+/**
+ * Cross-run comparison: the same document, the same arm, two independent runs.
+ *
+ * This is the only honest measure of run-to-run variance we have — the arms
+ * cannot serve as each other's replicates because they differ by design. A
+ * reader deciding whether a per-document difference means anything should
+ * consult this sheet first.
+ */
+async function buildVariance(s1, s2) {
+  const key = (r) => `${r.document}||${r.arm}`;
+  const m1 = new Map(s1.map((r) => [key(r), r]));
+  const rows = [];
+  for (const r2 of s2) {
+    const r1 = m1.get(key(r2));
+    if (!r1) continue;
+    const d = (a, b) => (a > 0 ? Math.round(((b - a) / a) * 100) : '');
+    rows.push({
+      document: r2.document, arm: r2.arm,
+      disc1: r1.discovery, disc2: r2.discovery, discD: d(r1.discovery, r2.discovery),
+      det1: r1.detections, det2: r2.detections, detD: d(r1.detections, r2.detections),
+      conf1: r1.confirmed, conf2: r2.confirmed, confD: d(r1.confirmed, r2.confirmed),
+      anch1: r1.anchoredPct, anch2: r2.anchoredPct
+    });
+  }
+
+  const totals = [];
+  for (const armLabel of [...new Set(rows.map((r) => r.arm))]) {
+    const rs = rows.filter((r) => r.arm === armLabel);
+    const sum = (f) => rs.reduce((n, r) => n + (Number(f(r)) || 0), 0);
+    const spreads = rs.map((r) => Math.abs(Number(r.discD) || 0)).sort((a, b) => a - b);
+    totals.push({
+      arm: armLabel,
+      disc1: sum((r) => r.disc1), disc2: sum((r) => r.disc2),
+      discD: sum((r) => r.disc1) > 0 ? Math.round(((sum((r) => r.disc2) - sum((r) => r.disc1)) / sum((r) => r.disc1)) * 100) : '',
+      det1: sum((r) => r.det1), det2: sum((r) => r.det2),
+      detD: sum((r) => r.det1) > 0 ? Math.round(((sum((r) => r.det2) - sum((r) => r.det1)) / sum((r) => r.det1)) * 100) : '',
+      medSpread: spreads[Math.floor(spreads.length / 2)],
+      worstSpread: spreads[spreads.length - 1]
+    });
+  }
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'asap-kr-sync A/B/C prompt arms — run variance';
+  addSheet(wb, 'READ ME', [
+    { header: 'Topic', key: 't', width: 30 }, { header: 'What you need to know', key: 'd', width: 110 }
+  ], [
+    { t: 'What this is', d: 'The same 11 manuscripts, the same three arms, run twice end to end on identical prompts. Differences here are pure run-to-run noise — nothing changed between the runs.' },
+    { t: 'Why it matters', d: 'It sets the bar a per-document difference has to clear before it means anything. Corpus totals are stable; single-document deltas are not.' },
+    { t: 'How to use it', d: 'Before quoting a per-document difference between arms, check the same-arm spread here. If the arm-to-arm difference is inside the run-to-run spread, it is noise.' },
+    { t: 'Excluded', d: 'An earlier run used a materials prompt with a malformed output example. It is archived but excluded from every figure, so both runs compared here used identical prompts.' }
+  ]);
+  addSheet(wb, 'Totals by arm', [
+    { header: 'Arm', key: 'arm', width: 34 },
+    { header: 'Discovery run 1', key: 'disc1', width: 15 }, { header: 'Discovery run 2', key: 'disc2', width: 15 },
+    { header: 'Discovery Δ%', key: 'discD', width: 13 },
+    { header: 'Detections run 1', key: 'det1', width: 16 }, { header: 'Detections run 2', key: 'det2', width: 16 },
+    { header: 'Detections Δ%', key: 'detD', width: 14 },
+    { header: 'Median per-doc spread %', key: 'medSpread', width: 22 },
+    { header: 'Worst per-doc spread %', key: 'worstSpread', width: 21 }
+  ], totals, (r) => r.arm.charAt(0));
+  addSheet(wb, 'Per document', [
+    { header: 'Document', key: 'document', width: 28 }, { header: 'Arm', key: 'arm', width: 32 },
+    { header: 'Disc run 1', key: 'disc1', width: 11 }, { header: 'Disc run 2', key: 'disc2', width: 11 },
+    { header: 'Disc Δ%', key: 'discD', width: 9 },
+    { header: 'Det run 1', key: 'det1', width: 10 }, { header: 'Det run 2', key: 'det2', width: 10 },
+    { header: 'Det Δ%', key: 'detD', width: 9 },
+    { header: 'Confirmed run 1', key: 'conf1', width: 15 }, { header: 'Confirmed run 2', key: 'conf2', width: 15 },
+    { header: 'Confirmed Δ%', key: 'confD', width: 13 },
+    { header: 'Anchored % run 1', key: 'anch1', width: 16 }, { header: 'Anchored % run 2', key: 'anch2', width: 16 }
+  ], rows, (r) => r.arm.charAt(0));
+  await wb.xlsx.writeFile(path.join(OUT_ROOT, '_RUN_VARIANCE.xlsx'));
+  console.log(`variance: ${rows.length} document/arm pairs -> tmp/ab-arms-reports/_RUN_VARIANCE.xlsx`);
+}
+
+(async () => {
+  fs.mkdirSync(OUT_ROOT, { recursive: true });
+  const s1 = await buildRun(1);
+  const s2 = await buildRun(2);
+  if (s1 && s2) await buildVariance(s1, s2);
+  else console.log('variance: skipped (needs both runs)');
 })();
