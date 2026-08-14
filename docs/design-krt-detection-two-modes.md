@@ -275,6 +275,12 @@ the words "body temperature" and the initial import. Every Gemini call therefore
 This was an omission, not a decision, and it is the most likely cause of the 34-vs-3-row swing on identical inputs in
 `AB-testing-results-2026-08-12.md`.
 
+> **Since fixed, and only partly the cause.** `temperature: 0` now applies to every Gemini call on both `dev` and the
+> branch, via `DEFAULT_GENERATION_CONFIG` in `utils/gemini.js` (commit `d03b58d`). The paragraph above describes the
+> state at the time of the audit, not current behaviour. It did **not** eliminate the swing: the A/B/C prompt arms ran
+> at temperature 0 and a repeated document still moved 117 → 95 detections (~22%). The residue is the model's own
+> nondeterminism, so it can be measured but not configured away.
+
 `thinkingBudget: 0` **was** deliberate — commit `38a16db` set it on the three detectors to stop JSON truncation, and
 its own message says *"Extraction tasks don't need thinking; re-enable if quality regresses."*
 
