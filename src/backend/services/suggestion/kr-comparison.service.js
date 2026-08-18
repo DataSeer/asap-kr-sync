@@ -21,6 +21,7 @@ const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
+const { getPipeline } = require('../../config/pipelines');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 
@@ -521,21 +522,43 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
   // badges a row that the manuscript never mentions. It deliberately carries no
   // suggestion — the author's KRT is authoritative even when detection cannot
   // corroborate it, so there is nothing here for the user to accept or reject.
+  // Which halves of grounding this pipeline is allowed to show.
+  //
+  // `presence` — the manuscript searched directly for the row — travels in
+  // every pipeline: it never consults the candidate pool, so seeding cannot
+  // affect it.
+  //
+  // Everything derived from candidate MATCHING is withheld under a seeded
+  // pipeline. There the pool contains the model's echo of the author's own
+  // rows, so `confirmed` can mean "it repeated what we handed it" and the
+  // output cannot tell that from a real find. Withholding it here rather than
+  // hiding it in the editor means the unusable verdict never leaves the server.
+  const { Submission } = require('../../models');
+  const submission = await Submission.findByPk(submissionId);
+  const policy = getPipeline(submission?.pipelineId).grounding;
+
   const groundings = groundingOutcomes.map((outcome) => ({
     krtRowId: outcome.krtRowId,
-    outcome: outcome.outcome,
-    matchedBy: outcome.matchedBy || null,
-    evidence: outcome.evidence || null,
-    // Disagreements between the row and the manuscript. Carried as a TAG, not a
-    // suggestion: the author's value stands and a curator decides.
-    conflicts: outcome.conflicts || [],
-    reason: outcome.reason || null
+    // Honest in every pipeline.
+    presence: outcome.presence || null,
+    ...(policy.surfaceValues ? {
+      outcome: outcome.outcome,
+      matchedBy: outcome.matchedBy || null,
+      evidence: outcome.evidence || null,
+      // Disagreements between the row and the manuscript. Carried as a TAG, not
+      // a suggestion: the author's value stands and a curator decides.
+      conflicts: outcome.conflicts || [],
+      reason: outcome.reason || null
+    } : {})
   }));
-  const notDetectedCount = groundings.filter((g) => g.outcome === 'not_detected').length;
+  // Counted from PRESENCE, not from the matcher: "not in the text" is a claim
+  // about the manuscript, and matching through candidates gets it wrong roughly
+  // three times out of four (55-60% located against 92% by direct search).
+  const notDetectedCount = groundings.filter((g) => g.presence && !g.presence.found).length;
   const conflictCount = groundings.reduce((n, g) => n + (g.conflicts?.length || 0), 0);
 
   return {
-    data: { suggestions, decisions, groundings },
+    data: { suggestions, decisions, groundings, groundingPolicy: policy },
     status: 'done',
     source: 'external',
     meta: {

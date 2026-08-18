@@ -1008,6 +1008,10 @@ function openJobModal(job) {
     // it gets its own table rather than being forced into 'resources'.
     modalContent.value = ''
     modalTableType.value = 'grounding'
+    // Which halves of this result may be shown, as stamped on the run itself.
+    // Read from the result rather than from the submission's current pipeline,
+    // so an old result is always read the way it was produced.
+    modalGroundingPolicy.value = job.result?.meta?.grounding || null
     const outcomes = job.result?.data?.outcomes || []
     modalItems.value = outcomes.length ? outcomes : null
   } else if (job.type === 'suggestion_generation') {
@@ -1204,15 +1208,52 @@ function itemEngines(item) {
   return [...origins]
 }
 
+/**
+ * Which halves of the open grounding result may be shown (from meta.grounding).
+ * Null for results produced before pipelines existed — treated as showing
+ * everything, which is what those runs meant.
+ */
+const modalGroundingPolicy = ref(null)
+
+/**
+ * Under a seeded pipeline the candidate pool contains the model's echo of the
+ * author's own rows, so "Found" can mean "the model repeated the row we handed
+ * it" and the output cannot tell that from a real find. Those columns are
+ * withheld rather than shown with a caveat nobody reads.
+ *
+ * Presence is unaffected — it searches the manuscript directly and never
+ * consults the candidate pool — so it is shown in every pipeline.
+ */
+const showGroundingValues = computed(() => modalGroundingPolicy.value?.surfaceValues !== false)
+
 /** Columns for the grounding table — same two-row shape as the detectors. */
-const GROUNDING_COLS = [
+const GROUNDING_ALL_COLS = [
   { key: 'resourceType', label: 'Resource Type' },
   { key: 'resourceName', label: "Author's row" },
+  { key: 'presence', label: 'In manuscript', always: true },
   { key: 'verdict', label: 'Verdict' },
   { key: 'matchedBy', label: 'Matched by' },
   { key: 'evidence', label: 'Evidence' },
   { key: 'fills', label: 'Manuscript says' }
 ]
+const GROUNDING_COLS = computed(() => (showGroundingValues.value
+  ? GROUNDING_ALL_COLS
+  : GROUNDING_ALL_COLS.filter((c) => c.always || c.key === 'resourceType' || c.key === 'resourceName')))
+
+/**
+ * Was the row's own name or identifier found in the manuscript, searched
+ * directly? Independent of every detector, and of what the prompts were seeded
+ * with — so it is the one verdict that means the same thing in every pipeline.
+ */
+function presenceLabel(o) {
+  if (!o?.presence) return '—'
+  if (!o.presence.found) return 'No'
+  return o.presence.via === 'identifier' ? 'Yes — identifier' : 'Yes — name'
+}
+function presenceClass(o) {
+  if (!o?.presence) return ''
+  return o.presence.found ? 'grounding-confirmed' : 'grounding-not-detected'
+}
 
 /** Human labels for a grounding verdict. */
 const GROUNDING_LABELS = {
@@ -2056,15 +2097,21 @@ async function downloadMarkdownFile(fileId) {
                         <td class="text-xs"><HighlightText :text="o.resourceType || ''" :query="modalSearch" /></td>
                         <td class="font-medium"><HighlightText :text="o.resourceName || ''" :query="modalSearch" /></td>
                         <td class="text-xs">
+                          <span class="grounding-badge" :class="presenceClass(o)"
+                                :title="o.presence ? (o.presence.occurrences + ' occurrence(s) found by direct search of the manuscript') : 'Not recorded for this run'">
+                            {{ presenceLabel(o) }}
+                          </span>
+                        </td>
+                        <td v-if="showGroundingValues" class="text-xs">
                           <span class="grounding-badge" :class="groundingClass(o)" :title="o.reason || ''">{{ groundingLabel(o) }}</span>
                         </td>
-                        <td class="text-xs">{{ groundingMatchedBy(o) }}</td>
-                        <td class="text-xs">
+                        <td v-if="showGroundingValues" class="text-xs">{{ groundingMatchedBy(o) }}</td>
+                        <td v-if="showGroundingValues" class="text-xs">
                           <span v-if="o.evidence?.section" class="evidence-section-cell" :title="o.evidence.section">{{ o.evidence.section }}</span>
                           <span v-else class="text-gray-300">—</span>
                           <span v-if="o.evidence?.match === 'partial'" class="grounding-badge grounding-partial" title="Only the leading part of the quote was located">partial</span>
                         </td>
-                        <td class="text-xs">
+                        <td v-if="showGroundingValues" class="text-xs">
                           <template v-if="groundingHasFindings(o)">
                             <div v-for="(f, fi) in groundingFills(o)" :key="'f' + fi" class="grounding-fill" title="Your row leaves this empty; the manuscript supplies it. Offered as a suggestion.">
                               {{ f }}
@@ -2078,7 +2125,7 @@ async function downloadMarkdownFile(fileId) {
                           </span>
                         </td>
                       </tr>
-                      <tr v-if="o.evidence?.quote" class="context-row">
+                      <tr v-if="showGroundingValues && o.evidence?.quote" class="context-row">
                         <td :colspan="GROUNDING_COLS.length" class="context-cell">
                           <EvidenceContext :evidence="o.evidence" :show-section="false" />
                         </td>

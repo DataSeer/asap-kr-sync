@@ -2171,15 +2171,25 @@ defineExpose({
                       class="tool-added-badge"
                       title="Added by AI from manuscript analysis"
                     >AI</span>
-                    <!-- Grounding verdict: this row could not be located in the
-                         manuscript. Purely informational — the author's row is
+                    <!-- Grounding: the manuscript does not mention this row.
+                         Purely informational — the author's row is
                          authoritative and is never altered or removed because
                          of it. It flags a possible citation gap for a human to
-                         judge. -->
+                         judge.
+
+                         Driven by PRESENCE — the manuscript searched directly
+                         for the row's name and identifier — not by whether a
+                         detector matched it. Those are different questions, and
+                         the old one was wrong far too often: matching through
+                         candidates locates 55-60% of author rows where a direct
+                         search locates 92%, so this badge was telling curators
+                         a resource was missing from papers that plainly discuss
+                         it. Presence is also the only reading that stays honest
+                         when the detection prompts were seeded with the KRT. -->
                     <span
-                      v-if="showSuggestions && rowGrounding(row.id)?.outcome === 'not_detected'"
+                      v-if="showSuggestions && rowGrounding(row.id)?.presence?.found === false"
                       class="not-detected-badge"
-                      :title="rowGrounding(row.id)?.reason || 'Not found in the manuscript text — check the manuscript cites this resource. Your row is kept as-is.'"
+                      title="Not found in the manuscript text — check the manuscript cites this resource. Your row is kept as-is."
                     >Not in text</span>
                     <!-- Module badges for any update suggestions on this row.
                          Same chips that ADD suggestions show in the # cell,

@@ -44,6 +44,7 @@ const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { matchAuthorRows } = require('./match-author-rows.service');
+const { getPipeline } = require('../../config/pipelines');
 const { buildEvidenceIndex, locateQuote, collectMentions } = require('../pdf-analysis/evidence.service');
 const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
@@ -223,6 +224,7 @@ async function groundSubmission(submission, jobLogger) {
   const submissionId = submission.id;
   const round = submission.currentRound || 1;
   const startTime = Date.now();
+  const pipeline = getPipeline(submission.pipelineId);
 
   // ── Step 1: inputs
   const authorRows = await loadAuthorKrtRows(submissionId, round);
@@ -292,6 +294,11 @@ async function groundSubmission(submission, jobLogger) {
       ...stats,
       secondLook: secondLookStats,
       presence: { ...presence.stats, available: presence.available, missedByDetection },
+      // Which halves of this result may be shown. Stamped on the run rather
+      // than looked up at render time, so a result always says how it should be
+      // read — including after the submission's pipeline changes.
+      pipeline: pipeline.id,
+      grounding: pipeline.grounding,
       hasAuthorKrt: authorRows.length > 0,
       mode: authorRows.length > 0 ? 'with_krt' : 'no_krt',
       totalMs: Date.now() - startTime,
