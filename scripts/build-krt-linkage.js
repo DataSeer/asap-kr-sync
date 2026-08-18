@@ -53,6 +53,8 @@ const MIME = {
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 };
 const MAX_CHUNKS = 8;
+/** Below this the evidence index refuses to search at all. */
+const MIN_NAME_CHARS = 4;
 const only = (() => { const i = process.argv.indexOf('--only'); return i > -1 ? process.argv[i + 1] : null; })();
 
 const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -88,6 +90,33 @@ function buildFlatIndex(md) {
 }
 
 const flatten = (s) => String(s ?? '').toLowerCase().replace(/[\s.\-_]/g, '');
+
+/**
+ * Whole-word search for names too short for the normal path.
+ *
+ * Three separate length guards (this file's own >=4, MIN_MENTION_CHARS in the
+ * evidence index, and isDistinctive's single-token rule) each independently
+ * reject a 3-character name, so rows like the R package "zoo" came back as
+ * "nothing found" while the manuscript says "zoo (1.8.14)" in plain sight.
+ *
+ * Substring matching is not the answer — it would take "zoo" from "zoom-ins" in
+ * the same document. Word boundaries are, and they must be manual: \b treats a
+ * hyphen as a boundary, so \bzoo\b still matches inside "zoo-like".
+ *
+ * Stops at 2 characters. A one-character name ("R", the language) hits 78 times
+ * in a single paper and no boundary rule rescues that.
+ */
+function findShortWord(md, name, cap) {
+  const n = String(name || '').trim();
+  if (n.length < 2 || n.length >= MIN_NAME_CHARS) return [];
+  const re = new RegExp(`(?<![A-Za-z0-9])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9])`, 'gi');
+  const out = [];
+  for (const m of md.matchAll(re)) {
+    out.push({ offset: m.index });
+    if (out.length >= cap) break;
+  }
+  return out;
+}
 
 /** Every separator-insensitive occurrence, as real offsets. */
 function findFlat(flatIndex, needle, cap) {
@@ -244,7 +273,7 @@ function linkDocument(name, authorRows, md) {
       const occ = findAllOccurrences(index, id, MAX_CHUNKS);
       if (occ.length) { idHit = true; add(occ, 'identifier', id); }
     }
-    const nameOcc = nameStr.length >= 4 ? findAllOccurrences(index, nameStr, MAX_CHUNKS) : [];
+    const nameOcc = nameStr.length >= MIN_NAME_CHARS ? findAllOccurrences(index, nameStr, MAX_CHUNKS) : [];
     let nameHit = nameOcc.length > 0;
     if (nameHit) add(nameOcc, 'name', nameStr);
 
@@ -273,6 +302,13 @@ function linkDocument(name, authorRows, md) {
     // Only when nothing settled it: propose partial evidence for a human.
     const proposals = [];
     if (!idHit && !nameHit) {
+      // Deliberately a proposal, not a link: "PBS" occurs 12 times in one paper
+      // and only a human can say which occurrence is the reagent row.
+      const shortOcc = findShortWord(md, nameStr, 3);
+      if (shortOcc.length) {
+        add(shortOcc.map((o) => ({ ...o, section: '' })), 'name-short', nameStr);
+        proposals.push(`${nameStr} (whole word)`);
+      }
       for (const run of tokenRuns(nameStr)) {
         const occ = findAllOccurrences(index, run, 3);
         if (!occ.length) continue;
