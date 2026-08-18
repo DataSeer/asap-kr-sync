@@ -427,16 +427,39 @@ function sentenceBoundsAround(context, from, to) {
  * times (in-detector dedup, cross-detector merge, LM consolidation). One
  * implementation, one grading rule:
  *
- *   exact > partial > none, and carrying a context paragraph beats not.
+ *   exact > partial > ungrounded-but-present > ungrounded, and carrying a
+ *   context paragraph beats not.
+ *
+ * `none` is a RANK, not a deletion. The previous grading scored every
+ * ungrounded record 0 — the same as no record at all — so when a resource's
+ * only evidence was ungrounded this returned null and the caller's
+ * `...(pickBestEvidence(...) ? { evidence } : {})` dropped the block entirely.
+ *
+ * That silently destroyed the `embellished` / `unsupported` verdict before
+ * anything downstream could read it, which had two consequences:
+ *
+ *   - `mergeDetections`' unsupported filter was dead code. No item reaching it
+ *     carried a verification status, so it could never fire.
+ *   - the three-verdict evidence contract collapsed to two in practice:
+ *     `embellished` is documented as "kept, tagged", and the tag never
+ *     survived its own detector.
+ *
+ * Ranking ungrounded records instead of erasing them keeps the verdict
+ * travelling. It is the same class as the four rebuild-by-enumeration sites,
+ * in a grading function rather than a field list.
  *
  * @param {object[]} evidences - candidate evidence blocks (nullish entries ignored)
- * @returns {object|null}
+ * @returns {object|null} null ONLY when there was no evidence record at all
  */
 function pickBestEvidence(evidences) {
   const grade = (e) => {
-    if (!e || !e.match) return 0;
-    const base = e.match === 'exact' ? 2 : 1;
-    return e.context ? base + 2 : base;
+    if (!e) return -1;                                  // genuinely nothing
+    if (!e.match) {
+      // Located nothing, but the verdict still matters downstream.
+      return e.verification?.status === 'embellished' ? 1 : 0;
+    }
+    const base = e.match === 'exact' ? 4 : 2;
+    return e.context ? base + 1 : base;
   };
   let best = null;
   for (const candidate of evidences || []) {

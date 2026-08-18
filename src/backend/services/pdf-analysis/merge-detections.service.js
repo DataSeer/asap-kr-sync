@@ -103,6 +103,13 @@ function toResource(item, source) {
     identifier,
     additionalInformation,
     confidence,
+    // Carried explicitly. The intake below filters on
+    // evidence.verification.status, and enumerating the fields here without
+    // this one meant that check read `undefined` on every item and could never
+    // fire — the filter was dead code from the day it was written. Same class
+    // as the four other rebuild-by-enumeration sites: a field is lost because
+    // a rebuild lists what to keep and someone forgets one.
+    evidence: d.evidence ?? item.evidence ?? null,
     source,
     originalItem: item
   };

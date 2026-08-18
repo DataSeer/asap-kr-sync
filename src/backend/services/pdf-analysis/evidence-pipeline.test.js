@@ -108,9 +108,28 @@ test('a merged resource surfaces the BEST evidence across contributors', () => {
   assert.ok(merged[0].evidence.context, 'the contributor carrying a context paragraph wins');
 });
 
-test('an ungrounded chain stays clean rather than inventing an empty block', () => {
+/**
+ * This used to assert that an ungrounded chain produced `evidence: null`, to
+ * avoid rendering a hollow block. That protection was in the wrong place: it
+ * was implemented by `pickBestEvidence` scoring every ungrounded record 0 —
+ * indistinguishable from no record — so the block was deleted along with its
+ * verification verdict.
+ *
+ * Deleting the verdict broke the thing that was supposed to keep the output
+ * clean: `mergeDetections` filters on `evidence.verification.status ===
+ * 'unsupported'`, and no item ever reached it carrying a status, so the filter
+ * was dead code from the day it was written.
+ *
+ * With the verdict travelling, the filter does the job instead — and does it
+ * better. An `unsupported` item is removed entirely rather than kept with its
+ * evidence blanked, and an `embellished` item keeps the mentions and context
+ * that make it useful. `quote` stays empty either way, because that field means
+ * "text located in the document" and must never carry an unverified claim.
+ */
+test('an embellished item keeps its evidence; nothing unverified is presented as located', () => {
   const index = buildEvidenceIndex(MARKDOWN);
-  // Softcite-style: a real quote from the PDF that is not in the markdown.
+  // Softcite-style: a real quote from the PDF that is not in the markdown. The
+  // RESOURCE is in the markdown, so this is embellished, not unsupported.
   const item = rawItem({
     origin: 'softcite',
     evidence: { quote: 'a sentence that is not in this markdown at all, nowhere', offset: -1, section: '', match: null }
@@ -118,7 +137,35 @@ test('an ungrounded chain stays clean rather than inventing an empty block', () 
   const { items: grounded } = attachEvidence([item], index, { drop: false, label: 'softcite' });
   const merged = mergeDetections([{ source: 'software_detection', items: dedupeKrtItems(grounded, 'software') }]);
 
-  assert.equal(merged[0].evidence, null, 'no match ⇒ null, not a fake block');
+  assert.equal(merged.length, 1, 'embellished survives the merge filter');
+  assert.equal(merged[0].evidence.verification.status, 'embellished', 'the verdict reaches the merged resource');
+  assert.equal(merged[0].evidence.quote, '', 'an unverified claim never occupies the located-text field');
+  assert.equal(merged[0].evidence.claimed.quote, 'a sentence that is not in this markdown at all, nowhere',
+    'what the model claimed is preserved, in its own channel');
+  assert.ok(merged[0].evidence.mentions.length > 0, 'where the resource DOES appear is still reported');
+});
+
+test('an unsupported item is dropped at merge, not kept with blank evidence', () => {
+  const index = buildEvidenceIndex(MARKDOWN);
+  // Neither the quote nor the resource is anywhere in the manuscript.
+  const item = rawItem({
+    resourceName: 'ZzzNotInThisPaper999',
+    identifier: '',
+    evidence: { quote: 'also entirely invented, nowhere in the text', offset: -1, section: '', match: null }
+  });
+  const { items: grounded } = attachEvidence([item], index, { drop: false, label: 'probe' });
+  assert.equal(grounded[0].evidence.verification.status, 'unsupported');
+
+  // Dropped inside the DETECTOR's own dedup, because dedupeKrtItems delegates
+  // to mergeDetections and so applies the same filter. Naming the stage matters:
+  // asserting only on the final merge would pass even if the item were being
+  // lost somewhere else entirely, which is how the previous version of this
+  // test hid the fact that the filter had never run at all.
+  const deduped = dedupeKrtItems(grounded, 'software');
+  assert.equal(deduped.length, 0, 'removed at in-detector dedup, the earliest point it can be');
+
+  const merged = mergeDetections([{ source: 'software_detection', items: deduped }]);
+  assert.equal(merged.length, 0, 'and it does not reappear downstream');
 });
 
 /**
