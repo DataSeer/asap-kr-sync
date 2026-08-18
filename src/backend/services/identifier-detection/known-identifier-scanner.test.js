@@ -106,6 +106,47 @@ test('scan: SCR-only token (no RRID prefix) → HIGH', () => {
   assert.equal(matches[0].relevance, 'HIGH');
 });
 
+// ---------------------------------------------------------------------------
+// Markdown-escaped identifiers
+//
+// The PDF-to-markdown converter escapes markdown punctuation, and across the
+// demo corpus the underscore is the only character it escapes (396 times). An
+// RRID is mostly underscore, so `[A-Za-z]+_` matched nothing and the scanner
+// went blind: 1 RRID found of 79 present in one manuscript, 0 of 18 in another.
+// Detections roughly doubled in those documents once this was fixed.
+// ---------------------------------------------------------------------------
+test('scan: RRID whose underscore the converter escaped still matches', () => {
+  const idx = indexOf(FIJI);
+  const text = 'We used Fiji (RRID:SCR\\_002285) for image analysis.';
+  const { matches } = scan(text, idx);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].entry.id, FIJI.id);
+  assert.equal(matches[0].relevance, 'HIGH');
+});
+
+test('scan: bare SCR token whose underscore was escaped still matches', () => {
+  const idx = indexOf(FIJI);
+  const text = 'Image analysis used SCR\\_002285.';
+  const { matches } = scan(text, idx);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].relevance, 'HIGH');
+});
+
+test('scan: escaped and plain spellings of one identifier are the same match', () => {
+  const idx = indexOf(FIJI);
+  const escaped = scan('Analysis in Fiji (RRID:SCR\\_002285).', idx).matches;
+  const plain = scan('Analysis in Fiji (RRID:SCR_002285).', idx).matches;
+  assert.equal(escaped.length, plain.length);
+  assert.equal(escaped[0].entry.id, plain[0].entry.id);
+  assert.equal(escaped[0].relevance, plain[0].relevance);
+});
+
+test('scan: a backslash elsewhere does not invent an identifier', () => {
+  const idx = indexOf(FIJI);
+  const { matches } = scan('The path C:\\data\\SCR was not an accession.', idx);
+  assert.equal(matches.length, 0);
+});
+
 test('scan: DOI exact match → HIGH', () => {
   const idx = indexOf(ZENODO_DATASET);
   const text = 'Data is available at 10.5281/zenodo.7340795 in the methods.';

@@ -22,6 +22,7 @@ const {
   locateQuote,
   extractContext,
   identifierNeedle,
+  findAllOccurrences,
   isCitationSection,
   attachEvidence
 } = require('./evidence.service');
@@ -442,6 +443,25 @@ test('identifierNeedle strips the scheme so "RRID: AB_1" finds "AB_1"', () => {
   assert.equal(identifierNeedle('Cat #: 657012, RRID: AB_1'), '657012');
   assert.equal(identifierNeedle('AB'), '', 'too short to be a safe needle');
   assert.equal(identifierNeedle(''), '');
+});
+
+test('findAllOccurrences: a converter-escaped identifier is found by its plain form', () => {
+  // The manuscript says `RRID:AB\_2687579`; the author's KRT, the model's output
+  // and the enrichment index all say `RRID:AB_2687579`. Before the backslash was
+  // folded away, 127 of 164 distinct RRIDs in the demo corpus were unreachable.
+  const index = buildEvidenceIndex('Stained with anti-LAMP1 (RRID:AB\\_2687579) overnight.');
+  assert.equal(findAllOccurrences(index, 'AB_2687579', 5).length, 1);
+  assert.equal(findAllOccurrences(index, 'AB\\_2687579', 5).length, 1);
+});
+
+test('findAllOccurrences: folding the escape away keeps offsets on real text', () => {
+  const text = 'Stained with anti-LAMP1 (RRID:AB\\_2687579) overnight.';
+  const index = buildEvidenceIndex(text);
+  const [hit] = findAllOccurrences(index, 'AB_2687579', 1);
+  assert.ok(hit, 'expected a hit');
+  // The offset must land on the identifier in the ORIGINAL string, escape and
+  // all — a normalisation that shifted offsets would break every quote we show.
+  assert.ok(text.slice(hit.offset).startsWith('AB\\_2687579'));
 });
 
 test('isCitationSection recognises bibliographies', () => {
