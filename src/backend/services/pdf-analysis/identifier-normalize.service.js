@@ -31,7 +31,11 @@ const identifierExtractor = require('../krt/identifier-extractor');
  */
 function normalizeRawValue(value) {
   if (value == null) return '';
-  let s = String(value).toLowerCase().trim();
+  // Markdown escapes first: converted manuscripts carry `RRID:AB\\_2687579`
+  // where the KRT, the model and the enrichment index all carry `AB_2687579`.
+  // An identifier never legitimately contains a backslash, so dropping it is a
+  // no-op on every other input and makes the two spellings compare equal.
+  let s = String(value).replace(/\\/g, '').toLowerCase().trim();
 
   // Repeatedly strip prefix/suffix noise until stable.
   // NOTE: each prefix replacement must REDUCE the string length (or be a
