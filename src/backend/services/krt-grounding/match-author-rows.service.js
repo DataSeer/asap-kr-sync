@@ -561,6 +561,11 @@ function summarise(outcomes, candidateCount, unmatchedCount) {
 module.exports = {
   MATCH_STRENGTH,
   FILLABLE_FIELDS,
+  // Exported for the gold-linkage tooling, which must bucket author rows by the
+  // SAME distinctiveness rule the matcher applies. Duplicating the list there
+  // would let the two drift apart silently.
+  GENERIC_TOKENS,
+  isDistinctive,
   matchAuthorRows,
   matchOneRow,
   matchStrength,
