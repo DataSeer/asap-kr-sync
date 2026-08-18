@@ -33,9 +33,23 @@
  *
  * Offline: no LM calls, no database.
  *
- * Usage: node scripts/score-against-gold.js [--run 1|2] [--arms A,B,C] [--strict]
- *   --strict  score only rows the linkage decided automatically or a human
- *             confirmed, excluding those still awaiting review.
+ * SCOPE, and the bias it carries. By default this scores only rows whose gold
+ * linkage is SETTLED — decided automatically or confirmed by a human. Rows still
+ * awaiting review are excluded, and so are documents where too few rows are
+ * settled for the remainder to represent them.
+ *
+ * That exclusion is not neutral and the output says so. The unreviewed pile IS
+ * the hard aliasing cases, by construction: they are unreviewed precisely
+ * because no rule could settle them. Dropping them understates the naming
+ * problem and flatters the pipeline. Measured both ways, the "right passage,
+ * wrong entity" cell moves from 29-30% to 14-17%. Read these figures as
+ * "performance on rows whose linkage is unambiguous", never as overall
+ * performance.
+ *
+ * Usage: node scripts/score-against-gold.js [--run 1,2] [--arms A,B,C]
+ *   --include-unsettled   also score rows still awaiting review
+ *   --min-coverage <pct>  drop documents below this share of settled rows
+ *                         (default 45)
  */
 
 const fs = require('fs');
@@ -51,7 +65,8 @@ const RUNS = { 1: path.join(ROOT, 'tmp/ab-arms-run1'), 2: path.join(ROOT, 'tmp/a
 const { chunkAt } = require('./build-krt-linkage');
 
 const arg = (flag, dflt) => { const i = process.argv.indexOf(flag); return i > -1 ? process.argv[i + 1] : dflt; };
-const STRICT = process.argv.includes('--strict');
+const STRICT = !process.argv.includes('--include-unsettled');
+const MIN_COVERAGE = Number(arg('--min-coverage', 45));
 const ARMS = arg('--arms', 'A,B,C').split(',');
 const RUN_IDS = arg('--run', '1,2').split(',').map(Number);
 
@@ -138,9 +153,19 @@ function summarise(rows) {
 (async () => {
   if (!fs.existsSync(GOLD)) { console.error('No gold linkage — run build-krt-linkage.js first.'); process.exit(1); }
   const goldByDoc = new Map();
+  const dropped = [];
   for (const f of fs.readdirSync(GOLD).filter((x) => x.endsWith('.json'))) {
     const rows = JSON.parse(fs.readFileSync(path.join(GOLD, f), 'utf-8'));
-    if (rows.length) goldByDoc.set(rows[0].document, rows);
+    if (!rows.length) continue;
+    // A document whose settled rows are a small minority cannot be represented
+    // by them: what survives is its easy tail, not the document.
+    const settled = rows.filter(isSettled).length;
+    const share = Math.round((settled / rows.length) * 100);
+    if (STRICT && share < MIN_COVERAGE) {
+      dropped.push({ document: rows[0].document, rows: rows.length, settled, share });
+      continue;
+    }
+    goldByDoc.set(rows[0].document, rows);
   }
 
   fs.mkdirSync(OUT, { recursive: true });
@@ -171,8 +196,20 @@ function summarise(rows) {
   console.log('SCORED AGAINST THE GOLD LINKAGE' + (STRICT ? '  [strict: settled rows only]' : ''));
   line();
   const first = table[0];
-  console.log(`${first.n} author rows in scope · ${first.notLocatable} not locatable in the manuscript (excluded)`
-    + (STRICT ? '' : ` · ${first.unsettled} still awaiting human review`));
+  console.log(`SCOPE: ${first.n} author rows`
+    + (STRICT ? ' whose gold linkage is SETTLED' : ' (including rows awaiting review)'));
+  console.log(`  excluded: ${first.notLocatable} not locatable in the manuscript`
+    + (STRICT ? `, ${first.unsettled} awaiting review` : '')
+    + (dropped.length ? `, ${dropped.length} whole documents below ${MIN_COVERAGE}% settled` : ''));
+  for (const d of dropped) {
+    console.log(`            ${d.document.slice(0, 28).padEnd(30)} ${d.settled}/${d.rows} settled (${d.share}%)`);
+  }
+  if (STRICT) {
+    console.log('\n  BIAS: the excluded rows are the hard aliasing cases by construction —');
+    console.log('  they are unreviewed because no rule could settle them. These figures');
+    console.log('  UNDERSTATE the naming problem. Read as "performance on rows whose');
+    console.log('  linkage is unambiguous", not as overall performance.');
+  }
   console.log('\nThe question: when a row is missed, did the pipeline never see the passage,');
   console.log('or read it and name the resource differently?\n');
   console.log('run arm                              correct   RIGHT PASSAGE    right name    missed   of which');
