@@ -42,7 +42,21 @@ const MIN_MENTION_CHARS = 4;
  * reproduce: zero-width joiners/spaces, soft hyphens, BOM. Dropped from both
  * sides so a soft hyphen inside a word cannot break a true match.
  */
-const INVISIBLE_RE = /[\u00ad\u200b-\u200f\u2060\ufeff]/;
+/**
+ * Characters that contribute nothing to a match.
+ *
+ * The backslash is here because the PDF-to-markdown converter escapes markdown
+ * punctuation, and an RRID is full of underscores: the text says
+ * `RRID:AB\_2687579` where every other layer — the author's KRT, the model's
+ * output, the enrichment index — says `RRID:AB_2687579`. Searching for the
+ * plain form found NOTHING in 127 of 164 distinct RRIDs across this corpus, and
+ * in the affected documents it was total: 79 of 79 in one paper, 18 of 18 in
+ * another. Every RRID in those manuscripts was invisible to identifier search.
+ *
+ * Dropping it is safe because it is symmetric — the haystack and the needle go
+ * through this same folding, so this can only create matches, never break one.
+ */
+const INVISIBLE_RE = /[\u00ad\u200b-\u200f\u2060\ufeff\\]/;
 
 /**
  * Whitespace, including the Unicode spaces PDF converters emit that `\s` in a

@@ -499,7 +499,7 @@ async function writeReview(all, verdicts) {
   }
 }
 
-module.exports = { linkDocument, rowKey, identifiers, tokenRuns, chunkAt };
+module.exports = { linkDocument, rowKey, identifiers, tokenRuns, chunkAt, nameParts };
 
 if (require.main === module) {
   (async () => {
