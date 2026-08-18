@@ -41,9 +41,6 @@ const MIN_MENTION_CHARS = 4;
  * Characters that carry no textual meaning and that a model will never
  * reproduce: zero-width joiners/spaces, soft hyphens, BOM. Dropped from both
  * sides so a soft hyphen inside a word cannot break a true match.
- */
-/**
- * Characters that contribute nothing to a match.
  *
  * The backslash is here because the PDF-to-markdown converter escapes markdown
  * punctuation, and an RRID is full of underscores: the text says
