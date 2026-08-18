@@ -44,7 +44,7 @@ const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { matchAuthorRows } = require('./match-author-rows.service');
-const { buildEvidenceIndex, locateQuote } = require('../pdf-analysis/evidence.service');
+const { buildEvidenceIndex, locateQuote, collectMentions } = require('../pdf-analysis/evidence.service');
 const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
@@ -66,6 +66,13 @@ const CONTRIBUTOR_SOURCES = [
 
 /** Author rows sent to the LM in one request. Keeps the response well inside the output cap. */
 const SECOND_LOOK_BATCH_SIZE = 25;
+
+/**
+ * Occurrences stored per author row for the presence check. Enough for a
+ * curator to judge use-vs-citation without carrying a reagent list's worth of
+ * hits for a common term.
+ */
+const PRESENCE_MENTIONS = 5;
 
 function hasPrompt() {
   return fs.existsSync(PROMPT_FILE);
@@ -137,6 +144,76 @@ async function processKrtGrounding(submissionId, jobLogger = null) {
 }
 
 /**
+ * Presence for a set of author rows against a prepared evidence index.
+ *
+ * Pure and exported so the judgement can be tested without S3 or a database —
+ * the loading wrapper below is the only part that needs either.
+ *
+ * @param {object} index - from buildEvidenceIndex
+ * @param {object[]} authorRows
+ * @returns {Map<string, {found: boolean, via: string|null, occurrences: number, mentions: object[]}>}
+ */
+function presenceForRows(index, authorRows) {
+  const out = new Map();
+  for (const row of authorRows || []) {
+    const mentions = collectMentions(index, { resourceName: row.resourceName, identifier: row.identifier }, null);
+    const found = mentions.length > 0;
+    out.set(row.id, {
+      found,
+      // An identifier hit is near-certain; a name hit is weaker. Report which,
+      // rather than flattening both into a boolean.
+      via: mentions.some((m) => m.via === 'identifier') ? 'identifier' : (found ? 'name' : null),
+      occurrences: mentions.length,
+      mentions: mentions.slice(0, PRESENCE_MENTIONS)
+    });
+  }
+  return out;
+}
+
+/**
+ * Does each author row occur in the manuscript AT ALL, judged directly?
+ *
+ * Grounding otherwise answers a proxy question — "did a detector find something
+ * matching this row?" — and reports `not_detected` whenever the detectors
+ * missed it, even for a resource the manuscript plainly discusses. Measured on
+ * the demo corpus, a direct search locates 92% of author rows where matching
+ * through candidates locates 55-60%.
+ *
+ * This is also the only half of grounding that stays honest under a seeded
+ * pipeline. Candidate matching there is contaminated: the pool contains the
+ * model's echo of the author's own rows, so a match can mean "it repeated what
+ * we handed it". A deterministic search of the row against the manuscript
+ * cannot be affected by what the prompts were given, so it is surfaced in every
+ * pipeline while candidate-derived values are not.
+ *
+ * The disagreement between the two is the useful part: a row present in the
+ * text with no candidate matched is a DETECTION miss, and nothing in the
+ * product could say that before.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {object[]} authorRows
+ * @param {object} [jobLogger]
+ * @returns {Promise<{available: boolean, byRowId: Map, stats: object}>}
+ */
+async function checkPresence(submissionId, round, authorRows, jobLogger) {
+  const byRowId = new Map();
+  const markdownText = await loadMarkdown(submissionId, round);
+  if (!markdownText) {
+    jobLogger?.log('presence_skipped', 'No markdown — presence cannot be judged', {});
+    return { available: false, byRowId, stats: { checked: 0, present: 0, absent: 0 } };
+  }
+
+  const found = presenceForRows(buildEvidenceIndex(markdownText), authorRows);
+  for (const [rowId, value] of found) byRowId.set(rowId, value);
+
+  const present = [...byRowId.values()].filter((p) => p.found).length;
+  const stats = { checked: authorRows.length, present, absent: authorRows.length - present };
+  jobLogger?.log('presence_checked', 'Searched the manuscript for each author row directly', stats);
+  return { available: true, byRowId, stats };
+}
+
+/**
  * Run grounding for one submission/round.
  * @param {object} submission
  * @param {object} [jobLogger]
@@ -160,11 +237,33 @@ async function groundSubmission(submission, jobLogger) {
     authorRows, candidates, contributors: contributions.map((c) => ({ source: c.source, count: c.items.length }))
   });
 
-  // ── Step 2: deterministic matching
+  // ── Step 2: presence — the manuscript searched directly, independent of what
+  // any detector found, and independent of what the prompts were seeded with.
+  const presence = await checkPresence(submissionId, round, authorRows, jobLogger);
+
+  // ── Step 3: deterministic matching against the candidate pool
   const matched = matchAuthorRows(authorRows, candidates);
   jobLogger?.log('deterministic_match', 'Matched author rows against candidates', matched.stats);
 
-  // ── Step 3: LM second look over the rows nothing matched
+  // Both readings travel on the outcome. `presence` says whether the resource
+  // is in the paper; the outcome says what detection made of it.
+  for (const outcome of matched.outcomes) {
+    outcome.presence = presence.byRowId.get(outcome.krtRowId) || null;
+  }
+
+  // Present in the text, yet no candidate matched it: a detection miss, which
+  // is a different failure from "the resource is not in this paper" and was
+  // indistinguishable from it until now.
+  const missedByDetection = matched.outcomes.filter(
+    (o) => o.outcome === 'not_detected' && o.presence?.found
+  ).length;
+  if (missedByDetection > 0) {
+    jobLogger?.log('detection_gap', 'Rows the manuscript contains that no detector found', {
+      count: missedByDetection
+    });
+  }
+
+  // ── Step 4: LM second look over the rows nothing matched
   const notDetected = matched.outcomes.filter((o) => o.outcome === 'not_detected');
   let secondLookStats = { attempted: 0, recovered: 0, skipped: true, reason: 'no_rows' };
 
@@ -192,6 +291,7 @@ async function groundSubmission(submission, jobLogger) {
     meta: {
       ...stats,
       secondLook: secondLookStats,
+      presence: { ...presence.stats, available: presence.available, missedByDetection },
       hasAuthorKrt: authorRows.length > 0,
       mode: authorRows.length > 0 ? 'with_krt' : 'no_krt',
       totalMs: Date.now() - startTime,
@@ -455,6 +555,7 @@ async function getGroundingResult(submissionId, round) {
 }
 
 module.exports = {
+  presenceForRows,
   CONTRIBUTOR_SOURCES,
   SECOND_LOOK_BATCH_SIZE,
   queueKrtGrounding,
