@@ -143,9 +143,9 @@ function checkServiceAvailability() {
     }
   };
   const PROMPTS = path.join(__dirname, '../src/backend/data/prompts');
-  tryConfig('protocols', '../src/backend/config/protocols-detection-api', path.join(PROMPTS, 'protocols-detection.txt'));
-  tryConfig('datasets',  '../src/backend/config/datasets-detection-api',  path.join(PROMPTS, 'datasets-consolidation.txt'));
-  tryConfig('materials', '../src/backend/config/materials-detection-api', path.join(PROMPTS, 'materials-detection.txt'));
+  tryConfig('protocols', '../src/backend/config/protocols-detection-api', path.join(PROMPTS, 'blind', 'protocols-detection.txt'));
+  tryConfig('datasets',  '../src/backend/config/datasets-detection-api',  path.join(PROMPTS, 'blind', 'datasets-consolidation.txt'));
+  tryConfig('materials', '../src/backend/config/materials-detection-api', path.join(PROMPTS, 'blind', 'materials-detection.txt'));
   tryConfig('software',  '../src/backend/config/softcite-api');
 
   const requiredCsvs = ['software', 'materials', 'datasets', 'protocols']

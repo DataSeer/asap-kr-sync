@@ -40,7 +40,7 @@ const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
-const PROMPT_FILE = path.join(PROMPTS_DIR, 'protocols-detection.txt');
+const PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'protocols-detection.txt');
 let _promptCache = null;
 
 // Same scale as identifier-detection.service.js — keeps confidence comparable

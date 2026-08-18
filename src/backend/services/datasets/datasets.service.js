@@ -41,7 +41,7 @@ const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
-const CONSOLIDATION_PROMPT_FILE = path.join(PROMPTS_DIR, 'datasets-consolidation.txt');
+const CONSOLIDATION_PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'datasets-consolidation.txt');
 let _consolidationPromptCache = null;
 
 // gemini-2.5-flash allows 65536 output tokens. This was 32768, which a
