@@ -34,6 +34,8 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const { resolveDetection } = require('../detection/resolve');
+const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
 const { buildKrtItemFromLM } = require('../pdf-analysis/lm-resource.service');
 const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
@@ -160,7 +162,18 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   // ── Step 1: detect (langextract → Gemini)
   jobLogger?.log('extract_signals_start', 'Starting langextract signal extraction', { markdownLength: markdownText.length });
   const signalStartTime = Date.now();
-  const extractions = await langextractClient.extractSignals(markdownText);
+  // Which prompts, and seeded from what. Datasets differs from the other two:
+  // its seeds go into the payload's `author_provided_datasets` field, which the
+  // seeded consolidation prompt reads by name, not into an appended block.
+  const resolved = await resolveDetection('datasets', { submission, markdownText, jobLogger });
+  if (!resolved.run) {
+    return { items: [], meta: { totalCount: 0, skipped: true,
+      reason: resolved.reason, pipeline: resolved.pipeline.id } };
+  }
+
+  const extractions = await langextractClient.extractSignals(markdownText, {
+    prompt: resolved.input.signalsPrompt
+  });
   const signalMs = Date.now() - signalStartTime;
 
   const datasetNames = langextractClient.collectDatasetNames(extractions);
@@ -205,7 +218,10 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
     datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length
   });
   const consolidationStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText);
+  const { resources: rawItems, rawResponse } = await callGeminiForConsolidation(
+    datasetNames, extractedRows, markdownText,
+    { prompt: resolved.input.prompt, seeds: resolved.input.seeds }
+  );
   const consolidationMs = Date.now() - consolidationStartTime;
 
   const cleanedConsolidation = stripMarkdownFences(rawResponse);
@@ -237,22 +253,26 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
       signalExtractionCount: extractedRows.length,
       signalMs, consolidationMs,
       totalMs: Date.now() - startTime,
-      model: datasetsConfig.model
+      model: datasetsConfig.model,
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id
     }
   };
 }
 
-async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, promptOverride) {
+async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, opts = {}) {
+  // A bare prompt string for the pure/benchmark entry point, or {prompt, seeds}
+  // from a strategy.
+  const { prompt: promptOverride, seeds } = typeof opts === 'string' ? { prompt: opts } : opts;
   const ai = new GoogleGenAI({ apiKey: datasetsConfig.apiKey });
   const systemPrompt = getConsolidationPrompt(promptOverride);
 
-  const userPayload = {
-    dataset_names: datasetNames,
-    extracted_dataset_rows: extractedRows,
-    full_article: markdownText
-  };
-
-  const prompt = systemPrompt + '\n\nINPUT:\n' + JSON.stringify(userPayload, null, 0);
+  // `author_provided_datasets` is ALWAYS emitted, empty when unseeded: prompts
+  // that do not reference the key ignore it, while a missing key breaks the
+  // ones that do.
+  const { prompt, payload: userPayload } = assemblePayloadPrompt({
+    systemPrompt, seeds, datasetNames, extractedRows, markdownText
+  });
 
   try {
     const response = await generateContentWithRetry(ai, {

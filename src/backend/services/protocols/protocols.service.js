@@ -34,6 +34,8 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const { resolveDetection } = require('../detection/resolve');
+const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
@@ -158,9 +160,23 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   // "did we actually find this in the manuscript?" unanswerable.
 
   // ── Step 1: detect (Gemini)
-  jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection');
+  // Which prompt, and seeded from what — the strategy decides. Protocols runs
+  // in both designs: with no seeds the seeded prompt's Section 0 simply has
+  // nothing to base on, which is article-only and is dev's behaviour.
+  const resolved = await resolveDetection('protocols', { submission, markdownText, jobLogger });
+  if (!resolved.run) {
+    return { items: [], meta: { totalCount: 0, uniqueCount: 0, skipped: true,
+      reason: resolved.reason, pipeline: resolved.pipeline.id } };
+  }
+
+  jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection',
+    { pipeline: resolved.pipeline.id, seedCount: resolved.input.meta?.seedCount ?? 0 });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForProtocols(markdownText);
+  const { resources: rawItems, rawResponse } = await callGeminiForProtocols(markdownText, {
+    prompt: resolved.input.prompt,
+    seeds: resolved.input.seeds,
+    seedTitle: resolved.strategy.seedTitle ? SEED_TITLES[resolved.strategy.seedTitle] : null
+  });
   const geminiMs = Date.now() - geminiStartTime;
 
   // Only the parsed JSON is saved. There used to be a second
@@ -196,15 +212,19 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
       highRelevanceCount,
       geminiMs,
       totalMs: Date.now() - startTime,
-      model: protocolsConfig.model
+      model: protocolsConfig.model,
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id
     }
   };
 }
 
-async function callGeminiForProtocols(markdownText, promptOverride) {
+async function callGeminiForProtocols(markdownText, opts = {}) {
+  const { prompt: promptOverride, seeds, seedTitle } =
+    typeof opts === 'string' ? { prompt: opts } : opts;
   const ai = new GoogleGenAI({ apiKey: protocolsConfig.apiKey });
   const prompt = getPrompt(promptOverride);
-  const fullPrompt = prompt + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
+  const fullPrompt = assembleTextPrompt({ prompt, seeds, seedTitle, markdownText });
 
   try {
     const response = await generateContentWithRetry(ai, {

@@ -34,6 +34,8 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const { resolveDetection } = require('../detection/resolve');
+const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
@@ -137,12 +139,6 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  // Materials detection is KRT-blind and always runs. It used to be skipped
-  // entirely when the author listed no materials, which gave the module zero
-  // discovery capacity in exactly the case that needs it most (no author KRT).
-  // The prompt now works from textual cues rather than from seeds, and the
-  // author's rows are reconciled against this output by krt_grounding.
-
   const mdFile = await File.findOne({
     where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
     order: [['version', 'DESC']]
@@ -154,10 +150,28 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const markdownText = mdBuffer.toString('utf-8');
   jobLogger?.log('download_markdown_done', 'Markdown downloaded', { markdownLength: markdownText.length });
 
+  // ── Step 0: which prompt, and seeded from what?
+  //
+  // The strategy owns both, including whether to run at all: the seeded design
+  // is author-seeded ONLY, because a prompt framed as "re-ground and lightly
+  // enrich the rows you were given" has nothing to do without them. The blind
+  // design always runs. Putting that gate here instead would make one of the
+  // two designs wrong, silently, by returning nothing.
+  const resolved = await resolveDetection('materials', { submission, markdownText, jobLogger });
+  if (!resolved.run) {
+    return { items: [], meta: { totalCount: 0, uniqueCount: 0, highRelevanceCount: 0,
+      skipped: true, reason: resolved.reason, pipeline: resolved.pipeline.id, totalMs: Date.now() - startTime } };
+  }
+
   // ── Step 1: detect (Gemini)
-  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection');
+  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection',
+    { pipeline: resolved.pipeline.id, seedCount: resolved.input.meta?.seedCount ?? 0 });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(markdownText);
+  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(markdownText, {
+    prompt: resolved.input.prompt,
+    seeds: resolved.input.seeds,
+    seedTitle: resolved.strategy.seedTitle ? SEED_TITLES[resolved.strategy.seedTitle] : null
+  });
   const geminiMs = Date.now() - geminiStartTime;
   await jobLogger?.saveRawResponse('gemini-materials', rawResponse || rawItems);
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
@@ -186,15 +200,23 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
       highRelevanceCount,
       geminiMs,
       totalMs: Date.now() - startTime,
-      model: materialsConfig.model
+      model: materialsConfig.model,
+      // Stamped on the result so a run records which configuration produced it.
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id
     }
   };
 }
 
-async function callGeminiForMaterials(markdownText, promptOverride) {
+async function callGeminiForMaterials(markdownText, opts = {}) {
+  // Accepts a bare prompt string for the pure/benchmark entry point, or the
+  // {prompt, seeds, seedTitle} a strategy produced.
+  const { prompt: promptOverride, seeds, seedTitle } =
+    typeof opts === 'string' ? { prompt: opts } : opts;
   const ai = new GoogleGenAI({ apiKey: materialsConfig.apiKey });
-  const prompt = getPrompt(promptOverride);
-  const fullPrompt = prompt + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
+  const fullPrompt = assembleTextPrompt({
+    prompt: getPrompt(promptOverride), seeds, seedTitle, markdownText
+  });
 
   try {
     const response = await generateContentWithRetry(ai, {
