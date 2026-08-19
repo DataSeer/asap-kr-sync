@@ -16,6 +16,7 @@ import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
+import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
 import { labelFor } from '@/components/modules/module-meta'
@@ -53,7 +54,7 @@ const label = computed(() => labelFor(jobType.value))
 
 // ── grounding data ─────────────────────────────────────────────────────
 const outcomes = computed(() => job.value?.result?.data?.outcomes || [])
-const policy = computed(() => job.value?.result?.meta?.grounding || null)
+const policy = computed(() => job.value?.result?.data?.meta?.grounding || null)
 
 const search = ref('')
 const tab = ref('all')
@@ -160,6 +161,7 @@ const tabConflicts = computed(() => {
         </button>
       </div>
       <GroundingTable :outcomes="visible" :policy="policy" :search="search" />
+      <ModuleTechnical :job="job" :submission-id="submissionId" />
     </template>
 
     <p v-else class="mrv-empty">

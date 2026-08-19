@@ -1065,7 +1065,7 @@ function openJobModal(job) {
     // Which halves of this result may be shown, as stamped on the run itself.
     // Read from the result rather than from the submission's current pipeline,
     // so an old result is always read the way it was produced.
-    modalGroundingPolicy.value = job.result?.meta?.grounding || null
+    modalGroundingPolicy.value = job.result?.data?.meta?.grounding || null
     const outcomes = job.result?.data?.outcomes || []
     modalItems.value = outcomes.length ? outcomes : null
   } else if (job.type === 'suggestion_generation') {
