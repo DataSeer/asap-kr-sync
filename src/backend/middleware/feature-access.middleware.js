@@ -25,22 +25,18 @@ function canViewJobInternals(req, res, next) {
   next();
 }
 
-/**
- * Restrict job lifecycle actions (restart, retry, advance, force-run) to
- * staff (admin and ds_annotator). Authors and PMs can trigger first-time
- * analysis but not manual job management.
- */
-function canManageJobs(req, res, next) {
-  if (!req.user) {
-    return next(new AuthorizationError('Authentication required'));
-  }
-  if (![ROLES.ADMIN, ROLES.DS_ANNOTATOR].includes(req.user.role)) {
-    return next(new AuthorizationError('Only staff can manage background jobs'));
-  }
-  next();
-}
+// A `canManageJobs` guard used to live here, applied to exactly one route:
+// POST /jobs/:jobType/advance. It was removed rather than left unused, because
+// an exported guard nothing applies reads as protection that is not there.
+//
+// Advancing only ever starts a job the pipeline parked at 'pending_input'
+// awaiting the user's own input — the orchestrator rejects every other status —
+// so restricting it to staff stalled any submission whose Availability
+// Statement had to be entered by hand. The route's own comment carries the
+// reasoning. Job actions that really are staff-only (the cross-submission
+// queue admin) sit behind requireRole(ADMIN) in job-admin.routes.js, and the
+// frontend keeps its own `canManageJobs` flag for the restart controls.
 
 module.exports = {
-  canViewJobInternals,
-  canManageJobs
+  canViewJobInternals
 };
