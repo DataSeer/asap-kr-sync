@@ -395,43 +395,41 @@ const tabConflicts = computed(() => {
          KRT and PDF files. Reused rather than rebuilt, so these pages carry the
          same identity and the same file links as every step view. -->
 
-    <div class="mrv-sticky">
-      <div class="mrv-head">
-        <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
-          ← Pipeline
-        </RouterLink>
-        <h1 class="mrv-title">{{ label }}</h1>
-        <!-- Beside the title, not off in a corner: it is a fact about THIS
-           module's result, not a property of the page. -->
-        <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
-          ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
-        </span>
-        <!-- The two documents every result on this page is a claim about. -->
-        <SubmissionFileLinks
-          class="mrv-files-links"
-          :submission-id="submissionId"
-          :files="latestFiles"
-        />
-      </div>
-
-      <!-- Every step, as links. RouterLink rather than a click handler so
-         ctrl-click opens a second tab, which is the point of these pages. -->
-      <nav v-if="steps.length" class="mrv-modules" aria-label="Pipeline steps">
-        <template v-for="s in steps" :key="s.jobType">
-          <RouterLink
-            v-if="HAS_PAGE.has(s.jobType)"
-            :to="{ name: 'submission-module', params: { id: submissionId, type: s.jobType } }"
-            class="mrv-module"
-            :class="{ 'mrv-module-active': s.jobType === jobType }"
-          >
-            {{ labelFor(s.jobType) }}
-          </RouterLink>
-          <span v-else class="mrv-module mrv-module-off" title="This step does not have a page yet — open it from the processes panel.">
-            {{ labelFor(s.jobType) }}
-          </span>
-        </template>
-      </nav>
+    <div class="mrv-head">
+      <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
+        ← Pipeline
+      </RouterLink>
+      <h1 class="mrv-title">{{ label }}</h1>
+      <!-- Beside the title, not off in a corner: it is a fact about THIS
+         module's result, not a property of the page. -->
+      <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
+        ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
+      </span>
+      <!-- The two documents every result on this page is a claim about. -->
+      <SubmissionFileLinks
+        class="mrv-files-links"
+        :submission-id="submissionId"
+        :files="latestFiles"
+      />
     </div>
+
+    <!-- Every step, as links. RouterLink rather than a click handler so
+       ctrl-click opens a second tab, which is the point of these pages. -->
+    <nav v-if="steps.length" class="mrv-modules" aria-label="Pipeline steps">
+      <template v-for="s in steps" :key="s.jobType">
+        <RouterLink
+          v-if="HAS_PAGE.has(s.jobType)"
+          :to="{ name: 'submission-module', params: { id: submissionId, type: s.jobType } }"
+          class="mrv-module"
+          :class="{ 'mrv-module-active': s.jobType === jobType }"
+        >
+          {{ labelFor(s.jobType) }}
+        </RouterLink>
+        <span v-else class="mrv-module mrv-module-off" title="This step does not have a page yet — open it from the processes panel.">
+          {{ labelFor(s.jobType) }}
+        </span>
+      </template>
+    </nav>
 
     <ModuleExplainer
       v-if="explainer"
@@ -583,14 +581,7 @@ const tabConflicts = computed(() => {
 </template>
 
 <style scoped>
-.mrv { padding: 0 1.5rem 3rem; max-width: 100%; }
-/* The back link and the step strip stay put: these pages scroll a long way,
-   and losing the way out of one is what made the modal frustrating. */
-.mrv-sticky {
-  position: sticky; top: 0; z-index: 20;
-  background: #f9fafb; padding: 1.25rem 0 0.25rem;
-  border-bottom: 1px solid #e5e7eb; margin-bottom: 1rem;
-}
+.mrv { padding: 1.25rem 1.5rem 3rem; max-width: 100%; }
 .mrv-files { margin-bottom: 0.5rem; }
 .mrv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .mrv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }

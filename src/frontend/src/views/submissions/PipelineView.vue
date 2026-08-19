@@ -185,19 +185,16 @@ const activeStage = computed(() => {
 
 <template>
   <div class="pv">
-    <!-- The way out and the two source files stay put while the graph scrolls. -->
-    <div class="pv-sticky">
-      <div class="pv-head">
-        <RouterLink :to="{ name: 'submission-pdf', params: { id: submissionId } }" class="pv-back">
-          ← Back to the submission
-        </RouterLink>
-        <h1 class="pv-title">Processing pipeline</h1>
-        <SubmissionFileLinks
-          class="pv-files-links"
-          :submission-id="submissionId"
-          :files="latestFiles"
-        />
-      </div>
+    <div class="pv-head">
+      <RouterLink :to="{ name: 'submission-pdf', params: { id: submissionId } }" class="pv-back">
+        ← Back to the submission
+      </RouterLink>
+      <h1 class="pv-title">Processing pipeline</h1>
+      <SubmissionFileLinks
+        class="pv-files-links"
+        :submission-id="submissionId"
+        :files="latestFiles"
+      />
     </div>
 
     <p class="pv-intro">
@@ -292,12 +289,7 @@ const activeStage = computed(() => {
 </template>
 
 <style scoped>
-.pv { padding: 0 1.5rem 3rem; }
-.pv-sticky {
-  position: sticky; top: 0; z-index: 20;
-  background: #f9fafb; padding: 1.25rem 0 0.6rem;
-  border-bottom: 1px solid #e5e7eb; margin-bottom: 0.75rem;
-}
+.pv { padding: 1.25rem 1.5rem 3rem; }
 .pv-files-links { margin-left: auto; }
 .pv-files { margin-bottom: 0.5rem; }
 .pv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
