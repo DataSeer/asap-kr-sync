@@ -63,6 +63,9 @@ const waitingOnKrt = computed(() => {
 const blockedOnMarkdown = computed(() =>
   jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === 'markdown_missing'))
 
+/** Either reason the pipeline is standing still. */
+const paused = computed(() => waitingOnKrt.value || blockedOnMarkdown.value)
+
 /** How many steps that has stopped — the scale of the problem, not just its name. */
 const blockedCount = computed(() =>
   jobList.value.filter((j) => j.status === 'waiting' && j.waitingReason === 'markdown_missing').length)
@@ -2004,7 +2007,12 @@ async function downloadMarkdownFile(fileId) {
 </script>
 
 <template>
-  <div class="job-status-wrapper job-status-card">
+  <!-- The whole card carries the state: blue while work is happening, amber
+       when the pipeline is paused on the user, red when it cannot continue. -->
+  <div
+    class="job-status-wrapper job-status-card"
+    :class="{ 'job-status-card-paused': waitingOnKrt, 'job-status-card-blocked': blockedOnMarkdown }"
+  >
     <!-- ETA header — always visible. The status summary pills (running /
          waiting / failed / done) sit on the right of the title row no matter
          what, so the user always sees pipeline progress even when the
@@ -2026,9 +2034,23 @@ async function downloadMarkdownFile(fileId) {
         >
           Background processes ↗
         </RouterLink>
-        <!-- No estimate while the pipeline is stopped: nothing is going to
-             finish, and "Finishing up…" over a blocked run is a lie. -->
-        <span v-if="etaVisible && !blockedOnMarkdown" class="job-status-eta-remaining">{{ etaLabel }}</span>
+        <!-- The remaining time's slot says why there is no remaining time.
+             Nothing is going to finish while the pipeline is paused, so an
+             estimate there would be a lie — and this is the line the user
+             already reads for "what is happening now". The estimate comes back
+             by itself on the next step. -->
+        <span v-if="blockedOnMarkdown" class="job-status-eta-state job-status-eta-state-blocked">
+          <strong>Analysis is blocked: the manuscript could not be converted to text.</strong>
+          {{ blockedCount }} step{{ blockedCount === 1 ? '' : 's' }}
+          {{ blockedCount === 1 ? 'is' : 'are' }} held rather than run against an empty document.
+          Re-run <strong>Markdown Convert</strong> below, or re-upload the PDF.
+        </span>
+        <span v-else-if="waitingOnKrt" class="job-status-eta-state job-status-eta-state-paused">
+          Analysis is waiting for your Key Resources Table to be validated before it can finish —
+          the detection modules are seeded with your rows, so they start once you are done editing.
+          Click <strong>Continue</strong> to proceed.
+        </span>
+        <span v-else-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
         <div class="job-header-badges">
           <span v-if="jobSummary.running > 0" class="job-summary-badge job-status-running">
             {{ jobSummary.running }} running
@@ -2050,45 +2072,16 @@ async function downloadMarkdownFile(fileId) {
           </span>
         </div>
       </div>
-      <!-- Not an error: the pipeline is waiting on the user, and says so. -->
-      <div v-if="waitingOnKrt" class="job-status-krt-gate">
-        <svg class="job-status-krt-gate-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
-        </svg>
-        <!-- One span: the flex row has two children, the icon and the text.
-             Inline elements left loose here became flex items of their own and
-             the emphasised words drifted to the far right. -->
-        <span>
-          Analysis is waiting for your Key Resources Table to be validated before it can finish —
-          the detection modules are seeded with your rows, so they start once you are done editing.
-          Click <strong>Continue</strong> to proceed.
-        </span>
-      </div>
-      <div v-if="etaVisible && !blockedOnMarkdown" class="job-status-eta-track">
+      <div v-if="etaVisible && !paused" class="job-status-eta-track">
         <div
           class="job-status-eta-fill"
           :class="{ 'job-status-eta-fill-done': allDone }"
           :style="{ width: `${etaProgress * 100}%` }"
         ></div>
       </div>
-      <p v-if="anyInFlight && !blockedOnMarkdown" class="job-status-eta-hint">
+      <p v-if="anyInFlight && !paused" class="job-status-eta-hint">
         You can keep editing the Key Resources Table while these finish — suggestions will appear once they're done.
       </p>
-      <!-- A real problem, in the place the progress bar would be: the pipeline
-           has stopped and will not restart on its own. -->
-      <div v-if="blockedOnMarkdown" class="job-status-blocked">
-        <svg class="job-status-blocked-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
-        </svg>
-        <span>
-          <strong>Analysis is blocked: the manuscript could not be converted to text.</strong>
-          {{ blockedCount }} step{{ blockedCount === 1 ? '' : 's' }}
-          {{ blockedCount === 1 ? 'is' : 'are' }} held rather than run against an empty document —
-          they would report no findings whatever the manuscript says. Re-run
-          <strong>Markdown Convert</strong> below, or re-upload the PDF; the rest of the pipeline
-          starts by itself once there is text.
-        </span>
-      </div>
       <div class="job-status-eta-footer">
         <button type="button" class="job-status-eta-toggle" @click="toggleCollapsed">
           <svg
@@ -2934,6 +2927,31 @@ async function downloadMarkdownFile(fileId) {
   background: #eff6ff;
   border-color: #bfdbfe;
 }
+/* Paused on the user, and blocked, read at a glance from across the page. */
+.job-status-card-paused,
+.job-status-card-paused.job-status-wrapper {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.job-status-card-paused .job-status-eta-label { color: #92400e; }
+.job-status-card-paused .job-status-eta-icon { color: #b45309; }
+.job-status-card-blocked,
+.job-status-card-blocked.job-status-wrapper {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.job-status-card-blocked .job-status-eta-label { color: #b91c1c; }
+.job-status-card-blocked .job-status-eta-icon { color: #dc2626; }
+/* Takes the room the estimate had, and wraps into it rather than pushing the
+   status badges off the row. */
+.job-status-eta-state {
+  flex: 1 1 16rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.job-status-eta-state-paused { color: #92400e; }
+.job-status-eta-state-blocked { color: #b91c1c; }
 .job-status-eta {
   display: flex;
   flex-direction: column;
@@ -3184,48 +3202,6 @@ async function downloadMarkdownFile(fileId) {
 .job-status-waiting {
   background: #fef3c7;
   color: #92400e;
-}
-
-.job-status-blocked {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.4rem;
-  margin: 0.4rem 0 0;
-  padding: 0.5rem 0.65rem;
-  border: 1px solid #fecaca;
-  border-radius: 0.375rem;
-  background: #fef2f2;
-  color: #b91c1c;
-  font-size: 0.75rem;
-  line-height: 1.45;
-}
-
-.job-status-blocked-icon {
-  width: 0.95rem;
-  height: 0.95rem;
-  flex-shrink: 0;
-  margin-top: 0.1rem;
-}
-
-.job-status-krt-gate {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.4rem;
-  margin: 0.4rem 0 0;
-  padding: 0.5rem 0.65rem;
-  border: 1px solid #fde68a;
-  border-radius: 0.375rem;
-  background: #fffbeb;
-  color: #92400e;
-  font-size: 0.75rem;
-  line-height: 1.45;
-}
-
-.job-status-krt-gate-icon {
-  width: 0.95rem;
-  height: 0.95rem;
-  flex-shrink: 0;
-  margin-top: 0.1rem;
 }
 
 .job-status-pending-input {
