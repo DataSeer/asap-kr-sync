@@ -38,6 +38,17 @@ const MAX_MENTIONS = 12;
 const MIN_MENTION_CHARS = 4;
 
 /**
+ * Floor for a separator-insensitive match. Higher than MIN_MENTION_CHARS
+ * because collapsing punctuation shortens the needle and widens what it can
+ * collide with: "IL-2" becomes "il2", which is three characters and would hit
+ * far too much.
+ */
+const MIN_NORMALISED_CHARS = 5;
+
+/** Separators a converter moves, inserts or drops without changing meaning. */
+const SEPARATOR_RE = /[\s.\-_]/;
+
+/**
  * Characters that carry no textual meaning and that a model will never
  * reproduce: zero-width joiners/spaces, soft hyphens, BOM. Dropped from both
  * sides so a soft hyphen inside a word cannot break a true match.
@@ -175,7 +186,58 @@ function buildEvidenceIndex(markdownText) {
     prevWasSpace = false;
   }
 
-  return { text, normalized: chars.join(''), map, headings: extractHeadings(text) };
+  // A second view with separators removed, and its own map back to real
+  // offsets. Converted manuscripts split and join words unpredictably around
+  // punctuation — the KRT says "anti-TagFP", the markdown says "anti -TagFP";
+  // the KRT says "Image J", the markdown says "ImageJ". Those are the same
+  // string once spaces, hyphens, dots and underscores stop counting, and
+  // treating them as different cost 28 of 1048 author rows on the demo corpus.
+  const flatChars = [];
+  const flatMap = [];
+  for (let n = 0; n < chars.length; n++) {
+    if (SEPARATOR_RE.test(chars[n])) continue;
+    flatChars.push(chars[n]);
+    flatMap.push(map[n]);
+  }
+
+  return {
+    text,
+    normalized: chars.join(''),
+    map,
+    flat: flatChars.join(''),
+    flatMap,
+    headings: extractHeadings(text)
+  };
+}
+
+/**
+ * Every occurrence of `needle` once separators are ignored on BOTH sides.
+ *
+ * Still an EXACT match, just of a normalised form — not a fuzzy or
+ * edit-distance search. That is what keeps it safe: the comparison is
+ * symmetric, so it can only create matches, never break one, and it cannot
+ * drift the way a similarity threshold does.
+ *
+ * @param {object} index - from buildEvidenceIndex
+ * @param {string} needle
+ * @param {number} [cap]
+ * @returns {{offset:number, section:string, normalised:true}[]}
+ */
+function findNormalisedOccurrences(index, needle, cap = MAX_MENTIONS) {
+  if (!index || !index.flat) return [];
+  const n = normalizeQuote(needle).replace(new RegExp(SEPARATOR_RE.source, 'g'), '');
+  if (n.length < MIN_NORMALISED_CHARS) return [];
+
+  const out = [];
+  let at = index.flat.indexOf(n);
+  while (at !== -1 && out.length < cap) {
+    const offset = index.flatMap[at];
+    if (typeof offset === 'number' && offset >= 0) {
+      out.push({ offset, section: sectionForOffset(index.headings, offset), normalised: true });
+    }
+    at = index.flat.indexOf(n, at + n.length);
+  }
+  return out;
 }
 
 /**
@@ -703,6 +765,8 @@ function defaultQuoteOf(item) {
 }
 
 module.exports = {
+  findNormalisedOccurrences,
+  MIN_NORMALISED_CHARS,
   MIN_PARTIAL_CHARS,
   foldChar,
   buildEvidenceIndex,

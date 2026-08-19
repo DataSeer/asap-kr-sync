@@ -45,7 +45,8 @@ const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { matchAuthorRows } = require('./match-author-rows.service');
 const { getPipeline } = require('../../config/pipelines');
-const { buildEvidenceIndex, locateQuote, collectMentions, extractContext } = require('../pdf-analysis/evidence.service');
+const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
+  findNormalisedOccurrences, identifierNeedle } = require('../pdf-analysis/evidence.service');
 const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
@@ -74,6 +75,9 @@ const SECOND_LOOK_BATCH_SIZE = 25;
  * hits for a common term.
  */
 const PRESENCE_MENTIONS = 5;
+
+/** Cap on separator-insensitive hits per field — enough to prove presence. */
+const MAX_NORMALISED = 3;
 
 function hasPrompt() {
   return fs.existsSync(PROMPT_FILE);
@@ -158,16 +162,46 @@ function presenceForRows(index, authorRows) {
   const out = new Map();
   for (const row of authorRows || []) {
     const mentions = collectMentions(index, { resourceName: row.resourceName, identifier: row.identifier }, null);
-    const found = mentions.length > 0;
+
     // Reported separately, not collapsed into one "via". The editor
     // distinguishes "name AND identifier both found" from either alone, and a
     // single winner-takes-all field cannot express that.
-    const viaIdentifier = mentions.some((m) => m.via === 'identifier');
-    const viaName = mentions.some((m) => m.via === 'name');
+    let viaIdentifier = mentions.some((m) => m.via === 'identifier');
+    let viaName = mentions.some((m) => m.via === 'name');
+
+    // Second pass, separators ignored, for whichever field the exact search
+    // missed. Converted manuscripts break words around punctuation — the KRT
+    // says "anti-TagFP", the markdown says "anti -TagFP"; the KRT says
+    // "N0502-At488-L", the markdown says "N0502 -At488 -L". Still an exact
+    // match of a normalised form, not a similarity score, so it cannot drift.
+    let normalised = false;
+    if (!viaIdentifier) {
+      const needle = identifierNeedle(row.identifier);
+      const hits = needle ? findNormalisedOccurrences(index, needle, MAX_NORMALISED) : [];
+      if (hits.length) {
+        viaIdentifier = true;
+        normalised = true;
+        mentions.push(...hits.map((h) => ({ ...h, via: 'identifier' })));
+      }
+    }
+    if (!viaName) {
+      const hits = findNormalisedOccurrences(index, row.resourceName, MAX_NORMALISED);
+      if (hits.length) {
+        viaName = true;
+        normalised = true;
+        mentions.push(...hits.map((h) => ({ ...h, via: 'name' })));
+      }
+    }
+
+    const found = mentions.length > 0;
     out.set(row.id, {
       found,
       viaIdentifier,
       viaName,
+      // At least one field matched only after punctuation was normalised. The
+      // match is exact, so this stays a green verdict — but the reader is told,
+      // because "the paper writes it differently" is worth knowing.
+      normalised,
       // Kept for older callers; the strongest single signal.
       via: viaIdentifier ? 'identifier' : (viaName ? 'name' : null),
       occurrences: mentions.length,

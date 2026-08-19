@@ -1278,10 +1278,13 @@ const GROUNDING_ALL_COLS = [
   { key: 'source', label: 'Source', krt: true },
   { key: 'identifier', label: 'Identifier', krt: true },
   { key: 'newReuse', label: 'New/Reuse', krt: true },
-  { key: 'presence', label: 'In manuscript', always: true },
-  { key: 'verdict', label: 'Verdict' },
+  // ONE verdict column, not two. "In manuscript" and "Verdict" answered
+  // overlapping questions in different words, which is what let a row read
+  // "No" beside "Found" and look self-contradictory. FOUND states which of the
+  // row's fields was located, so the badge carries its own justification.
+  { key: 'found', label: 'Found', always: true },
   { key: 'matchedBy', label: 'Matched by' },
-  { key: 'fills', label: 'Manuscript says' }
+  { key: 'fills', label: 'More information' }
 ]
 const GROUNDING_COLS = computed(() => (showGroundingValues.value
   ? GROUNDING_ALL_COLS
@@ -1316,6 +1319,67 @@ const GROUNDING_LABELS = {
   not_detected: 'Not found in text'
 }
 function groundingLabel(o) { return GROUNDING_LABELS[o?.outcome] || o?.outcome || '—' }
+/**
+ * Was the author's row found in the manuscript, and on what.
+ *
+ * Built from the direct search — the row's own name and identifier looked for
+ * in the text — so it means the same thing in every pipeline, seeded or not.
+ * The label names WHICH field matched, because "found" without saying what was
+ * found is exactly what made a row read as contradicting itself.
+ *
+ * Colours follow one rule each: green asks nothing of the reader, blue is a
+ * real signal that still wants a glance, orange is nothing found at all, red is
+ * reserved for errors. Grey is unused — every row reaches one of the four.
+ *
+ * @param {object} o - a grounding outcome
+ * @returns {{label: string, cls: string, title: string}}
+ */
+function foundVerdict(o) {
+  if (!o?.presence) return { label: '—', cls: 'grounding-unknown', title: 'Not recorded for this run.' }
+
+  const p = o.presence
+  const conflicts = o.conflicts?.length || 0
+  const occurrences = p.occurrences || 0
+
+  // A disagreement outranks how the row was located: it IS there, and the
+  // mismatch is the thing worth reading.
+  if (conflicts > 0) {
+    return {
+      label: 'Incoherence', cls: 'grounding-check',
+      title: `Located, but ${conflicts} value(s) in this row disagree with the manuscript. Your row is kept — this is for you to check.`
+    }
+  }
+
+  // Matched only once punctuation was normalised: the paper writes it with
+  // different spacing or hyphens. Still an exact match, so still green — the
+  // reader is simply told, because that difference is worth knowing.
+  const via = p.normalised ? ' The manuscript writes it with different spacing or hyphenation.' : ''
+
+  if (p.viaName && p.viaIdentifier) {
+    return { label: 'Yes', cls: 'grounding-ok', title: `Name and identifier both found in the manuscript (${occurrences} occurrence(s)).${via}` }
+  }
+  if (p.viaIdentifier) {
+    return { label: 'Yes - id', cls: 'grounding-ok', title: `The identifier was found in the manuscript; the name as written was not.${via}` }
+  }
+  if (p.viaName) {
+    return { label: 'Yes - name', cls: 'grounding-ok', title: `The name was found in the manuscript; the identifier was not.${via}` }
+  }
+
+  // Nothing matched outright. A weaker signal from the matcher still means we
+  // saw something, and belongs in blue rather than orange.
+  if (o.matchedBy === 'partial_name' || o.matchedBy === 'alias') {
+    return { label: 'Partial match - name', cls: 'grounding-check', title: 'Part of the name matches a resource in the manuscript. Not enough to call them the same item — worth a look.' }
+  }
+  if (o.matchedBy === 'identifier') {
+    return { label: 'Partial match - id', cls: 'grounding-check', title: 'An identifier matched a detected resource, but was not found in the manuscript text itself.' }
+  }
+  if (o.matchedBy === 'lm_second_look') {
+    return { label: 'Partial match - name', cls: 'grounding-check', title: 'Only the targeted LM search placed this row. A direct search found neither its name nor its identifier — worth checking.' }
+  }
+
+  return { label: 'No', cls: 'grounding-absent', title: 'Neither the name nor the identifier occurs in the manuscript. Your row is kept as-is.' }
+}
+
 /** How the row was matched — deterministic key, or the targeted LM search. */
 const MATCHED_BY_LABELS = {
   lm_second_look: 'LM search',

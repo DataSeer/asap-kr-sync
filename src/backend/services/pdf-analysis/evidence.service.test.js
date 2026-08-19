@@ -23,6 +23,7 @@ const {
   extractContext,
   identifierNeedle,
   findAllOccurrences,
+  findNormalisedOccurrences,
   isCitationSection,
   attachEvidence
 } = require('./evidence.service');
@@ -468,4 +469,52 @@ test('isCitationSection recognises bibliographies', () => {
   assert.equal(isCitationSection('References'), true);
   assert.equal(isCitationSection('Bibliography'), true);
   assert.equal(isCitationSection('Materials and Methods'), false);
+});
+
+/**
+ * Separator-insensitive search.
+ *
+ * Converted manuscripts split and join words around punctuation without
+ * changing meaning: the KRT says "anti-TagFP", the markdown says "anti -TagFP".
+ * This is still an EXACT match of a normalised form — not a similarity score —
+ * which is what makes it safe: symmetric on both sides, so it can only create
+ * matches, never break one.
+ */
+const NORMALISED_MD = 'Blocked, then anti -TagFP nanobody conjugated with ATTO488 '
+  + '(NanoTag, N0502 -At488 -L) overnight. Quantified in ImageJ and antimycin-A was added.';
+
+test('findNormalisedOccurrences: a hyphen the converter moved does not hide a name', () => {
+  const index = buildEvidenceIndex(NORMALISED_MD);
+  const name = 'anti-TagFP nanobody conjugated with ATTO488';
+  assert.equal(findAllOccurrences(index, name, 3).length, 0, 'exact search cannot see it');
+  const hits = findNormalisedOccurrences(index, name, 3);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].normalised, true, 'the match is labelled, not passed off as exact');
+  assert.ok(NORMALISED_MD.slice(hits[0].offset).startsWith('anti -TagFP'),
+    'the offset lands on the real text, not the normalised copy');
+});
+
+test('findNormalisedOccurrences: works for identifiers too', () => {
+  // Catalog numbers get the same treatment: "N0502-At488-L" vs "N0502 -At488 -L".
+  const index = buildEvidenceIndex(NORMALISED_MD);
+  assert.equal(findAllOccurrences(index, 'N0502-At488-L', 3).length, 0);
+  assert.equal(findNormalisedOccurrences(index, 'N0502-At488-L', 3).length, 1);
+});
+
+test('findNormalisedOccurrences: joins and splits are the same to it', () => {
+  const index = buildEvidenceIndex(NORMALISED_MD);
+  assert.equal(findNormalisedOccurrences(index, 'Image J', 3).length, 1, 'split name vs joined text');
+  assert.equal(findNormalisedOccurrences(index, 'Antimycin A', 3).length, 1, 'space vs hyphen');
+});
+
+test('findNormalisedOccurrences: too short to be safe is refused', () => {
+  // "IL-2" collapses to "il2" — three characters, and it would hit far too
+  // much. The floor is what stops normalisation becoming fuzzy matching.
+  const index = buildEvidenceIndex('Treated with IL2 and IL-2 receptor blockade.');
+  assert.equal(findNormalisedOccurrences(index, 'IL-2', 5).length, 0);
+});
+
+test('findNormalisedOccurrences: absent is still absent', () => {
+  const index = buildEvidenceIndex(NORMALISED_MD);
+  assert.equal(findNormalisedOccurrences(index, 'ZzzNotInThisPaper999', 3).length, 0);
 });
