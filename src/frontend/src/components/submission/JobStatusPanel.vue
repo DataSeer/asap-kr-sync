@@ -2015,7 +2015,9 @@ async function downloadMarkdownFile(fileId) {
         >
           view pipeline ↗
         </RouterLink>
-        <span v-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
+        <!-- No estimate while the pipeline is stopped: nothing is going to
+             finish, and "Finishing up…" over a blocked run is a lie. -->
+        <span v-if="etaVisible && !blockedOnMarkdown" class="job-status-eta-remaining">{{ etaLabel }}</span>
         <div class="job-header-badges">
           <span v-if="jobSummary.running > 0" class="job-summary-badge job-status-running">
             {{ jobSummary.running }} running
@@ -2037,14 +2039,14 @@ async function downloadMarkdownFile(fileId) {
           </span>
         </div>
       </div>
-      <div v-if="etaVisible" class="job-status-eta-track">
+      <div v-if="etaVisible && !blockedOnMarkdown" class="job-status-eta-track">
         <div
           class="job-status-eta-fill"
           :class="{ 'job-status-eta-fill-done': allDone }"
           :style="{ width: `${etaProgress * 100}%` }"
         ></div>
       </div>
-      <p v-if="anyInFlight" class="job-status-eta-hint">
+      <p v-if="anyInFlight && !blockedOnMarkdown" class="job-status-eta-hint">
         You can keep editing the Key Resources Table while these finish — suggestions will appear once they're done.
       </p>
       <!-- A real problem, in the place the progress bar would be: the pipeline
@@ -2063,14 +2065,19 @@ async function downloadMarkdownFile(fileId) {
         </span>
       </div>
       <!-- Not an error: the pipeline is waiting on the user, and says so. -->
-      <p v-if="waitingOnKrt" class="job-status-krt-gate">
+      <div v-if="waitingOnKrt" class="job-status-krt-gate">
         <svg class="job-status-krt-gate-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
         </svg>
-        Analysis is waiting for your Key Resources Table to be validated before it can finish —
-        the detection modules are seeded with your rows, so they start once you are done editing.
-        Click <strong>Continue</strong> to proceed.
-      </p>
+        <!-- One span: the flex row has two children, the icon and the text.
+             Inline elements left loose here became flex items of their own and
+             the emphasised words drifted to the far right. -->
+        <span>
+          Analysis is waiting for your Key Resources Table to be validated before it can finish —
+          the detection modules are seeded with your rows, so they start once you are done editing.
+          Click <strong>Continue</strong> to proceed.
+        </span>
+      </div>
       <div class="job-status-eta-footer">
         <button type="button" class="job-status-eta-toggle" @click="toggleCollapsed">
           <svg
