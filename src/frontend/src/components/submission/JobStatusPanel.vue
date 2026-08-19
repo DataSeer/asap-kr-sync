@@ -7,11 +7,11 @@
  * Shows elapsed time, retry count, and timeout warnings.
  */
 import { computed, inject, ref, onMounted, onUnmounted, watch } from 'vue'
-import { RouterLink } from 'vue-router'
-import { useRoute } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import Papa from 'papaparse'
 import { useAuthStore } from '@/stores/auth.store'
 import jobService from '@/services/job.service'
+import configService from '@/services/config.service'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import HighlightText from '@/components/submission/HighlightText.vue'
@@ -93,19 +93,30 @@ const jobSummary = computed(() => {
   return { complete, running, failed, cancelled, pending, waiting, total, done }
 })
 
-// ── ETA computation ──────────────────────────────────────────────────
-// Pipeline dependency map: each entry lists job types that must finish
-// before this job can finish. Drives the cumulative remaining-time math
-// so siblings run in parallel and downstream jobs stack on top of upstreams.
-const ETA_DEPS = {
-  pdf_analysis: ['das_extraction', 'software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection', 'krt_grounding'],
-  krt_grounding: ['software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection'],
-  software_detection: ['markdown_convert'],
-  datasets_detection: ['markdown_convert'],
-  materials_detection: ['markdown_convert'],
-  protocols_detection: ['markdown_convert'],
-  identifier_detection: ['markdown_convert']
-}
+// ── Pipeline shape ───────────────────────────────────────────────────
+/**
+ * Dependencies, from the server's own pipeline table.
+ *
+ * This used to be two hand-written maps in this file — one for the ETA maths,
+ * one for the "waiting for" tooltip — and they had drifted: the first gave
+ * PDF Analysis seven dependencies, the second gave it two, and the table that
+ * actually runs gives it seven. The tooltip had been under-reporting for as
+ * long as they disagreed.
+ *
+ * Empty until the fetch lands, which degrades to "no dependencies": an ETA
+ * without stacking, and a tooltip that names nothing. Both recover on the next
+ * poll tick.
+ */
+const pipelineDeps = ref({})
+
+onMounted(async () => {
+  try {
+    const { nodes } = await configService.getPipeline()
+    pipelineDeps.value = Object.fromEntries(nodes.map((n) => [n.jobType, n.dependsOn]))
+  } catch {
+    // Non-fatal: the panel still lists jobs and their statuses.
+  }
+})
 
 const now = ref(Date.now())
 let tickTimer = null
@@ -287,7 +298,7 @@ function effectiveRemainingMs(type, jobMap, which, seen = new Set()) {
   if (seen.has(type)) return 0
   seen.add(type)
   const own = jobRemainingMs(jobMap[type], which)
-  const deps = ETA_DEPS[type] || []
+  const deps = pipelineDeps.value[type] || []
   let upstream = 0
   for (const dep of deps) {
     const depRemaining = effectiveRemainingMs(dep, jobMap, which, seen)
@@ -893,18 +904,7 @@ function getResultTitle(job) {
  * Find which jobs this job is waiting for (from pipeline dependencies)
  */
 function getWaitingFor(job) {
-  const deps = {
-    das_extraction: ['markdown_convert'],
-    pdf_analysis: ['das_extraction', 'krt_grounding'],
-    datasets_detection: ['markdown_convert'],
-    materials_detection: ['markdown_convert'],
-    protocols_detection: ['markdown_convert'],
-    identifier_detection: ['markdown_convert'],
-    software_detection: ['markdown_convert'],
-    krt_grounding: ['software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection'],
-    suggestion_generation: ['pdf_analysis']
-  }
-  return deps[job.type] || []
+  return pipelineDeps.value[job.type] || []
 }
 
 function getJobDetail(job) {

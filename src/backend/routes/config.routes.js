@@ -19,6 +19,7 @@ const krtComparisonConfig = require('../config/krt-comparison-api');
 const identifierDetectionConfig = require('../config/identifier-detection-api');
 const krtGroundingConfig = require('../config/krt-grounding-api');
 const softwareLmConfig = require('../config/software-detection-lm-api');
+const { buildPipelineGraph } = require('../services/queue/pipeline-graph.service');
 
 const router = express.Router();
 
@@ -32,6 +33,24 @@ const router = express.Router();
 router.get('/krt-template', (req, res) => {
   const url = /^https?:\/\//i.test(KRT_TEMPLATE_URL) ? KRT_TEMPLATE_URL : '';
   res.json({ url });
+});
+
+/**
+ * GET /api/config/pipeline
+ *
+ * The processing pipeline as a graph: which steps exist, what each waits for,
+ * which stage it sits in, and whether it can pause for input.
+ *
+ * Served rather than mirrored in the client because the client had been
+ * mirroring it, twice, and the two copies had already drifted apart from the
+ * table that actually runs — one claimed PDF Analysis waits for seven steps,
+ * the other for two, and the truth is seven.
+ *
+ * Static for a given deployment, so it is cacheable and carries no submission
+ * data.
+ */
+router.get('/pipeline', (req, res) => {
+  res.json(buildPipelineGraph());
 });
 
 /**

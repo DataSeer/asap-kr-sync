@@ -6,7 +6,22 @@
 
 import api from './api'
 
+/** Cached: the pipeline shape cannot change without a redeploy. */
+let _pipeline = null
+
 export default {
+  /**
+   * The processing pipeline as a graph — steps, dependencies, stages.
+   *
+   * Static per deployment, so it is fetched once and cached here rather than
+   * per component. Mirroring it in the client is what this replaces: two
+   * hand-written copies had already drifted from the table that runs.
+   */
+  async getPipeline() {
+    if (!_pipeline) _pipeline = (await api.get('/config/pipeline')).data
+    return _pipeline
+  },
+
   /**
    * Get the enabled/disabled status of each external service
    * @returns {Promise<Object>} - { services: { [jobType]: { enabled, hasDemoData } } }
