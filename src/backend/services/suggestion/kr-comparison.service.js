@@ -23,7 +23,8 @@ const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.servic
 const logger = require('../../utils/logger');
 const { getPipeline } = require('../../config/pipelines');
 const { generateContentWithRetry } = require('../../utils/gemini');
-const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
+const { cleanReason } = require('../../utils/lm-reason');
 const { repoPath } = require('../detection/repo-path');
 const runInputs = require('../queue/run-inputs.service');
 
@@ -121,22 +122,6 @@ function authorRowDisplay(row) {
     resourceType: row.resourceType || '', resourceName: row.resourceName || '',
     source: row.source || '', identifier: row.identifier || '', newReuse: row.newReuse || ''
   };
-}
-
-const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-/**
- * Strip raw KRT-row ids out of an LM reason — the affected row is now shown
- * directly in the UI, so "(row a3d12…)" / "row a3d12…" is just noise.
- */
-function cleanReason(reason) {
-  if (!reason) return '';
-  return String(reason)
-    .replace(/\(\s*(?:row\s+)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*\)/gi, '')
-    .replace(/\brow\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'the matching author row')
-    .replace(UUID_RE, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+([.,;:])/g, '$1')
-    .trim();
 }
 
 /**
@@ -365,22 +350,6 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, grounding
   });
 
   return { suggestions, decisions };
-}
-
-function extractJsonBlock(text) {
-  if (typeof text !== 'string') return '';
-  const fenced = [...text.matchAll(/```json\s*\n?([\s\S]*?)```/g)];
-  if (fenced.length) return fenced[fenced.length - 1][1].trim();
-  const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
-  if (plain.length) return plain[plain.length - 1][1].trim();
-  // An UNTERMINATED fence. Both patterns above require a closing fence,
-  // which a response truncated at the token limit never has — so the raw
-  // text came back still carrying its opener and JSON.parse died on the
-  // backtick. Take everything after the opener so the salvage below can
-  // recover the decisions that completed before the cut.
-  const opener = text.match(/```(?:json)?\s*\n?/);
-  if (opener) return text.slice(opener.index + opener[0].length).trim();
-  return text.trim();
 }
 
 function parseLMResponse(text) {

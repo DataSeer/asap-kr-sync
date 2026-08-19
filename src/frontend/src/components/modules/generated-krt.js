@@ -81,10 +81,15 @@ export const groupBadge = (tabGroup) => GROUP_BADGES[tabGroup] || 'rbadge-neutra
 export function cleanReason(reason) {
   if (!reason) return ''
   return String(reason)
-    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, '')
-    .replace(/\(\s*(?:row\s+)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*\)/gi, '')
+    // Each removal leaves a SPACE: these patterns eat the whitespace on both
+    // sides of what they match, so deleting outright welded the surrounding
+    // words together ("merged refs 1, 2 & 3 into one row" → "mergedinto one
+    // row"). The collapse further down restores single spacing.
+    // Mirrored in src/backend/utils/lm-reason.js — same rules, same order.
+    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, ' ')
+    .replace(/\(\s*(?:row\s+)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*\)/gi, ' ')
     .replace(/\brow\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'the matching author row')
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ' ')
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+([.,;:])/g, '$1')
     .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')

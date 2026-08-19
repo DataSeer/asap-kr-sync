@@ -131,6 +131,19 @@ describe('cleanReason', () => {
     expect(cleanReason('kept ref 7')).toBe('kept')
   })
 
+  it('does not weld the surrounding words together when it removes a ref', () => {
+    // The removal consumes the whitespace on both sides of the match, so it has
+    // to put one back: this produced 'mergedinto one row'.
+    expect(cleanReason('merged refs 1, 2 & 3 into one row')).toBe('merged into one row')
+  })
+
+  it('handles a ref AND a row id in one reason', () => {
+    const uuid = 'a3d12f45-1234-4321-8888-abcdefabcdef'
+    const out = cleanReason(`merged refs 0 and 4 into row ${uuid}`)
+    expect(out).not.toContain('ref')
+    expect(out).not.toContain(uuid)
+  })
+
   it('replaces a raw row UUID with words a reader can use', () => {
     const uuid = 'a3d12f45-1234-4321-8888-abcdefabcdef'
     expect(cleanReason(`matched row ${uuid}`)).toBe('matched the matching author row')

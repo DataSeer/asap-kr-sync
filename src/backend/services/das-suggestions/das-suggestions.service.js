@@ -22,7 +22,7 @@ const jobQueue = require('../queue/job-queue.service');
 const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { generateContentWithRetry } = require('../../utils/gemini');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, extractJsonBlock } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/das-suggestions.txt');
@@ -153,15 +153,6 @@ function computeKrtSignals(krtRows) {
     has_protocol_resources: rows.some(r => typeMatches(r, 'protocol')),
     has_lab_material_resources: rows.some(r => LAB_MATERIAL_KEYWORDS.some(kw => typeMatches(r, kw)))
   };
-}
-
-function extractJsonBlock(text) {
-  if (typeof text !== 'string') return '';
-  const fenced = [...text.matchAll(/```json\s*\n?([\s\S]*?)```/g)];
-  if (fenced.length) return fenced[fenced.length - 1][1].trim();
-  const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
-  if (plain.length) return plain[plain.length - 1][1].trim();
-  return text.trim();
 }
 
 /** Parse the LM response into an array of { rule_id, applies, reason }. */

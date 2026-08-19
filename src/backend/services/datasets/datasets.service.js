@@ -40,7 +40,7 @@ const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
 const runInputs = require('../queue/run-inputs.service');
 const { buildKrtItemFromLM } = require('../pdf-analysis/lm-resource.service');
 const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
-const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
@@ -232,7 +232,7 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   );
   const consolidationMs = Date.now() - consolidationStartTime;
 
-  const cleanedConsolidation = stripMarkdownFences(rawResponse);
+  const cleanedConsolidation = extractJsonBlock(rawResponse);
   await jobLogger?.saveRawResponse('gemini-consolidation', cleanedConsolidation || rawResponse || rawItems);
   // Both passes are recorded: the signals prompt drives extraction, the
   // consolidation prompt drives the merge, and a run is only reproducible with
@@ -343,14 +343,6 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
   }
 }
 
-function stripMarkdownFences(text) {
-  if (typeof text !== 'string') return '';
-  let s = text.trim();
-  if (!s.startsWith('```')) return s;
-  s = s.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
-  return s.trim();
-}
-
 function mapDatasetRole(role) {
   const v = (role || '').toString().trim().toUpperCase();
   if (v === 'GENERATED') return 'new';
@@ -385,7 +377,7 @@ function joinIdentifiers(item) {
  * pre-refactor behavior of `parseGeminiResponse`, which dropped these).
  */
 function parseGeminiResponse(text) {
-  const jsonStr = sanitizeJsonEscapes(stripMarkdownFences(text));
+  const jsonStr = sanitizeJsonEscapes(extractJsonBlock(text));
 
   try {
     const parsed = JSON.parse(jsonStr);

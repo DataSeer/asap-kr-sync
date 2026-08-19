@@ -102,4 +102,41 @@ function salvageTruncatedObjects(text) {
   return objects;
 }
 
-module.exports = { sanitizeJsonEscapes, salvageTruncatedObjects };
+
+/**
+ * Pull the JSON out of a model response that may have wrapped it in a fence.
+ *
+ * There were five copies of this across the detectors, in three behaviours, and
+ * the differences were bugs rather than intent:
+ *
+ *   - two (`stripFences` in krt-grounding and software-lm) stopped at the last
+ *     CLOSED fence, so a response truncated at the token limit — which never
+ *     gets its closing fence — fell through to `String(text).trim()` and handed
+ *     JSON.parse a leading "```json". Every partial result was thrown away at
+ *     the very moment the salvage path existed to rescue it.
+ *   - one (das-suggestions) had the same gap.
+ *   - one (`stripMarkdownFences` in datasets) only stripped when the response
+ *     STARTED with a fence, so a model that prefixed one polite line
+ *     ("Here is the JSON:") defeated it completely.
+ *
+ * The full behaviour, from krt-generation and kr-comparison, is the one kept:
+ * prefer the last ```json block, then the last plain ``` block, then — for an
+ * unterminated fence — everything after the opener, so `salvageTruncatedObjects`
+ * can recover whatever completed before the cut. Unfenced text is returned
+ * as-is.
+ *
+ * @param {string} text - raw model response
+ * @returns {string} the JSON body, or '' for a non-string
+ */
+function extractJsonBlock(text) {
+  if (typeof text !== 'string') return '';
+  const fenced = [...text.matchAll(/```json\s*\n?([\s\S]*?)```/g)];
+  if (fenced.length) return fenced[fenced.length - 1][1].trim();
+  const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
+  if (plain.length) return plain[plain.length - 1][1].trim();
+  const opener = text.match(/```(?:json)?\s*\n?/);
+  if (opener) return text.slice(opener.index + opener[0].length).trim();
+  return text.trim();
+}
+
+module.exports = { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock };

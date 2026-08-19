@@ -24,7 +24,7 @@ const { GoogleGenAI } = require('@google/genai');
 const softwareLmConfig = require('../../config/software-detection-lm-api');
 const { ExternalServiceError } = require('../../utils/errors');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
-const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
 
@@ -102,7 +102,7 @@ async function detectSoftwareLM(markdownText, { prompt } = {}) {
  */
 function parseResponse(text) {
   if (!text) return [];
-  const jsonStr = sanitizeJsonEscapes(stripFences(text));
+  const jsonStr = sanitizeJsonEscapes(extractJsonBlock(text));
   try {
     const parsed = JSON.parse(jsonStr);
     const resources = parsed.resources || parsed;
@@ -123,11 +123,6 @@ function parseResponse(text) {
     }
     return [];
   }
-}
-
-function stripFences(text) {
-  const fenced = [...String(text).matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/g)];
-  return fenced.length > 0 ? fenced[fenced.length - 1][1].trim() : String(text).trim();
 }
 
 /**

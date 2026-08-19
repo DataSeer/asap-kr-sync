@@ -15,7 +15,8 @@ const { computeDedupKey } = require('./identifier-normalize.service');
 const { mergeAdditionalInfo } = require('./merge-detections.service');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
-const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
+const { cleanReason } = require('../../utils/lm-reason');
 
 function isConfigured() {
   return krtGenConfig.isConfigured();
@@ -42,20 +43,6 @@ function sourcesOf(c) {
   return Array.isArray(c?.detectedBy)
     ? [...new Set(c.detectedBy.map(d => d.source).filter(Boolean))]
     : [];
-}
-
-/**
- * Scrub internal candidate `ref` numbers out of an LM reason so the curator
- * never sees "merged refs 0 and 4" — the refs are an implementation detail.
- */
-function cleanReason(reason) {
-  if (!reason) return '';
-  return String(reason)
-    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+([.,;:])/g, '$1')
-    .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')
-    .trim();
 }
 
 /** Union the detectedBy provenance of several candidates (every contributor, including repeats from one module). */
@@ -168,22 +155,6 @@ function buildKrtFromLM(candidates, lmOutput) {
   });
 
   return { items, dropped };
-}
-
-function extractJsonBlock(text) {
-  if (typeof text !== 'string') return '';
-  const fenced = [...text.matchAll(/```json\s*\n?([\s\S]*?)```/g)];
-  if (fenced.length) return fenced[fenced.length - 1][1].trim();
-  const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
-  if (plain.length) return plain[plain.length - 1][1].trim();
-  // An UNTERMINATED fence. Both patterns above require a closing ```, which a
-  // response truncated at the token limit never has — so the raw text came back
-  // still carrying its "```json" opener and JSON.parse died on the backtick.
-  // Take everything after the opener and let the salvage below recover whatever
-  // objects completed before the cut.
-  const opener = text.match(/```(?:json)?\s*\n?/);
-  if (opener) return text.slice(opener.index + opener[0].length).trim();
-  return text.trim();
 }
 
 function parseLMResponse(text) {

@@ -47,7 +47,7 @@ const { matchAuthorRows } = require('./match-author-rows.service');
 const { getPipeline } = require('../../config/pipelines');
 const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
   findNormalisedOccurrences, identifierNeedle } = require('../pdf-analysis/evidence.service');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, extractJsonBlock } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
 const { repoPath } = require('../detection/repo-path');
@@ -540,7 +540,7 @@ async function askSecondLook(batch, markdownText) {
 function parseSecondLookResponse(text) {
   if (!text) return [];
   try {
-    const parsed = JSON.parse(sanitizeJsonEscapes(stripFences(text)));
+    const parsed = JSON.parse(sanitizeJsonEscapes(extractJsonBlock(text)));
     const found = Array.isArray(parsed) ? parsed : parsed.found;
     if (!Array.isArray(found)) return [];
     return found
@@ -552,11 +552,6 @@ function parseSecondLookResponse(text) {
     });
     return [];
   }
-}
-
-function stripFences(text) {
-  const fenced = [...String(text).matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/g)];
-  return fenced.length > 0 ? fenced[fenced.length - 1][1].trim() : String(text).trim();
 }
 
 /**
