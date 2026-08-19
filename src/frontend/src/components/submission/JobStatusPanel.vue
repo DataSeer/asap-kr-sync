@@ -1960,6 +1960,14 @@ async function downloadMarkdownFile(fileId) {
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
         <span class="job-status-eta-label">Background processes</span>
+        <!-- The pipeline overview. A link, so ctrl-click opens it beside the
+             submission — which is how you read a result against the KRT. -->
+        <RouterLink
+          :to="{ name: 'submission-pipeline', params: { id: submissionId } }"
+          class="job-pipeline-link"
+          title="See the whole pipeline: every step, what it waits for, and what it produced"
+          @click.stop
+        >view pipeline ↗</RouterLink>
         <span v-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
         <div class="job-header-badges">
           <span v-if="jobSummary.running > 0" class="job-summary-badge job-status-running">
@@ -4099,6 +4107,14 @@ async function downloadMarkdownFile(fileId) {
   line-height: 1.35;
   max-width: 34rem;
 }
+.job-pipeline-link {
+  margin-left: 0.6rem;
+  font-size: 0.7rem;
+  color: #2563eb;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.job-pipeline-link:hover { text-decoration: underline; }
 .job-open-page {
   margin-left: 0.5rem;
   font-size: 0.7rem;

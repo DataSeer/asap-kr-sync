@@ -96,6 +96,61 @@ const conflictsFor = (jobType) => (jobType === 'krt_grounding' ? (jobFor(jobType
 
 /** Only krt_grounding has a page so far; a link to an empty one is worse than none. */
 const HAS_PAGE = new Set(['krt_grounding'])
+
+/** Which steps consume each step's output — the reverse of dependsOn. */
+const consumersOf = computed(() => {
+  const map = {}
+  for (const n of graph.value.nodes) {
+    for (const dep of n.dependsOn) (map[dep] = map[dep] || []).push(n.jobType)
+  }
+  return map
+})
+
+/**
+ * Within a stage, steps that feed exactly the same downstream steps are one
+ * group.
+ *
+ * That is what "does the same job" means structurally, and it needs no list to
+ * maintain: the five detectors all feed Grounding and PDF Analysis, so they
+ * cluster, while DAS Extraction sits in the same stage but feeds only PDF
+ * Analysis and stays separate. Add a sixth detector to the orchestrator and it
+ * joins the cluster on its own.
+ */
+function groupsForStage(nodes) {
+  const by = new Map()
+  for (const n of nodes) {
+    const consumers = [...(consumersOf.value[n.jobType] || [])].sort()
+    const key = consumers.join('|')
+    if (!by.has(key)) by.set(key, { key, consumers, nodes: [] })
+    by.get(key).nodes.push(n)
+  }
+  // Biggest cluster first, so the parallel block reads before the one-offs.
+  return [...by.values()].sort((a, b) => b.nodes.length - a.nodes.length)
+}
+
+/** Where the pipeline currently is, in one line. */
+const state = computed(() => {
+  const nodes = graph.value.nodes
+  const tally = { done: 0, running: 0, waiting: 0, failed: 0, pending: 0, idle: 0 }
+  for (const n of nodes) {
+    const cls = statusOf(n.jobType).cls
+    if (cls === 'st-done') tally.done++
+    else if (cls === 'st-run') tally.running++
+    else if (cls === 'st-fail') tally.failed++
+    else if (cls === 'st-pending') tally.pending++
+    else if (cls === 'st-wait') tally.waiting++
+    else tally.idle++
+  }
+  return { ...tally, total: nodes.length }
+})
+
+/** The first stage that has not finished — where the work actually is now. */
+const activeStage = computed(() => {
+  for (const stage of stages.value) {
+    if (stage.nodes.some((n) => statusOf(n.jobType).cls !== 'st-done')) return stage.index
+  }
+  return -1
+})
 </script>
 
 <template>
@@ -108,69 +163,93 @@ const HAS_PAGE = new Set(['krt_grounding'])
     </div>
 
     <p class="pv-intro">
-      Each step reads what the steps before it produced. A step waits until everything it
-      depends on has finished, so a stalled step is usually waiting rather than broken.
+      The manuscript flows down this page. Each step waits until everything above it that
+      it depends on has finished, so a step sitting idle is usually waiting rather than broken.
+      Steps shown side by side run at the same time.
     </p>
+
+    <!-- Where the pipeline is right now, before any of the detail. -->
+    <div v-if="graph.nodes.length" class="pv-state">
+      <span class="pv-state-item"><b>{{ state.done }}</b> of {{ state.total }} done</span>
+      <span v-if="state.running" class="pv-state-item st-run">{{ state.running }} running</span>
+      <span v-if="state.pending" class="pv-state-item st-pending">{{ state.pending }} needs input</span>
+      <span v-if="state.waiting" class="pv-state-item st-wait">{{ state.waiting }} waiting</span>
+      <span v-if="state.failed" class="pv-state-item st-fail">{{ state.failed }} failed</span>
+    </div>
 
     <div v-if="!stages.length" class="pv-empty">Loading the pipeline…</div>
 
-    <div v-else class="pv-stages">
-      <template v-for="(stage, si) in stages" :key="stage.index">
-        <section class="pv-stage" :aria-label="stage.label">
-          <h2 class="pv-stage-title">
-            <span class="pv-stage-num">{{ si + 1 }}</span>{{ stage.label }}
-          </h2>
+    <ol v-else class="pv-flow">
+      <li
+        v-for="(stage, si) in stages"
+        :key="stage.index"
+        class="pv-band"
+        :class="{ 'pv-band-active': stage.index === activeStage }"
+      >
+        <div class="pv-band-label">
+          <span class="pv-stage-num">{{ si + 1 }}</span>
+          <span>{{ stage.label }}</span>
+          <span v-if="stage.index === activeStage" class="pv-here">← here now</span>
+        </div>
 
-          <component
-            :is="HAS_PAGE.has(node.jobType) ? 'RouterLink' : 'div'"
-            v-for="node in stage.nodes"
-            :key="node.jobType"
-            :to="HAS_PAGE.has(node.jobType)
-              ? { name: 'submission-module', params: { id: submissionId, type: node.jobType } }
-              : undefined"
-            class="pv-card"
-            :class="{ 'pv-card-link': HAS_PAGE.has(node.jobType) }"
+        <div class="pv-groups">
+          <div
+            v-for="group in groupsForStage(stage.nodes)"
+            :key="group.key"
+            class="pv-group"
+            :class="{ 'pv-group-boxed': group.nodes.length > 1 }"
           >
-            <div class="pv-card-head">
-              <span class="pv-card-name">{{ labelFor(node.jobType) }}</span>
-              <span class="pv-status" :class="statusOf(node.jobType).cls">{{ statusOf(node.jobType).text }}</span>
+            <!-- Only a real cluster gets a caption; a lone step does not need
+                 telling that it runs by itself. -->
+            <p v-if="group.nodes.length > 1" class="pv-group-caption">
+              {{ group.nodes.length }} steps, in parallel
+              <span v-if="group.consumers.length">→ {{ group.consumers.map(labelFor).join(', ') }}</span>
+            </p>
+
+            <div class="pv-cards">
+              <component
+                :is="HAS_PAGE.has(node.jobType) ? 'RouterLink' : 'div'"
+                v-for="node in group.nodes"
+                :key="node.jobType"
+                :to="HAS_PAGE.has(node.jobType)
+                  ? { name: 'submission-module', params: { id: submissionId, type: node.jobType } }
+                  : undefined"
+                class="pv-card"
+                :class="{ 'pv-card-link': HAS_PAGE.has(node.jobType) }"
+              >
+                <div class="pv-card-head">
+                  <span class="pv-card-name">{{ labelFor(node.jobType) }}</span>
+                  <span class="pv-status" :class="statusOf(node.jobType).cls">{{ statusOf(node.jobType).text }}</span>
+                </div>
+
+                <p class="pv-purpose">{{ purposeFor(node.jobType) }}</p>
+
+                <dl class="pv-io">
+                  <dt>in</dt>
+                  <dd v-if="node.dependsOn.length">{{ node.dependsOn.map(labelFor).join(' · ') }}</dd>
+                  <dd v-else class="pv-muted">the submission itself</dd>
+                  <template v-if="outputOf(node.jobType)">
+                    <dt>out</dt>
+                    <dd>{{ outputOf(node.jobType) }}</dd>
+                  </template>
+                </dl>
+
+                <div class="pv-card-foot">
+                  <span v-if="conflictsFor(node.jobType) > 0" class="pv-conflicts">
+                    ⚠ {{ conflictsFor(node.jobType) }} conflict{{ conflictsFor(node.jobType) === 1 ? '' : 's' }}
+                  </span>
+                  <span v-if="node.gate" class="pv-gate" :title="'Waits for a condition on the submission: ' + node.gate">gated</span>
+                  <span v-if="!node.autoAdvances" class="pv-gate" title="Can pause and wait for you before it runs.">may pause</span>
+                  <span v-if="HAS_PAGE.has(node.jobType)" class="pv-open">open ↗</span>
+                </div>
+              </component>
             </div>
+          </div>
+        </div>
 
-            <p class="pv-purpose">{{ purposeFor(node.jobType) }}</p>
-
-            <dl class="pv-io">
-              <template v-if="node.dependsOn.length">
-                <dt>in</dt>
-                <dd>{{ node.dependsOn.map(labelFor).join(' · ') }}</dd>
-              </template>
-              <template v-else>
-                <dt>in</dt>
-                <dd class="pv-muted">the submission itself</dd>
-              </template>
-              <template v-if="outputOf(node.jobType)">
-                <dt>out</dt>
-                <dd>{{ outputOf(node.jobType) }}</dd>
-              </template>
-            </dl>
-
-            <div class="pv-card-foot">
-              <span v-if="conflictsFor(node.jobType) > 0" class="pv-conflicts">
-                ⚠ {{ conflictsFor(node.jobType) }} conflict{{ conflictsFor(node.jobType) === 1 ? '' : 's' }}
-              </span>
-              <span v-if="node.gate" class="pv-gate" :title="'This step waits for a condition on the submission: ' + node.gate">
-                gated
-              </span>
-              <span v-if="!node.autoAdvances" class="pv-gate" title="This step can pause and wait for you before it runs.">
-                may pause
-              </span>
-              <span v-if="HAS_PAGE.has(node.jobType)" class="pv-open">open ↗</span>
-            </div>
-          </component>
-        </section>
-
-        <div v-if="si < stages.length - 1" class="pv-arrow" aria-hidden="true">→</div>
-      </template>
-    </div>
+        <div v-if="si < stages.length - 1" class="pv-down" aria-hidden="true">↓</div>
+      </li>
+    </ol>
   </div>
 </template>
 
@@ -180,27 +259,46 @@ const HAS_PAGE = new Set(['krt_grounding'])
 .pv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
 .pv-back:hover { text-decoration: underline; }
 .pv-title { font-size: 1.25rem; font-weight: 600; color: #111827; margin: 0; }
-.pv-intro { color: #6b7280; font-size: 0.85rem; margin: 0.5rem 0 1.5rem; max-width: 60rem; }
+.pv-intro { color: #6b7280; font-size: 0.85rem; margin: 0.5rem 0 1rem; max-width: 60rem; }
 .pv-empty { color: #9ca3af; font-size: 0.9rem; }
 
-.pv-stages { display: flex; gap: 0.5rem; align-items: flex-start; overflow-x: auto; padding-bottom: 0.5rem; }
-.pv-stage { flex: 0 0 15.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
-.pv-stage-title {
-  display: flex; align-items: center; gap: 0.4rem;
+.pv-state { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1.5rem; }
+.pv-state-item {
+  font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 0.3rem;
+  background: #f3f4f6; color: #4b5563;
+}
+
+/* Top to bottom: the manuscript flows down the page, and an ordered list is
+   what this actually is — which a screen reader then reads correctly. */
+.pv-flow { list-style: none; margin: 0; padding: 0; max-width: 74rem; }
+.pv-band { position: relative; padding: 0.75rem 0.9rem; border: 1px solid #f3f4f6; border-radius: 0.5rem; }
+.pv-band-active { border-color: #bfdbfe; background: #f8fbff; }
+.pv-band-label {
+  display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem;
   font-size: 0.7rem; font-weight: 700; color: #6b7280;
-  text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 0.15rem;
+  text-transform: uppercase; letter-spacing: 0.05em;
 }
 .pv-stage-num {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 1.1rem; height: 1.1rem; border-radius: 50%;
+  width: 1.15rem; height: 1.15rem; border-radius: 50%;
   background: #e5e7eb; color: #4b5563; font-size: 0.62rem;
 }
-.pv-arrow { flex: 0 0 auto; align-self: center; color: #d1d5db; font-size: 1.1rem; padding-top: 2rem; }
+.pv-here { color: #1d4ed8; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.pv-down { text-align: center; color: #d1d5db; font-size: 1.2rem; line-height: 1; margin: 0.35rem 0 0; }
+
+.pv-groups { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-start; }
+.pv-group { flex: 1 1 16rem; }
+/* A cluster is boxed so "these run together" is visible before reading names. */
+.pv-group-boxed {
+  flex: 2 1 34rem; border: 1px dashed #e5e7eb; border-radius: 0.5rem;
+  padding: 0.5rem 0.55rem 0.6rem; background: #fcfcfd;
+}
+.pv-group-caption { font-size: 0.68rem; color: #9ca3af; margin: 0 0 0.45rem; }
+.pv-cards { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
 .pv-card {
-  display: block; text-decoration: none; color: inherit;
-  border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fff;
-  padding: 0.6rem 0.7rem;
+  display: block; text-decoration: none; color: inherit; flex: 1 1 15rem;
+  border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fff; padding: 0.6rem 0.7rem;
 }
 .pv-card-link { cursor: pointer; }
 .pv-card-link:hover { border-color: #bfdbfe; background: #f8fafc; }
@@ -232,11 +330,8 @@ const HAS_PAGE = new Set(['krt_grounding'])
 .st-fail { background: #fef2f2; color: #b91c1c; }
 .st-idle { background: #f9fafb; color: #9ca3af; }
 
-/* One column per stage is only readable while they fit. Below that the stages
-   stack, which keeps the order and drops the arrows. */
-@media (max-width: 900px) {
-  .pv-stages { flex-direction: column; overflow-x: visible; }
-  .pv-stage { flex: 1 1 auto; width: 100%; }
-  .pv-arrow { display: none; }
+@media (max-width: 700px) {
+  .pv-group, .pv-group-boxed { flex: 1 1 100%; }
+  .pv-card { flex: 1 1 100%; }
 }
 </style>
