@@ -242,7 +242,10 @@ const inputs = computed(() => {
  * stores one today; the rest of this section links to where the input lives
  * instead, because nothing else is saved a second time.
  */
-const INPUT_ARTEFACTS = new Set(['grounding-inputs'])
+// `inputs` is the frozen audit record every module writes; `grounding-inputs`
+// is the older name grounding used for the same thing. Both belong under Module
+// inputs — listed as outputs they read as something the run produced.
+const INPUT_ARTEFACTS = new Set(['inputs', 'grounding-inputs'])
 
 /** Every artefact name this run saved, before the input/result split. */
 const savedNames = computed(() => {
@@ -332,7 +335,7 @@ const responseUrl = (name) =>
         <ul v-if="inputArtefacts.length" class="mt-files">
           <li v-for="name in inputArtefacts" :key="name">
             <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
-            <span class="mt-files-note">the exact input this run was given</span>
+            <span class="mt-files-note">the exact input this run was given, frozen</span>
           </li>
         </ul>
         <dl v-if="inputCounts.length">
@@ -373,16 +376,33 @@ const responseUrl = (name) =>
 }
 .mt-caret { color: #9ca3af; transition: transform 0.12s ease; }
 .mt-caret-open { transform: rotate(90deg); }
-.mt-body { padding: 0 0.9rem 0.9rem 2rem; display: flex; flex-wrap: wrap; gap: 1.75rem; }
-.mt-block { min-width: 15rem; }
+/* A grid, not a flex row: the four blocks then share the width instead of
+   sizing to their content and leaving the right third of a 1440px screen
+   empty. They collapse to two columns, then one, rather than wrapping into a
+   ragged shape. */
+.mt-body {
+  padding: 0 0.9rem 0.9rem 2rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1.5rem 2rem;
+  align-items: start;
+}
+.mt-block { min-width: 0; }
 .mt-block h3 {
   font-size: 0.68rem; font-weight: 700; color: #9ca3af;
   text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 0.4rem;
 }
-.mt-block dl { display: grid; grid-template-columns: auto auto; gap: 0.2rem 0.9rem; margin: 0; font-size: 0.75rem; }
+.mt-block dl {
+  display: grid; grid-template-columns: minmax(0, auto) minmax(0, auto);
+  /* Hug the content: stretched to the column width, a label and its value ended
+     up at opposite ends of the block and stopped reading as a pair. */
+  justify-content: start;
+  gap: 0.2rem 0.9rem; margin: 0; font-size: 0.75rem;
+}
 .mt-block dt { color: #6b7280; }
 .mt-block dd { margin: 0; color: #111827; font-variant-numeric: tabular-nums; }
 .mt-files { list-style: none; margin: 0; padding: 0; font-size: 0.75rem; }
+.mt-files li { overflow-wrap: anywhere; margin-bottom: 0.15rem; }
 .mt-files a { color: #2563eb; text-decoration: none; }
 .mt-files a:hover { text-decoration: underline; }
 .mt-linkish {
@@ -391,5 +411,5 @@ const responseUrl = (name) =>
 }
 .mt-linkish:hover { text-decoration: underline; }
 .mt-files-note { color: #9ca3af; margin-left: 0.4rem; font-size: 0.7rem; }
-.mt-note { font-size: 0.7rem; color: #9ca3af; margin: 0.4rem 0 0; max-width: 22rem; line-height: 1.4; }
+.mt-note { font-size: 0.7rem; color: #9ca3af; margin: 0.4rem 0 0; line-height: 1.4; }
 </style>
