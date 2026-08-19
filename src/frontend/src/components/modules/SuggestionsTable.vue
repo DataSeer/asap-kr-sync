@@ -127,20 +127,7 @@ const isEmpty = computed(() => props.rows.length === 0)
               class="st-xs"
               :class="{ 'st-name': c.key === 'resourceName' }"
             >
-              <!-- NEW/REUSE is a value with two states everywhere else in the
-                   app, so it carries the same two colours here. A changed one
-                   still takes the diff styling, which is why the badge is inside
-                   the same branch rather than replacing it. -->
-              <span
-                v-if="c.key === 'newReuse' && r.cells && r.cells[c.key]"
-                class="badge"
-                :class="[
-                  String(r.cells[c.key]).toLowerCase() === 'new' ? 'badge-new' : 'badge-reuse',
-                  (r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'st-diff-old' : 'st-diff-new') : ''
-                ]"
-              >{{ r.cells[c.key] }}</span>
               <HighlightText
-                v-else
                 :class="(r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'st-diff-old' : 'st-diff-new') : ''"
                 :text="r.cells && r.cells[c.key]"
                 :query="search"
@@ -151,7 +138,7 @@ const isEmpty = computed(() => props.rows.length === 0)
                 <span
                   v-for="src in detectedBy(r.decision)"
                   :key="src"
-                  class="badge st-badge-gap"
+                  class="badge"
                   :class="sourceBadge(src)"
                   :title="sourceTitle(src)"
                 >{{ sourceLabel(src) }}</span>
@@ -205,8 +192,7 @@ const isEmpty = computed(() => props.rows.length === 0)
 .st-d-remove { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 .st-d-skip { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
 .st-d-unreviewed { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
-/* Colours come from assets/styles/badges.css. */
-.st-badge-gap { margin-right: 0.25rem; }
+/* Colours and spacing come from assets/styles/badges.css. */
 /* The two sides of a change, marked rather than merged into a diff string:
    the author's value is what exists, the generated one is what is proposed. */
 .st-diff-old :deep(*), .st-diff-old { color: #b91c1c; text-decoration: line-through; }

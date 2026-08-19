@@ -220,11 +220,9 @@ function downloadJson() {
             <td class="gk-xs"><HighlightText :text="row.sourceUrl" :query="search" /></td>
             <td class="gk-xs"><HighlightText :text="row.identifier" :query="search" /></td>
             <td>
-              <span
-                v-if="row.newReuse"
-                class="badge"
-                :class="row.newReuse === 'new' ? 'badge-new' : 'badge-reuse'"
-              >{{ row.newReuse }}</span>
+              <!-- Plain text: see assets/styles/badges.css — a badge here
+                   competed with the category colour beside it. -->
+              <span v-if="row.newReuse">{{ row.newReuse }}</span>
               <span v-else>—</span>
             </td>
             <td v-if="showAdditionalInfo" class="gk-xs gk-muted">
@@ -272,7 +270,7 @@ function downloadJson() {
                 <span
                   v-for="s in (d.sources || [])"
                   :key="s"
-                  class="badge gk-badge-gap"
+                  class="badge"
                   :class="sourceBadge(s)"
                   :title="sourceTitle(s)"
                 >{{ sourceLabel(s) }}</span>
@@ -339,8 +337,7 @@ function downloadJson() {
 .gk-group-end td { border-bottom: 1px solid #f3f4f6; }
 .gk-krtnum { font-weight: 600; color: #374151; font-size: 0.76rem; }
 .gk-merge-label { font-size: 0.66rem; color: #1d4ed8; margin-top: 0.1rem; }
-/* Colours come from assets/styles/badges.css, shared with every other table. */
-.gk-badge-gap { margin-right: 0.25rem; }
+/* Colours and spacing come from assets/styles/badges.css. */
 .gk-frame-main { max-height: min(60vh, 40rem); }
 .gk-empty { padding: 1.5rem; text-align: center; color: #9ca3af; font-size: 0.85rem; }
 .gk-dropped { margin-top: 1.25rem; }

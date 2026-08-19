@@ -189,7 +189,7 @@ function getMergedFromContext(originalItem) {
                                entirely when nothing was seeded. -->
               <span
                 v-if="item.detectorMeta?.fromAuthorKrt"
-                class="badge badge-own dt-badge-gap"
+                class="badge badge-own"
                 :title="item.evidence?.verification?.status === 'verified'
                   ? 'In the author KRT, and the model located it in the manuscript.'
                   : 'In the author KRT. The model returned it, but did not locate it in the manuscript.'"
@@ -201,13 +201,13 @@ function getMergedFromContext(originalItem) {
               <span
                 v-for="engine in itemEngines(item)"
                 :key="engine"
-                class="badge dt-badge-gap"
+                class="badge"
                 :class="engine === 'lm' ? 'badge-derived' : 'badge-own'"
                 :title="ENGINE_TITLES[engine]"
               >{{ ENGINE_LABELS[engine] }}</span>
               <span
                 v-if="getEnrichmentMeta(item)?.matched"
-                class="badge badge-neutral dt-badge-gap dt-badge-icon"
+                class="badge badge-neutral dt-badge-icon"
                 :title="enrichmentBadgeTitle(item)"
               >
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -218,7 +218,7 @@ function getMergedFromContext(originalItem) {
               <button
                 v-if="getMergedFromCount(item) > 1"
                 type="button"
-                class="badge badge-neutral dt-badge-gap dt-badge-button"
+                class="badge badge-neutral dt-badge-button"
                 :title="`Merged from ${getMergedFromCount(item)} pre-dedup mentions — click to expand`"
                 @click="toggleMergedRow(i)"
               >
@@ -229,9 +229,7 @@ function getMergedFromContext(originalItem) {
             <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'source') }" :title="isFieldFromEnrichment(item, 'source') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.source || item.suggestedURL || item.url" :query="search" /></td>
             <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'identifier') }" :title="isFieldFromEnrichment(item, 'identifier') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.identifier || item.RRID || item.suggestedRRID" :query="search" /></td>
             <td :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'newReuse') }" :title="isFieldFromEnrichment(item, 'newReuse') ? 'Filled in from the enrichment list' : null">
-              <span v-if="item.newReuse" class="badge" :class="item.newReuse === 'new' ? 'badge-new' : 'badge-reuse'">
-                {{ item.newReuse }}
-              </span>
+              <span v-if="item.newReuse">{{ item.newReuse }}</span>
               <span v-else>—</span>
             </td>
             <!-- Evidence: WHERE in the manuscript this came from.
@@ -245,7 +243,7 @@ function getMergedFromContext(originalItem) {
               <span v-else class="text-gray-300">—</span>
               <span
                 v-if="item.evidence?.match === 'partial'"
-                class="badge dt-badge-weak dt-badge-gap"
+                class="badge dt-badge-weak"
                 title="Only the leading part of the quote was located in the manuscript"
               >partial</span>
               <!-- The model's quote is not in the manuscript, but
@@ -254,7 +252,7 @@ function getMergedFromContext(originalItem) {
                                highlighted because it was never found. -->
               <span
                 v-else-if="item.evidence?.verification?.status === 'embellished'"
-                class="badge dt-badge-weak dt-badge-gap"
+                class="badge dt-badge-weak"
                 title="The resource is in the manuscript, but the sentence the model quoted is not verbatim. The paragraph below is where the resource actually appears."
               >not verbatim</span>
             </td>
@@ -349,7 +347,6 @@ function getMergedFromContext(originalItem) {
    two shapes that are not plain spans are local.
    These badges previously borrowed JobStatusPanel's styles, which are SCOPED —
    so on a module page they rendered as unstyled text. */
-.dt-badge-gap { margin-right: 0.25rem; }
 .dt-badge-icon { display: inline-flex; align-items: center; gap: 0.2rem; }
 .dt-badge-button { cursor: pointer; font-family: inherit; }
 /* Evidence qualifiers ("partial", "not verbatim") are a caveat on a finding

@@ -207,14 +207,7 @@ defineExpose({ foundVerdict })
             <td class="gt-xs"><HighlightText :text="o.source || ''" :query="search" /></td>
             <td class="gt-xs"><HighlightText :text="o.identifier || ''" :query="search" /></td>
             <td class="gt-xs">
-              <!-- The same two colours the detections and the Generated KRT use;
-                   plain text here made the one table that shows the author's own
-                   value the only one where it did not read as a value. -->
-              <span
-                v-if="o.newReuse"
-                class="badge"
-                :class="String(o.newReuse).toLowerCase() === 'new' ? 'badge-new' : 'badge-reuse'"
-              >{{ o.newReuse }}</span>
+              <span v-if="o.newReuse">{{ o.newReuse }}</span>
               <span v-else>—</span>
             </td>
             <td class="gt-xs">
