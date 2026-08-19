@@ -80,15 +80,15 @@ const search = ref('')
 const tab = ref('all')
 
 /**
- * Which modules span more than one resource category.
+ * The tab strip is always present; tabs with nothing in them are disabled.
  *
- * Materials, protocols, datasets and software each produce exactly one kind, so
- * a tab strip there is four tabs reading 0 and one reading everything. Only the
- * identifier scan (cross-category by design) and grounding (the author's whole
- * KRT) genuinely mix them.
+ * Most modules produce one kind of resource, so hiding the strip there moved
+ * the search box to a different place on every module. Keeping the strip and
+ * greying the empty tabs holds the layout still AND says what the module does
+ * — that Materials Detection finds materials and nothing else is information,
+ * not clutter.
  */
-const MULTI_CATEGORY = new Set(['krt_grounding', 'identifier_detection'])
-const showTabs = computed(() => MULTI_CATEGORY.has(jobType.value))
+const tabEnabled = (key) => key === 'all' || (tabCounts.value[key] || 0) > 0
 const TABS = [
   { key: 'all', label: 'All' },
   { key: 'Datasets', label: 'Datasets' },
@@ -106,7 +106,7 @@ const rows = computed(() => (isDetection.value ? detections.value : outcomes.val
 const visible = computed(() => {
   const q = search.value.trim().toLowerCase()
   return rows.value.filter((o) => {
-    if (showTabs.value && tab.value !== 'all'
+    if (tab.value !== 'all'
         && resourceTypesStore.getTabGroup(o.resourceType || '') !== tab.value) return false
     return matches(o, q)
   })
@@ -188,13 +188,15 @@ const tabConflicts = computed(() => {
       <!-- Filters and search on one line: they do the same job, and splitting
            them over two rows pushed the table itself below the fold. -->
       <div class="mrv-toolbar">
-        <div v-if="showTabs" class="mrv-tabs">
+        <div class="mrv-tabs">
           <button
             v-for="t in TABS"
             :key="t.key"
             type="button"
             class="mrv-tab"
-            :class="{ 'mrv-tab-active': tab === t.key }"
+            :class="{ 'mrv-tab-active': tab === t.key, 'mrv-tab-empty': !tabEnabled(t.key) }"
+            :disabled="!tabEnabled(t.key)"
+            :title="tabEnabled(t.key) ? undefined : 'This module produces no resources of this kind'"
             @click="tab = t.key"
           >
             {{ t.label }}
@@ -267,6 +269,8 @@ const tabConflicts = computed(() => {
   background: #fff; font-size: 0.78rem; color: #374151; cursor: pointer;
 }
 .mrv-tab-active { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; font-weight: 600; }
+.mrv-tab-empty { color: #d1d5db; background: #fafafa; cursor: default; }
+.mrv-tab-empty:hover { border-color: #e5e7eb; }
 .mrv-tab-count { color: #9ca3af; font-size: 0.72rem; }
 .mrv-tab-conflicts {
   padding: 0 0.3rem; border-radius: 0.25rem; font-size: 0.68rem; font-weight: 600;

@@ -235,6 +235,14 @@ async function getJobResponse(req, res, next) {
     }
 
     const url = await s3Service.getPresignedDownloadUrl(s3Key);
+
+    // `?redirect=1` sends the caller to the file itself. Without it the caller
+    // gets JSON and has to open the url in a second step, which cannot be a
+    // plain link — so ctrl-click, middle-click and "open in new tab" all stop
+    // working on something that is, to a reader, just a file.
+    if (req.query.redirect !== undefined && req.query.redirect !== 'false') {
+      return res.redirect(302, url);
+    }
     res.json({ url, name: responseName, s3Key, round: job.round });
   } catch (error) {
     next(error);

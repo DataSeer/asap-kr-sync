@@ -125,8 +125,15 @@ const artefacts = computed(() => {
   return Array.isArray(files) ? files.filter((f) => typeof f === 'string') : Object.keys(files)
 })
 
+/**
+ * A link straight to the artefact.
+ *
+ * `?redirect=1` because without it the endpoint answers with JSON describing
+ * where the file is, and the reader lands on that JSON instead of the file.
+ */
 const responseUrl = (name) =>
-  `/api/submissions/${props.submissionId}/jobs/${props.jobType}/responses/${encodeURIComponent(name)}`
+  `/api/submissions/${props.submissionId}/jobs/${props.jobType}`
+  + `/responses/${encodeURIComponent(name)}?redirect=1`
 </script>
 
 <template>
