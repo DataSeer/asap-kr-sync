@@ -17,11 +17,20 @@ import { useJobPoller } from '@/composables'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import DetectionsTable from '@/components/modules/DetectionsTable.vue'
+import AuthorsTable from '@/components/modules/AuthorsTable.vue'
+import GeneratedKrtTable from '@/components/modules/GeneratedKrtTable.vue'
+import SuggestionsTable from '@/components/modules/SuggestionsTable.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
 import { labelFor } from '@/components/modules/module-meta'
+import { buildKrtRows } from '@/components/modules/generated-krt'
+import {
+  decisionLabel, decisionType, decisionMatchesSearch, buildDecisionRows, DECISION_ORDER
+} from '@/components/modules/suggestion-decisions'
 import configService from '@/services/config.service'
+import orcidService from '@/services/orcid.service'
+import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 
 const route = useRoute()
@@ -59,7 +68,9 @@ onMounted(async () => {
 const HAS_PAGE = new Set([
   'krt_grounding',
   'software_detection', 'datasets_detection', 'materials_detection',
-  'protocols_detection', 'identifier_detection'
+  'protocols_detection', 'identifier_detection',
+  'markdown_convert', 'orcid_extraction', 'das_extraction',
+  'pdf_analysis', 'suggestion_generation'
 ])
 
 const label = computed(() => labelFor(jobType.value))
@@ -78,6 +89,175 @@ const policy = computed(() => job.value?.result?.data?.meta?.grounding || null)
 
 const search = ref('')
 const tab = ref('all')
+
+// ── the ingest steps ───────────────────────────────────────────────────
+/**
+ * The authors come from the submission, not from the job result — the job
+ * writes them to the submission and keeps only counts. The panel could inject
+ * them from its parent view; a page opened cold has to ask for them itself,
+ * which is the same lesson the resource types taught above.
+ */
+const authors = ref([])
+onMounted(async () => {
+  if (jobType.value !== 'orcid_extraction') return
+  try {
+    authors.value = (await orcidService.getAuthors(submissionId.value))?.authors || []
+  } catch {
+    // Leaves the table empty rather than the page broken; Technical detail
+    // still shows what the run itself produced.
+  }
+})
+
+const visibleAuthors = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return authors.value
+  return authors.value.filter((a) => [a.name, a.orcid, a.affiliation, a.source]
+    .some((v) => String(v ?? '').toLowerCase().includes(q)))
+})
+
+/** The Data Availability Statement, verbatim. Empty string when none was found. */
+const das = computed(() => job.value?.result?.data?.das || '')
+
+/** All markdown conversion reports about itself; the text is an artefact. */
+const markdownLength = computed(() => job.value?.result?.data?.markdownLength || 0)
+const markdownFileId = computed(() => job.value?.result?.data?.fileId || null)
+
+/**
+ * The converted text, as the stored file rather than the raw LM artefact — this
+ * is the one every module actually read, and the one worth searching when a row
+ * comes back "not found".
+ */
+async function downloadMarkdown() {
+  if (!markdownFileId.value) return
+  try {
+    const data = await fileService.download(submissionId.value, markdownFileId.value)
+    if (data.url) window.open(data.url, '_blank', 'noopener,noreferrer')
+  } catch {
+    // Nothing useful to say to the user here; the artefact links below still work.
+  }
+}
+
+// ── AI Suggestions ─────────────────────────────────────────────────────
+const isSuggestions = computed(() => jobType.value === 'suggestion_generation')
+
+/**
+ * The decision log, falling back to the suggestion list for older results that
+ * predate it. Both shapes carry an action and a row, which is all this needs.
+ */
+const decisions = computed(() => {
+  if (!isSuggestions.value) return []
+  const d = job.value?.result?.data
+  return d?.decisions?.length ? d.decisions : (d?.suggestions || [])
+})
+
+/**
+ * Which decision kinds are shown. Empty = all of them; the chips are
+ * multi-select, so a curator can look at adds and removes together without
+ * the skips burying them.
+ */
+const decisionFilter = ref(new Set())
+const toggleDecision = (label) => {
+  const next = new Set(decisionFilter.value)
+  if (next.has(label)) next.delete(label)
+  else next.add(label)
+  decisionFilter.value = next
+}
+
+/**
+ * Chips for every decision kind PRESENT in the log, counted under the current
+ * tab and search but not under the chips themselves — otherwise clicking one
+ * would zero the others and there would be no way back.
+ */
+const decisionOptions = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  const inTab = (d) => tab.value === 'all'
+    || resourceTypesStore.getTabGroup(decisionType(d)) === tab.value
+  const present = new Set()
+  const counts = new Map()
+  for (const d of decisions.value) {
+    const label = decisionLabel(d)
+    present.add(label)
+    if (inTab(d) && decisionMatchesSearch(d, q)) counts.set(label, (counts.get(label) || 0) + 1)
+  }
+  const rank = (l) => { const i = DECISION_ORDER.indexOf(l); return i === -1 ? DECISION_ORDER.length : i }
+  return [...present].sort((a, b) => rank(a) - rank(b))
+    .map((label) => ({ label, count: counts.get(label) || 0 }))
+})
+
+const visibleDecisionRows = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  let items = [...decisions.value].sort((a, b) => compareTypes(decisionType(a), decisionType(b)))
+  if (tab.value !== 'all') {
+    items = items.filter((d) => resourceTypesStore.getTabGroup(decisionType(d)) === tab.value)
+  }
+  if (decisionFilter.value.size) items = items.filter((d) => decisionFilter.value.has(decisionLabel(d)))
+  if (q) items = items.filter((d) => decisionMatchesSearch(d, q))
+  return buildDecisionRows(items)
+})
+
+// ── the Generated KRT ──────────────────────────────────────────────────
+const isKrt = computed(() => jobType.value === 'pdf_analysis')
+const krtItems = computed(() => (isKrt.value ? job.value?.result?.data?.items || [] : []))
+const krtDropped = computed(() => job.value?.result?.data?.meta?.dropped || [])
+const krtRows = computed(() => buildKrtRows(krtItems.value))
+
+/** Resource type of each group, taken from its first row. */
+const krtGroupType = computed(() => {
+  const m = new Map()
+  for (const r of krtRows.value) if (r.isGroupStart) m.set(r.groupIndex, r.resourceType || '')
+  return m
+})
+
+const krtRowMatches = (r, q) => !q || [
+  r.resourceType, r.resourceName, r.finalName, r.sourceUrl,
+  r.identifier, r.newReuse, r.additionalInformation, r.reason
+].some((v) => String(v ?? '').toLowerCase().includes(q))
+
+/**
+ * Filtering keeps or drops a WHOLE group.
+ *
+ * A merged row exists because several modules agreed; showing one of its lines
+ * because a search term happens to appear in that module's version, and hiding
+ * the others, would make a group of three look like a group of one.
+ */
+const keptGroups = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  const keep = new Set()
+  const matched = new Set(krtRows.value.filter((r) => krtRowMatches(r, q)).map((r) => r.groupIndex))
+  for (const [gi, type] of krtGroupType.value) {
+    if (!matched.has(gi)) continue
+    if (tab.value !== 'all' && resourceTypesStore.getTabGroup(type) !== tab.value) continue
+    keep.add(gi)
+  }
+  return keep
+})
+
+/** The KRT editor's ordering: tab group first, then the type's own order. */
+const compareTypes = (a, b) => {
+  const ga = resourceTypesStore.getGroupSortOrder(a)
+  const gb = resourceTypesStore.getGroupSortOrder(b)
+  if (ga !== gb) return ga - gb
+  return resourceTypesStore.getTypeSortOrder(a) - resourceTypesStore.getTypeSortOrder(b)
+}
+
+const visibleKrtRows = computed(() => {
+  const keep = keptGroups.value
+  const type = krtGroupType.value
+  const rows = krtRows.value
+    .filter((r) => keep.has(r.groupIndex))
+    .sort((a, b) => (a.groupIndex === b.groupIndex
+      ? 0
+      : (compareTypes(type.get(a.groupIndex), type.get(b.groupIndex)) || (a.groupIndex - b.groupIndex))))
+  // Parity is assigned after sorting so the shading alternates by group as
+  // displayed, not by the order the groups were built in.
+  let parity = -1
+  let last = null
+  return rows.map((r) => {
+    if (r.groupIndex !== last) { parity++; last = r.groupIndex }
+    return { ...r, displayParity: parity % 2 }
+  })
+})
+
 
 /**
  * The tab strip is always present; tabs with nothing in them are disabled.
@@ -116,6 +296,28 @@ const visible = computed(() => {
 const tabCounts = computed(() => {
   const c = { all: 0 }
   const q = search.value.trim().toLowerCase()
+  // The Generated KRT counts GROUPS — one per KRT row — not the contributor
+  // lines below them, so the tab count matches the row numbers on screen.
+  if (isSuggestions.value) {
+    for (const d of decisions.value) {
+      if (!decisionMatchesSearch(d, q)) continue
+      if (decisionFilter.value.size && !decisionFilter.value.has(decisionLabel(d))) continue
+      const g = resourceTypesStore.getTabGroup(decisionType(d))
+      c[g] = (c[g] || 0) + 1
+      c.all++
+    }
+    return c
+  }
+  if (isKrt.value) {
+    for (const r of krtRows.value) {
+      if (!r.isGroupStart) continue
+      if (!krtRows.value.some((x) => x.groupIndex === r.groupIndex && krtRowMatches(x, q))) continue
+      const g = resourceTypesStore.getTabGroup(r.resourceType || '')
+      c[g] = (c[g] || 0) + 1
+      c.all++
+    }
+    return c
+  }
   for (const o of rows.value) {
     if (!matches(o, q)) continue
     const g = resourceTypesStore.getTabGroup(o.resourceType || '')
@@ -216,6 +418,115 @@ const tabConflicts = computed(() => {
       <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
     </template>
 
+    <template v-else-if="isSuggestions">
+      <div class="mrv-toolbar">
+        <div class="mrv-tabs">
+          <button
+            v-for="t in TABS"
+            :key="t.key"
+            type="button"
+            class="mrv-tab"
+            :class="{ 'mrv-tab-active': tab === t.key, 'mrv-tab-empty': !tabEnabled(t.key) }"
+            :disabled="!tabEnabled(t.key)"
+            @click="tab = t.key"
+          >
+            {{ t.label }}
+            <span class="mrv-tab-count">{{ tabCounts[t.key] || 0 }}</span>
+          </button>
+        </div>
+        <SearchInput v-model="search" placeholder="Search decisions…" class="mrv-search" />
+      </div>
+      <!-- Decision chips, multi-select. No chip active = everything shown. -->
+      <div v-if="decisionOptions.length > 1" class="mrv-chips">
+        <button
+          v-for="opt in decisionOptions"
+          :key="opt.label"
+          type="button"
+          class="mrv-chip"
+          :class="['mrv-chip-' + opt.label.toLowerCase(),
+                   { 'mrv-chip-off': decisionFilter.size && !decisionFilter.has(opt.label) }]"
+          :title="decisionFilter.has(opt.label)
+            ? 'Click to stop filtering on ' + opt.label
+            : 'Click to show only ' + opt.label + ' decisions (combine by clicking several)'"
+          @click="toggleDecision(opt.label)"
+        >
+          {{ opt.label }}
+          <span class="mrv-chip-count">{{ opt.count }}</span>
+        </button>
+      </div>
+      <SuggestionsTable :rows="visibleDecisionRows" :search="search" />
+      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+    </template>
+
+    <template v-else-if="isKrt">
+      <div class="mrv-toolbar">
+        <div class="mrv-tabs">
+          <button
+            v-for="t in TABS"
+            :key="t.key"
+            type="button"
+            class="mrv-tab"
+            :class="{ 'mrv-tab-active': tab === t.key, 'mrv-tab-empty': !tabEnabled(t.key) }"
+            :disabled="!tabEnabled(t.key)"
+            @click="tab = t.key"
+          >
+            {{ t.label }}
+            <span class="mrv-tab-count">{{ tabCounts[t.key] || 0 }}</span>
+          </button>
+        </div>
+        <SearchInput v-model="search" placeholder="Search rows…" class="mrv-search" />
+      </div>
+      <GeneratedKrtTable
+        :rows="visibleKrtRows"
+        :all-rows="krtRows"
+        :items="krtItems"
+        :dropped="krtDropped"
+        :search="search"
+      />
+      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+    </template>
+
+    <template v-else-if="jobType === 'orcid_extraction'">
+      <div class="mrv-toolbar">
+        <span class="mrv-count">{{ authors.length }} author{{ authors.length === 1 ? '' : 's' }}</span>
+        <SearchInput v-model="search" placeholder="Search authors…" class="mrv-search" />
+      </div>
+      <div class="mrv-table-frame">
+        <AuthorsTable :authors="visibleAuthors" :search="search" />
+      </div>
+      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+    </template>
+
+    <template v-else-if="jobType === 'das_extraction'">
+      <!-- Verbatim, in a monospaced block: this is a quotation from the paper,
+           and it should not be mistaken for something the app wrote. -->
+      <pre v-if="das" class="mrv-verbatim">{{ das }}</pre>
+      <p v-else class="mrv-empty">
+        No Data Availability Statement was located in the converted manuscript.
+      </p>
+      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+    </template>
+
+    <template v-else-if="jobType === 'markdown_convert'">
+      <!-- There is no on-screen view of the text itself: it runs to hundreds of
+           kilobytes and reading it in a browser pane helps nobody. The size is
+           the one number worth seeing, and the file is one click below. -->
+      <p class="mrv-note">
+        <template v-if="markdownLength">
+          The manuscript converted to <strong>{{ markdownLength.toLocaleString() }}</strong>
+          characters of text. Download it under Technical detail to check whether something you
+          expected is actually in there.
+        </template>
+        <template v-else>
+          No converted text was recorded for this run.
+        </template>
+      </p>
+      <p v-if="markdownFileId">
+        <button type="button" class="mrv-btn" @click="downloadMarkdown">Download the converted text</button>
+      </p>
+      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+    </template>
+
     <p v-else class="mrv-empty">
       A dedicated view for this module is not built yet — open it from the processes panel for now.
     </p>
@@ -255,7 +566,7 @@ const tabConflicts = computed(() => {
   padding-bottom: 0;
 }
 .mrv-table-frame {
-  height: min(60vh, 40rem);
+  max-height: min(60vh, 40rem);
   overflow: auto;
   border: 1px solid #e5e7eb;
   border-radius: 0.5rem;
@@ -277,4 +588,31 @@ const tabConflicts = computed(() => {
   background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
 }
 .mrv-empty { color: #6b7280; font-size: 0.9rem; padding: 1.5rem 0; }
+.mrv-count { font-size: 0.78rem; color: #6b7280; }
+.mrv-btn {
+  height: 1.85rem; padding: 0 0.65rem; border-radius: 0.375rem;
+  border: 1px solid #e5e7eb; background: #fff; font-size: 0.78rem;
+  color: #374151; cursor: pointer;
+}
+.mrv-btn:hover { border-color: #bfdbfe; color: #1d4ed8; }
+.mrv-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.6rem; }
+.mrv-chip {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.15rem 0.5rem; border-radius: 0.375rem;
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase; cursor: pointer;
+}
+.mrv-chip-count { font-weight: 500; opacity: 0.7; }
+.mrv-chip-off { opacity: 0.35; }
+.mrv-chip-add { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+.mrv-chip-update { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.mrv-chip-remove { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+.mrv-chip-skip { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
+.mrv-chip-unreviewed { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+.mrv-note { font-size: 0.85rem; color: #374151; line-height: 1.5; margin: 0 0 1rem; max-width: 46rem; }
+.mrv-verbatim {
+  margin: 0 0 1rem; padding: 0.9rem 1rem;
+  border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fff;
+  font-size: 0.82rem; line-height: 1.55; color: #111827;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: min(60vh, 40rem); overflow: auto;
+}
 </style>

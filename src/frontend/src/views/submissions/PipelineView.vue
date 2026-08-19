@@ -98,6 +98,8 @@ const conflictsFor = (jobType) => (jobType === 'krt_grounding' ? (jobFor(jobType
 
 /** Only krt_grounding has a page so far; a link to an empty one is worse than none. */
 const HAS_PAGE = new Set([
+  'pdf_analysis', 'suggestion_generation',
+  'markdown_convert', 'orcid_extraction', 'das_extraction',
   'krt_grounding',
   'software_detection', 'datasets_detection', 'materials_detection',
   'protocols_detection', 'identifier_detection'

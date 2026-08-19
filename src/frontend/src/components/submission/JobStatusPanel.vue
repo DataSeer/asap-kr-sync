@@ -188,6 +188,8 @@ const modalDecisionFilter = ref(new Set())
  * their view exists — a link to an empty page would be worse than no link.
  */
 const MODULE_PAGE_TYPES = new Set([
+  'pdf_analysis', 'suggestion_generation',
+  'markdown_convert', 'orcid_extraction', 'das_extraction',
   'krt_grounding',
   'software_detection', 'datasets_detection', 'materials_detection',
   'protocols_detection', 'identifier_detection'
