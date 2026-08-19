@@ -100,6 +100,11 @@ graph TD
     ID --> KG
 
     KRTV{{KRT validated?<br/>status past step_krt}}
+    KRTV -.->|gate: krt_curated| SW
+    KRTV -.->|gate: krt_curated| DS
+    KRTV -.->|gate: krt_curated| MAT
+    KRTV -.->|gate: krt_curated| PROT
+    KRTV -.->|gate: krt_curated| ID
     KRTV -.->|gate: krt_curated| KG
 
     DAS --> PA[PDF Analysis]
@@ -132,20 +137,23 @@ graph TD
     style KRTV fill:#6b7280,color:#fff
 ```
 
-**Every detector is KRT-blind.** Datasets, Materials, Protocols, Software and
-Identifier detection never see the author's KRT. They answer one question —
-*what resources does this manuscript describe?* — and answer it the same way
-whether the author supplied a KRT or not. This is what makes their output usable
-as evidence: a detector that had been shown the KRT could only confirm it.
+**The KRT-validation gate covers the whole detection stage.** Datasets, Materials,
+Protocols, Software and Identifier detection are all gated on `krt_curated`, as is
+KRT Grounding. Under the default `seeded-v1` pipeline the detection prompts are
+given the author's rows, so a detector that ran while the table was still being
+edited would answer a question about a KRT that no longer exists — and spend an LM
+call doing it. Software and Identifier detection read no KRT themselves, but are
+gated with the rest so the stage starts as one moment rather than trickling in
+around the KRT step.
 
-**The KRT-validation gate sits on KRT Grounding**, not on the detectors. Grounding
-is the step that reads the author's KRT (as a *query* against the candidate pool,
-never as a seed), so it is the only one that needs the KRT to be final. Until the
-submission status moves past `draft`/`step_krt` the job stays in `waiting` and the
-jobs API reports `waitingReason: 'krt_validation'`. Unlike the DAS `pending_input`
-gate this needs **no manual action** — the job advances by itself once the status
-changes. With no author KRT at all, grounding still runs and reports zero author
-rows, so the pipeline shape is identical in both modes.
+Until the submission status moves past `draft`/`step_krt` those jobs stay in
+`waiting` and the jobs API reports `waitingReason: 'krt_validation'`, which the
+processes panel surfaces as a banner telling the user to click **Continue**. Unlike
+the DAS `pending_input` gate this needs **no manual action beyond finishing the KRT
+step** — the jobs advance by themselves once the status changes. The gate is on
+submission *state*, not on the presence of a KRT: with no author KRT at all the
+submission passes it as soon as the author moves on, and grounding still runs and
+reports zero author rows, so the pipeline shape is identical in both modes.
 
 **Software Detection depends on Markdown Convert** even though Softcite reads the
 PDF directly: the module's second engine — the optional LM pass — reads the
@@ -163,11 +171,11 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 | Markdown Convert | (none) | — | Always |
 | ORCID Extraction | (none) | — | Always |
 | DAS Extraction | Markdown Convert | — | Always |
-| Software Detection | Markdown Convert | — | Always (Softcite reads the PDF; the LM pass reads the markdown) |
-| Identifier Detection | Markdown Convert | — | Always |
-| Datasets Detection | Markdown Convert | — | Always (falls back gracefully if markdown unavailable) |
-| Materials Detection | Markdown Convert | — | Always |
-| Protocols Detection | Markdown Convert | — | Always |
+| Software Detection | Markdown Convert | `krt_curated` | Always (Softcite reads the PDF; the LM pass reads the markdown) |
+| Identifier Detection | Markdown Convert | `krt_curated` | Always |
+| Datasets Detection | Markdown Convert | `krt_curated` | Always (falls back gracefully if markdown unavailable) |
+| Materials Detection | Markdown Convert | `krt_curated` | Always |
+| Protocols Detection | Markdown Convert | `krt_curated` | Always |
 | KRT Grounding | Software + Datasets + Materials + Protocols + Identifier Detection | `krt_curated` | Always |
 | PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection + KRT Grounding | — (inherited transitively) | Only if DAS extraction `result.status.detected === true` |
 | Suggestion Generation | PDF Analysis | — (inherited transitively) | Always (runs last in the pipeline) |

@@ -25,6 +25,21 @@ const route = useRoute()
 const submissionId = computed(() => route.params.id)
 
 const jobs = inject('submissionJobs', ref({}))
+
+/**
+ * Is the analysis parked on the KRT step?
+ *
+ * Read from the job's own `waitingReason`, which the server sets by asking the
+ * orchestrator whether that step's gate is blocked. Deriving it here from a
+ * list of gated types plus the submission status would be a second copy of a
+ * rule that lives in the pipeline table — and every copy of that table in this
+ * app has drifted at least once.
+ *
+ * Without this the panel says "waiting" and gives no way to find out what for,
+ * which reads as a stall. The pipeline is in fact waiting on the user.
+ */
+const waitingOnKrt = computed(() =>
+  jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === 'krt_validation'))
 const restartJobFn = inject('restartJob', null)
 // Cancel-processing action, provided by BackgroundProcesses (#15).
 const cancelProcessingFn = inject('cancelProcessing', null)
@@ -1978,7 +1993,9 @@ async function downloadMarkdownFile(fileId) {
           class="job-pipeline-link"
           title="See the whole pipeline: every step, what it waits for, and what it produced"
           @click.stop
-        >view pipeline ↗</RouterLink>
+        >
+          view pipeline ↗
+        </RouterLink>
         <span v-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
         <div class="job-header-badges">
           <span v-if="jobSummary.running > 0" class="job-summary-badge job-status-running">
@@ -2010,6 +2027,15 @@ async function downloadMarkdownFile(fileId) {
       </div>
       <p v-if="anyInFlight" class="job-status-eta-hint">
         You can keep editing the Key Resources Table while these finish — suggestions will appear once they're done.
+      </p>
+      <!-- Not an error: the pipeline is waiting on the user, and says so. -->
+      <p v-if="waitingOnKrt" class="job-status-krt-gate">
+        <svg class="job-status-krt-gate-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
+        </svg>
+        Analysis is waiting for your Key Resources Table to be validated before it can finish —
+        the detection modules are seeded with your rows, so they start once you are done editing.
+        Click <strong>Continue</strong> to proceed.
       </p>
       <div class="job-status-eta-footer">
         <button type="button" class="job-status-eta-toggle" @click="toggleCollapsed">
@@ -2364,13 +2390,11 @@ async function downloadMarkdownFile(fileId) {
                             <div class="conflict-field">⚠ {{ c.field }}</div>
                             <div class="conflict-line">
                               <span class="conflict-side">your row</span>
-                              <span class="conflict-value conflict-value-author"
-                              ><span>{{ c.diff.a.pre }}</span><mark v-if="c.diff.a.mid">{{ c.diff.a.mid }}</mark><span>{{ c.diff.a.post }}</span></span>
+                              <span class="conflict-value conflict-value-author"><span>{{ c.diff.a.pre }}</span><mark v-if="c.diff.a.mid">{{ c.diff.a.mid }}</mark><span>{{ c.diff.a.post }}</span></span>
                             </div>
                             <div class="conflict-line">
                               <span class="conflict-side">manuscript</span>
-                              <span class="conflict-value conflict-value-paper"
-                              ><span>{{ c.diff.b.pre }}</span><mark v-if="c.diff.b.mid">{{ c.diff.b.mid }}</mark><span>{{ c.diff.b.post }}</span></span>
+                              <span class="conflict-value conflict-value-paper"><span>{{ c.diff.b.pre }}</span><mark v-if="c.diff.b.mid">{{ c.diff.b.mid }}</mark><span>{{ c.diff.b.post }}</span></span>
                             </div>
                           </div>
                         </td>
@@ -3101,6 +3125,27 @@ async function downloadMarkdownFile(fileId) {
 .job-status-waiting {
   background: #fef3c7;
   color: #92400e;
+}
+
+.job-status-krt-gate {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #fde68a;
+  border-radius: 0.375rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.job-status-krt-gate-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
 }
 
 .job-status-pending-input {

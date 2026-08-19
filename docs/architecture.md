@@ -48,7 +48,7 @@ asap-kr-sync/
 │   │   │   ├── orcid/             # ORCID extraction (GROBID, OpenAlex, ORCID API)
 │   │   │   ├── pdf/               # PDF processing, DAS extraction, markdown convert
 │   │   │   ├── pdf-analysis/      # Generated KRT builder — rule-based merge then LM (Gemini) consolidation, rule-based fallback
-│   │   │   ├── protocols/         # Protocols detection (Google Gemini, KRT-blind)
+│   │   │   ├── protocols/         # Protocols detection (Google Gemini; seeded or blind per pipeline)
 │   │   │   ├── queue/             # Job queue (pg-boss), orchestrator, workers
 │   │   │   ├── reports/           # Excel report generation
 │   │   │   ├── software/          # Software detection (Softcite + optional LM pass)
@@ -159,8 +159,9 @@ Each step has a corresponding status, view, and set of operations. Users can nav
 PDF upload triggers parallel background jobs via pg-boss. The pipeline separates
 two jobs that used to be fused:
 
-- **Discovery** — five KRT-blind detectors answer *what resources does this
-  manuscript describe?* None of them sees the author's table.
+- **Discovery** — five detectors answer *what resources does this manuscript
+  describe?* Under the default `seeded-v1` pipeline they are seeded with the
+  author's rows; under `blind-v1` they never see the table.
 - **Grounding** — `krt_grounding` then answers *for each row the author wrote,
   is it in the PDF, and does their row carry everything the PDF says about it?*
 
@@ -208,11 +209,12 @@ graph TD
     style KRTV fill:#6b7280,color:#fff
 ```
 
-**Every detector is KRT-blind and starts as soon as the markdown exists.** The
-`krt_curated` gate sits on **KRT Grounding** — the only step that reads the
-author's table, and therefore the only one that needs it final. It holds in
-`waiting` until the submission moves past `step_krt`, then advances by itself.
-`pdf_analysis` and `suggestion_generation` inherit the gate through it.
+**The `krt_curated` gate covers the whole detection stage** — all five detectors
+and KRT Grounding. Under the default pipeline the detection prompts carry the
+author's rows, so nothing that reads the table may start while it is still being
+edited. The jobs hold in `waiting` until the submission moves past `step_krt`,
+then advance by themselves; `pdf_analysis` and `suggestion_generation` inherit
+the gate through their dependencies.
 
 **Software Detection depends on Markdown Convert** even though Softcite reads the
 PDF: the module's optional LM pass reads the converted markdown, and without the

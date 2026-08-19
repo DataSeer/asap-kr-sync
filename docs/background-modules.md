@@ -21,12 +21,12 @@ step rather than the auto pipeline; see §3.11 and [submission-workflow.md](./su
 |---------------------|---------------|--------|-----------|-------|
 | `markdown_convert` | — (PDF → Markdown text) | Modal/Docling **or** local MarkItDown | — | the text detectors below |
 | `das_extraction` | Data Availability Statement | Google Gemini | `markdown_convert` | the PDF-Analysis gate |
-| `software_detection` | Software / code | Softcite (NER) **+ optional Gemini LM pass**, unioned | `markdown_convert` | PDF Analysis |
-| `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` | PDF Analysis |
-| `materials_detection` | Lab materials / reagents | Google Gemini (cue-driven, KRT-blind) | `markdown_convert` | PDF Analysis |
-| `protocols_detection` | Protocols | Google Gemini | `markdown_convert` | PDF Analysis |
+| `software_detection` | Software / code | Softcite (NER) **+ optional Gemini LM pass**, unioned | `markdown_convert` + gate `krt_curated` | PDF Analysis |
+| `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` + gate `krt_curated` | PDF Analysis |
+| `materials_detection` | Lab materials / reagents | Google Gemini (cue-driven; seeded with the author rows under `seeded-v1`) | `markdown_convert` + gate `krt_curated` | PDF Analysis |
+| `protocols_detection` | Protocols | Google Gemini | `markdown_convert` + gate `krt_curated` | PDF Analysis |
 | `krt_grounding` | Author KRT ↔ manuscript reconciliation | Deterministic matcher + optional LM second look | every detector + gate `krt_curated` | Suggestion Generation |
-| `identifier_detection` | Known RRIDs / DOIs / accessions | **Local** scan of curated lists | `markdown_convert` | PDF Analysis |
+| `identifier_detection` | Known RRIDs / DOIs / accessions | **Local** scan of curated lists | `markdown_convert` + gate `krt_curated` | PDF Analysis |
 | `orcid_extraction` | Authors + ORCIDs | GROBID → OpenAlex → ORCID API | — | `submission.authors` (not the KRT) |
 | `pdf_analysis` | The consolidated Generated KRT | Rule-based merge → **LM (Gemini)** consolidation, rule-based fallback | all detectors above | Suggestion Generation |
 | `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
@@ -49,7 +49,12 @@ flowchart LR
     MAT --> KG
     PR --> KG
     ID --> KG
-    KRTV{{"KRT validated?<br/>(gate: krt_curated)"}} -.-> KG
+    KRTV{{"KRT validated?<br/>(gate: krt_curated)"}} -.-> SW
+    KRTV -.-> DS
+    KRTV -.-> MAT
+    KRTV -.-> PR
+    KRTV -.-> ID
+    KRTV -.-> KG
     SW --> PA["pdf_analysis<br/>(rule-merge → LM consolidate)"]
     MAT --> PA
     DAS --> PA
@@ -65,20 +70,25 @@ flowchart LR
     OR --> AU(["submission.authors"])
 ```
 
-**Detection is KRT-blind.** No detector reads the author's table, so all of them start as soon as
-`markdown_convert` finishes. The author's rows enter one step later, at **`krt_grounding`** (§3.7b), which is the
-only module gated on `krt_curated`: it holds in `waiting` (the panel shows *"Waiting for the Key Resources Table to
-be validated"*, `waitingReason: 'krt_validation'` from the jobs API) until the submission status moves past
-`step_krt`, then advances automatically with no manual step. `pdf_analysis` and `suggestion_generation` inherit the
-gate transitively through it.
+**Detection waits for the KRT.** Every detector, and `krt_grounding` with them, is gated on `krt_curated`: the
+step holds in `waiting` until the submission status moves past `step_krt`, then advances automatically with no
+manual action. `pdf_analysis` and `suggestion_generation` inherit the gate through their dependencies, so the whole
+analysis after conversion starts at one moment — when the author finishes curating the table.
 
-> **Why the seeds went away.** `datasets`/`materials`/`protocols` used to be seeded with the author's KRT rows and
-> told to *"emit one row for every author-provided entry, never drop one"*. That fused two different jobs into one
-> call: the model could echo a seed it had never located in the text, and the output looked identical either way —
-> so the app could not answer whether an author row was actually supported by the PDF, while *"ADD SPARINGLY"* in
-> the same prompt suppressed discovery. Both eval runs had to be executed article-only to measure anything real.
-> Separating them (detection blind, reconciliation in `krt_grounding`) makes both jobs answerable. See
-> [design-krt-detection-two-modes.md](./design-krt-detection-two-modes.md).
+The reason is seeding. Under the default pipeline the detection prompts are **given the author's rows**, so a
+detector that started while the table was still being edited would answer a question about a KRT that no longer
+exists, and spend an LM call doing it. The gate is on submission **state**, not on the presence of a KRT: a
+submission with no KRT at all passes it as soon as the author moves on, so the no-KRT mode is unaffected.
+
+While a step is gated the jobs API reports `waitingReason: 'krt_validation'`, and the processes panel turns that
+into a banner — *"Analysis is waiting for your Key Resources Table to be validated… Click Continue"* — rather than
+leaving the user to read "waiting" and wonder what stalled.
+
+> **Two pipelines, one engine.** `seeded-v1` (the default, every user) seeds `datasets`/`materials`/`protocols`
+> with the author's rows; `blind-v1` (admin-only, not enabled for anyone yet) shows the detectors nothing and
+> reconciles afterwards in `krt_grounding`. The measured trade-off is real in both directions: seeding suppresses
+> discovery by about 24%, while the blind arm confirms fewer author rows. Which prompts a run used is recorded on
+> the run itself — see §2.1f. Design: [design-krt-detection-two-modes.md](./design-krt-detection-two-modes.md).
 
 ---
 
@@ -352,6 +362,24 @@ its own. Pipeline output reaches the author only as a *suggestion* they must acc
 > into an empty IDENTIFIER when it is of a kind allowed for that resource type, and saves the row.
 > See [KRT Validation Rules](./krt-validation-rules.md) and [KRT Editor §3](./krt-editor.md).
 
+### 2.1f What a run records about itself
+
+Every module writes a `meta` object into its persisted result at `job.result.data.meta`. Two fields there matter
+outside the module that wrote them:
+
+- **`promptFile`** — the repository-relative path of the prompt the run actually used, e.g.
+  `src/backend/data/prompts/seeded/materials-detection.txt`. Written **only when the LM pass ran**: a run that
+  fell back to a deterministic path, or skipped the model, records `null` rather than naming a prompt it never
+  sent. `materials_detection` alone chooses between two files at runtime (seeded vs discovery), which is why this
+  is recorded per run instead of looked up from a static table. `datasets_detection` also records
+  `signalsPromptFile` for its LangExtract pass.
+- **`strategy`** — which strategy answered, e.g. `materials.seeded`, alongside `pipeline` (`seeded-v1` /
+  `blind-v1`). Together with `promptFile` this is enough to reproduce a result exactly.
+
+The module pages render both in **Technical detail**, with `promptFile` as a GitHub link on the branch the
+deployment runs (`GET /api/config/source`). Three modules legitimately record no prompt because they call no
+model: `markdown_convert`, `orcid_extraction` and `identifier_detection`.
+
 ### 2.2 Fail-soft: the On / Demo / Off + Done / Fail model
 
 Every detector wraps its work in **`runWithDemoFallback`** (`services/demo-fallback.service.js`), driven by two
@@ -452,7 +480,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   The LM pass is **additive and fail-soft**: disabled, missing markdown, or an LM error all degrade to
   Softcite-only rather than failing the module. Where both engines find the same tool, they collapse into one
   row carrying both provenances — and that agreement is itself a confidence signal.
-- **Depends on:** `markdown_convert`. Softcite alone could start immediately, but the LM pass reads the
+- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (see §1). Softcite alone could start immediately, but the LM pass reads the
   markdown and would otherwise race the conversion and skip on nearly every run. Waiting costs nothing
   end-to-end: nothing consumes software output until `krt_grounding`, which waits for the markdown-dependent
   detectors regardless. **Input:** the PDF (Softcite) + the Markdown (LM pass).
@@ -477,7 +505,8 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
      **grounded candidate signals** with source spans (high recall, reduces hallucination).
   2. **Google Gemini** consolidates those signals + the article: merges duplicate mentions, applies exclusion
      rules (no annotation tracks / preprints / literature-only refs), and classifies KRT relevance.
-- **Depends on:** `markdown_convert`. **No KRT gate** — the detector is KRT-blind and starts as soon as the markdown exists (see §1). **Input:** the Markdown (both passes).
+- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (see §1). **Input:** the Markdown (both passes),
+  plus the author's dataset rows as seeds under `seeded-v1`.
 - **Config:** `DATASETS_DETECTION_ENABLED`, `DATASETS_DETECTION_GEMINI_API_KEY/_MODEL`, `DATASETS_DETECTION_API_TIMEOUT`,
   `DATASETS_DETECTION_DEMO_DATA_ENABLED`, and the LangExtract tunables `DATASETS_LANGEXTRACT_MAX_WORKERS /
   _MAX_CHAR_BUFFER / _EXTRACTION_PASSES / _BATCH_LENGTH / _TIMEOUT`, `PYTHON_BIN`. **Prompts:** pass 1
@@ -494,8 +523,9 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   cues* mark a material (a catalog number, an RRID, a vendor name, a clone ID, a concentration in a methods
   sentence) rather than being handed a list to enrich. The prompt carries an explicit **"LISTS: ONE ROW PER ITEM"**
   worked example, because the dominant failure mode was collapsing a comma-separated antibody list into a single row.
-- **Depends on:** `markdown_convert`. **No KRT gate** — the detector is KRT-blind and runs on every submission,
-  including ones with no author materials at all (see §1). **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
+- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (see §1). It runs on every submission, including
+  ones with no author materials at all: the seeded strategy falls back to the discovery prompt when there is
+  nothing to seed with, so the module always produces something. **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
 - **Config:** `MATERIALS_DETECTION_ENABLED`, `MATERIALS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `MATERIALS_DETECTION_API_TIMEOUT`, `MATERIALS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
   `data/prompts/materials-detection.txt`.
@@ -508,11 +538,11 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Engine:** **Google Gemini** over the Markdown, with a **post-filter** that reclassifies purely computational
   / in-silico "protocols" as software (`isInSilicoProtocol`) — encoding an ASAP domain rule in code. Parses
   defensively (fenced-code stripping, markdown-escape repair). The prompt's former "Section 0" — the author's own
-  protocol rows, injected as authoritative base records — **has been removed**; the detector now reads the
-  manuscript alone. Recent prompt fixes: don't
+  protocol rows, injected as authoritative base records — is what `blind-v1` removes; under the default
+  `seeded-v1` the author's protocol rows are still passed as seeds (see §1). Recent prompt fixes: don't
   pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations;
   exclude analyses; and improve new/reuse classification.
-- **Depends on:** `markdown_convert`. **No KRT gate** — the detector is KRT-blind (see §1). **Output:** `KrtEntry[]` (Protocol).
+- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (see §1). **Output:** `KrtEntry[]` (Protocol).
 - **Config:** `PROTOCOLS_DETECTION_ENABLED`, `PROTOCOLS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `PROTOCOLS_DETECTION_API_TIMEOUT`, `PROTOCOLS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
   `data/prompts/protocols-detection.txt`.
@@ -542,7 +572,8 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
     consolidator folds these into the named row for the same identifier; see the nameless-row rule in
     `merge-detections.service.js`. Allowlist-only: ambiguous prefixes (`10.1371/journal.*`, `10.1007/*`,
     `10.2144/*`, legacy `10.21203/rs.*`) are deliberately **not** matched.
-- **Depends on:** `markdown_convert`. **Output:** **cross-category** `KrtEntry[]` (it can emit software / materials
+- **Depends on:** `markdown_convert`, **gated on `krt_curated`** (see §1) — it reads no KRT itself, but is
+  gated with the rest of detection so the stage starts as one. **Output:** **cross-category** `KrtEntry[]` (it can emit software / materials
   / datasets / protocols items in one pass) for PDF Analysis to consolidate.
 - **References cutoff:** by default the scanner **truncates the document at the first markdown heading matching
   `References` / `Bibliography` / `Citations`** (`cutAtReferences`, default on) and scans only the text *before*

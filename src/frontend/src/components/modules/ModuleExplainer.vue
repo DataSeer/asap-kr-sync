@@ -12,17 +12,38 @@
  * way — someone who already knows how a module works should not scroll past the
  * same paragraph every visit, and the results are what they came for.
  */
-import { ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import configService from '@/services/config.service'
 
-defineProps({
+const props = defineProps({
   title: { type: String, required: true },
   /** One sentence: what the module produces. */
   summary: { type: String, required: true },
   /** [{ q, a }] — the questions a reader actually has, answered. */
-  points: { type: Array, default: () => [] }
+  points: { type: Array, default: () => [] },
+  /**
+   * Anchor of this module's section in docs/background-modules.md, e.g.
+   * "32-das_extraction--data-availability-statement". Just the fragment: the
+   * repository and branch belong to the deployment, not to this component.
+   */
+  doc: { type: String, default: '' }
 })
 
 const open = ref(false)
+
+/**
+ * Where the documentation lives, for the branch this deployment runs. Fetched
+ * rather than hard-coded for the same reason the prompt links are: which branch
+ * is deployed is a property of the deployment.
+ */
+const source = ref(null)
+onMounted(async () => {
+  try { source.value = await configService.getSource() } catch { /* link omitted */ }
+})
+
+const docUrl = computed(() => (props.doc && source.value
+  ? `${source.value.repoUrl}/blob/${source.value.branch}/docs/background-modules.md#${props.doc}`
+  : null))
 </script>
 
 <template>
@@ -39,6 +60,10 @@ const open = ref(false)
           <dd>{{ p.a }}</dd>
         </template>
       </dl>
+      <!-- The full technical account, for whoever wants the rest of it. -->
+      <p v-if="docUrl" class="explainer-doc">
+        <a :href="docUrl" target="_blank" rel="noopener">Full documentation for this module ↗</a>
+      </p>
     </div>
   </section>
 </template>
@@ -97,6 +122,12 @@ const open = ref(false)
   margin: 0;
   color: #374151;
 }
+.explainer-doc {
+  margin: 0.85rem 0 0;
+  font-size: 0.78rem;
+}
+.explainer-doc a { color: #2563eb; text-decoration: none; }
+.explainer-doc a:hover { text-decoration: underline; }
 @media (max-width: 700px) {
   .explainer-points { grid-template-columns: 1fr; gap: 0.15rem; }
   .explainer-points dd { margin-bottom: 0.5rem; }

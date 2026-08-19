@@ -367,12 +367,14 @@ const activeStage = computed(() => {
 }
 
 .pv-status { font-size: 0.66rem; font-weight: 600; padding: 0 0.3rem; border-radius: 0.25rem; white-space: nowrap; }
-.st-done { background: #ecfdf5; color: #047857; }
-.st-run { background: #eff6ff; color: #1d4ed8; }
-.st-wait { background: #f3f4f6; color: #6b7280; }
-.st-pending { background: #fffbeb; color: #b45309; }
-.st-fail { background: #fef2f2; color: #b91c1c; }
-.st-idle { background: #f9fafb; color: #9ca3af; }
+/* The same palette the processes panel uses. A step that reads "waiting" in
+   gold there and grey here is the same fact told twice in two colours. */
+.st-done { background: #d1fae5; color: #047857; }
+.st-run { background: #dbeafe; color: #1d4ed8; }
+.st-wait { background: #fef3c7; color: #92400e; }
+.st-pending { background: #ffedd5; color: #c2410c; }
+.st-fail { background: #fee2e2; color: #b91c1c; }
+.st-idle { background: #f3f4f6; color: #6b7280; }
 
 @media (max-width: 700px) {
   .pv-group, .pv-group-boxed { flex: 1 1 100%; }

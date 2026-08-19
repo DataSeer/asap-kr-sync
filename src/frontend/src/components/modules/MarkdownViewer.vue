@@ -23,7 +23,12 @@ const props = defineProps({
   error: { type: String, default: '' }
 })
 
-const view = ref('rendered')
+/**
+ * Raw by default. Rendered is the nicer read, but the reason to open this page
+ * at all is usually "why did the pipeline not find X" — and that answer lives
+ * in the escapes and broken words only the raw view keeps.
+ */
+const view = ref('raw')
 
 const html = computed(() => (view.value === 'rendered' ? renderMarkdown(props.content) : ''))
 
@@ -49,15 +54,15 @@ const rawLines = computed(() => {
         <button
           type="button"
           class="mv-view"
-          :class="{ 'mv-view-active': view === 'rendered' }"
-          @click="view = 'rendered'"
-        >Rendered</button>
-        <button
-          type="button"
-          class="mv-view"
           :class="{ 'mv-view-active': view === 'raw' }"
           @click="view = 'raw'"
         >Raw</button>
+        <button
+          type="button"
+          class="mv-view"
+          :class="{ 'mv-view-active': view === 'rendered' }"
+          @click="view = 'rendered'"
+        >Rendered</button>
       </div>
       <input
         v-if="view === 'raw'"
@@ -108,8 +113,11 @@ const rawLines = computed(() => {
 .mv-count { font-size: 0.75rem; color: #6b7280; margin-left: auto; }
 .mv-note { font-size: 0.85rem; color: #6b7280; padding: 1rem 0; }
 .mv-error { color: #b91c1c; }
+/* Deliberately short: the manuscript is reference material, and a frame tall
+   enough to read a paper in pushes Technical detail off the screen. It scrolls
+   inside itself, and the whole file is one download away. */
 .mv-frame {
-  max-height: min(65vh, 44rem); overflow: auto;
+  max-height: min(38vh, 24rem); overflow: auto;
   border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fff;
   padding: 1rem 1.25rem;
 }

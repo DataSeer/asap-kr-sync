@@ -14,6 +14,7 @@
 export const MODULE_EXPLAINERS = {
   suggestion_generation: {
     title: 'AI Suggestions',
+    doc: '310-suggestion_generation--ai-suggestions-krt-comparison',
     summary: 'Compares your KRT with the Generated one row by row and proposes changes. It only '
       + 'proposes — every decision here waits for you, and nothing in your table has been touched.',
     points: [
@@ -45,6 +46,7 @@ export const MODULE_EXPLAINERS = {
 
   pdf_analysis: {
     title: 'PDF Analysis',
+    doc: '39-pdf_analysis--the-generated-krt-lm-primary-rule-based-fallback',
     summary: 'Merges every detection into one Generated KRT — the table the app would propose if '
       + 'it were writing your KRT from scratch. Nothing here touches your own KRT.',
     points: [
@@ -56,9 +58,11 @@ export const MODULE_EXPLAINERS = {
       },
       {
         q: 'How rows get merged',
-        a: 'By a dedup key built from the name and identifier, not by similarity — two detections '
-          + 'merge when they resolve to the same resource, and stay apart when they do not. Hover '
-          + 'the "N detections → 1 row" label to see the key.'
+        a: 'By an exact key, never by similarity: resource type + new/reuse + a normalised '
+          + 'identifier token — or, when neither detection carries an identifier, the normalised '
+          + 'name. So the same name filed under two different types stays two rows, which is '
+          + 'usually a classification disagreement worth seeing. Hover "N detections → 1 row" '
+          + 'for the key.'
       },
       {
         q: 'Dropped candidates',
@@ -76,6 +80,7 @@ export const MODULE_EXPLAINERS = {
 
   markdown_convert: {
     title: 'Markdown Convert',
+    doc: '31-markdown_convert--pdf--markdown',
     summary: 'Turns the manuscript PDF into plain text. Everything downstream reads that text and '
       + 'nothing else, so whatever is lost here is invisible to every other module.',
     points: [
@@ -102,31 +107,36 @@ export const MODULE_EXPLAINERS = {
 
   orcid_extraction: {
     title: 'ORCID Extraction',
+    doc: '38-orcid_extraction--authors--orcids',
     summary: 'Reads the author list off the front matter of the manuscript and pairs each name with '
       + 'an ORCID identifier where the paper prints one.',
     points: [
       {
-        q: 'Where the ORCIDs come from',
-        a: 'Only from the manuscript itself. Nothing is looked up in an external registry, so an '
-          + 'author whose ORCID is not printed in the paper will appear without one rather than '
-          + 'with a guessed match.'
+        q: 'Three sources, in order of trust',
+        a: 'GROBID parses the PDF header for authors, the DOI and any ORCIDs printed in the '
+          + 'paper. If a DOI was found, OpenAlex supplies verified author↔ORCID pairs. Anything '
+          + 'still missing falls back to a capped ORCID public-API lookup that accepts only a '
+          + 'unique match.'
       },
       {
         q: 'The Source column',
-        a: 'Which part of the document a row came from — the byline, a footnote, or the '
-          + 'corresponding-author block. It is there so a surprising row can be traced back.'
+        a: 'Which of those supplied the row, and therefore how much to trust it. '
+          + '"GROBID + OpenAlex" means two sources agreed and is the strongest; a single source '
+          + 'is weaker. It is the fastest way to spot an ORCID that came from a lookup rather '
+          + 'than from the manuscript.'
       },
       {
         q: 'What it cannot do',
-        a: 'It cannot tell two researchers with the same name apart, and it does not resolve an '
-          + 'ORCID to check the name matches. Affiliations come out as printed, superscript '
-          + 'markers and all.'
+        a: 'The ORCID API fallback matches on name, so two researchers who publish under the '
+          + 'same name cannot be told apart — that is why it is capped and restricted to unique '
+          + 'matches. Affiliations come out as printed, superscript markers and all.'
       }
     ]
   },
 
   das_extraction: {
     title: 'DAS Extraction',
+    doc: '32-das_extraction--data-availability-statement',
     summary: 'Locates the Data Availability Statement — the paragraph where the authors say where '
       + 'their data and code can be found — and extracts it verbatim.',
     points: [
@@ -153,6 +163,7 @@ export const MODULE_EXPLAINERS = {
 
   krt_grounding: {
     title: 'KRT Grounding',
+    doc: '37b-krt_grounding--author-krt--manuscript-reconciliation',
     summary: 'Checks every row of your Key Resources Table against the manuscript, '
       + 'and never changes a row. It answers two separate questions per row: is this resource '
       + 'mentioned in the paper at all, and did our detection modules independently find it?',
@@ -205,9 +216,16 @@ export const MODULE_EXPLAINERS = {
 
   software_detection: {
     title: 'Software Detection',
+    doc: '33-software_detection--software--code',
     summary: 'Finds the software and code this study used, by two methods at once: a name '
       + 'recogniser trained on scientific prose, and a language model reading the manuscript.',
     points: [
+      {
+        q: 'When it runs',
+        a: 'After the manuscript is converted AND you have validated your Key Resources Table. '
+          + 'This module reads no KRT itself, but the whole detection stage starts together so the results '
+          + 'arrive as one set rather than trickling in while you are still editing.'
+      },
       {
         q: 'Why two engines',
         a: 'They miss different things. Softcite recognises tool names written in ordinary '
@@ -230,9 +248,16 @@ export const MODULE_EXPLAINERS = {
 
   datasets_detection: {
     title: 'Datasets Detection',
+    doc: '34-datasets_detection--datasets-two-pass',
     summary: 'Finds the datasets this study generated or reused, and the repositories they live '
       + 'in — accessions, DOIs and repository links.',
     points: [
+      {
+        q: 'When it runs',
+        a: 'After the manuscript is converted AND you have validated your Key Resources Table — '
+          + 'your dataset rows are given to the model as a starting point, so it waits until you have '
+          + 'finished editing them.'
+      },
       {
         q: 'How a dataset is recognised',
         a: 'A first pass pulls candidate mentions from the manuscript with their exact position '
@@ -257,9 +282,15 @@ export const MODULE_EXPLAINERS = {
 
   protocols_detection: {
     title: 'Protocols Detection',
+    doc: '36-protocols_detection--protocols',
     summary: 'Finds the experimental protocols and methods this study used, including protocols '
       + 'published on dedicated venues.',
     points: [
+      {
+        q: 'When it runs',
+        a: 'After the manuscript is converted AND you have validated your Key Resources Table — '
+          + 'your protocol rows are given to the model as a starting point.'
+      },
       {
         q: 'What counts as a protocol',
         a: 'A repeatable procedure describing HOW something was done — usually one per Methods '
@@ -268,8 +299,10 @@ export const MODULE_EXPLAINERS = {
       },
       {
         q: 'Published protocols',
-        a: 'A DOI from a protocol-publishing venue is recognised on sight, so a cited protocol '
-          + 'is found even where the manuscript does not describe its steps.'
+        a: 'The model is told to treat a protocols.io DOI or another protocol-repository link as '
+          + 'the protocol\'s identifier, so a cited protocol can be picked up even where the '
+          + 'manuscript does not describe its steps. It is an instruction, not a guaranteed '
+          + 'scan — Identifiers Detection is the module that matches identifiers literally.'
       },
       {
         q: 'What it will miss',
@@ -281,9 +314,16 @@ export const MODULE_EXPLAINERS = {
 
   identifier_detection: {
     title: 'Identifiers Detection',
+    doc: '37-identifier_detection--known-identifier-scan-local-enabled-by-default',
     summary: 'Scans the manuscript for identifiers it already knows — RRIDs, DOIs, accessions and '
       + 'catalogue numbers — and reports what each one refers to.',
     points: [
+      {
+        q: 'When it runs',
+        a: 'After the manuscript is converted AND you have validated your Key Resources Table. '
+          + 'The scan itself never reads your table; it waits so the whole detection stage starts at one '
+          + 'moment.'
+      },
       {
         q: 'How this differs from the other detectors',
         a: 'No language model is involved. It matches identifiers in the text against a curated '
@@ -293,8 +333,8 @@ export const MODULE_EXPLAINERS = {
       {
         q: 'Why it spans every resource type',
         a: 'An identifier says what a thing IS, so one scan produces software, datasets, '
-          + 'materials and protocols together — which is why this table has type tabs and the '
-          + 'others do not.'
+          + 'materials and protocols together. It is the only module whose table fills more '
+          + 'than one type tab — the others each produce a single kind.'
       },
       {
         q: 'What it will miss',
@@ -306,9 +346,16 @@ export const MODULE_EXPLAINERS = {
 
   materials_detection: {
     title: 'Materials Detection',
+    doc: '35-materials_detection--lab-materials-cue-driven',
     summary: 'Reads the manuscript and reports the lab materials it can evidence — antibodies, '
       + 'plasmids, cell lines, organisms and the rest — each with the sentence that supports it.',
     points: [
+      {
+        q: 'When it runs',
+        a: 'After the manuscript is converted AND you have validated your Key Resources Table — '
+          + 'your material rows seed the prompt. With no materials in your table it still runs, using the '
+          + 'discovery prompt instead.'
+      },
       {
         q: 'Where the rows come from',
         a: 'A language model reading the converted manuscript. Every row it returns must carry a '

@@ -259,6 +259,10 @@ Built on `feat/krt-detection-two-modes`. Steps 1–4 of §8 are implemented; ste
 |---|---|---|
 | 4 | Evidence contract + deterministic grounding of every claim | `services/pdf-analysis/evidence.service.js`, `krt-entry.js` |
 | 3 | Detection made KRT-blind; `krt_curated` gate moved off the detectors | the three detector services, `queue/orchestrator.service.js` |
+
+> **Superseded.** Both designs now ship side by side as pipelines (`seeded-v1` default, `blind-v1` admin-only),
+> and the `krt_curated` gate has been put back on the detectors — the seeded prompts read the author's table, so
+> they must not start before it is final. See [background-jobs.md](./background-jobs.md#pipeline).
 | 3 | Materials always runs (the `no_author_materials` early return is gone) | `services/materials/materials.service.js` + rewritten cue-driven prompt |
 | 5 | Per-type key hierarchy + matcher + three outcomes | `services/krt-grounding/match-author-rows.service.js` |
 | 5.3 | Targeted LM second look, with every quote re-verified | `services/krt-grounding/krt-grounding.service.js` |

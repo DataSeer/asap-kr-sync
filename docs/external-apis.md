@@ -298,9 +298,10 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 
 ## Google Gemini API (Materials Detection)
 
-> **Cue-driven and KRT-blind.** The prompt (`src/backend/data/prompts/materials-detection.txt`) tells the model
-> which *textual cues* mark a material — a catalog number, an RRID, a vendor name, a clone ID, a concentration in
-> a methods sentence — rather than handing it the author's rows to enrich. It runs on **every** submission,
+> **Cue-driven.** The prompt tells the model which *textual cues* mark a material — a catalog number, an RRID, a
+> vendor name, a clone ID, a concentration in a methods sentence. Which prompt file it uses depends on the
+> pipeline and on the submission: `seeded/materials-detection.txt` when the author's KRT has materials to seed
+> with, `blind/materials-detection.txt` otherwise. It runs on **every** submission,
 > including ones with no author materials; the author's table enters one step later, at `krt_grounding`.
 > *(Until 2026-08 the prompt was seeded with the author's material rows and skipped entirely when there were
 > none, which made the KRT-less mode blind by construction.)*
@@ -347,7 +348,7 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 - `canonical_name`, `protocol_type` (EXPERIMENTAL, COMPUTATIONAL, etc.), `protocol_role` (NEW/REUSE)
 - `source`, `doi`, `url`, `krt_relevance`
 
-**KRT-blind:** the prompt's former "Section 0" — the author's protocol rows injected as authoritative base records — has been removed; the detector reads the manuscript alone. Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
+**Seeding:** the prompt's "Section 0" — the author's protocol rows as authoritative base records — is what `blind-v1` removes; under the default `seeded-v1` those rows are still passed as seeds. Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
 
 **Prompt file:** `src/backend/data/prompts/protocols-detection.txt`
 

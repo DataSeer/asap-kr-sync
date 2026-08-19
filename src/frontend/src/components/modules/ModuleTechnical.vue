@@ -182,6 +182,14 @@ const responseUrl = (name) =>
         </ul>
       </div>
 
+      <!-- Files the module PRODUCED, as opposed to the raw exchange below.
+           A slot rather than a prop: only the caller knows what its module
+           stored and how to hand it over. -->
+      <div v-if="$slots.files" class="mt-block">
+        <h3>Files</h3>
+        <slot name="files" />
+      </div>
+
       <div v-if="canViewInternals && artefacts.length" class="mt-block">
         <h3>Saved by this run</h3>
         <!-- Real links: ctrl-click opens one in a tab like anything else, and

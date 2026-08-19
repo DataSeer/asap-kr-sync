@@ -151,6 +151,7 @@ const das = computed(() => job.value?.result?.data?.das || '')
 /** All markdown conversion reports about itself; the text is an artefact. */
 const markdownLength = computed(() => job.value?.result?.data?.markdownLength || 0)
 const markdownFileId = computed(() => job.value?.result?.data?.fileId || null)
+const markdownFileName = ref('converted manuscript')
 
 /** The converted text itself, so the page can show it rather than describe it. */
 const markdown = ref('')
@@ -160,7 +161,9 @@ onMounted(async () => {
   if (jobType.value !== 'markdown_convert') return
   markdownLoading.value = true
   try {
-    markdown.value = (await markdownService.getContent(submissionId.value))?.content || ''
+    const data = await markdownService.getContent(submissionId.value)
+    markdown.value = data?.content || ''
+    if (data?.fileName) markdownFileName.value = data.fileName
   } catch (e) {
     markdownError.value = e?.response?.status === 404
       ? 'No converted text is stored for this submission yet.'
@@ -436,6 +439,7 @@ const tabConflicts = computed(() => {
       :title="explainer.title"
       :summary="explainer.summary"
       :points="explainer.points"
+      :doc="explainer.doc"
     />
 
     <p v-if="!job" class="mrv-empty">This module has not produced a result for this submission yet.</p>
@@ -568,10 +572,18 @@ const tabConflicts = computed(() => {
         :loading="markdownLoading"
         :error="markdownError"
       />
-      <p v-if="markdownFileId" class="mrv-actions">
-        <button type="button" class="mrv-btn" @click="downloadMarkdown">Download the converted text</button>
-      </p>
-      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType">
+        <template v-if="markdownFileId" #files>
+          <ul class="mrv-filelist">
+            <li>
+              <button type="button" class="mrv-linkish" @click="downloadMarkdown">
+                {{ markdownFileName }} ↗
+              </button>
+              <span class="mrv-filenote">The converted text every other module reads.</span>
+            </li>
+          </ul>
+        </template>
+      </ModuleTechnical>
     </template>
 
     <p v-else class="mrv-empty">
@@ -594,7 +606,13 @@ const tabConflicts = computed(() => {
 .mrv-modules { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.75rem; }
 /* Pushed right, on the same line as the title. */
 .mrv-files-links { margin-left: auto; }
-.mrv-actions { margin: 0.6rem 0 0; }
+.mrv-filelist { margin: 0; padding: 0; list-style: none; font-size: 0.8rem; }
+.mrv-linkish {
+  background: none; border: 0; padding: 0;
+  color: #2563eb; font-size: 0.8rem; cursor: pointer;
+}
+.mrv-linkish:hover { text-decoration: underline; }
+.mrv-filenote { color: #6b7280; font-size: 0.75rem; margin-left: 0.5rem; }
 .mrv-module {
   padding: 0.2rem 0.5rem; border-radius: 0.3rem; border: 1px solid #e5e7eb;
   font-size: 0.72rem; color: #374151; background: #fff; text-decoration: none;

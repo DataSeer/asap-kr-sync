@@ -555,6 +555,14 @@ Trigger identifier detection (re-run). Cascade-restarts PDF Analysis.
 
 ## Markdown Convert
 
+### `GET /api/submissions/:id/markdown`
+The converted manuscript text for the current round. Returns `{ content, fileName, length, version, round }`.
+404 when conversion has not produced a file yet.
+
+Served through the API rather than as a presigned S3 link because the Markdown Convert module page *displays*
+it: a cross-origin fetch of a presigned URL depends on the bucket's CORS policy, which a view should not be
+hostage to. The presigned download still exists via `GET /api/submissions/:id/files/:fileId/download`.
+
 ### `POST /api/submissions/:id/markdown/convert`
 Re-trigger PDF → Markdown conversion. Cascade-restarts Datasets / Protocols / Identifier Detection / PDF Analysis.
 
