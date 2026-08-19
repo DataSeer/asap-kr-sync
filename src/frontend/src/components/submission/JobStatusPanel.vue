@@ -189,6 +189,11 @@ const modalDecisionFilter = ref(new Set())
  */
 const MODULE_PAGE_TYPES = new Set(['krt_grounding'])
 
+/** Does this tile navigate, or open the modal? */
+function hasModulePage(job) {
+  return MODULE_PAGE_TYPES.has(job.type) && job.status === 'complete'
+}
+
 const MODAL_TAB_GROUPS = [
   { key: 'all', label: 'All' },
   { key: 'Datasets', label: 'Datasets' },
@@ -2028,11 +2033,19 @@ async function downloadMarkdownFile(fileId) {
 
     <!-- Expandable grid -->
     <div v-show="!isCollapsed" class="job-status-panel">
-      <div
+      <!-- A module with its own page is a LINK, whole tile, so ctrl-click and
+           middle-click open it in a tab like anything else. The rest still open
+           the modal, until their pages exist. -->
+      <component
+        :is="hasModulePage(job) ? 'RouterLink' : 'div'"
         v-for="job in jobList"
         :key="job.type"
+        :to="hasModulePage(job)
+          ? { name: 'submission-module', params: { id: submissionId, type: job.type } }
+          : undefined"
         class="job-status-item"
-        @click.stop="openJobModal(job)"
+        :class="{ 'job-status-item-link': hasModulePage(job) }"
+        @click="hasModulePage(job) ? undefined : openJobModal(job)"
       >
         <!-- Line 1: Configuration pill (On / Demo / Off) -->
         <div class="job-config-line" :title="getLiveConfigTitle(job)">
@@ -2108,16 +2121,7 @@ async function downloadMarkdownFile(fileId) {
             {{ getResultBadgeText(job) }}
           </span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
-          <!-- Opens the module's own page. A router-link rather than a click
-               handler so ctrl/cmd-click opens a second tab, which is what
-               reading results beside the KRT editor requires. -->
-          <RouterLink
-            v-if="MODULE_PAGE_TYPES.has(job.type) && job.status === 'complete'"
-            :to="{ name: 'submission-module', params: { id: submissionId, type: job.type } }"
-            class="job-open-page"
-            title="Open this module's results on its own page (ctrl-click for a new tab)"
-            @click.stop
-          >open ↗</RouterLink>
+
           <!-- A KRT/manuscript disagreement is a defect, not a statistic, so it
                gets its own badge in the error colour rather than a clause at
                the end of a grey summary line. -->
@@ -2127,7 +2131,7 @@ async function downloadMarkdownFile(fileId) {
             :title="conflictCount(job) + ' KRT row(s) hold a value the manuscript contradicts. One of the two is wrong — open the module to see which values differ.'"
           >{{ conflictCount(job) }} conflict{{ conflictCount(job) === 1 ? '' : 's' }}</span>
         </div>
-      </div>
+      </component>
     </div>
   </div>
 
@@ -4115,14 +4119,7 @@ async function downloadMarkdownFile(fileId) {
   white-space: nowrap;
 }
 .job-pipeline-link:hover { text-decoration: underline; }
-.job-open-page {
-  margin-left: 0.5rem;
-  font-size: 0.7rem;
-  color: #2563eb;
-  text-decoration: none;
-  white-space: nowrap;
-}
-.job-open-page:hover { text-decoration: underline; }
+.job-status-item-link { text-decoration: none; color: inherit; display: block; }
 .job-conflict-badge {
   background: #fef2f2;
   color: #b91c1c;

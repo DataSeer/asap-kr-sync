@@ -241,7 +241,9 @@ defineExpose({ foundVerdict })
 </template>
 
 <style scoped>
-.gt-wrapper { overflow-x: auto; }
+/* No scrolling of its own: the caller provides the scroll frame, and a nested
+   scroll container would take the sticky header with it. */
+.gt-wrapper { min-width: max-content; }
 .gt-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
 .gt-table th {
   position: sticky; top: 0; z-index: 1;

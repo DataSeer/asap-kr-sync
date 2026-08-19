@@ -8,8 +8,9 @@
  * far about "I don't understand this result" has been a missing explanation
  * rather than a wrong number.
  *
- * Collapsible, and open by default the first time. Someone who already knows
- * how a module works should not have to scroll past the same paragraph forever.
+ * Collapsed by default. The explanation has to be one click away, not in the
+ * way — someone who already knows how a module works should not scroll past the
+ * same paragraph every visit, and the results are what they came for.
  */
 import { ref } from 'vue'
 
@@ -21,7 +22,7 @@ defineProps({
   points: { type: Array, default: () => [] }
 })
 
-const open = ref(true)
+const open = ref(false)
 </script>
 
 <template>

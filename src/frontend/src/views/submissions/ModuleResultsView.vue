@@ -143,24 +143,31 @@ const tabConflicts = computed(() => {
     <p v-if="!job" class="mrv-empty">This module has not produced a result for this submission yet.</p>
 
     <template v-else-if="jobType === 'krt_grounding'">
-      <div class="mrv-controls">
+      <!-- Filters and search on one line: they do the same job, and splitting
+           them over two rows pushed the table itself below the fold. -->
+      <div class="mrv-toolbar">
+        <div class="mrv-tabs">
+          <button
+            v-for="t in TABS"
+            :key="t.key"
+            type="button"
+            class="mrv-tab"
+            :class="{ 'mrv-tab-active': tab === t.key }"
+            @click="tab = t.key"
+          >
+            {{ t.label }}
+            <span class="mrv-tab-count">{{ tabCounts[t.key] || 0 }}</span>
+            <span v-if="tabConflicts[t.key] > 0" class="mrv-tab-conflicts">⚠ {{ tabConflicts[t.key] }}</span>
+          </button>
+        </div>
         <SearchInput v-model="search" placeholder="Search rows…" class="mrv-search" />
       </div>
-      <div class="mrv-tabs">
-        <button
-          v-for="t in TABS"
-          :key="t.key"
-          type="button"
-          class="mrv-tab"
-          :class="{ 'mrv-tab-active': tab === t.key }"
-          @click="tab = t.key"
-        >
-          {{ t.label }}
-          <span class="mrv-tab-count">{{ tabCounts[t.key] || 0 }}</span>
-          <span v-if="tabConflicts[t.key] > 0" class="mrv-tab-conflicts">⚠ {{ tabConflicts[t.key] }}</span>
-        </button>
+      <!-- Fixed height with the header pinned: these tables run to hundreds of
+           rows, and a page that grows with them loses the column names exactly
+           when they are needed. -->
+      <div class="mrv-table-frame">
+        <GroundingTable :outcomes="visible" :policy="policy" :search="search" />
       </div>
-      <GroundingTable :outcomes="visible" :policy="policy" :search="search" />
       <ModuleTechnical :job="job" :submission-id="submissionId" />
     </template>
 
@@ -188,11 +195,31 @@ const tabConflicts = computed(() => {
 .mrv-module:hover { border-color: #bfdbfe; }
 .mrv-module-active { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; font-weight: 600; }
 .mrv-module-off { color: #d1d5db; background: #fafafa; cursor: default; }
-.mrv-controls { margin-bottom: 0.75rem; max-width: 32rem; }
+.mrv-toolbar {
+  display: flex; align-items: center; gap: 0.75rem;
+  flex-wrap: wrap; margin-bottom: 0.6rem;
+}
+.mrv-toolbar .mrv-tabs { margin-bottom: 0; flex: 1 1 auto; }
+/* Right-aligned, and the same height as a tab so the row reads as one strip. */
+.mrv-search { margin-left: auto; flex: 0 1 22rem; min-width: 12rem; }
+.mrv-search :deep(input) {
+  height: 1.85rem;
+  font-size: 0.78rem;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.mrv-table-frame {
+  height: min(60vh, 40rem);
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #fff;
+}
 .mrv-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
 .mrv-tab {
   display: inline-flex; align-items: center; gap: 0.35rem;
-  padding: 0.3rem 0.65rem; border-radius: 0.375rem; border: 1px solid #e5e7eb;
+  height: 1.85rem; padding: 0 0.65rem;
+  border-radius: 0.375rem; border: 1px solid #e5e7eb;
   background: #fff; font-size: 0.78rem; color: #374151; cursor: pointer;
 }
 .mrv-tab-active { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; font-weight: 600; }
