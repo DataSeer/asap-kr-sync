@@ -543,6 +543,11 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
     presence: outcome.presence || null,
     identifier: outcome.identifier || '',
     source: outcome.source || '',
+    newReuse: outcome.newReuse || '',
+    // Conflicts drive the "Incoherence" verdict, so they travel in every
+    // pipeline — a disagreement between the author's row and the manuscript is
+    // worth surfacing even when candidate MATCHING is not.
+    conflicts: outcome.conflicts || [],
     ...(policy.surfaceValues ? {
       outcome: outcome.outcome,
       matchedBy: outcome.matchedBy || null,

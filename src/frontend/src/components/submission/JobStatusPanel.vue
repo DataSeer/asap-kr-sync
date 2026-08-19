@@ -1292,11 +1292,6 @@ const GROUNDING_COLS = computed(() => (showGroundingValues.value
  * directly? Independent of every detector, and of what the prompts were seeded
  * with — so it is the one verdict that means the same thing in every pipeline.
  */
-function presenceLabel(o) {
-  if (!o?.presence) return '—'
-  if (!o.presence.found) return 'No'
-  return o.presence.via === 'identifier' ? 'Yes — identifier' : 'Yes — name'
-}
 /**
  * The context paragraph to show beneath a row.
  *
@@ -1309,10 +1304,6 @@ function groundingContext(o) {
   const mention = o?.presence?.mentions?.[0]
   return mention?.context ? mention : null
 }
-function presenceClass(o) {
-  if (!o?.presence) return ''
-  return o.presence.found ? 'grounding-confirmed' : 'grounding-not-detected'
-}
 
 /** Human labels for a grounding verdict. */
 const GROUNDING_LABELS = {
@@ -1324,16 +1315,7 @@ const GROUNDING_LABELS = {
   partial: 'Partial name match',
   not_detected: 'Not found in text'
 }
-const GROUNDING_CLASSES = {
-  confirmed: 'grounding-confirmed',
-  incomplete: 'grounding-incomplete',
-  // NOT `grounding-partial` — that class already badges a partially located
-  // evidence quote, which is a different thing from a partial name match.
-  partial: 'grounding-partial-match',
-  not_detected: 'grounding-not-detected'
-}
 function groundingLabel(o) { return GROUNDING_LABELS[o?.outcome] || o?.outcome || '—' }
-function groundingClass(o) { return GROUNDING_CLASSES[o?.outcome] || '' }
 /** How the row was matched — deterministic key, or the targeted LM search. */
 const MATCHED_BY_LABELS = {
   lm_second_look: 'LM search',
@@ -2166,14 +2148,9 @@ async function downloadMarkdownFile(fileId) {
                         <td class="text-xs"><HighlightText :text="o.identifier || ''" :query="modalSearch" /></td>
                         <td class="text-xs">{{ o.newReuse || '—' }}</td>
                         <td class="text-xs">
-                          <span class="grounding-badge" :class="presenceClass(o)"
-                                :title="o.presence ? (o.presence.occurrences + ' occurrence(s) found by direct search of the manuscript') : 'Not recorded for this run'">
-                            {{ presenceLabel(o) }}
+                          <span class="grounding-badge" :class="foundVerdict(o).cls" :title="foundVerdict(o).title">
+                            {{ foundVerdict(o).label }}
                           </span>
-                        </td>
-                        <td v-if="showGroundingValues" class="text-xs">
-                          <span class="grounding-badge" :class="groundingClass(o)" :title="o.reason || ''">{{ groundingLabel(o) }}</span>
-                          <span v-if="o.evidence?.match === 'partial'" class="grounding-badge grounding-partial" title="Only the leading part of the quote was located">partial</span>
                         </td>
                         <td v-if="showGroundingValues" class="text-xs">{{ groundingMatchedBy(o) }}</td>
                         <td v-if="showGroundingValues" class="text-xs">
@@ -3855,6 +3832,39 @@ async function downloadMarkdownFile(fileId) {
 .grounding-confirmed { background: #dcfce7; color: #15803d; }
 .grounding-incomplete { background: #fef3c7; color: #b45309; }
 .grounding-not-detected { background: #fee2e2; color: #b91c1c; }
+/*
+ * Grounding verdict colours, one rule each:
+ *   green  nothing is asked of the reader
+ *   blue   a real signal that still wants a human glance
+ *   orange nothing was found at all — the likeliest citation gap
+ *   red    an error, or something important enough to interrupt for
+ * Grey is deliberately unused here: every row reaches one of the four.
+ */
+.grounding-ok {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+.grounding-check {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.grounding-absent {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+.grounding-error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+.grounding-unknown {
+  background: #f9fafb;
+  color: #6b7280;
+  border: 1px solid #e5e7eb;
+}
 .grounding-from-krt {
   background: #eef2ff;
   color: #4338ca;

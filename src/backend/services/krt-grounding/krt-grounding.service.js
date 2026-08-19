@@ -159,11 +159,17 @@ function presenceForRows(index, authorRows) {
   for (const row of authorRows || []) {
     const mentions = collectMentions(index, { resourceName: row.resourceName, identifier: row.identifier }, null);
     const found = mentions.length > 0;
+    // Reported separately, not collapsed into one "via". The editor
+    // distinguishes "name AND identifier both found" from either alone, and a
+    // single winner-takes-all field cannot express that.
+    const viaIdentifier = mentions.some((m) => m.via === 'identifier');
+    const viaName = mentions.some((m) => m.via === 'name');
     out.set(row.id, {
       found,
-      // An identifier hit is near-certain; a name hit is weaker. Report which,
-      // rather than flattening both into a boolean.
-      via: mentions.some((m) => m.via === 'identifier') ? 'identifier' : (found ? 'name' : null),
+      viaIdentifier,
+      viaName,
+      // Kept for older callers; the strongest single signal.
+      via: viaIdentifier ? 'identifier' : (viaName ? 'name' : null),
       occurrences: mentions.length,
       // With the surrounding paragraph, so the editor can show WHERE without a
       // second pass over the manuscript. collectMentions returns positions
