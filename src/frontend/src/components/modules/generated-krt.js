@@ -12,13 +12,21 @@
  * rows per tab, and two copies of this would drift.
  */
 
-/** Which module a contributing detection came from, in the words on screen. */
+/**
+ * Which module a contributing detection came from, in the words on screen.
+ *
+ * `author_krt` is not a detector: it marks a row carried over from the author's
+ * own table because nothing re-found it in the PDF. That is the most important
+ * badge on the table — it says "we did not confirm this" — so it must not fall
+ * through to the raw key.
+ */
 export const SOURCE_LABELS = {
   software_detection: 'Software',
   datasets_detection: 'Datasets',
   materials_detection: 'Materials',
   protocols_detection: 'Protocols',
-  identifier_detection: 'ID'
+  identifier_detection: 'ID',
+  author_krt: 'Author KRT'
 }
 
 export const sourceLabel = (source) => SOURCE_LABELS[source] || source

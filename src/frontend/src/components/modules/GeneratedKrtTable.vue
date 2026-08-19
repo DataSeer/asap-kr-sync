@@ -196,7 +196,14 @@ function downloadJson() {
               </template>
             </td>
             <td>
-              <span v-if="row.source" class="gk-badge gk-badge-source">{{ sourceLabel(row.source) }}</span>
+              <span
+                v-if="row.source"
+                class="gk-badge"
+                :class="row.source === 'author_krt' ? 'gk-badge-carried' : 'gk-badge-source'"
+                :title="row.source === 'author_krt'
+                  ? 'Carried from your KRT — no detector found this in the manuscript'
+                  : undefined"
+              >{{ sourceLabel(row.source) }}</span>
               <span v-else>—</span>
             </td>
             <td class="gk-reason"><HighlightText v-if="row.isGroupStart" :text="row.reason" :query="search" /></td>
@@ -324,6 +331,8 @@ function downloadJson() {
 }
 .gk-badge-gap { margin-right: 0.25rem; }
 .gk-badge-source { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+/* Not a detection: amber, because it means nothing confirmed this row. */
+.gk-badge-carried { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
 .gk-badge-new { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
 .gk-badge-reuse { background: #f5f3ff; color: #6d28d9; border: 1px solid #ddd6fe; }
 .gk-frame-main { max-height: min(60vh, 40rem); }
