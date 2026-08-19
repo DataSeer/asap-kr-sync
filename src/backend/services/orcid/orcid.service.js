@@ -21,6 +21,7 @@ const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
+const runInputs = require('../queue/run-inputs.service');
 
 /** Max authors to search via ORCID API fallback */
 const ORCID_API_MAX_AUTHORS = 10;
@@ -97,6 +98,11 @@ async function extractAuthorsForSubmission(submission, jobLogger) {
 
   // Step 1: GROBID header extraction
   jobLogger?.log('grobid_start', 'Sending PDF to GROBID for header extraction');
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { pdf: runInputs.fileRef(pdfFile, pdfBuffer) },
+    meta: { engines: ['grobid', 'openalex', 'orcid_api'] }
+  });
+
   const grobidResult = await grobidClient.extractHeader(pdfBuffer, pdfFile.fileName);
   const { doi, authors: grobidAuthors } = grobidResult;
   await jobLogger?.saveRawResponse('grobid-header', {

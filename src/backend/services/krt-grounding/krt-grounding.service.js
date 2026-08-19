@@ -51,6 +51,7 @@ const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
 const { repoPath } = require('../detection/repo-path');
+const runInputs = require('../queue/run-inputs.service');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/krt-grounding-second-look.txt');
 let _promptCache = null;
@@ -282,8 +283,13 @@ async function groundSubmission(submission, jobLogger) {
     candidateCount: candidates.length,
     contributors: contributions.map((c) => `${c.source}:${c.items.length}`)
   });
-  await jobLogger?.saveRawResponse('grounding-inputs', {
-    authorRows, candidates, contributors: contributions.map((c) => ({ source: c.source, count: c.items.length }))
+  // This module already froze its inputs; what it lacked was their identity —
+  // which run produced each candidate, and which prompt the second look used.
+  await runInputs.saveRunInputs(jobLogger, {
+    frozen: { authorRows, candidates },
+    upstream: runInputs.upstreamRefs(contributions),
+    prompt: runInputs.promptRef(repoPath(PROMPT_FILE)),
+    meta: { model: groundingConfig.model, authorRowCount: authorRows.length, candidateCount: candidates.length }
   });
 
   // ── Step 2: presence — the manuscript searched directly, independent of what

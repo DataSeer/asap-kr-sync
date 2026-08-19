@@ -35,6 +35,7 @@ const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const { resolveDetection } = require('../detection/resolve');
+const runInputs = require('../queue/run-inputs.service');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
@@ -173,7 +174,7 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection',
     { pipeline: resolved.pipeline.id, seedCount: resolved.input.meta?.seedCount ?? 0 });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForProtocols(markdownText, {
+  const { resources: rawItems, rawResponse, promptDigest } = await callGeminiForProtocols(markdownText, {
     prompt: resolved.input.prompt,
     seeds: resolved.input.seeds,
     seedTitle: resolved.strategy.seedTitle ? SEED_TITLES[resolved.strategy.seedTitle] : null
@@ -187,6 +188,17 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   // duplicate of the .json under a misleading name.
   const extractedJson = stripMarkdownEscapes(extractJsonBlock(rawResponse));
   await jobLogger?.saveRawResponse('gemini-protocols', extractedJson || rawItems);
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, mdBuffer) },
+    frozen: { seeds: resolved.input.seeds || [] },
+    prompt: runInputs.promptRef(resolved.input.meta?.promptFile || null, promptDigest),
+    meta: {
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      model: protocolsConfig.model,
+      seedCount: resolved.input.meta?.seedCount ?? 0
+    }
+  });
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
 
   // ── Step 2: buildKrtItems
@@ -229,6 +241,9 @@ async function callGeminiForProtocols(markdownText, opts = {}) {
   const ai = new GoogleGenAI({ apiKey: protocolsConfig.apiKey });
   const prompt = getPrompt(promptOverride);
   const fullPrompt = assembleTextPrompt({ prompt, seeds, seedTitle, markdownText });
+  // Digested in place: the assembled prompt is the manuscript plus the
+  // instructions, and only its hash needs to survive the call.
+  const promptDigest = { sha256: runInputs.sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -251,11 +266,11 @@ async function callGeminiForProtocols(markdownText, opts = {}) {
     const text = response.text;
     if (!text) {
       logger.warn('Gemini returned empty response for protocols detection');
-      return { resources: [], rawResponse: '' };
+      return { resources: [], rawResponse: '', promptDigest };
     }
 
     logger.debug('Gemini raw response preview (protocols)', { preview: text.substring(0, 500) });
-    return { resources: parseGeminiResponse(text), rawResponse: text };
+    return { resources: parseGeminiResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for protocols detection', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);

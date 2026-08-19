@@ -41,6 +41,7 @@ const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
+const runInputs = require('../queue/run-inputs.service');
 
 // Confidence floor we hand to merge-detections for tiebreaking. Identifier
 // matches are usually high-precision so even MEDIUM is decent.
@@ -305,6 +306,15 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     scannedBytes: scannedLength,
     referencesCutoff,
     durationMs: scanMs
+  });
+
+  // No model here, so the curated list is the whole variable input — it is
+  // edited between runs, and a match that appears or vanishes is explained by
+  // its size and digest rather than by anything in the manuscript.
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
+    frozen: { enrichmentIndex: { entryCount: index?.size ?? null } },
+    meta: { engine: 'local-scan', scannedLength, referencesCutoff }
   });
 
   // Persist raw scan output for forensics.

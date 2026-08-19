@@ -19,6 +19,7 @@ const { NotFoundError } = require('../../utils/errors');
 const { generateS3Key } = require('../../utils/helpers');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
+const runInputs = require('../queue/run-inputs.service');
 
 async function queueMarkdownConvert(submissionId, round = 1) {
   const orchestrator = require('../queue/orchestrator.service');
@@ -79,6 +80,11 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
 
   jobLogger?.log('convert_start', `Converting via ${markdownConfig.provider}`, { provider: markdownConfig.provider });
   const convertStartTime = Date.now();
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { pdf: runInputs.fileRef(pdfFile, pdfBuffer) },
+    meta: { provider: markdownConfig.provider }
+  });
+
   const rawMarkdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile.fileName);
   const convertMs = Date.now() - convertStartTime;
   jobLogger?.log('convert_done', 'Conversion complete', { markdownLength: rawMarkdown.length, durationMs: convertMs });

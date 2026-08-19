@@ -41,6 +41,7 @@ const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
+const runInputs = require('../queue/run-inputs.service');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'materials-detection.txt');
@@ -168,7 +169,7 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection',
     { pipeline: resolved.pipeline.id, seedCount: resolved.input.meta?.seedCount ?? 0 });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(markdownText, {
+  const { resources: rawItems, rawResponse, promptDigest } = await callGeminiForMaterials(markdownText, {
     prompt: resolved.input.prompt,
     seeds: resolved.input.seeds,
     // No seeds means the discovery prompt is in play, so there is no block to
@@ -179,6 +180,19 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   });
   const geminiMs = Date.now() - geminiStartTime;
   await jobLogger?.saveRawResponse('gemini-materials', rawResponse || rawItems);
+  // Frozen now, while the seeds are the ones this run was actually given: the
+  // author can edit that table a minute later, and this record must not follow.
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, mdBuffer) },
+    frozen: { seeds: resolved.input.seeds || [] },
+    prompt: runInputs.promptRef(resolved.input.meta?.promptFile || null, promptDigest),
+    meta: {
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      model: materialsConfig.model,
+      seedCount: resolved.input.meta?.seedCount ?? 0
+    }
+  });
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
 
   // ── Step 2: buildKrtItems
@@ -225,6 +239,10 @@ async function callGeminiForMaterials(markdownText, opts = {}) {
   const fullPrompt = assembleTextPrompt({
     prompt: getPrompt(promptOverride), seeds, seedTitle, markdownText
   });
+  // Hashed here, where the assembled prompt exists, rather than returned: it is
+  // the manuscript plus the instructions, and it has no business travelling
+  // back up the stack just to be digested.
+  const promptDigest = { sha256: runInputs.sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -247,11 +265,11 @@ async function callGeminiForMaterials(markdownText, opts = {}) {
     const text = response.text;
     if (!text) {
       logger.warn('Gemini returned empty response for materials detection');
-      return { resources: [], rawResponse: '' };
+      return { resources: [], rawResponse: '', promptDigest };
     }
 
     logger.debug('Gemini raw response preview (materials)', { preview: text.substring(0, 500) });
-    return { resources: parseGeminiResponse(text), rawResponse: text };
+    return { resources: parseGeminiResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for materials detection', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);

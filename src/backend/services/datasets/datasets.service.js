@@ -37,6 +37,7 @@ const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence
 const { resolveDetection } = require('../detection/resolve');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
+const runInputs = require('../queue/run-inputs.service');
 const { buildKrtItemFromLM } = require('../pdf-analysis/lm-resource.service');
 const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
@@ -219,7 +220,7 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
     datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length
   });
   const consolidationStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForConsolidation(
+  const { resources: rawItems, rawResponse, promptDigest } = await callGeminiForConsolidation(
     datasetNames, extractedRows, markdownText,
     { prompt: resolved.input.prompt, seeds: resolved.input.seeds }
   );
@@ -227,6 +228,23 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
 
   const cleanedConsolidation = stripMarkdownFences(rawResponse);
   await jobLogger?.saveRawResponse('gemini-consolidation', cleanedConsolidation || rawResponse || rawItems);
+  // Both passes are recorded: the signals prompt drives extraction, the
+  // consolidation prompt drives the merge, and a run is only reproducible with
+  // the pair. The extracted signals themselves are the `langextract-signals`
+  // artefact beside this one.
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, mdBuffer) },
+    frozen: { seeds: resolved.input.seeds || [] },
+    prompt: runInputs.promptRef(resolved.input.meta?.promptFile || null, promptDigest),
+    signalsPrompt: runInputs.promptRef(resolved.input.meta?.signalsPromptFile || null),
+    meta: {
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      model: datasetsConfig.model,
+      seedCount: resolved.input.meta?.seedCount ?? 0,
+      signalCount: extractedRows.length
+    }
+  });
 
   // ── Step 2: buildKrtItems
   const krtItems = tagAuthorRows(buildKrtItemsDatasets(rawItems), resolved.input.seeds);
@@ -277,6 +295,7 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
   const { prompt, payload: userPayload } = assemblePayloadPrompt({
     systemPrompt, seeds, datasetNames, extractedRows, markdownText
   });
+  const promptDigest = { sha256: runInputs.sha256(prompt), bytes: Buffer.byteLength(prompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -299,11 +318,11 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
     const text = response.text;
     if (!text) {
       logger.warn('Gemini returned empty response for datasets consolidation');
-      return { resources: [], rawResponse: '' };
+      return { resources: [], rawResponse: '', promptDigest };
     }
 
     logger.debug('Gemini consolidation response preview', { preview: text.substring(0, 500) });
-    return { resources: parseGeminiResponse(text), rawResponse: text };
+    return { resources: parseGeminiResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for datasets consolidation', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);

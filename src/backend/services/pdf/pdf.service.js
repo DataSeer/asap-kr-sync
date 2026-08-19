@@ -11,6 +11,7 @@ const { sequelize, File, ChangeLog, KRTData, ValidationResult, Submission, Submi
 const s3Service = require('../storage/s3.service');
 const dasExtractionService = require('./das-extraction.service');
 const { repoPath } = require('../detection/repo-path');
+const runInputs = require('../queue/run-inputs.service');
 const dasExtractionConfig = require('../../config/das-extraction-api');
 const jobQueue = require('../queue/job-queue.service');
 const { generateS3Key } = require('../../utils/helpers');
@@ -586,6 +587,11 @@ async function runDasExtractor(submission, jobLogger) {
   jobLogger?.log('das_api_start', 'Calling Gemini for DAS extraction');
   const extracted = await dasExtractionService.extractDAS(markdownText);
   await jobLogger?.saveRawResponse('das-extractor-response', extracted);
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
+    prompt: runInputs.promptRef(repoPath(dasExtractionService.PROMPT_FILE), extracted?.promptDigest || null),
+    meta: { model: dasExtractionConfig.model }
+  });
   jobLogger?.log('das_api_done', 'DAS extractor returned', {
     dasLength: extracted?.content?.length || 0,
     partialMatch: !!extracted?.partialMatch,

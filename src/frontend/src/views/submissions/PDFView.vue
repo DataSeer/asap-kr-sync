@@ -1285,14 +1285,10 @@ function scrollToFindingRow(finding) {
              found" copy below, which only kicks in once a process actually
              completes. -->
         <div v-if="findings.length === 0 && pdfAnalysisInFlight" class="text-center py-6 px-4">
-          <svg class="mx-auto w-8 h-8 text-primary-500 mb-2 animate-spin" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-          </svg>
           <p class="text-sm font-medium text-gray-800">Analyzing the manuscript…</p>
           <p class="text-xs text-gray-500 mt-1">PDF analysis is running. Suggestions will appear here as they're generated.</p>
-          <!-- Progress bar (#9): an indeterminate bar so Step 2 shows analysis
-               progress in the suggestions header, matching the KRT-processing UX. -->
+          <!-- One indeterminate bar, and only one: a spinner above it said the
+               same thing twice, and neither knows the real progress. -->
           <div class="mx-auto mt-3 max-w-xs h-1.5 rounded-full bg-primary-100 overflow-hidden">
             <div class="analysis-progress-bar h-full rounded-full bg-primary-500"></div>
           </div>
@@ -1312,12 +1308,11 @@ function scrollToFindingRow(finding) {
             <p class="text-xs text-gray-500 mt-1">No suggestions to review. You can open the background processes panel above to check what was detected.</p>
           </template>
           <template v-else>
-            <svg class="mx-auto w-8 h-8 text-primary-500 mb-2 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
             <p class="text-sm font-medium text-gray-800">Analyzing the manuscript…</p>
             <p class="text-xs text-gray-500 mt-1">Background processes are still running. New suggestions will appear here as they finish.</p>
+            <div class="mx-auto mt-3 max-w-xs h-1.5 rounded-full bg-primary-100 overflow-hidden">
+              <div class="analysis-progress-bar h-full rounded-full bg-primary-500"></div>
+            </div>
           </template>
         </div>
 

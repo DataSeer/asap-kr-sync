@@ -20,4 +20,18 @@ function repoPath(absolutePath) {
   return path.relative(ROOT, absolutePath).split(path.sep).join('/');
 }
 
-module.exports = { repoPath };
+/**
+ * The inverse: a repository-relative path back to a path on disk.
+ *
+ * A run records its prompt relatively, because that is what a reader can
+ * follow. Hashing the template later needs the file itself, and re-deriving the
+ * absolute path here keeps every caller from carrying both forms around.
+ *
+ * @param {string} relative
+ * @returns {string|null} null when given nothing
+ */
+function absolutePath(relative) {
+  return relative ? path.join(ROOT, relative) : null;
+}
+
+module.exports = { repoPath, absolutePath };

@@ -25,6 +25,7 @@ const { getPipeline } = require('../../config/pipelines');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const { repoPath } = require('../detection/repo-path');
+const runInputs = require('../queue/run-inputs.service');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/krt-comparison.txt');
 let _promptCache = null;
@@ -505,6 +506,19 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
     authorCount: authorRows.length, generatedCount: generatedKrt.length,
     groundedRowCount: groundingOutcomes.length
   });
+  // Both tables as this run saw them: the author's is edited constantly, and the
+  // Generated one is replaced by any re-run of consolidation.
+  await runInputs.saveRunInputs(jobLogger, {
+    frozen: { authorRows, generatedKrt, groundingOutcomes },
+    prompt: runInputs.promptRef(repoPath(PROMPT_FILE)),
+    meta: {
+      model: krtComparisonConfig.model,
+      authorCount: authorRows.length,
+      generatedCount: generatedKrt.length,
+      groundedRowCount: groundingOutcomes.length
+    }
+  });
+
   const { lmDecisions, rawResponse } = await callGeminiForComparison(authorRows, generatedKrt);
   await jobLogger?.saveRawResponse('krt-comparison', rawResponse || lmDecisions);
 

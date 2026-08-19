@@ -110,6 +110,8 @@ async function extractDAS(markdownText, { prompt } = {}) {
   const ai = new GoogleGenAI({ apiKey: dasConfig.apiKey });
   const resolvedPrompt = getPrompt(prompt);
   const fullPrompt = `${resolvedPrompt}\n\nSection type: ${dasConfig.section}\n\nMANUSCRIPT:\n${markdownText}`;
+  const { sha256 } = require('../queue/run-inputs.service');
+  const promptDigest = { sha256: sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -122,7 +124,7 @@ async function extractDAS(markdownText, { prompt } = {}) {
     const text = response.text;
     if (!text) {
       logger.warn('Gemini returned empty response for DAS extraction');
-      return { content: '', partialMatch: false, sectionFragmented: false, raw: '' };
+      return { content: '', partialMatch: false, sectionFragmented: false, raw: '', promptDigest };
     }
 
     logger.debug('Gemini raw response preview (DAS)', { preview: text.substring(0, 500) });
@@ -135,7 +137,7 @@ async function extractDAS(markdownText, { prompt } = {}) {
       partialMatch: parsed.partialMatch,
       sectionFragmented: parsed.sectionFragmented
     });
-    return { ...parsed, raw: text };
+    return { ...parsed, raw: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for DAS extraction', { error: error.message });
     throw new ExternalServiceError('DAS Extraction (Gemini)', error.message);

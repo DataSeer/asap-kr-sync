@@ -68,6 +68,8 @@ function getPrompt(override) {
 async function detectSoftwareLM(markdownText, { prompt } = {}) {
   const ai = new GoogleGenAI({ apiKey: softwareLmConfig.apiKey });
   const fullPrompt = getPrompt(prompt) + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
+  const { sha256 } = require('../queue/run-inputs.service');
+  const promptDigest = { sha256: sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -85,7 +87,7 @@ async function detectSoftwareLM(markdownText, { prompt } = {}) {
     }
 
     const text = response.text || '';
-    return { resources: parseResponse(text), rawResponse: text };
+    return { resources: parseResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for software detection', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);

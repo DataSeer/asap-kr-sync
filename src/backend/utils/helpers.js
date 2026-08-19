@@ -102,9 +102,16 @@ function generateS3Key(manuscriptId, submissionId, round, fileType, originalName
  * @param {string} fileName - File name (e.g., "logs.json", "gemini-consolidation.json")
  * @returns {string} S3 key (without bucket prefix)
  */
-function generateJobS3Key(manuscriptId, submissionId, round, jobType, fileName) {
+function generateJobS3Key(manuscriptId, submissionId, round, jobType, fileName, jobId) {
   const folder = buildS3Folder(manuscriptId, submissionId);
-  return `${folder}/round-${round}/jobs/${jobType}/${fileName}`;
+  // The job row id is in the path so a re-run cannot overwrite the previous
+  // run's artefacts. It used to: every run of a job type in a round wrote to
+  // the same keys, while `runAllProcesses` created a NEW SubmissionJob row each
+  // time — so the older row survived, still pointing at keys whose contents had
+  // been replaced. Its "raw responses" then showed the newer run's data under
+  // the older run's timestamps, which is worse than losing them.
+  const run = jobId ? `/${jobId}` : '';
+  return `${folder}/round-${round}/jobs/${jobType}${run}/${fileName}`;
 }
 
 /**

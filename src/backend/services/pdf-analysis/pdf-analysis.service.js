@@ -24,6 +24,7 @@ const {
 } = require('./identifier-normalize.service');
 const logger = require('../../utils/logger');
 const { repoPath } = require('../detection/repo-path');
+const runInputs = require('../queue/run-inputs.service');
 
 /**
  * Seed-retention invariant (issue #1): the Generated KRT MUST contain every
@@ -163,6 +164,15 @@ async function buildGeneratedKrt(submission, jobLogger) {
   // Step b: an LM consolidates the candidates into the final Generated KRT,
   // attaching a `reason` per line (kept/merged/dropped). Falls back to the
   // rule-based candidates when the LM isn't configured or errors.
+  // The candidate pool is the whole input here, and it is exactly what a
+  // re-run of any detector would change underneath this result.
+  await runInputs.saveRunInputs(jobLogger, {
+    frozen: { candidates },
+    upstream: runInputs.upstreamRefs(contributions),
+    prompt: runInputs.promptRef(repoPath(require('./krt-generation.service').PROMPT_FILE)),
+    meta: { candidateCount: candidates.length, contributorCount: contributions.length }
+  });
+
   const consolidated = await consolidateWithLM(candidates, jobLogger);
   const { dropped, usedLM, rawResponse } = consolidated;
   if (rawResponse) {

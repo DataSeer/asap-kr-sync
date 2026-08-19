@@ -37,6 +37,7 @@ const demoDataService = require('../demo-data.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const softwareLm = require('./software-lm.service');
 const { repoPath } = require('../detection/repo-path');
+const runInputs = require('../queue/run-inputs.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const logger = require('../../utils/logger');
 
@@ -207,7 +208,7 @@ async function runLmPass(submissionId, round, jobLogger) {
     jobLogger?.log('software_lm_start', 'Calling Gemini for the software LM pass', {
       markdownLength: markdownText.length
     });
-    const { resources, rawResponse } = await softwareLm.detectSoftwareLM(markdownText);
+    const { resources, rawResponse, promptDigest } = await softwareLm.detectSoftwareLM(markdownText);
     await jobLogger?.saveRawResponse('gemini-software', rawResponse || resources);
 
     const built = softwareLm.buildKrtItemsSoftwareLM(resources);
@@ -215,6 +216,14 @@ async function runLmPass(submissionId, round, jobLogger) {
       label: 'software-lm'
     });
     await jobLogger?.saveRawResponse('software-lm-evidence', { stats, items });
+    // Two engines, two inputs: Softcite reads the PDF, this pass reads the
+    // converted text. Both are recorded because a disagreement between them is
+    // exactly what an audit would ask about.
+    await runInputs.saveRunInputs(jobLogger, {
+      documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
+      prompt: runInputs.promptRef(repoPath(softwareLm.PROMPT_FILE), promptDigest),
+      meta: { model: require('../../config/software-detection-lm-api').model, engine: 'software-lm' }
+    });
 
     jobLogger?.log('software_lm_done', 'Software LM pass complete', {
       returned: resources.length, grounded: items.length, ...stats, durationMs: Date.now() - started
