@@ -295,9 +295,6 @@ function getUserName(userId) {
   return user?.name || user?.email || userId
 }
 
-function handleCreateNew() {
-  router.push({ name: 'create-submission' })
-}
 
 function handleViewSubmission(submission) {
   const route = router.resolve({ name: 'submission-detail', params: { id: submission.id } })
@@ -649,9 +646,9 @@ const activeFilterCount = computed(() => {
         creating a new submission.
       </p>
       <div class="mt-6">
-        <button class="btn-primary" @click="handleCreateNew">
+        <RouterLink :to="{ name: 'create-submission' }" class="btn-primary">
           New Submission
-        </button>
+        </RouterLink>
       </div>
     </div>
 

@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
@@ -55,11 +55,6 @@ function navigateToCurrentStep() {
   router.replace({ name: stepRoutes[currentStep.value], params: { id: route.params.id } })
 }
 
-function navigateToStep(step) {
-  // Only allow navigation to current or previous steps
-  if (step > currentStep.value) return
-  router.push({ name: stepRoutes[step], params: { id: route.params.id } })
-}
 
 function getStepStatus(step) {
   if (!submission.value) return 'pending'
@@ -118,16 +113,23 @@ function getStepStatus(step) {
 
     <!-- Steps -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div
+      <!-- A link, not a click handler, so ctrl-click and middle-click open the
+           step in a new tab. A step the user may not reach yet renders as a
+           plain div: a disabled link is still a link to a browser, and would
+           open in a new tab from a card that refuses to open in this one. -->
+      <component
+        :is="getStepStatus(step) === 'pending' ? 'div' : 'RouterLink'"
         v-for="step in 5"
         :key="step"
-        class="card transition-shadow"
+        :to="getStepStatus(step) === 'pending'
+          ? undefined
+          : { name: stepRoutes[step], params: { id: route.params.id } }"
+        class="card transition-shadow block no-underline text-inherit"
         :class="{
           'ring-2 ring-primary-500': getStepStatus(step) === 'current',
           'opacity-50 cursor-not-allowed': getStepStatus(step) === 'pending',
           'cursor-pointer hover:shadow-md': getStepStatus(step) !== 'pending'
         }"
-        @click="navigateToStep(step)"
       >
         <div class="flex items-center justify-between">
           <div>
@@ -161,7 +163,7 @@ function getStepStatus(step) {
             <span v-else class="text-sm font-medium">{{ step }}</span>
           </div>
         </div>
-      </div>
+      </component>
     </div>
   </div>
 </template>

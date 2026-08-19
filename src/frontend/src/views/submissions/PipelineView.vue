@@ -270,9 +270,12 @@ const activeStage = computed(() => {
 
 /* Top to bottom: the manuscript flows down the page, and an ordered list is
    what this actually is — which a screen reader then reads correctly. */
-.pv-flow { list-style: none; margin: 0; padding: 0; max-width: 74rem; }
-.pv-band { position: relative; padding: 0.75rem 0.9rem; border: 1px solid #f3f4f6; border-radius: 0.5rem; }
-.pv-band-active { border-color: #bfdbfe; background: #f8fbff; }
+.pv-flow { list-style: none; margin: 0; padding: 0; max-width: 74rem; display: flex; flex-direction: column; gap: 0.35rem; }
+/* The band is the GROUND, the cards sit on it. White cards on a white band
+   left the borders with nothing to separate — everything read as one block. */
+.pv-band { position: relative; padding: 0.75rem 0.9rem; border-radius: 0.5rem; background: #f4f5f7; }
+.pv-band + .pv-band { margin-top: 0; }
+.pv-band-active { background: #eaf2fd; }
 .pv-band-label {
   display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem;
   font-size: 0.7rem; font-weight: 700; color: #6b7280;
@@ -286,22 +289,26 @@ const activeStage = computed(() => {
 .pv-here { color: #1d4ed8; text-transform: none; letter-spacing: 0; font-weight: 600; }
 .pv-down { text-align: center; color: #d1d5db; font-size: 1.2rem; line-height: 1; margin: 0.35rem 0 0; }
 
-.pv-groups { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-start; }
+.pv-groups { display: flex; flex-wrap: wrap; gap: 0.85rem; align-items: flex-start; }
 .pv-group { flex: 1 1 16rem; }
 /* A cluster is boxed so "these run together" is visible before reading names. */
 .pv-group-boxed {
-  flex: 2 1 34rem; border: 1px dashed #e5e7eb; border-radius: 0.5rem;
-  padding: 0.5rem 0.55rem 0.6rem; background: #fcfcfd;
+  flex: 2 1 34rem; border: 1px dashed #c3c7ce; border-radius: 0.5rem;
+  padding: 0.5rem 0.55rem 0.6rem; background: #fbfbfc;
 }
 .pv-group-caption { font-size: 0.68rem; color: #9ca3af; margin: 0 0 0.45rem; }
-.pv-cards { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.pv-cards { display: flex; flex-wrap: wrap; gap: 0.6rem; }
 
 .pv-card {
   display: block; text-decoration: none; color: inherit; flex: 1 1 15rem;
-  border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fff; padding: 0.6rem 0.7rem;
+  border: 1px solid #d1d5db; border-radius: 0.5rem; background: #fff;
+  padding: 0.6rem 0.7rem;
+  /* A hairline shadow does more than a darker border here: it separates two
+     adjacent cards even where their edges touch. */
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
 }
 .pv-card-link { cursor: pointer; }
-.pv-card-link:hover { border-color: #bfdbfe; background: #f8fafc; }
+.pv-card-link:hover { border-color: #60a5fa; box-shadow: 0 2px 6px rgba(37, 99, 235, 0.12); }
 .pv-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
 .pv-card-name { font-size: 0.82rem; font-weight: 600; color: #111827; }
 .pv-purpose { font-size: 0.72rem; color: #6b7280; line-height: 1.35; margin: 0.3rem 0 0.45rem; }

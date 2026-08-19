@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useAuthStore } from '@/stores/auth.store'
@@ -329,9 +329,6 @@ async function proceedWithSubmit(krtFileToSend) {
   }
 }
 
-function handleCancel() {
-  router.push({ name: 'dashboard' })
-}
 </script>
 
 <template>
@@ -541,7 +538,9 @@ function handleCancel() {
       </div>
 
       <div class="flex items-center justify-end space-x-4 pt-4 border-t">
-        <button type="button" class="btn-secondary" @click="handleCancel">Cancel</button>
+        <!-- Cancel goes somewhere; it does not DO anything. So it is a link,
+             and ctrl-click opens the dashboard in a new tab like any other. -->
+        <RouterLink :to="{ name: 'dashboard' }" class="btn-secondary">Cancel</RouterLink>
         <!-- Always clickable (except while loading) so the click handler can
              highlight missing required inputs (title + PDF). A missing KRT opens
              a confirmation modal instead of blocking. -->
