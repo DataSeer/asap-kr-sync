@@ -111,8 +111,30 @@ async function parseKrt(file) {
   return parseXlsx(file);
 }
 
+/**
+ * Read a CSV as what it is, not as what it ought to be.
+ *
+ * Author KRTs come out of Excel and are routinely cp1252, not UTF-8. Decoding
+ * one as UTF-8 turns every µ, é and – into U+FFFD, and `--fix` then writes
+ * those back — silently corrupting cells the tool was not asked to touch. It
+ * did exactly that to 21 characters of a real corpus file before this existed.
+ *
+ * So: try UTF-8 strictly, fall back to latin1, and remember which, so the write
+ * puts the same bytes back.
+ */
+function readCsvText(file) {
+  const buf = fs.readFileSync(file);
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    return { text: buf.toString('utf8'), encoding: 'utf8' };
+  } catch {
+    return { text: buf.toString('latin1'), encoding: 'latin1' };
+  }
+}
+
 function parseCsv(file) {
-  const parsed = Papa.parse(fs.readFileSync(file, 'utf-8'), { skipEmptyLines: false });
+  const { text, encoding } = readCsvText(file);
+  const parsed = Papa.parse(text, { skipEmptyLines: false });
   const grid = parsed.data.map(r => r.map(cellStr));
   const headerIdx = grid.findIndex(r => r.map(normHeader).filter(h => KRT_HEADERS.includes(h)).length >= 3);
   if (headerIdx === -1) return { rows: [], writer: null };
@@ -135,7 +157,12 @@ function parseCsv(file) {
       grid[gr][c] = f.to;
     }
     fs.copyFileSync(file, file + '.bak');
-    fs.writeFileSync(file, Papa.unparse(grid));
+    // Same encoding, delimiter and line ending the file arrived with: a fix to
+    // one cell must not rewrite the other 300 rows.
+    fs.writeFileSync(file, Papa.unparse(grid, {
+      delimiter: parsed.meta?.delimiter || ',',
+      newline: text.includes('\r\n') ? '\r\n' : '\n'
+    }), encoding);
   };
   return { rows, writer };
 }
