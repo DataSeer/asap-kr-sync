@@ -11,6 +11,7 @@
  * decides only how to say them.
  */
 import { computed } from 'vue'
+import { useColumnResize } from '@/composables/useColumnResize'
 import HighlightText from '@/components/submission/HighlightText.vue'
 import EvidenceContext from '@/components/common/EvidenceContext.vue'
 
@@ -30,16 +31,24 @@ const props = defineProps({
  */
 const showValues = computed(() => props.policy?.surfaceValues === true)
 
+/**
+ * Widths are the STARTING point only — each column can be dragged, and the
+ * choice is remembered. "More information" gets the most room because it
+ * carries a sentence per row; the rest are sized to their typical content.
+ */
 const ALL_COLS = [
-  { key: 'resourceType', label: 'Resource Type', krt: true },
-  { key: 'resourceName', label: 'Resource Name', krt: true },
-  { key: 'source', label: 'Source', krt: true },
-  { key: 'identifier', label: 'Identifier', krt: true },
-  { key: 'newReuse', label: 'New/Reuse', krt: true },
-  { key: 'found', label: 'Found', always: true },
-  { key: 'matchedBy', label: 'Matched by' },
-  { key: 'fills', label: 'More information', always: true }
+  { key: 'resourceType', label: 'Resource Type', krt: true, width: 130 },
+  { key: 'resourceName', label: 'Resource Name', krt: true, width: 230 },
+  { key: 'source', label: 'Source', krt: true, width: 150 },
+  { key: 'identifier', label: 'Identifier', krt: true, width: 190 },
+  { key: 'newReuse', label: 'New/Reuse', krt: true, width: 90 },
+  { key: 'found', label: 'Found', always: true, width: 120 },
+  { key: 'matchedBy', label: 'Matched by', width: 110 },
+  { key: 'fills', label: 'More information', always: true, width: 420 }
 ]
+
+/** Shared with the modal's tables, so a width dragged in one is kept in both. */
+const colResize = useColumnResize('jobModal.columnWidths')
 const cols = computed(() => (showValues.value ? ALL_COLS : ALL_COLS.filter((c) => c.always || c.krt)))
 
 /** How the row was matched — deterministic key, or the targeted LM search. */
@@ -151,22 +160,6 @@ function groundingConflicts(o) {
   }))
 }
 
-/**
- * What the manuscript says that the author's row does not.
- *
- * Two kinds, and the difference matters to a curator:
- *   - a FILL   — the row's cell is empty and the paper supplies a value
- *   - a CONFLICT — the row is filled and the paper disagrees
- * Only fills become edit suggestions; a conflict is reported and left alone.
- */
-function groundingFills(o) {
-  return Object.keys(o?.foundValues || {}).map(k => `${k}: ${o.foundValues[k]}`)
-}
-
-
-function groundingHasFindings(o) {
-  return groundingFills(o).length > 0 || groundingConflicts(o).length > 0
-}
 
 /**
  * The context paragraph to show beneath a row.
@@ -186,13 +179,24 @@ defineExpose({ foundVerdict })
 
 <template>
   <div class="gt-wrapper">
-    <table class="gt-table">
+    <table class="gt-table gt-table--resizable" :style="colResize.tableStyle('grounding', cols)">
       <thead>
-        <tr><th v-for="c in cols" :key="c.key">{{ c.label }}</th></tr>
+        <tr>
+          <th v-for="c in cols" :key="c.key" :style="colResize.headStyle('grounding', c.key, c.width)">
+            {{ c.label }}
+            <span
+              class="gt-col-resize"
+              title="Drag to resize"
+              @mousedown.stop.prevent="colResize.startResize('grounding', c.key, c.width, $event)"
+            ></span>
+          </th>
+        </tr>
       </thead>
       <tbody>
         <template v-for="(o, i) in outcomes" :key="i">
-          <tr>
+          <!-- The row that ends an item carries the gap, so items are separated
+               without a rule between an item and its own context line. -->
+          <tr :class="{ 'gt-row-end': !groundingContext(o) }">
             <td class="gt-xs"><HighlightText :text="o.resourceType || ''" :query="search" /></td>
             <td class="gt-name"><HighlightText :text="o.resourceName || ''" :query="search" /></td>
             <td class="gt-xs"><HighlightText :text="o.source || ''" :query="search" /></td>
@@ -208,8 +212,12 @@ defineExpose({ foundVerdict })
                    exist at all on a touch screen. -->
               <div class="grounding-why">{{ foundVerdict(o).title }}</div>
               <template v-if="showValues">
-                <div v-for="(f, fi) in groundingFills(o)" :key="'f' + fi" class="grounding-fill"
-                     title="Your row leaves this empty; the manuscript supplies it.">{{ f }}</div>
+                <div
+                  v-for="(f, fi) in groundingFills(o)" :key="'f' + fi" class="grounding-fill"
+                  title="Your row leaves this empty; the manuscript supplies it."
+                >
+                  {{ f }}
+                </div>
               </template>
               <!-- Conflicts travel in every pipeline: a value contradicting the
                    manuscript is a defect either way. -->
@@ -217,18 +225,16 @@ defineExpose({ foundVerdict })
                 <div class="conflict-field">⚠ {{ c.field }}</div>
                 <div class="conflict-line">
                   <span class="conflict-side">your row</span>
-                  <span class="conflict-value conflict-value-author"
-                  ><span>{{ c.diff.a.pre }}</span><mark v-if="c.diff.a.mid">{{ c.diff.a.mid }}</mark><span>{{ c.diff.a.post }}</span></span>
+                  <span class="conflict-value conflict-value-author"><span>{{ c.diff.a.pre }}</span><mark v-if="c.diff.a.mid">{{ c.diff.a.mid }}</mark><span>{{ c.diff.a.post }}</span></span>
                 </div>
                 <div class="conflict-line">
                   <span class="conflict-side">manuscript</span>
-                  <span class="conflict-value conflict-value-paper"
-                  ><span>{{ c.diff.b.pre }}</span><mark v-if="c.diff.b.mid">{{ c.diff.b.mid }}</mark><span>{{ c.diff.b.post }}</span></span>
+                  <span class="conflict-value conflict-value-paper"><span>{{ c.diff.b.pre }}</span><mark v-if="c.diff.b.mid">{{ c.diff.b.mid }}</mark><span>{{ c.diff.b.post }}</span></span>
                 </div>
               </div>
             </td>
           </tr>
-          <tr v-if="groundingContext(o)" class="gt-context-row">
+          <tr v-if="groundingContext(o)" class="gt-context-row gt-row-end">
             <td :colspan="cols.length" class="gt-context-cell">
               <EvidenceContext :evidence="groundingContext(o)" :show-section="true" />
             </td>
@@ -252,6 +258,18 @@ defineExpose({ foundVerdict })
   padding: 0.5rem 0.6rem; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
 }
 .gt-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+/* Fixed layout is what makes a dragged width hold: without it the browser
+   re-fits every column to its content and the drag appears to do nothing. */
+.gt-table--resizable { table-layout: fixed; }
+.gt-table--resizable td { overflow-wrap: anywhere; }
+.gt-table th { position: relative; }
+.gt-col-resize {
+  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
+  cursor: col-resize; user-select: none;
+}
+.gt-col-resize:hover { background: #bfdbfe; }
+/* Breathing room between items, on whichever row ends one. */
+.gt-row-end td { padding-bottom: 0.95rem; }
 .gt-xs { font-size: 0.75rem; color: #374151; }
 .gt-name { font-weight: 500; }
 .gt-context-row td { background: #fffdf5; border-bottom: 1px solid #f3f4f6; }

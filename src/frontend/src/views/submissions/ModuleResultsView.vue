@@ -40,6 +40,11 @@ const explainer = computed(() => explainerFor(jobType.value))
  */
 const steps = ref([])
 onMounted(async () => {
+  // Resource-type categories drive the tab groups, and getTabGroup falls back to
+  // "Lab Materials" for a type it does not know — so without this every row
+  // lands in one tab. The panel loads them because its parent view does; a page
+  // opened directly, which is the whole point of these being pages, does not.
+  resourceTypesStore.fetchResourceTypeNames().catch(() => {})
   try {
     steps.value = (await configService.getPipeline()).nodes
   } catch {
