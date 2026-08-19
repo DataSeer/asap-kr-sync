@@ -17,6 +17,7 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useRoute } from 'vue-router'
 import { useJobPoller } from '@/composables'
+import SubmissionLinks from '@/components/modules/SubmissionLinks.vue'
 import configService from '@/services/config.service'
 import { labelFor, purposeFor, stageLabel } from '@/components/modules/module-meta'
 
@@ -160,6 +161,7 @@ const activeStage = computed(() => {
         ← Back to the submission
       </RouterLink>
       <h1 class="pv-title">Processing pipeline</h1>
+      <SubmissionLinks :submission-id="submissionId" current="pipeline" class="sl-right" />
     </div>
 
     <p class="pv-intro">
@@ -255,7 +257,8 @@ const activeStage = computed(() => {
 
 <style scoped>
 .pv { padding: 1.25rem 1.5rem 3rem; }
-.pv-head { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+.sl-right { margin-left: auto; }
+.pv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
 .pv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
 .pv-back:hover { text-decoration: underline; }
 .pv-title { font-size: 1.25rem; font-weight: 600; color: #111827; margin: 0; }

@@ -15,6 +15,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
+import SubmissionLinks from '@/components/modules/SubmissionLinks.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
@@ -115,6 +116,7 @@ const tabConflicts = computed(() => {
         ← Pipeline
       </RouterLink>
       <h1 class="mrv-title">{{ label }}</h1>
+      <SubmissionLinks :submission-id="submissionId" current="" class="sl-right" />
       <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
         ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
       </span>
@@ -184,7 +186,8 @@ const tabConflicts = computed(() => {
 
 <style scoped>
 .mrv { padding: 1.25rem 1.5rem 3rem; max-width: 100%; }
-.mrv-head { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.sl-right { margin-left: auto; }
+.mrv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .mrv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
 .mrv-back:hover { text-decoration: underline; }
 .mrv-title { font-size: 1.25rem; font-weight: 600; color: #111827; margin: 0; }

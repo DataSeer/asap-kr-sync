@@ -44,8 +44,24 @@ export function useColumnResize(storageKey, minWidth = 60) {
     return { width: w + 'px', minWidth: w + 'px' }
   }
 
-  /** Inline style for the table: an explicit total width = sum of the columns. */
+  /** Has the user dragged anything in this table? */
+  function hasCustomWidths(ns, cols) {
+    return cols.some((c) => typeof widths.value[cellKey(ns, c.key)] === 'number')
+  }
+
+  /**
+   * Inline style for the table.
+   *
+   * Until something is dragged the table is 100% wide, so the columns share the
+   * space available and nothing scrolls sideways on first view — the per-column
+   * widths act as proportions rather than absolutes.
+   *
+   * After a drag it becomes an explicit total, which is what makes a widened
+   * column push the table wider instead of squashing its neighbours. That is
+   * the point of dragging, and it is only wanted once the user has asked for it.
+   */
   function tableStyle(ns, cols) {
+    if (!hasCustomWidths(ns, cols)) return { width: '100%' }
     const total = cols.reduce((sum, c) => sum + widthOf(ns, c.key, c.width), 0)
     return { width: total + 'px' }
   }
@@ -71,5 +87,5 @@ export function useColumnResize(storageKey, minWidth = 60) {
     persist()
   }
 
-  return { headStyle, tableStyle, startResize }
+  return { headStyle, tableStyle, startResize, hasCustomWidths }
 }
