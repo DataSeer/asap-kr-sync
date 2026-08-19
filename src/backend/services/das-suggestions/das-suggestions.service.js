@@ -26,6 +26,15 @@ const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/das-suggestions.txt');
+
+/**
+ * What `extractAndSaveDAS` persists when the manuscript has no statement.
+ *
+ * A sentinel rather than an empty column, so the UI can tell "we looked and
+ * found nothing" from "nobody has run extraction yet". Named here because two
+ * places have to agree on it and they had it spelled out twice.
+ */
+const NO_DAS_SENTINEL = 'Not found';
 let _promptCache = null;
 
 function hasPrompt() {
@@ -237,7 +246,7 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
 
   const submission = await Submission.findByPk(submissionId);
   const rawDas = submission?.dataAvailabilityStatement || '';
-  const dasText = rawDas === 'Not found' ? '' : rawDas;
+  const dasText = rawDas === NO_DAS_SENTINEL ? '' : rawDas;
   const krtRows = await KRTData.findAll({ where: { submissionId, round } });
   const signals = computeKrtSignals(krtRows);
 
@@ -295,8 +304,13 @@ async function queueDasSuggestions(submissionId, round = 1) {
     attributes: ['dataAvailabilityStatement']
   });
   const das = (submission?.dataAvailabilityStatement || '').trim();
-  if (!das) {
-    logger.info('DAS suggestions skipped — no DAS provided', { submissionId, round });
+  // NO_DAS_SENTINEL, not just empty: extraction always persists something, and
+  // writes this literal when it found no statement. Testing only for empty let
+  // the sentinel through, so the job was queued and generateDasSuggestions then
+  // mapped it back to '' and called the model against an empty statement —
+  // exactly the case this guard exists to skip, one wasted LM call per run.
+  if (!das || das === NO_DAS_SENTINEL) {
+    logger.info('DAS suggestions skipped — no DAS provided', { submissionId, round, das: das || '(empty)' });
     return null;
   }
 
@@ -326,6 +340,7 @@ async function getPersistedDasSuggestions(submissionId, round) {
 }
 
 module.exports = {
+  NO_DAS_SENTINEL,
   generateDasSuggestions,
   processDasSuggestions,
   queueDasSuggestions,

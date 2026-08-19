@@ -58,16 +58,15 @@ function cleanReason(reason) {
     .trim();
 }
 
-/** Union the detectedBy provenance of several candidates (deduped by source). */
+/** Union the detectedBy provenance of several candidates (every contributor, including repeats from one module). */
 function unionDetectedBy(candidates) {
+  // Every contributor is kept, including two from the same module: each carries
+  // its own originalItem, and that is what the Generated KRT shows as the
+  // working behind a merged row. (This used to keep a `seen` set that both
+  // branches ignored, and a docstring promising a dedupe that never happened.)
   const out = [];
-  const seen = new Set();
   for (const c of candidates) {
-    for (const d of (c.detectedBy || [])) {
-      const key = d.source || '';
-      if (!seen.has(key)) { seen.add(key); out.push(d); }
-      else out.push(d); // keep all originalItems, even same source
-    }
+    for (const d of (c.detectedBy || [])) out.push(d);
   }
   return out;
 }

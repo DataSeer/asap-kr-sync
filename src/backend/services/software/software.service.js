@@ -157,7 +157,12 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
     meta: {
       rawMentionCount: rawMentions.length,
       uniqueCount: items.length,
-      softciteCount: krtItems.length - lm.items.length,
+      // Counted from the items' own provenance, not as a subtraction: the old
+      // `krtItems.length - lm.items.length` compared a POST-policy total with a
+      // PRE-policy one (instrument software is dropped from both engines), so
+      // it went NEGATIVE whenever the policy dropped an LM row — 0 Softcite
+      // mentions and 3 dropped LM rows reported "-3 from Softcite".
+      softciteCount: countFromSoftcite(items),
       lmCount: lm.items.length,
       lmEnabled: lm.enabled,
       lmSkippedReason: lm.skippedReason,
@@ -170,6 +175,23 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
       totalMs: Date.now() - startTime
     }
   };
+}
+
+/**
+ * How many final rows Softcite contributed to.
+ *
+ * A row found by both engines counts for both — this is "how many rows did
+ * Softcite have a hand in", not a partition. Dedupe keeps every pre-merge
+ * contributor on `mergedFrom`, so the origin survives the collapse; reading
+ * only the top-level `origin` would undercount a row the LM happened to win.
+ *
+ * @param {object[]} items final, post-policy items
+ * @returns {number}
+ */
+function countFromSoftcite(items) {
+  const fromSoftcite = (origin) => String(origin || '').includes('softcite');
+  return items.filter((item) => fromSoftcite(item.origin)
+    || (item.mergedFrom || []).some((c) => fromSoftcite(c?.originalItem?.origin))).length;
 }
 
 /**

@@ -34,7 +34,7 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
-const { resolveDetection } = require('../detection/resolve');
+const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
 const runInputs = require('../queue/run-inputs.service');
@@ -54,6 +54,12 @@ let _consolidationPromptCache = null;
 // (commit 38a16db), so the whole budget goes to output.
 const MAX_OUTPUT_TOKENS = 65536;
 
+/**
+ * Fallback only. The prompt a run actually uses comes from its strategy and is
+ * passed in as an override; this file backs the no-override path (scripts, and
+ * any caller that has no submission). Availability is decided by
+ * detectionPromptsExist, which asks the submission's own pipeline.
+ */
 function hasConsolidationPrompt() {
   return fs.existsSync(CONSOLIDATION_PROMPT_FILE);
 }
@@ -115,7 +121,7 @@ async function processDatasetDetection(submissionId, jobLogger = null, { isFinal
   if (!submission) throw new NotFoundError('Submission');
 
   const result = await runWithDemoFallback({
-    isExternalEnabled: datasetsConfig.isConfigured() && hasConsolidationPrompt(),
+    isExternalEnabled: datasetsConfig.isConfigured() && detectionPromptsExist('datasets', submission),
     demoEnabled: process.env.DATASETS_DETECTION_DEMO_DATA_ENABLED !== 'false',
     runExternal: () => detectDatasetsForSubmission(submission, jobLogger),
     getDemoData: async () => {
@@ -300,7 +306,7 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
   // `author_provided_datasets` is ALWAYS emitted, empty when unseeded: prompts
   // that do not reference the key ignore it, while a missing key breaks the
   // ones that do.
-  const { prompt, payload: userPayload } = assemblePayloadPrompt({
+  const { prompt } = assemblePayloadPrompt({
     systemPrompt, seeds, datasetNames, extractedRows, markdownText
   });
   const promptDigest = { sha256: runInputs.sha256(prompt), bytes: Buffer.byteLength(prompt) };

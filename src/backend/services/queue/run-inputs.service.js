@@ -52,7 +52,9 @@ function fileRef(file, content = null) {
     type: file.type,
     version: file.version,
     s3Key: file.s3Key,
-    bytes: content ? Buffer.byteLength(content) : (file.fileSize ?? null),
+    // `size` is the model's attribute; `fileSize` never existed, so this
+    // recorded null whenever a caller had no bytes to hand.
+    bytes: content ? Buffer.byteLength(content) : (file.size ?? null),
     sha256: content ? sha256(content) : null
   };
 }

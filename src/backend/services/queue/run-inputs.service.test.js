@@ -31,10 +31,20 @@ test('a file is recorded by identity and digest, not copied', () => {
 });
 
 test('a file with no bytes to hand still records what it was', () => {
-  const ref = fileRef({ id: 'f1', fileName: 'ms.pdf', type: 'pdf', version: 1, s3Key: 'k', fileSize: 42 });
+  // `size` is the File model's attribute. This test asserted `fileSize`, which
+  // is what the code read at the time — both were wrong together, so the test
+  // passed while the field was always null in practice.
+  const ref = fileRef({ id: 'f1', fileName: 'ms.pdf', type: 'pdf', version: 1, s3Key: 'k', size: 42 });
   assert.equal(ref.sha256, null, 'no digest is better than a wrong one');
   assert.equal(ref.bytes, 42);
   assert.equal(fileRef(null), null);
+});
+
+test('the digest wins over the recorded size when the bytes are to hand', () => {
+  const content = Buffer.from('12345');
+  const ref = fileRef({ id: 'f1', fileName: 'ms.md', type: 'markdown', version: 2, s3Key: 'k', size: 999 }, content);
+  assert.equal(ref.bytes, 5, 'the size READ, not the size the row claims');
+  assert.match(ref.sha256, /^[0-9a-f]{64}$/);
 });
 
 test('the prompt is provable: template digest + assembled digest', () => {

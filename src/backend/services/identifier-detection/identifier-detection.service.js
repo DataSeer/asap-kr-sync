@@ -313,7 +313,15 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
   // its size and digest rather than by anything in the manuscript.
   await runInputs.saveRunInputs(jobLogger, {
     documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
-    frozen: { enrichmentIndex: { entryCount: index?.size ?? null } },
+    // The index is three maps, not one — `index.size` was always undefined, so
+    // the audit record stored null for the very thing it says it is recording.
+    frozen: {
+      enrichmentIndex: {
+        byIdentifier: index?.byIdentifier?.size ?? null,
+        byCatalog: index?.byCatalog?.size ?? null,
+        catalogTokens: index?.catalogTokens?.size ?? null
+      }
+    },
     meta: { engine: 'local-scan', scannedLength, referencesCutoff }
   });
 

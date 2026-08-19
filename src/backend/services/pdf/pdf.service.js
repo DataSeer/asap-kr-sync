@@ -12,6 +12,7 @@ const s3Service = require('../storage/s3.service');
 const dasExtractionService = require('./das-extraction.service');
 const { repoPath } = require('../detection/repo-path');
 const runInputs = require('../queue/run-inputs.service');
+const { NO_DAS_SENTINEL } = require('../das-suggestions/das-suggestions.service');
 const dasExtractionConfig = require('../../config/das-extraction-api');
 const jobQueue = require('../queue/job-queue.service');
 const { generateS3Key } = require('../../utils/helpers');
@@ -540,7 +541,7 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
   // extraction was attempted. "Not found" doubles as the empty-but-tried
   // sentinel and as the placeholder shown in the UI.
   const das = result.data?.meta?.das || null;
-  const persisted = das || 'Not found';
+  const persisted = das || NO_DAS_SENTINEL;
   submission.extractedDataAvailabilityStatement = persisted;
   submission.dataAvailabilityStatement = persisted;
   await submission.save();

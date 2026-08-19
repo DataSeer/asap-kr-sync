@@ -6,6 +6,7 @@
  * prompt and the seeds".
  */
 
+const fs = require('fs');
 const { getPipeline } = require('../../config/pipelines');
 const { getStrategy } = require('./registry');
 
@@ -56,4 +57,26 @@ async function resolveDetection(detector, { submission, markdownText, jobLogger 
   return { run: true, pipeline, strategy, input };
 }
 
-module.exports = { resolveDetection };
+/**
+ * Are the prompt files the run would actually read present on disk?
+ *
+ * A detector's "is this module available" check has to ask the strategy the
+ * submission's own pipeline selects. Datasets hard-coded the BLIND
+ * consolidation prompt for this, while the default pipeline is seeded — so a
+ * missing blind file silently downgraded a perfectly runnable seeded detection
+ * to demo data, and a missing SEEDED file was reported as available and threw
+ * mid-run instead.
+ *
+ * @param {string} detector - 'materials' | 'protocols' | 'datasets'
+ * @param {object} submission - needs `pipelineId` (undefined = the default)
+ * @returns {boolean}
+ */
+function detectionPromptsExist(detector, submission) {
+  const pipeline = getPipeline(submission?.pipelineId);
+  const strategyId = pipeline.strategies[detector];
+  if (!strategyId) return false;
+  const files = getStrategy(strategyId).promptFiles || [];
+  return files.every((file) => fs.existsSync(file));
+}
+
+module.exports = { resolveDetection, detectionPromptsExist };

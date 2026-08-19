@@ -62,11 +62,16 @@ const STALE_REASONS = {
 function classifyJob(job, submissionExists, newestByKey, now) {
   if (!submissionExists) return 'orphaned';
 
+  // A finished job is history, not backlog — never stale. This has to come
+  // BEFORE the superseded check: every manual re-run creates a fresh row, so
+  // testing "is this the newest?" first labelled the previous SUCCESSFUL run
+  // superseded, and `deleteStaleJobs` then deleted it along with its logs and
+  // its artefact references. What "superseded" is for is an unfinished job that
+  // a newer run has replaced.
+  if (TERMINAL_STATUSES.includes(job.status)) return null;
+
   const key = `${job.submissionId}|${job.jobType}|${job.round}`;
   if (newestByKey.get(key) !== job.id) return 'superseded';
-
-  // A finished job is history, not backlog — never stale.
-  if (TERMINAL_STATUSES.includes(job.status)) return null;
 
   const ageMs = now - new Date(job.updatedAt || job.createdAt).getTime();
   if (job.status === 'waiting' && ageMs > STUCK_WAITING_HOURS * 3600_000) return 'stuck_waiting';
