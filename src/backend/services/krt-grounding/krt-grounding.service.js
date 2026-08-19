@@ -45,7 +45,7 @@ const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { matchAuthorRows } = require('./match-author-rows.service');
 const { getPipeline } = require('../../config/pipelines');
-const { buildEvidenceIndex, locateQuote, collectMentions } = require('../pdf-analysis/evidence.service');
+const { buildEvidenceIndex, locateQuote, collectMentions, extractContext } = require('../pdf-analysis/evidence.service');
 const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
@@ -165,7 +165,13 @@ function presenceForRows(index, authorRows) {
       // rather than flattening both into a boolean.
       via: mentions.some((m) => m.via === 'identifier') ? 'identifier' : (found ? 'name' : null),
       occurrences: mentions.length,
-      mentions: mentions.slice(0, PRESENCE_MENTIONS)
+      // With the surrounding paragraph, so the editor can show WHERE without a
+      // second pass over the manuscript. collectMentions returns positions
+      // only; a position a curator cannot read is not evidence of anything.
+      mentions: mentions.slice(0, PRESENCE_MENTIONS).map((m) => ({
+        ...m,
+        ...(extractContext(index.text, m.offset, (row.resourceName || '').length) || {})
+      }))
     });
   }
   return out;

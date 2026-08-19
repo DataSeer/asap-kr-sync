@@ -541,6 +541,8 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
     krtRowId: outcome.krtRowId,
     // Honest in every pipeline.
     presence: outcome.presence || null,
+    identifier: outcome.identifier || '',
+    source: outcome.source || '',
     ...(policy.surfaceValues ? {
       outcome: outcome.outcome,
       matchedBy: outcome.matchedBy || null,

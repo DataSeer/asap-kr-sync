@@ -595,7 +595,23 @@ const colResize = useColumnResize('jobModal.columnWidths')
 // protocols / identifier) so a user finds the same information in the same
 // place whichever module they open. Each item renders as TWO rows: these
 // columns, then a full-width context line underneath.
-const RESIZE_MENTIONS_COLS = [
+/**
+ * ADDITIONAL INFORMATION is an AUTHOR field. No detector writes it — it reaches
+ * a table only on rows carried over from the author's KRT — so in a detection
+ * module it is a permanently empty column taking 220px of a table that already
+ * scrolls sideways.
+ *
+ * Driven by the data rather than by a list of which modules carry author rows:
+ * the column appears when something is in it. That also keeps it correct if the
+ * pipeline ever does populate the field.
+ */
+function hasAdditionalInfo(items) {
+  return (items || []).some((it) => String(
+    it?.additionalInformation || it?.additional_information || ''
+  ).trim().length > 0)
+}
+const showMentionsAdditionalInfo = computed(() => hasAdditionalInfo(modalItems.value))
+const RESIZE_MENTIONS_ALL_COLS = [
   { key: 'resourceType', label: 'Resource Type', width: 120 },
   { key: 'resourceName', label: 'Resource Name', width: 240 },
   { key: 'source', label: 'Source', width: 170 },
@@ -604,7 +620,11 @@ const RESIZE_MENTIONS_COLS = [
   { key: 'evidence', label: 'Evidence', width: 170 },
   { key: 'additionalInformation', label: 'Additional Information', width: 220 }
 ]
-const RESIZE_PDF_COLS = [
+const RESIZE_MENTIONS_COLS = computed(() => (showMentionsAdditionalInfo.value
+  ? RESIZE_MENTIONS_ALL_COLS
+  : RESIZE_MENTIONS_ALL_COLS.filter((c) => c.key !== 'additionalInformation')))
+
+const RESIZE_PDF_ALL_COLS = [
   { key: 'krtNum', label: 'KRT #', width: 70 },
   { key: 'detection', label: 'Detection', width: 110 },
   { key: 'reason', label: 'Reason', width: 240 },
@@ -615,6 +635,14 @@ const RESIZE_PDF_COLS = [
   { key: 'newReuse', label: 'New/Reuse', width: 90 },
   { key: 'additionalInformation', label: 'Additional Information', width: 200 }
 ]
+// The Generated KRT carries the author's rows through reconciliation, so this
+// column is populated there whenever the submission has a KRT — and empty, and
+// hidden, when it does not.
+const showPdfAdditionalInfo = computed(() => hasAdditionalInfo(pdfAnalysisRows.value))
+const RESIZE_PDF_COLS = computed(() => (showPdfAdditionalInfo.value
+  ? RESIZE_PDF_ALL_COLS
+  : RESIZE_PDF_ALL_COLS.filter((c) => c.key !== 'additionalInformation')))
+
 const RESIZE_DROPPED_COLS = [
   { key: 'detectedBy', label: 'Detected by', width: 130 },
   { key: 'resourceType', label: 'Resource Type', width: 120 },
@@ -1178,6 +1206,14 @@ const modalTabCounts = computed(() => {
       if (!suggestionMatchesSearch(d, q)) continue
       bump(suggestionDecisionType(d))
     }
+  } else if (modalTableType.value === 'grounding') {
+    // Counts track the search box but not the tab filter itself, so a tab can
+    // read 0 and stay clickable — same behaviour as the other tables.
+    const q = modalSearch.value.trim().toLowerCase()
+    for (const o of (modalItems.value || [])) {
+      if (q && !rowMatchesSearch([o.resourceType, o.resourceName, o.source, o.identifier, o.newReuse], q)) continue
+      bump(o.resourceType || '')
+    }
   }
   return counts
 })
@@ -1227,18 +1263,29 @@ const modalGroundingPolicy = ref(null)
 const showGroundingValues = computed(() => modalGroundingPolicy.value?.surfaceValues !== false)
 
 /** Columns for the grounding table — same two-row shape as the detectors. */
+/**
+ * The author's row, in the same column shape as the KRT editor, then the
+ * verdicts about it.
+ *
+ * Showing only the name made verdicts unreadable: a row can read "not in
+ * manuscript" while carrying an identifier that IS in the manuscript, and with
+ * the identifier off screen that looks like a contradiction instead of the
+ * distinction it is.
+ */
 const GROUNDING_ALL_COLS = [
-  { key: 'resourceType', label: 'Resource Type' },
-  { key: 'resourceName', label: "Author's row" },
+  { key: 'resourceType', label: 'Resource Type', krt: true },
+  { key: 'resourceName', label: 'Resource Name', krt: true },
+  { key: 'source', label: 'Source', krt: true },
+  { key: 'identifier', label: 'Identifier', krt: true },
+  { key: 'newReuse', label: 'New/Reuse', krt: true },
   { key: 'presence', label: 'In manuscript', always: true },
   { key: 'verdict', label: 'Verdict' },
   { key: 'matchedBy', label: 'Matched by' },
-  { key: 'evidence', label: 'Evidence' },
   { key: 'fills', label: 'Manuscript says' }
 ]
 const GROUNDING_COLS = computed(() => (showGroundingValues.value
   ? GROUNDING_ALL_COLS
-  : GROUNDING_ALL_COLS.filter((c) => c.always || c.key === 'resourceType' || c.key === 'resourceName')))
+  : GROUNDING_ALL_COLS.filter((c) => c.always || c.krt)))
 
 /**
  * Was the row's own name or identifier found in the manuscript, searched
@@ -1249,6 +1296,18 @@ function presenceLabel(o) {
   if (!o?.presence) return '—'
   if (!o.presence.found) return 'No'
   return o.presence.via === 'identifier' ? 'Yes — identifier' : 'Yes — name'
+}
+/**
+ * The context paragraph to show beneath a row.
+ *
+ * Prefers the candidate-derived evidence when the pipeline allows it, and falls
+ * back to the first presence mention — which is available in every pipeline,
+ * because it comes from searching the manuscript rather than from a detector.
+ */
+function groundingContext(o) {
+  if (showGroundingValues.value && o?.evidence?.quote) return o.evidence
+  const mention = o?.presence?.mentions?.[0]
+  return mention?.context ? mention : null
 }
 function presenceClass(o) {
   if (!o?.presence) return ''
@@ -1333,6 +1392,21 @@ const displayedModalItems = computed(() => {
       o.resourceName, o.resourceType, groundingLabel(o), groundingMatchedBy(o),
       o.evidence?.section, o.evidence?.quote, o.reason
     ], q))
+  }
+  if (modalTableType.value === 'grounding') {
+    // Same tab groups as the KRT editor, over the author's own resource type.
+    let rows = [...(modalItems.value || [])]
+      .sort((a, b) => compareTypes(a.resourceType || '', b.resourceType || ''))
+    if (modalTabFilter.value !== 'all') {
+      rows = rows.filter(o => resourceTypesStore.getTabGroup(o.resourceType || '') === modalTabFilter.value)
+    }
+    const gq = modalSearch.value.trim().toLowerCase()
+    if (gq) {
+      rows = rows.filter(o => rowMatchesSearch([
+        o.resourceType, o.resourceName, o.source, o.identifier, o.newReuse
+      ], gq))
+    }
+    return rows
   }
   if (modalTableType.value !== 'resources' && modalTableType.value !== 'software') {
     return modalItems.value || []
@@ -2043,7 +2117,7 @@ async function downloadMarkdownFile(fileId) {
               <!-- Tab-group filter (same tabs as the KRT editor) sits directly
                    above the table; the suggestions decision chips share the row. -->
               <div
-                v-if="(modalTableType === 'pdf_analysis_krt' || modalTableType === 'suggestions') && modalItems && modalItems.length"
+                v-if="(modalTableType === 'pdf_analysis_krt' || modalTableType === 'suggestions' || modalTableType === 'grounding') && modalItems && modalItems.length"
                 class="job-modal-tabs-row"
               >
                 <div class="job-modal-tabs">
@@ -2096,6 +2170,9 @@ async function downloadMarkdownFile(fileId) {
                       <tr>
                         <td class="text-xs"><HighlightText :text="o.resourceType || ''" :query="modalSearch" /></td>
                         <td class="font-medium"><HighlightText :text="o.resourceName || ''" :query="modalSearch" /></td>
+                        <td class="text-xs"><HighlightText :text="o.source || ''" :query="modalSearch" /></td>
+                        <td class="text-xs"><HighlightText :text="o.identifier || ''" :query="modalSearch" /></td>
+                        <td class="text-xs">{{ o.newReuse || '—' }}</td>
                         <td class="text-xs">
                           <span class="grounding-badge" :class="presenceClass(o)"
                                 :title="o.presence ? (o.presence.occurrences + ' occurrence(s) found by direct search of the manuscript') : 'Not recorded for this run'">
@@ -2104,13 +2181,9 @@ async function downloadMarkdownFile(fileId) {
                         </td>
                         <td v-if="showGroundingValues" class="text-xs">
                           <span class="grounding-badge" :class="groundingClass(o)" :title="o.reason || ''">{{ groundingLabel(o) }}</span>
-                        </td>
-                        <td v-if="showGroundingValues" class="text-xs">{{ groundingMatchedBy(o) }}</td>
-                        <td v-if="showGroundingValues" class="text-xs">
-                          <span v-if="o.evidence?.section" class="evidence-section-cell" :title="o.evidence.section">{{ o.evidence.section }}</span>
-                          <span v-else class="text-gray-300">—</span>
                           <span v-if="o.evidence?.match === 'partial'" class="grounding-badge grounding-partial" title="Only the leading part of the quote was located">partial</span>
                         </td>
+                        <td v-if="showGroundingValues" class="text-xs">{{ groundingMatchedBy(o) }}</td>
                         <td v-if="showGroundingValues" class="text-xs">
                           <template v-if="groundingHasFindings(o)">
                             <div v-for="(f, fi) in groundingFills(o)" :key="'f' + fi" class="grounding-fill" title="Your row leaves this empty; the manuscript supplies it. Offered as a suggestion.">
@@ -2125,9 +2198,14 @@ async function downloadMarkdownFile(fileId) {
                           </span>
                         </td>
                       </tr>
-                      <tr v-if="showGroundingValues && o.evidence?.quote" class="context-row">
+                      <!-- Context line under every row that has one, exactly as
+                           the detection tables read. In a seeded pipeline the
+                           candidate-derived quote is withheld, but presence
+                           mentions are not — they come from searching the
+                           manuscript directly. -->
+                      <tr v-if="groundingContext(o)" class="context-row">
                         <td :colspan="GROUNDING_COLS.length" class="context-cell">
-                          <EvidenceContext :evidence="o.evidence" :show-section="false" />
+                          <EvidenceContext :evidence="groundingContext(o)" :show-section="true" />
                         </td>
                       </tr>
                     </template>
@@ -2211,7 +2289,7 @@ async function downloadMarkdownFile(fileId) {
                             title="Only the leading part of the quote was located in the manuscript"
                           >partial</span>
                         </td>
-                        <td class="text-xs text-gray-500"><HighlightText :text="item.additionalInformation || item.additional_information" :query="modalSearch" /></td>
+                        <td v-if="showMentionsAdditionalInfo" class="text-xs text-gray-500"><HighlightText :text="item.additionalInformation || item.additional_information" :query="modalSearch" /></td>
                       </tr>
                       <!-- Context line: full-width, one per item. Collapsed to
                            the sentence, expandable to the paragraph. Falls back
@@ -2318,7 +2396,7 @@ async function downloadMarkdownFile(fileId) {
                           </span>
                           <span v-else>—</span>
                         </td>
-                        <td class="text-xs text-gray-500"><HighlightText :text="row.additionalInformation" :query="modalSearch" /></td>
+                        <td v-if="showPdfAdditionalInfo" class="text-xs text-gray-500"><HighlightText :text="row.additionalInformation" :query="modalSearch" /></td>
                       </tr>
                     </tbody>
                   </table>

@@ -183,6 +183,14 @@ function matchOneRow(row, pool) {
       krtRowId: row?.id ?? null,
       resourceType: row?.resourceType || '',
       resourceName: rowName,
+      // The author's own cells travel with the verdict. Showing a bare name
+      // makes a verdict unreadable: a row can read "not in manuscript" while
+      // its identifier is the thing that WAS found, and with only the name on
+      // screen the two look like a contradiction rather than a distinction.
+      identifier: row?.identifier || '',
+      source: row?.source || '',
+      newReuse: row?.newReuse || '',
+      additionalInformation: row?.additionalInformation || '',
       outcome: 'not_detected',
       matchedBy: null,
       matchedRefs: [],
@@ -227,6 +235,10 @@ function matchOneRow(row, pool) {
     krtRowId: row?.id ?? null,
     resourceType: row?.resourceType || '',
     resourceName: rowName,
+    identifier: row?.identifier || '',
+    source: row?.source || '',
+    newReuse: row?.newReuse || '',
+    additionalInformation: row?.additionalInformation || '',
     outcome,
     matchedBy: best.how,
     matchedRefs,
