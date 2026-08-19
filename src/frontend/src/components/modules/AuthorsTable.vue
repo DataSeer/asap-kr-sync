@@ -49,7 +49,7 @@ const COLS = [
 
 <template>
   <div class="at-wrapper">
-    <table class="at-table at-table--resizable" :style="colResize.tableStyle('authors', COLS)">
+    <table class="mtable mtable--fixed" :style="colResize.tableStyle('authors', COLS)">
       <thead>
         <tr>
           <th
@@ -58,12 +58,13 @@ const COLS = [
             :style="colResize.headStyle('authors', c.key, c.width)"
           >
             {{ c.label }}
-            <span class="at-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('authors', c.key, c.width, $event)"></span>
+            <span class="mtable-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('authors', c.key, c.width, $event)"></span>
           </th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="(item, i) in authors" :key="i">
+        <!-- One author is one row, so every row opens and closes its own block. -->
+        <tr v-for="(item, i) in authors" :key="i" class="mt-row mt-row-start mt-row-end" :class="{ 'mt-row-alt': i % 2 === 1 }">
           <td><HighlightText :text="item.fullName || [item.firstName, item.lastName].filter(Boolean).join(' ')" :query="search" /></td>
           <td>
             <a v-if="item.orcid" :href="'https://orcid.org/' + item.orcid" target="_blank" rel="noopener" class="at-orcid"><HighlightText :text="item.orcid" :query="search" /></a>
@@ -79,29 +80,14 @@ const COLS = [
         </tr>
       </tbody>
     </table>
-    <p v-if="!authors.length" class="at-empty">No authors found.</p>
+    <p v-if="!authors.length" class="mtable-empty">No authors found.</p>
   </div>
 </template>
 
 <style scoped>
 .at-wrapper { min-width: 0; }
-.at-table { width: 100%; font-size: 0.8rem; }
-.at-table--resizable { table-layout: fixed; }
-.at-table td { overflow-wrap: anywhere; word-break: break-word; }
-.at-table th {
-  position: sticky; top: 0; z-index: 1;
-  background: #f9fafb; text-align: left; font-weight: 600; color: #6b7280;
-  text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.03em;
-  padding: 0.5rem 0.6rem; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
-  position: relative;
-}
-.at-table td { padding: 0.5rem 0.6rem; vertical-align: top; border-bottom: 1px solid #f3f4f6; }
-.at-col-resize {
-  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
-  cursor: col-resize; user-select: none;
-}
-.at-col-resize:hover { background: #bfdbfe; }
+/* Borders, spacing and the row-block rules come from
+   assets/styles/module-tables.css. */
 .at-orcid { color: #2563eb; text-decoration: none; font-family: monospace; font-size: 0.75rem; }
 .at-orcid:hover { text-decoration: underline; }
-.at-empty { padding: 1.5rem; text-align: center; color: #9ca3af; font-size: 0.85rem; }
 </style>

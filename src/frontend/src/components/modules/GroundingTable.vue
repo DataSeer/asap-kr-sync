@@ -182,13 +182,13 @@ defineExpose({ foundVerdict })
 
 <template>
   <div class="gt-wrapper">
-    <table class="gt-table gt-table--resizable" :style="colResize.tableStyle('grounding', cols)">
+    <table class="mtable mtable--fixed" :style="colResize.tableStyle('grounding', cols)">
       <thead>
         <tr>
           <th v-for="c in cols" :key="c.key" :style="colResize.headStyle('grounding', c.key, c.width)">
             {{ c.label }}
             <span
-              class="gt-col-resize"
+              class="mtable-col-resize"
               title="Drag to resize"
               @mousedown.stop.prevent="colResize.startResize('grounding', c.key, c.width, $event)"
             ></span>
@@ -197,11 +197,10 @@ defineExpose({ foundVerdict })
       </thead>
       <tbody>
         <template v-for="(o, i) in outcomes" :key="i">
-          <!-- An item and its context line are ONE block: the item row draws the
-               top and sides, the last row draws the bottom, and the two share a
-               background. Row-level borders alone read as a list of equal
-               stripes, which is what made two items hard to tell apart. -->
-          <tr class="gt-item" :class="{ 'gt-last': !groundingContext(o), 'gt-alt': i % 2 === 1 }">
+          <!-- An item and its context line are ONE block; the rules that draw
+               it live in assets/styles/module-tables.css, shared with every
+               other module table. -->
+          <tr class="mt-row mt-row-start" :class="{ 'mt-row-end': !groundingContext(o), 'mt-row-alt': i % 2 === 1 }">
             <td class="gt-xs"><HighlightText :text="o.resourceType || ''" :query="search" /></td>
             <td class="gt-name"><HighlightText :text="o.resourceName || ''" :query="search" /></td>
             <td class="gt-xs"><HighlightText :text="o.source || ''" :query="search" /></td>
@@ -242,8 +241,8 @@ defineExpose({ foundVerdict })
               </div>
             </td>
           </tr>
-          <tr v-if="groundingContext(o)" class="gt-context-row gt-last" :class="{ 'gt-alt': i % 2 === 1 }">
-            <td :colspan="cols.length" class="gt-context-cell">
+          <tr v-if="groundingContext(o)" class="mt-row mt-row-span mt-row-end" :class="{ 'mt-row-alt': i % 2 === 1 }">
+            <td :colspan="cols.length">
               <EvidenceContext :evidence="groundingContext(o)" :show-section="true" />
             </td>
           </tr>
@@ -263,46 +262,12 @@ defineExpose({ foundVerdict })
    view. The table sets its own width (100% until a column is dragged); the
    wrapper only needs to let the frame scroll when it exceeds that. */
 .gt-wrapper { min-width: 0; }
-.gt-table { width: 100%; font-size: 0.8rem; }
-.gt-table th {
-  position: sticky; top: 0; z-index: 1;
-  background: #f9fafb; text-align: left; font-weight: 600; color: #6b7280;
-  text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.03em;
-  padding: 0.5rem 0.6rem; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
-}
-.gt-table td { padding: 0.5rem 0.6rem; vertical-align: top; background: #fff; }
-
-/* One item = its row plus its context line. The block is drawn with borders on
-   the outside only, so nothing separates an item from its own context. */
-.gt-item td { border-top: 1px solid #d1d5db; }
-.gt-item td:first-child { border-left: 1px solid #d1d5db; }
-.gt-item td:last-child { border-right: 1px solid #d1d5db; }
-.gt-context-row td:first-child { border-left: 1px solid #d1d5db; }
-.gt-context-row td:last-child { border-right: 1px solid #d1d5db; }
-.gt-last td { border-bottom: 1px solid #d1d5db; padding-bottom: 0.6rem; }
-/* The gap between blocks belongs to the table, not the cells, so the border
-   closes above it. */
-.gt-table { border-spacing: 0 0.4rem; border-collapse: separate; }
-/* Alternating ground, applied to every row of a block so the block reads as
-   one — colour does the separating work that a rule cannot at this density. */
-.gt-alt td { background: #fafbfc; }
-.gt-alt.gt-context-row td { background: #fffcf2; }
-/* Fixed layout is what makes a dragged width hold: without it the browser
-   re-fits every column to its content and the drag appears to do nothing. */
-.gt-table--resizable { table-layout: fixed; }
-.gt-table td { overflow-wrap: anywhere; word-break: break-word; }
-.gt-table th { position: relative; }
-.gt-col-resize {
-  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
-  cursor: col-resize; user-select: none;
-}
-.gt-col-resize:hover { background: #bfdbfe; }
+/* Borders, spacing, the sticky header and the row-block rules come from
+   assets/styles/module-tables.css, shared with every other module table. */
 /* Breathing room between items, on whichever row ends one. */
 
 .gt-xs { font-size: 0.75rem; color: #374151; }
 .gt-name { font-weight: 500; }
-.gt-context-row td { background: #fffdf5; }
-.gt-context-cell { padding: 0.35rem 0.6rem 0.6rem 1.4rem; }
 .gt-empty { padding: 1.5rem; text-align: center; color: #9ca3af; font-size: 0.85rem; }
 
 .grounding-badge {

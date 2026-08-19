@@ -161,8 +161,8 @@ function downloadJson() {
       </div>
     </div>
 
-    <div v-if="allRows.length" class="gk-frame gk-frame-main">
-      <table class="gk-table gk-table--resizable" :style="colResize.tableStyle('pdfAnalysis', cols)">
+    <div v-if="allRows.length" class="mtable-frame gk-frame-main">
+      <table class="mtable mtable--fixed" :style="colResize.tableStyle('pdfAnalysis', cols)">
         <thead>
           <tr>
             <th
@@ -172,7 +172,7 @@ function downloadJson() {
             >
               {{ c.label }}
               <span
-                class="gk-col-resize"
+                class="mtable-col-resize"
                 title="Drag to resize"
                 @mousedown.stop.prevent="colResize.startResize('pdfAnalysis', c.key, c.width, $event)"
               ></span>
@@ -183,13 +183,12 @@ function downloadJson() {
           <tr
             v-for="(row, i) in rows"
             :key="i"
-            :class="[
-              'gk-row',
-              row.displayParity === 0 ? 'gk-group-even' : 'gk-group-odd',
-              { 'gk-group-start': row.isGroupStart,
-                'gk-group-end': row.isGroupEnd,
-                'gk-group-merged': row.groupSize > 1 }
-            ]"
+            class="mt-row"
+            :class="{
+              'mt-row-start': row.isGroupStart,
+              'mt-row-end': row.isGroupEnd,
+              'mt-row-alt': row.displayParity === 1
+            }"
           >
             <!-- The row number appears once per group so a merged group reads
                  as one block rather than as repeated identical lines. -->
@@ -231,9 +230,9 @@ function downloadJson() {
           </tr>
         </tbody>
       </table>
-      <p v-if="!rows.length" class="gk-empty">No rows match the current filters.</p>
+      <p v-if="!rows.length" class="mtable-empty">No rows match the current filters.</p>
     </div>
-    <p v-else class="gk-empty">
+    <p v-else class="mtable-empty">
       No detections were consolidated yet. Run the upstream detections first.
     </p>
 
@@ -246,8 +245,8 @@ function downloadJson() {
       <p class="gk-dropped-hint">
         These detections were not kept in the Generated KRT — with the reason for each.
       </p>
-      <div class="gk-frame">
-        <table class="gk-table gk-table--resizable" :style="colResize.tableStyle('dropped', DROPPED_COLS)">
+      <div class="mtable-frame gk-frame-dropped">
+        <table class="mtable mtable--fixed" :style="colResize.tableStyle('dropped', DROPPED_COLS)">
           <thead>
             <tr>
               <th
@@ -257,7 +256,7 @@ function downloadJson() {
               >
                 {{ c.label }}
                 <span
-                  class="gk-col-resize"
+                  class="mtable-col-resize"
                   title="Drag to resize"
                   @mousedown.stop.prevent="colResize.startResize('dropped', c.key, c.width, $event)"
                 ></span>
@@ -265,7 +264,12 @@ function downloadJson() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(d, i) in dropped" :key="i">
+            <tr
+              v-for="(d, i) in dropped"
+              :key="i"
+              class="mt-row mt-row-start mt-row-end"
+              :class="{ 'mt-row-alt': i % 2 === 1 }"
+            >
               <td>
                 <span
                   v-for="s in (d.sources || [])"
@@ -305,41 +309,16 @@ function downloadJson() {
 .gk-btn:hover { border-color: #bfdbfe; color: #1d4ed8; }
 /* max-height, not height: with three rows a fixed-height frame is mostly empty
    box, and with three hundred it still has to stop somewhere. */
-.gk-frame {
-  max-height: min(45vh, 30rem); overflow: auto;
-  border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fff;
-}
-.gk-table { width: 100%; font-size: 0.8rem; }
-.gk-table--resizable { table-layout: fixed; }
-.gk-table th {
-  position: sticky; top: 0; z-index: 1;
-  background: #f9fafb; text-align: left; font-weight: 600; color: #6b7280;
-  text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.03em;
-  padding: 0.5rem 0.6rem; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
-}
-.gk-table td {
-  padding: 0.45rem 0.6rem; vertical-align: top;
-  overflow-wrap: anywhere; word-break: break-word;
-}
-.gk-col-resize {
-  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
-  cursor: col-resize; user-select: none;
-}
-.gk-col-resize:hover { background: #bfdbfe; }
+/* Table borders, spacing and the row-block rules come from
+   assets/styles/module-tables.css. */
+.gk-frame-main { max-height: min(60vh, 40rem); }
+.gk-frame-dropped { max-height: min(40vh, 24rem); }
 .gk-xs { font-size: 0.76rem; }
 .gk-muted { color: #6b7280; }
 .gk-name { font-weight: 500; }
 .gk-reason { font-size: 0.74rem; color: #6b7280; }
-/* Alternating shade per GROUP, not per row — the block is the unit here. */
-.gk-group-even td { background: #fff; }
-.gk-group-odd td { background: #fafafa; }
-.gk-group-merged.gk-group-start td { border-top: 2px solid #bfdbfe; }
-.gk-group-end td { border-bottom: 1px solid #f3f4f6; }
 .gk-krtnum { font-weight: 600; color: #374151; font-size: 0.76rem; }
 .gk-merge-label { font-size: 0.66rem; color: #1d4ed8; margin-top: 0.1rem; }
-/* Colours and spacing come from assets/styles/badges.css. */
-.gk-frame-main { max-height: min(60vh, 40rem); }
-.gk-empty { padding: 1.5rem; text-align: center; color: #9ca3af; font-size: 0.85rem; }
 .gk-dropped { margin-top: 1.25rem; }
 .gk-dropped-title {
   display: flex; align-items: center; gap: 0.4rem;

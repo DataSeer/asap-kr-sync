@@ -6,6 +6,10 @@
    @tailwind directives it is silently dropped and every badge renders as plain
    text. */
 @import './badges.css';
+/* How every module-page table draws its rows: one item is one block, with a
+   heavy rule between blocks. Shared for the same reason as the badges — five
+   tables showing the same structure had five sets of borders. */
+@import './module-tables.css';
 
 @tailwind base;
 @tailwind components;

@@ -71,13 +71,20 @@ const sourceTitle = (source) => SOURCE_TITLES[source]
  */
 const fromLabel = (row) => (row.side === 'author' ? 'Author' : 'LM')
 
+/**
+ * The last row of a decision. The rows carry `isGroupStart` but not its
+ * counterpart, and a block needs to know where it ends to close itself.
+ */
+const isGroupEnd = (i) => i === props.rows.length - 1
+  || props.rows[i + 1]?.groupIndex !== props.rows[i].groupIndex
+
 const isEmpty = computed(() => props.rows.length === 0)
 </script>
 
 <template>
   <div class="st">
-    <div class="st-frame">
-      <table v-if="!isEmpty" class="st-table st-table--resizable" :style="colResize.tableStyle('suggestions', COLS)">
+    <div class="mtable-frame">
+      <table v-if="!isEmpty" class="mtable mtable--fixed" :style="colResize.tableStyle('suggestions', COLS)">
         <thead>
           <tr>
             <th
@@ -87,7 +94,7 @@ const isEmpty = computed(() => props.rows.length === 0)
             >
               {{ c.label }}
               <span
-                class="st-col-resize"
+                class="mtable-col-resize"
                 title="Drag to resize"
                 @mousedown.stop.prevent="colResize.startResize('suggestions', c.key, c.width, $event)"
               ></span>
@@ -98,7 +105,12 @@ const isEmpty = computed(() => props.rows.length === 0)
           <tr
             v-for="(r, i) in rows"
             :key="i"
-            :class="[r.groupIndex % 2 === 0 ? 'st-group-even' : 'st-group-odd', { 'st-group-start': r.isGroupStart }]"
+            class="mt-row"
+            :class="{
+              'mt-row-start': r.isGroupStart,
+              'mt-row-end': isGroupEnd(i),
+              'mt-row-alt': r.groupIndex % 2 === 1
+            }"
           >
             <!-- Decision, reason and modules belong to the decision, not to
                  either row, so they are printed once at the top of the group. -->
@@ -148,41 +160,18 @@ const isEmpty = computed(() => props.rows.length === 0)
           </tr>
         </tbody>
       </table>
-      <p v-else class="st-empty">No rows match the current filters.</p>
+      <p v-else class="mtable-empty">No rows match the current filters.</p>
     </div>
   </div>
 </template>
 
 <style scoped>
 .st { min-width: 0; }
-.st-frame {
-  max-height: min(60vh, 40rem); overflow: auto;
-  border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fff;
-}
-.st-table { width: 100%; font-size: 0.8rem; }
-.st-table--resizable { table-layout: fixed; }
-.st-table th {
-  position: sticky; top: 0; z-index: 1;
-  background: #f9fafb; text-align: left; font-weight: 600; color: #6b7280;
-  text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.03em;
-  padding: 0.5rem 0.6rem; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
-}
-.st-table td {
-  padding: 0.45rem 0.6rem; vertical-align: top;
-  overflow-wrap: anywhere; word-break: break-word;
-}
-.st-col-resize {
-  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
-  cursor: col-resize; user-select: none;
-}
-.st-col-resize:hover { background: #bfdbfe; }
+/* Borders, spacing and the row-block rules come from
+   assets/styles/module-tables.css. */
 .st-xs { font-size: 0.76rem; }
 .st-name { font-weight: 500; }
 .st-reason { font-size: 0.74rem; color: #6b7280; }
-/* Shading by decision, so the author/generated pair reads as one unit. */
-.st-group-even td { background: #fff; }
-.st-group-odd td { background: #fafafa; }
-.st-group-start td { border-top: 1px solid #e5e7eb; }
 .st-decision {
   display: inline-block; padding: 0.05rem 0.4rem; border-radius: 0.25rem;
   font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
@@ -197,5 +186,4 @@ const isEmpty = computed(() => props.rows.length === 0)
    the author's value is what exists, the generated one is what is proposed. */
 .st-diff-old :deep(*), .st-diff-old { color: #b91c1c; text-decoration: line-through; }
 .st-diff-new :deep(*), .st-diff-new { color: #047857; font-weight: 600; }
-.st-empty { padding: 1.5rem; text-align: center; color: #9ca3af; font-size: 0.85rem; }
 </style>

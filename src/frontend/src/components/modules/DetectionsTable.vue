@@ -27,6 +27,17 @@ const props = defineProps({
   jobType: { type: String, default: '' }
 })
 
+/**
+ * Does this item carry a sentence to show underneath it?
+ *
+ * Asked twice — once to decide whether the columns row is also the last row of
+ * the block, once to render the sentence — so it is a function rather than the
+ * same four-way condition written twice and drifting.
+ */
+const hasContext = (item) => !!(
+  item.evidence?.quote || item.evidence?.context || item.detectorMeta?.context || item.context
+)
+
 /** Shared with the other tables so a dragged width is remembered everywhere. */
 /** Shared with the other module tables, and separate from the modal's. */
 const WIDTHS_KEY = 'moduleView.columnWidths'
@@ -163,7 +174,7 @@ function getMergedFromContext(originalItem) {
 
 <template>
   <div v-if="items.length" class="dt-wrapper">
-    <table class="dt-table dt-table--resizable" :style="colResize.tableStyle('mentions', cols)">
+    <table class="mtable mtable--fixed" :style="colResize.tableStyle('mentions', cols)">
       <thead>
         <tr>
           <th
@@ -172,13 +183,13 @@ function getMergedFromContext(originalItem) {
             :style="colResize.headStyle('mentions', c.key, c.width)"
           >
             {{ c.label }}
-            <span class="dt-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('mentions', c.key, c.width, $event)"></span>
+            <span class="mtable-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('mentions', c.key, c.width, $event)"></span>
           </th>
         </tr>
       </thead>
       <tbody>
         <template v-for="(item, i) in items" :key="i">
-          <tr>
+          <tr class="mt-row mt-row-start" :class="{ 'mt-row-alt': i % 2 === 1, 'mt-row-end': !hasContext(item) }">
             <td class="text-xs"><HighlightText :text="item.resourceType || item.resource_type || 'Software/code'" :query="search" /></td>
             <td class="font-medium">
               <HighlightText :text="getMentionName(item)" :query="search" />
@@ -269,13 +280,17 @@ function getMergedFromContext(originalItem) {
                            located-text field. It still has the paragraph where
                            the resource appears, and that is worth more to a
                            curator than a blank row. -->
-          <tr v-if="item.evidence?.quote || item.evidence?.context || item.detectorMeta?.context || item.context" class="context-row">
-            <td :colspan="cols.length" class="context-cell">
+          <tr v-if="hasContext(item)" class="mt-row mt-row-span mt-row-end" :class="{ 'mt-row-alt': i % 2 === 1 }">
+            <td :colspan="cols.length">
               <EvidenceContext v-if="item.evidence?.quote || item.evidence?.context" :evidence="item.evidence" :show-section="false" />
               <template v-else>{{ item.detectorMeta?.context || item.context }}</template>
             </td>
           </tr>
-          <tr v-if="expandedMergedRows.has(i) && getMergedFromCount(item) > 1" class="merged-from-row">
+          <tr
+            v-if="expandedMergedRows.has(i) && getMergedFromCount(item) > 1"
+            class="mt-row mt-row-span mt-row-end merged-from-row"
+            :class="{ 'mt-row-alt': i % 2 === 1 }"
+          >
             <td :colspan="cols.length">
               <div class="merged-from-title">Merged from {{ getMergedFromCount(item) }} pre-dedup mentions:</div>
               <table class="merged-from-table">
@@ -315,38 +330,8 @@ function getMergedFromContext(originalItem) {
    view. The table sets its own width (100% until a column is dragged); the
    wrapper only needs to let the frame scroll when it exceeds that. */
 .dt-wrapper { min-width: 0; }
-.dt-table { width: 100%; font-size: 0.8rem; }
-.dt-table--resizable { table-layout: fixed; }
-.dt-table td { overflow-wrap: anywhere; word-break: break-word; }
-.dt-table th {
-  position: sticky; top: 0; z-index: 1;
-  background: #f9fafb; text-align: left; font-weight: 600; color: #6b7280;
-  text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.03em;
-  padding: 0.5rem 0.6rem; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
-}
-.dt-table td { padding: 0.5rem 0.6rem; vertical-align: top; background: #fff; }
-.dt-col-resize {
-  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
-  cursor: col-resize; user-select: none;
-}
-.dt-col-resize:hover { background: #bfdbfe; }
-
-/* An item and its context line are one block, bordered on the outside only. */
-.dt-table { border-spacing: 0 0.4rem; border-collapse: separate; }
-.dt-item td { border-top: 1px solid #d1d5db; }
-.dt-item td:first-child { border-left: 1px solid #d1d5db; }
-.dt-item td:last-child { border-right: 1px solid #d1d5db; }
-.context-row td:first-child { border-left: 1px solid #d1d5db; }
-.context-row td:last-child { border-right: 1px solid #d1d5db; }
-.dt-last td { border-bottom: 1px solid #d1d5db; padding-bottom: 0.6rem; }
-.context-row td { background: #fffdf5; }
-.dt-alt td { background: #fafbfc; }
-.dt-alt.context-row td { background: #fffcf2; }
-
-/* Badge colours come from assets/styles/badges.css; only the spacing and the
-   two shapes that are not plain spans are local.
-   These badges previously borrowed JobStatusPanel's styles, which are SCOPED —
-   so on a module page they rendered as unstyled text. */
+/* Borders, spacing and the row-block rules come from
+   assets/styles/module-tables.css. */
 .dt-badge-icon { display: inline-flex; align-items: center; gap: 0.2rem; }
 .dt-badge-button { cursor: pointer; font-family: inherit; }
 /* Evidence qualifiers ("partial", "not verbatim") are a caveat on a finding
