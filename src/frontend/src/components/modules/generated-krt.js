@@ -26,10 +26,35 @@ export const SOURCE_LABELS = {
   materials_detection: 'Materials',
   protocols_detection: 'Protocols',
   identifier_detection: 'ID',
-  author_krt: 'Author KRT'
+  author_krt: 'Author KRT',
+  // Steps rather than detectors, but they appear as sources on a suggestion —
+  // without a label they printed as the raw job type.
+  krt_grounding: 'Grounding',
+  pdf_analysis: 'Consolidation'
 }
 
 export const sourceLabel = (source) => SOURCE_LABELS[source] || source
+
+/**
+ * The badge class for a contributing source.
+ *
+ * A detector takes the colour of what it finds, so a "Materials" badge matches
+ * a Lab Materials row wherever both appear. Identifier detection spans every
+ * category and the author's own table is not a finding at all, so neither
+ * borrows a category colour.
+ */
+const SOURCE_BADGES = {
+  software_detection: 'badge-software',
+  datasets_detection: 'badge-datasets',
+  materials_detection: 'badge-materials',
+  protocols_detection: 'badge-protocols',
+  identifier_detection: 'badge-neutral',
+  krt_grounding: 'badge-neutral',
+  pdf_analysis: 'badge-neutral',
+  author_krt: 'badge-own'
+}
+
+export const sourceBadge = (source) => SOURCE_BADGES[source] || 'badge-neutral'
 
 /**
  * Display-side scrub of internal references that leak into LM reasons —

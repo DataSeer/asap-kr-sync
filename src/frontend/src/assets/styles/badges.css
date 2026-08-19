@@ -1,0 +1,64 @@
+/**
+ * The app's badge colours, in one place.
+ *
+ * Every table that names a resource category, a detection module, a NEW/REUSE
+ * value or who proposed a row had grown its own palette — "Materials" was amber
+ * on one page and blue on another, and NEW was green in the Generated KRT while
+ * the detections table drew it in the same blue it used for "found by Softcite".
+ * A colour that means two things is worse than no colour.
+ *
+ * The category hues are taken from /admin/krt-editor/resource-types, which is
+ * where a curator sets them up and therefore where the app's colour vocabulary
+ * is established. The rest are chosen not to collide with them.
+ *
+ *   Datasets        blue      Software/code   green
+ *   Protocols       purple    Lab materials   amber
+ *   anything else   gray
+ *
+ * A detection module takes the colour of what it finds, so the badge for
+ * Materials Detection matches a Lab Materials row. Modules that span categories
+ * (identifiers) or are pipeline steps rather than detectors (grounding,
+ * consolidation) are grey — they are not a category and should not borrow one.
+ *
+ * Two more oppositions, each on hues the categories do not use:
+ *   NEW / REUSE                   teal / rose
+ *   from the document / derived   slate / indigo
+ *
+ * That last pair covers Author vs LM in the suggestions, the "KRT" tag on a
+ * detection, and the ORCID ladder — GROBID reads the paper, OpenAlex and the
+ * ORCID API look it up somewhere else. Same distinction, so the same colours.
+ */
+
+.badge {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+/* ── resource categories, and the modules that detect them ───────────── */
+.badge-datasets { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.badge-software { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+.badge-protocols { background: #f3e8ff; color: #7e22ce; border: 1px solid #e9d5ff; }
+.badge-materials { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+/* Cross-category or not a detector at all. */
+.badge-neutral { background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
+
+/* ── new vs reuse ────────────────────────────────────────────────────── */
+.badge-new { background: #ccfbf1; color: #0f766e; border: 1px solid #99f6e4; }
+.badge-reuse { background: #ffe4e6; color: #be123c; border: 1px solid #fecdd3; }
+
+/* ── where a value came from ─────────────────────────────────────────── */
+/* From the document or the author's own table — not inferred by anything.
+   Slate, because it is a fact rather than a finding. */
+.badge-own { background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; }
+/* Produced elsewhere: a model's proposal, or an external registry lookup.
+   Indigo rather than purple, which is Protocols. */
+.badge-derived { background: #e0e7ff; color: #4338ca; border: 1px solid #c7d2fe; }
+
+/* A badge that explains itself on hover says so with the cursor. */
+.badge[title] { cursor: help; }

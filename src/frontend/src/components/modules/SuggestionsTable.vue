@@ -12,7 +12,7 @@
 import { computed } from 'vue'
 import HighlightText from '@/components/submission/HighlightText.vue'
 import { useColumnResize } from '@/composables/useColumnResize'
-import { cleanReason, sourceLabel } from '@/components/modules/generated-krt'
+import { cleanReason, sourceLabel, sourceBadge } from '@/components/modules/generated-krt'
 
 const props = defineProps({
   /** Display rows, already filtered and grouped by the caller. */
@@ -115,7 +115,11 @@ const isEmpty = computed(() => props.rows.length === 0)
               />
             </td>
             <td class="st-xs">
-              <span v-if="r.role" class="st-role" :class="'st-role-' + r.side">{{ fromLabel(r) }}</span>
+              <span
+                v-if="r.role"
+                class="badge"
+                :class="r.side === 'author' ? 'badge-own' : 'badge-derived'"
+              >{{ fromLabel(r) }}</span>
             </td>
             <td
               v-for="c in ROW_COLUMNS"
@@ -123,7 +127,20 @@ const isEmpty = computed(() => props.rows.length === 0)
               class="st-xs"
               :class="{ 'st-name': c.key === 'resourceName' }"
             >
+              <!-- NEW/REUSE is a value with two states everywhere else in the
+                   app, so it carries the same two colours here. A changed one
+                   still takes the diff styling, which is why the badge is inside
+                   the same branch rather than replacing it. -->
+              <span
+                v-if="c.key === 'newReuse' && r.cells && r.cells[c.key]"
+                class="badge"
+                :class="[
+                  String(r.cells[c.key]).toLowerCase() === 'new' ? 'badge-new' : 'badge-reuse',
+                  (r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'st-diff-old' : 'st-diff-new') : ''
+                ]"
+              >{{ r.cells[c.key] }}</span>
               <HighlightText
+                v-else
                 :class="(r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'st-diff-old' : 'st-diff-new') : ''"
                 :text="r.cells && r.cells[c.key]"
                 :query="search"
@@ -134,7 +151,8 @@ const isEmpty = computed(() => props.rows.length === 0)
                 <span
                   v-for="src in detectedBy(r.decision)"
                   :key="src"
-                  class="st-badge"
+                  class="badge st-badge-gap"
+                  :class="sourceBadge(src)"
                   :title="sourceTitle(src)"
                 >{{ sourceLabel(src) }}</span>
                 <span v-if="!detectedBy(r.decision).length">—</span>
@@ -187,19 +205,8 @@ const isEmpty = computed(() => props.rows.length === 0)
 .st-d-remove { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 .st-d-skip { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
 .st-d-unreviewed { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
-.st-role {
-  display: inline-block; padding: 0.05rem 0.35rem; border-radius: 0.25rem;
-  font-size: 0.66rem; font-weight: 600;
-}
-.st-role-author { background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
-.st-role-generated { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
-/* The same badge the Generated KRT uses for a contributing module. */
-.st-badge {
-  display: inline-block; margin-right: 0.25rem; padding: 0.05rem 0.35rem;
-  border-radius: 0.25rem; font-size: 0.68rem; font-weight: 600;
-  text-transform: uppercase; cursor: help;
-  background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;
-}
+/* Colours come from assets/styles/badges.css. */
+.st-badge-gap { margin-right: 0.25rem; }
 /* The two sides of a change, marked rather than merged into a diff string:
    the author's value is what exists, the generated one is what is proposed. */
 .st-diff-old :deep(*), .st-diff-old { color: #b91c1c; text-decoration: line-through; }

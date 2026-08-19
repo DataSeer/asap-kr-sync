@@ -14,7 +14,7 @@ import { computed } from 'vue'
 import Papa from 'papaparse'
 import HighlightText from '@/components/submission/HighlightText.vue'
 import { useColumnResize } from '@/composables/useColumnResize'
-import { sourceLabel, cleanReason } from '@/components/modules/generated-krt'
+import { sourceLabel, sourceBadge, cleanReason } from '@/components/modules/generated-krt'
 
 const props = defineProps({
   /** Contributor rows, already filtered and carrying `displayParity`. */
@@ -208,8 +208,8 @@ function downloadJson() {
             <td>
               <span
                 v-if="row.source"
-                class="gk-badge"
-                :class="row.source === 'author_krt' ? 'gk-badge-carried' : 'gk-badge-source'"
+                class="badge"
+                :class="sourceBadge(row.source)"
                 :title="sourceTitle(row.source)"
               >{{ sourceLabel(row.source) }}</span>
               <span v-else>—</span>
@@ -222,8 +222,8 @@ function downloadJson() {
             <td>
               <span
                 v-if="row.newReuse"
-                class="gk-badge"
-                :class="row.newReuse === 'new' ? 'gk-badge-new' : 'gk-badge-reuse'"
+                class="badge"
+                :class="row.newReuse === 'new' ? 'badge-new' : 'badge-reuse'"
               >{{ row.newReuse }}</span>
               <span v-else>—</span>
             </td>
@@ -272,7 +272,8 @@ function downloadJson() {
                 <span
                   v-for="s in (d.sources || [])"
                   :key="s"
-                  class="gk-badge gk-badge-source gk-badge-gap"
+                  class="badge gk-badge-gap"
+                  :class="sourceBadge(s)"
                   :title="sourceTitle(s)"
                 >{{ sourceLabel(s) }}</span>
                 <span v-if="!d.sources || !d.sources.length">—</span>
@@ -338,17 +339,8 @@ function downloadJson() {
 .gk-group-end td { border-bottom: 1px solid #f3f4f6; }
 .gk-krtnum { font-weight: 600; color: #374151; font-size: 0.76rem; }
 .gk-merge-label { font-size: 0.66rem; color: #1d4ed8; margin-top: 0.1rem; }
-.gk-badge {
-  display: inline-block; padding: 0.05rem 0.35rem; border-radius: 0.25rem;
-  font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
-}
+/* Colours come from assets/styles/badges.css, shared with every other table. */
 .gk-badge-gap { margin-right: 0.25rem; }
-.gk-badge-source { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
-.gk-badge { cursor: help; }
-/* Not a detection: amber, because it means nothing confirmed this row. */
-.gk-badge-carried { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
-.gk-badge-new { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
-.gk-badge-reuse { background: #f5f3ff; color: #6d28d9; border: 1px solid #ddd6fe; }
 .gk-frame-main { max-height: min(60vh, 40rem); }
 .gk-empty { padding: 1.5rem; text-align: center; color: #9ca3af; font-size: 0.85rem; }
 .gk-dropped { margin-top: 1.25rem; }

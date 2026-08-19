@@ -1,3 +1,12 @@
+/* Badge colours, shared by every table that names a category, a module, a
+   NEW/REUSE value or who proposed a row. Global rather than per-component:
+   scoped styles are what let four tables drift to four palettes.
+
+   First line, because @import must precede every other rule — placed after the
+   @tailwind directives it is silently dropped and every badge renders as plain
+   text. */
+@import './badges.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

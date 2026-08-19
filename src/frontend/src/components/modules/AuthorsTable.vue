@@ -18,12 +18,15 @@ const WIDTHS_KEY = 'moduleView.columnWidths'
 
 const colResize = useColumnResize(WIDTHS_KEY)
 
-/** Which pass supplied the ORCID — colour-coded so a weaker source is visible. */
+/**
+ * Which pass supplied the ORCID.
+ *
+ * The same distinction the rest of the app draws: GROBID read it off the paper,
+ * everything else looked it up somewhere the paper does not say. These used to
+ * be blue and amber, which now mean Datasets and Lab materials.
+ */
 function sourceClass(source) {
-  if (source === 'grobid+openalex' || source === 'openalex') return 'at-src-enriched'
-  if (source === 'grobid') return 'at-src-grobid'
-  if (source === 'orcid_api') return 'at-src-api'
-  return 'at-src-plain'
+  return source === 'grobid' ? 'badge-own' : 'badge-derived'
 }
 
 function formatOrcidSource(source) {
@@ -68,7 +71,7 @@ const COLS = [
           </td>
           <td><HighlightText :text="item.affiliation" :query="search" /></td>
           <td>
-            <span v-if="item.source" class="at-badge" :class="sourceClass(item.source)">
+            <span v-if="item.source" class="badge" :class="sourceClass(item.source)">
               {{ formatOrcidSource(item.source) }}
             </span>
             <span v-else>—</span>
@@ -98,14 +101,6 @@ const COLS = [
   cursor: col-resize; user-select: none;
 }
 .at-col-resize:hover { background: #bfdbfe; }
-.at-badge {
-  display: inline-block; padding: 0.0625rem 0.375rem;
-  border-radius: 9999px; font-size: 0.6875rem; font-weight: 500;
-}
-.at-src-enriched { background: #dbeafe; color: #1d4ed8; }
-.at-src-grobid { background: #fef3c7; color: #92400e; }
-.at-src-api { background: #e0e7ff; color: #3730a3; }
-.at-src-plain { background: #f3f4f6; color: #6b7280; }
 .at-orcid { color: #2563eb; text-decoration: none; font-family: monospace; font-size: 0.75rem; }
 .at-orcid:hover { text-decoration: underline; }
 .at-empty { padding: 1.5rem; text-align: center; color: #9ca3af; font-size: 0.85rem; }
