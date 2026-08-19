@@ -1341,12 +1341,18 @@ function foundVerdict(o) {
   const conflicts = o.conflicts?.length || 0
   const occurrences = p.occurrences || 0
 
-  // A disagreement outranks how the row was located: it IS there, and the
+  // A disagreement outranks how the row was located: the row IS there, and the
   // mismatch is the thing worth reading.
+  //
+  // RED, not blue. This is not "have a look when you get a chance" — one of the
+  // two sources is wrong. Either the manuscript prints an identifier that
+  // contradicts the KRT, or the KRT contradicts the paper, and both are errors
+  // a reader has to resolve rather than note. It is the only verdict here that
+  // reports a defect rather than a degree of confidence.
   if (conflicts > 0) {
     return {
-      label: 'Incoherence', cls: 'grounding-check',
-      title: `Located, but ${conflicts} value(s) in this row disagree with the manuscript. Your row is kept — this is for you to check.`
+      label: 'Incoherence', cls: 'grounding-error',
+      title: `${conflicts} value(s) in this row disagree with the manuscript — one of the two is wrong. Your row is kept unchanged; the conflicting values are listed under More information.`
     }
   }
 
