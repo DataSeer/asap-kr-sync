@@ -95,6 +95,16 @@ const routes = [
         meta: { title: 'Step 4: Edit manuscript', isSubmissionPage: true }
       },
       {
+        // One module's results, on its own page. A real route rather than a
+        // modal so it can be opened in a second tab beside the KRT editor —
+        // which is what resolving a conflict actually requires — and so a
+        // result can be linked to.
+        path: 'submissions/:id/modules/:type',
+        name: 'submission-module',
+        component: () => import('@/views/submissions/ModuleResultsView.vue'),
+        meta: { requiresAuth: true }
+      },
+      {
         path: 'submissions/:id/report',
         name: 'submission-report',
         component: ReportView,

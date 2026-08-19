@@ -7,6 +7,7 @@
  * Shows elapsed time, retry count, and timeout warnings.
  */
 import { computed, inject, ref, onMounted, onUnmounted, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useRoute } from 'vue-router'
 import Papa from 'papaparse'
 import { useAuthStore } from '@/stores/auth.store'
@@ -20,6 +21,8 @@ import { isCancelledJob } from '@/composables/useJobPoller'
 
 const emit = defineEmits(['edit-das'])
 const route = useRoute()
+/** For links out of the panel; the id is always in the route on these views. */
+const submissionId = computed(() => route.params.id)
 
 const jobs = inject('submissionJobs', ref({}))
 const restartJobFn = inject('restartJob', null)
@@ -169,6 +172,12 @@ const modalTabFilter = ref('all')
 // Multi-select decision filter for the AI-suggestions table (toggle chips).
 // Empty set = no filter (all decisions shown).
 const modalDecisionFilter = ref(new Set())
+/**
+ * Modules with a dedicated results page. The others still open the modal until
+ * their view exists — a link to an empty page would be worse than no link.
+ */
+const MODULE_PAGE_TYPES = new Set(['krt_grounding'])
+
 const MODAL_TAB_GROUPS = [
   { key: 'all', label: 'All' },
   { key: 'Datasets', label: 'Datasets' },
@@ -2091,6 +2100,16 @@ async function downloadMarkdownFile(fileId) {
             {{ getResultBadgeText(job) }}
           </span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
+          <!-- Opens the module's own page. A router-link rather than a click
+               handler so ctrl/cmd-click opens a second tab, which is what
+               reading results beside the KRT editor requires. -->
+          <RouterLink
+            v-if="MODULE_PAGE_TYPES.has(job.type) && job.status === 'complete'"
+            :to="{ name: 'submission-module', params: { id: submissionId, type: job.type } }"
+            class="job-open-page"
+            title="Open this module's results on its own page (ctrl-click for a new tab)"
+            @click.stop
+          >open ↗</RouterLink>
           <!-- A KRT/manuscript disagreement is a defect, not a statistic, so it
                gets its own badge in the error colour rather than a clause at
                the end of a grey summary line. -->
@@ -4053,8 +4072,11 @@ async function downloadMarkdownFile(fileId) {
   font-size: 0.72rem;
   word-break: break-all;
 }
-.conflict-value-author { color: #b91c1c; }
-.conflict-value-paper { color: #047857; }
+/* The highlight already marks WHAT changed, so the text colour only has to say
+   which side you are reading. Colouring both sides as alarms made an entire
+   cell look like an error when the difference is often one character. */
+.conflict-value-author { color: #111827; }
+.conflict-value-paper { color: #1d4ed8; }
 .conflict-value mark {
   background: #fde68a;
   color: inherit;
@@ -4077,6 +4099,14 @@ async function downloadMarkdownFile(fileId) {
   line-height: 1.35;
   max-width: 34rem;
 }
+.job-open-page {
+  margin-left: 0.5rem;
+  font-size: 0.7rem;
+  color: #2563eb;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.job-open-page:hover { text-decoration: underline; }
 .job-conflict-badge {
   background: #fef2f2;
   color: #b91c1c;
