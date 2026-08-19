@@ -299,11 +299,11 @@ const responseUrl = (name) =>
     </button>
 
     <div v-if="open" class="mt-body">
-      <div v-if="config.length" class="mt-block">
+      <div v-if="config.length" class="mt-block mt-narrow">
         <h3>Configuration</h3>
         <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
       </div>
-      <div v-if="stats.length || timings.length" class="mt-block">
+      <div v-if="stats.length || timings.length" class="mt-block mt-narrow">
         <h3>Statistics</h3>
         <!-- Durations sit with the counts: both are "what this run did", and a
              column of its own for two numbers was a column too many. -->
@@ -312,7 +312,10 @@ const responseUrl = (name) =>
           <template v-for="([k, v]) in timings" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
         </dl>
       </div>
-      <div v-if="inputs.length || inputCounts.length || inputArtefacts.length || prompts.length" class="mt-block">
+      <div
+        v-if="inputs.length || inputCounts.length || inputArtefacts.length || prompts.length"
+        class="mt-block mt-wide"
+      >
         <h3>Module inputs</h3>
         <ul v-if="inputs.length" class="mt-files">
           <li v-for="(i, n) in inputs" :key="n">
@@ -346,7 +349,7 @@ const responseUrl = (name) =>
           input; elsewhere an edit made after the run will show here even though the run never saw it.
         </p>
       </div>
-      <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block">
+      <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
         <h3>Module outputs</h3>
         <!-- What the module produced and stored. A slot rather than a prop:
              only the caller knows what its module kept and how to hand it over. -->
@@ -376,18 +379,37 @@ const responseUrl = (name) =>
 }
 .mt-caret { color: #9ca3af; transition: transform 0.12s ease; }
 .mt-caret-open { transform: rotate(90deg); }
-/* A grid, not a flex row: the four blocks then share the width instead of
-   sizing to their content and leaving the right third of a 1440px screen
-   empty. They collapse to two columns, then one, rather than wrapping into a
-   ragged shape. */
+/* Six columns, split 1 : 1 : 2 : 2.
+   Configuration and Statistics are short label/value lists; inputs and outputs
+   are lines of links with explanatory notes, and they were the two wrapping
+   awkwardly while the first two sat half empty. The spans are declared per
+   block rather than by position, because any block can be absent — a module
+   with no prompt or no stored artefacts simply omits one. */
 .mt-body {
   padding: 0 0.9rem 0.9rem 2rem;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 1.5rem 2rem;
   align-items: start;
 }
 .mt-block { min-width: 0; }
+/* Configuration and Statistics: short label/value lists. */
+.mt-narrow { grid-column: span 1; }
+/* Module inputs and outputs: lines of links with an explanatory note under
+   them, which is what was wrapping while the two lists sat half empty. */
+.mt-wide { grid-column: span 2; }
+
+/* Below the six-column width each track would be narrower than a file name, so
+   drop to two: the short lists side by side, each wide block on its own row. */
+@media (max-width: 1099px) {
+  .mt-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mt-wide { grid-column: span 2; }
+}
+
+@media (max-width: 640px) {
+  .mt-body { grid-template-columns: minmax(0, 1fr); }
+  .mt-narrow, .mt-wide { grid-column: span 1; }
+}
 .mt-block h3 {
   font-size: 0.68rem; font-weight: 700; color: #9ca3af;
   text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 0.4rem;
