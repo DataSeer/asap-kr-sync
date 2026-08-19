@@ -16,6 +16,7 @@ import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
+import DetectionsTable from '@/components/modules/DetectionsTable.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
@@ -55,9 +56,21 @@ onMounted(async () => {
 })
 
 /** Modules with a page. A tab that goes nowhere is worse than a greyed one. */
-const HAS_PAGE = new Set(['krt_grounding'])
+const HAS_PAGE = new Set([
+  'krt_grounding',
+  'software_detection', 'datasets_detection', 'materials_detection',
+  'protocols_detection', 'identifier_detection'
+])
 
 const label = computed(() => labelFor(jobType.value))
+
+/** Detection modules: five detectors, one result shape. */
+const DETECTION_TYPES = new Set([
+  'software_detection', 'datasets_detection', 'materials_detection',
+  'protocols_detection', 'identifier_detection'
+])
+const isDetection = computed(() => DETECTION_TYPES.has(jobType.value))
+const detections = computed(() => job.value?.result?.data?.items || [])
 
 // ── grounding data ─────────────────────────────────────────────────────
 const outcomes = computed(() => job.value?.result?.data?.outcomes || [])
@@ -76,9 +89,12 @@ const TABS = [
 const matches = (o, q) => !q || [o.resourceType, o.resourceName, o.source, o.identifier, o.newReuse]
   .some((v) => String(v ?? '').toLowerCase().includes(q))
 
+/** Whichever list this module produced — the toolbar treats both the same. */
+const rows = computed(() => (isDetection.value ? detections.value : outcomes.value))
+
 const visible = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return outcomes.value.filter((o) => {
+  return rows.value.filter((o) => {
     if (tab.value !== 'all' && resourceTypesStore.getTabGroup(o.resourceType || '') !== tab.value) return false
     return matches(o, q)
   })
@@ -88,7 +104,7 @@ const visible = computed(() => {
 const tabCounts = computed(() => {
   const c = { all: 0 }
   const q = search.value.trim().toLowerCase()
-  for (const o of outcomes.value) {
+  for (const o of rows.value) {
     if (!matches(o, q)) continue
     const g = resourceTypesStore.getTabGroup(o.resourceType || '')
     c[g] = (c[g] || 0) + 1
@@ -100,7 +116,7 @@ const tabCounts = computed(() => {
 /** Conflicts per tab — where the defects are, not just how many rows. */
 const tabConflicts = computed(() => {
   const c = { all: 0 }
-  for (const o of outcomes.value) {
+  for (const o of rows.value) {
     if (!(o.conflicts?.length > 0)) continue
     const g = resourceTypesStore.getTabGroup(o.resourceType || '')
     c[g] = (c[g] || 0) + 1
@@ -156,7 +172,7 @@ const tabConflicts = computed(() => {
 
     <p v-if="!job" class="mrv-empty">This module has not produced a result for this submission yet.</p>
 
-    <template v-else-if="jobType === 'krt_grounding'">
+    <template v-else-if="jobType === 'krt_grounding' || isDetection">
       <!-- Filters and search on one line: they do the same job, and splitting
            them over two rows pushed the table itself below the fold. -->
       <div class="mrv-toolbar">
@@ -180,9 +196,10 @@ const tabConflicts = computed(() => {
            rows, and a page that grows with them loses the column names exactly
            when they are needed. -->
       <div class="mrv-table-frame">
-        <GroundingTable :outcomes="visible" :policy="policy" :search="search" />
+        <GroundingTable v-if="jobType === 'krt_grounding'" :outcomes="visible" :policy="policy" :search="search" />
+        <DetectionsTable v-else :items="visible" :search="search" :job-type="jobType" />
       </div>
-      <ModuleTechnical :job="job" :submission-id="submissionId" />
+      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
     </template>
 
     <p v-else class="mrv-empty">

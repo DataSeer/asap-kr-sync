@@ -97,7 +97,11 @@ function outputOf(jobType) {
 const conflictsFor = (jobType) => (jobType === 'krt_grounding' ? (jobFor(jobType)?.result?.counts?.conflicts || 0) : 0)
 
 /** Only krt_grounding has a page so far; a link to an empty one is worse than none. */
-const HAS_PAGE = new Set(['krt_grounding'])
+const HAS_PAGE = new Set([
+  'krt_grounding',
+  'software_detection', 'datasets_detection', 'materials_detection',
+  'protocols_detection', 'identifier_detection'
+])
 
 /** Which steps consume each step's output — the reverse of dependsOn. */
 const consumersOf = computed(() => {

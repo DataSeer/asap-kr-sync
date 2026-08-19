@@ -15,7 +15,16 @@ import { useAuthStore } from '@/stores/auth.store'
 
 const props = defineProps({
   job: { type: Object, required: true },
-  submissionId: { type: String, required: true }
+  submissionId: { type: String, required: true },
+  /**
+   * Passed in rather than read off the job.
+   *
+   * The poller keys its map by jobType and the objects carry `jobType`, not
+   * `type` — the panel adds `type` when it builds its own list. Reading
+   * `job.type` here produced download URLs with "undefined" in the path. The
+   * caller always knows which module it is showing, so it says so.
+   */
+  jobType: { type: String, required: true }
 })
 
 const authStore = useAuthStore()
@@ -83,7 +92,7 @@ const artefacts = computed(() => {
 })
 
 const responseUrl = (name) =>
-  `/api/submissions/${props.submissionId}/jobs/${props.job.type}/responses/${encodeURIComponent(name)}`
+  `/api/submissions/${props.submissionId}/jobs/${props.jobType}/responses/${encodeURIComponent(name)}`
 </script>
 
 <template>

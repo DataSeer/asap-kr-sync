@@ -187,7 +187,11 @@ const modalDecisionFilter = ref(new Set())
  * Modules with a dedicated results page. The others still open the modal until
  * their view exists — a link to an empty page would be worse than no link.
  */
-const MODULE_PAGE_TYPES = new Set(['krt_grounding'])
+const MODULE_PAGE_TYPES = new Set([
+  'krt_grounding',
+  'software_detection', 'datasets_detection', 'materials_detection',
+  'protocols_detection', 'identifier_detection'
+])
 
 /** Does this tile navigate, or open the modal? */
 function hasModulePage(job) {
