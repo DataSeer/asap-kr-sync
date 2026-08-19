@@ -23,6 +23,7 @@ const {
   stripSoftwareVersion, normalizeResourceTypeKey
 } = require('./identifier-normalize.service');
 const logger = require('../../utils/logger');
+const { repoPath } = require('../detection/repo-path');
 
 /**
  * Seed-retention invariant (issue #1): the Generated KRT MUST contain every
@@ -209,6 +210,9 @@ async function buildGeneratedKrt(submission, jobLogger) {
       droppedCount: dropped.length,
       dropped,
       usedLM,
+      // Consolidation falls back to a deterministic merge when the model is
+      // unavailable; naming a prompt on that run would be a lie.
+      promptFile: usedLM ? repoPath(require('./krt-generation.service').PROMPT_FILE) : null,
       multiSourceCount: multiSource,
       carriedCount: carried.length,
       totalMs: Date.now() - startTime

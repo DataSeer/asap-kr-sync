@@ -298,7 +298,12 @@ async function initializeWorkers() {
         await submissionJob?.markComplete({
           status: { detected: isProductive(result) },
           service: buildServiceSnapshot('das_extraction', result),
-          data: { das: result.data?.meta?.das || null }
+          // Everything the run recorded about itself EXCEPT the statement,
+          // which is the `das` field — storing it twice helps nobody.
+          data: {
+            das: result.data?.meta?.das || null,
+            meta: (({ das, ...rest }) => rest)(result.data?.meta || {})
+          }
         });
         await jobLogger?.flush();
         await advancePipeline(submissionId, 'das_extraction', round);

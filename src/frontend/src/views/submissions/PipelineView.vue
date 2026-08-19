@@ -13,12 +13,15 @@
  * spaghetti in any layout. Each card lists its own inputs by name instead —
  * complete, and readable.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useRoute } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import configService from '@/services/config.service'
 import { labelFor, purposeFor, stageLabel } from '@/components/modules/module-meta'
+import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
+import { useSubmissionStore } from '@/stores/submission.store'
+import { setSubmissionTitle } from '@/router'
 
 const route = useRoute()
 const submissionId = computed(() => route.params.id)
@@ -26,8 +29,27 @@ const { jobs } = useJobPoller(submissionId)
 
 
 
+/**
+ * The submission, for the two file links and the tab title. Fetched here for
+ * the same reason the module pages fetch it: this page is meant to be opened
+ * on its own.
+ */
+const submissionStore = useSubmissionStore()
+const submission = ref(null)
+const latestFiles = ref({})
+
+watch(submission, () => {
+  const name = submission.value?.title || submission.value?.manuscriptId
+  setSubmissionTitle(name ? `Pipeline · ${name}` : 'Pipeline')
+}, { immediate: true })
+
 const graph = ref({ nodes: [], stageCount: 0 })
 onMounted(async () => {
+  submissionStore.fetchSubmission(submissionId.value).then((sub) => {
+    submission.value = sub
+    latestFiles.value = submissionStore.latestFiles || {}
+  }).catch(() => { /* the links are simply absent */ })
+
   try {
     graph.value = await configService.getPipeline()
   } catch {
@@ -163,11 +185,19 @@ const activeStage = computed(() => {
 
 <template>
   <div class="pv">
-    <div class="pv-head">
-      <RouterLink :to="{ name: 'submission-pdf', params: { id: submissionId } }" class="pv-back">
-        ← Back to the submission
-      </RouterLink>
-      <h1 class="pv-title">Processing pipeline</h1>
+    <!-- The way out and the two source files stay put while the graph scrolls. -->
+    <div class="pv-sticky">
+      <div class="pv-head">
+        <RouterLink :to="{ name: 'submission-pdf', params: { id: submissionId } }" class="pv-back">
+          ← Back to the submission
+        </RouterLink>
+        <h1 class="pv-title">Processing pipeline</h1>
+        <SubmissionFileLinks
+          class="pv-files-links"
+          :submission-id="submissionId"
+          :files="latestFiles"
+        />
+      </div>
     </div>
 
     <p class="pv-intro">
@@ -262,7 +292,13 @@ const activeStage = computed(() => {
 </template>
 
 <style scoped>
-.pv { padding: 1.25rem 1.5rem 3rem; }
+.pv { padding: 0 1.5rem 3rem; }
+.pv-sticky {
+  position: sticky; top: 0; z-index: 20;
+  background: #f9fafb; padding: 1.25rem 0 0.6rem;
+  border-bottom: 1px solid #e5e7eb; margin-bottom: 0.75rem;
+}
+.pv-files-links { margin-left: auto; }
 .pv-files { margin-bottom: 0.5rem; }
 .pv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
 .pv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }

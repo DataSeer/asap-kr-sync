@@ -28,7 +28,10 @@ const props = defineProps({
 })
 
 /** Shared with the other tables so a dragged width is remembered everywhere. */
-const colResize = useColumnResize('jobModal.columnWidths')
+/** Shared with the other module tables, and separate from the modal's. */
+const WIDTHS_KEY = 'moduleView.columnWidths'
+
+const colResize = useColumnResize(WIDTHS_KEY)
 
 const ALL_COLS = [
   { key: 'resourceType', label: 'Resource Type', width: 120 },

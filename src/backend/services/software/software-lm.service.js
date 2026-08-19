@@ -147,6 +147,10 @@ function buildKrtItemsSoftwareLM(rawItems) {
 }
 
 module.exports = {
+  // Exported so the caller can record which prompt a run used — the UI links
+  // it, and a link derived from a lookup table is wrong the moment the file
+  // moves.
+  PROMPT_FILE,
   isEnabled,
   detectSoftwareLM,
   buildKrtItemsSoftwareLM,

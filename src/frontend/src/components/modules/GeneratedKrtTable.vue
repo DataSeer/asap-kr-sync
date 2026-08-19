@@ -28,7 +28,18 @@ const props = defineProps({
   search: { type: String, default: '' }
 })
 
-const colResize = useColumnResize('jobModal.columnWidths')
+/**
+ * Column widths for the module PAGES, stored apart from the modal's.
+ *
+ * They looked like the same tables but are not: the modal's Generated KRT
+ * calls its second column `detection` where this one calls it `detectedBy`,
+ * and sharing a namespace meant one dragged width in the modal flipped this
+ * table out of proportional layout while leaving that column at its default —
+ * which is exactly the "weird widths" that were reported.
+ */
+const WIDTHS_KEY = 'moduleView.columnWidths'
+
+const colResize = useColumnResize(WIDTHS_KEY)
 
 // Defaults chosen to fit a 1440px screen without a horizontal scrollbar; every
 // one of them is draggable, and the width a user sets is remembered.

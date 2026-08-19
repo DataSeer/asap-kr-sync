@@ -24,6 +24,7 @@ const logger = require('../../utils/logger');
 const { getPipeline } = require('../../config/pipelines');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
+const { repoPath } = require('../detection/repo-path');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/krt-comparison.txt');
 let _promptCache = null;
@@ -578,7 +579,8 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
       notDetectedCount,
       conflictCount,
       totalMs: Date.now() - startTime,
-      model: krtComparisonConfig.model
+      model: krtComparisonConfig.model,
+      promptFile: repoPath(PROMPT_FILE)
     }
   };
 }
@@ -613,7 +615,9 @@ async function processSuggestionGeneration(submissionId, jobLogger = null /*, op
 
   const job = await SubmissionJob.getLatest(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: result.data, meta: result.meta };
+    // meta goes INSIDE data, which is where every other module puts it and
+    // where the UI reads it from.
+    job.result = { ...(job.result || {}), data: { ...result.data, meta: result.meta } };
     job.changed('result', true);
     await job.save();
   }

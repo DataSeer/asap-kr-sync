@@ -50,6 +50,7 @@ const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
 const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
+const { repoPath } = require('../detection/repo-path');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/krt-grounding-second-look.txt');
 let _promptCache = null;
@@ -339,6 +340,8 @@ async function groundSubmission(submission, jobLogger) {
     meta: {
       ...stats,
       secondLook: secondLookStats,
+      // The prompt is the second look's; a run that skipped it used none.
+      promptFile: secondLookStats.skipped ? null : repoPath(PROMPT_FILE),
       presence: { ...presence.stats, available: presence.available, missedByDetection },
       // Which halves of this result may be shown. Stamped on the run rather
       // than looked up at render time, so a result always says how it should be

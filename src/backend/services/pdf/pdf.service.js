@@ -10,6 +10,7 @@
 const { sequelize, File, ChangeLog, KRTData, ValidationResult, Submission, SubmissionJob } = require('../../models');
 const s3Service = require('../storage/s3.service');
 const dasExtractionService = require('./das-extraction.service');
+const { repoPath } = require('../detection/repo-path');
 const dasExtractionConfig = require('../../config/das-extraction-api');
 const jobQueue = require('../queue/job-queue.service');
 const { generateS3Key } = require('../../utils/helpers');
@@ -599,6 +600,7 @@ async function runDasExtractor(submission, jobLogger) {
       items: [],
       meta: {
         das: null, dasLength: 0,
+        promptFile: repoPath(dasExtractionService.PROMPT_FILE),
         partialMatch: !!extracted?.partialMatch,
         sectionFragmented: !!extracted?.sectionFragmented
       }
@@ -610,6 +612,7 @@ async function runDasExtractor(submission, jobLogger) {
     meta: {
       das: dasContent,
       dasLength: dasContent.length,
+      promptFile: repoPath(dasExtractionService.PROMPT_FILE),
       partialMatch: !!extracted.partialMatch,
       sectionFragmented: !!extracted.sectionFragmented
     }

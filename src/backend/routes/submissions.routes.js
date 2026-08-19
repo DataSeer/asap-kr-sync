@@ -372,6 +372,12 @@ router.post('/:id/datasets/detect',
 
 // ===== Markdown Convert =====
 
+// GET /api/submissions/:id/markdown - Read the converted manuscript text
+router.get('/:id/markdown',
+  canAccessSubmission,
+  markdownController.getMarkdown
+);
+
 // POST /api/submissions/:id/markdown/convert - Trigger markdown conversion
 router.post('/:id/markdown/convert',
   canAccessSubmission,

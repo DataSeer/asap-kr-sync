@@ -48,7 +48,10 @@ const ALL_COLS = [
 ]
 
 /** Shared with the modal's tables, so a width dragged in one is kept in both. */
-const colResize = useColumnResize('jobModal.columnWidths')
+/** Shared with the other module tables, and separate from the modal's. */
+const WIDTHS_KEY = 'moduleView.columnWidths'
+
+const colResize = useColumnResize(WIDTHS_KEY)
 const cols = computed(() => (showValues.value ? ALL_COLS : ALL_COLS.filter((c) => c.always || c.krt)))
 
 /** How the row was matched — deterministic key, or the targeted LM search. */

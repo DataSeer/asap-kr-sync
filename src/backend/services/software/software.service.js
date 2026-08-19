@@ -36,6 +36,7 @@ const { NotFoundError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const softwareLm = require('./software-lm.service');
+const { repoPath } = require('../detection/repo-path');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const logger = require('../../utils/logger');
 
@@ -159,6 +160,9 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
       lmCount: lm.items.length,
       lmEnabled: lm.enabled,
       lmSkippedReason: lm.skippedReason,
+      // Only when the pass ran: a prompt link on a run that never called the
+      // model would claim something that did not happen.
+      promptFile: lm.enabled ? repoPath(softwareLm.PROMPT_FILE) : null,
       lmMs: lm.durationMs,
       evidenceStats: lm.evidenceStats,
       softciteMs,

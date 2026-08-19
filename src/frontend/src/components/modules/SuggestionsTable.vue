@@ -20,7 +20,10 @@ const props = defineProps({
   search: { type: String, default: '' }
 })
 
-const colResize = useColumnResize('jobModal.columnWidths')
+/** Shared with the other module tables, and separate from the modal's. */
+const WIDTHS_KEY = 'moduleView.columnWidths'
+
+const colResize = useColumnResize(WIDTHS_KEY)
 
 /** The KRT columns shown for each decision (the concerned row). */
 const ROW_COLUMNS = [

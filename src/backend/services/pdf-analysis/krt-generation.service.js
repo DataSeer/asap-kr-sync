@@ -212,11 +212,13 @@ function parseLMResponse(text) {
   }
 }
 
+/** The consolidation prompt, named once so a run can report which file it used. */
+const PROMPT_FILE = require('path').join(__dirname, '../../data/prompts/pdf-analysis-krt.txt');
+
 async function callGeminiForKrt(candidates) {
   const fs = require('fs');
-  const path = require('path');
   const ai = new GoogleGenAI({ apiKey: krtGenConfig.apiKey });
-  const prompt = fs.readFileSync(path.join(__dirname, '../../data/prompts/pdf-analysis-krt.txt'), 'utf-8').trim();
+  const prompt = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   const payload = { candidates: candidates.map((c, i) => candidateForPrompt(c, i)) };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
   const response = await generateContentWithRetry(ai, {
@@ -272,6 +274,7 @@ async function consolidateWithLM(candidates, jobLogger = null) {
 }
 
 module.exports = {
+  PROMPT_FILE,
   isConfigured,
   consolidateWithLM,
   // Pure helper (exported for tests)

@@ -11,7 +11,7 @@
  * so far has been a missing explanation rather than a wrong number, and there
  * was nowhere in a modal to put one without crowding the table.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
@@ -20,6 +20,8 @@ import DetectionsTable from '@/components/modules/DetectionsTable.vue'
 import AuthorsTable from '@/components/modules/AuthorsTable.vue'
 import GeneratedKrtTable from '@/components/modules/GeneratedKrtTable.vue'
 import SuggestionsTable from '@/components/modules/SuggestionsTable.vue'
+import MarkdownViewer from '@/components/modules/MarkdownViewer.vue'
+import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
@@ -30,13 +32,17 @@ import {
 } from '@/components/modules/suggestion-decisions'
 import configService from '@/services/config.service'
 import orcidService from '@/services/orcid.service'
+import markdownService from '@/services/markdown.service'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
+import { useSubmissionStore } from '@/stores/submission.store'
+import { setSubmissionTitle } from '@/router'
 
 const route = useRoute()
 const submissionId = computed(() => route.params.id)
 const jobType = computed(() => route.params.type)
 const resourceTypesStore = useResourceTypesStore()
+const submissionStore = useSubmissionStore()
 
 const { jobs } = useJobPoller(submissionId)
 
@@ -50,8 +56,22 @@ const explainer = computed(() => explainerFor(jobType.value))
  * shown greyed instead of hidden: a reader should be able to see that Materials
  * Detection exists and simply is not viewable here yet.
  */
+/**
+ * The submission itself — for the two file links and for the tab title.
+ *
+ * Fetched here rather than inherited: these pages exist to be opened directly
+ * in a second tab, so there is no parent view to have loaded it already.
+ */
+const submission = ref(null)
+const latestFiles = ref({})
+
 const steps = ref([])
 onMounted(async () => {
+  submissionStore.fetchSubmission(submissionId.value).then((sub) => {
+    submission.value = sub
+    latestFiles.value = submissionStore.latestFiles || {}
+  }).catch(() => { /* the links are simply absent */ })
+
   // Resource-type categories drive the tab groups, and getTabGroup falls back to
   // "Lab Materials" for a type it does not know — so without this every row
   // lands in one tab. The panel loads them because its parent view does; a page
@@ -74,6 +94,16 @@ const HAS_PAGE = new Set([
 ])
 
 const label = computed(() => labelFor(jobType.value))
+
+/**
+ * The module leads the tab title. These pages are opened several at a time —
+ * that is the point of them being pages — so a title that named only the
+ * submission would give every tab the same label.
+ */
+watch([label, submission], () => {
+  const name = submission.value?.title || submission.value?.manuscriptId
+  setSubmissionTitle(name ? `${label.value} · ${name}` : label.value)
+}, { immediate: true })
 
 /** Detection modules: five detectors, one result shape. */
 const DETECTION_TYPES = new Set([
@@ -121,6 +151,24 @@ const das = computed(() => job.value?.result?.data?.das || '')
 /** All markdown conversion reports about itself; the text is an artefact. */
 const markdownLength = computed(() => job.value?.result?.data?.markdownLength || 0)
 const markdownFileId = computed(() => job.value?.result?.data?.fileId || null)
+
+/** The converted text itself, so the page can show it rather than describe it. */
+const markdown = ref('')
+const markdownLoading = ref(false)
+const markdownError = ref('')
+onMounted(async () => {
+  if (jobType.value !== 'markdown_convert') return
+  markdownLoading.value = true
+  try {
+    markdown.value = (await markdownService.getContent(submissionId.value))?.content || ''
+  } catch (e) {
+    markdownError.value = e?.response?.status === 404
+      ? 'No converted text is stored for this submission yet.'
+      : 'The converted text could not be loaded.'
+  } finally {
+    markdownLoading.value = false
+  }
+})
 
 /**
  * The converted text, as the stored file rather than the raw LM artefact — this
@@ -347,35 +395,43 @@ const tabConflicts = computed(() => {
          KRT and PDF files. Reused rather than rebuilt, so these pages carry the
          same identity and the same file links as every step view. -->
 
-    <div class="mrv-head">
-      <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
-        ← Pipeline
-      </RouterLink>
-      <h1 class="mrv-title">{{ label }}</h1>
-      <!-- Beside the title, not off in a corner: it is a fact about THIS
-           module's result, not a property of the page. -->
-      <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
-        ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
-      </span>
-    </div>
-
-    <!-- Every step, as links. RouterLink rather than a click handler so
-         ctrl-click opens a second tab, which is the point of these pages. -->
-    <nav v-if="steps.length" class="mrv-modules" aria-label="Pipeline steps">
-      <template v-for="s in steps" :key="s.jobType">
-        <RouterLink
-          v-if="HAS_PAGE.has(s.jobType)"
-          :to="{ name: 'submission-module', params: { id: submissionId, type: s.jobType } }"
-          class="mrv-module"
-          :class="{ 'mrv-module-active': s.jobType === jobType }"
-        >
-          {{ labelFor(s.jobType) }}
+    <div class="mrv-sticky">
+      <div class="mrv-head">
+        <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
+          ← Pipeline
         </RouterLink>
-        <span v-else class="mrv-module mrv-module-off" title="This step does not have a page yet — open it from the processes panel.">
-          {{ labelFor(s.jobType) }}
+        <h1 class="mrv-title">{{ label }}</h1>
+        <!-- Beside the title, not off in a corner: it is a fact about THIS
+           module's result, not a property of the page. -->
+        <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
+          ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
         </span>
-      </template>
-    </nav>
+        <!-- The two documents every result on this page is a claim about. -->
+        <SubmissionFileLinks
+          class="mrv-files-links"
+          :submission-id="submissionId"
+          :files="latestFiles"
+        />
+      </div>
+
+      <!-- Every step, as links. RouterLink rather than a click handler so
+         ctrl-click opens a second tab, which is the point of these pages. -->
+      <nav v-if="steps.length" class="mrv-modules" aria-label="Pipeline steps">
+        <template v-for="s in steps" :key="s.jobType">
+          <RouterLink
+            v-if="HAS_PAGE.has(s.jobType)"
+            :to="{ name: 'submission-module', params: { id: submissionId, type: s.jobType } }"
+            class="mrv-module"
+            :class="{ 'mrv-module-active': s.jobType === jobType }"
+          >
+            {{ labelFor(s.jobType) }}
+          </RouterLink>
+          <span v-else class="mrv-module mrv-module-off" title="This step does not have a page yet — open it from the processes panel.">
+            {{ labelFor(s.jobType) }}
+          </span>
+        </template>
+      </nav>
+    </div>
 
     <ModuleExplainer
       v-if="explainer"
@@ -508,20 +564,13 @@ const tabConflicts = computed(() => {
     </template>
 
     <template v-else-if="jobType === 'markdown_convert'">
-      <!-- There is no on-screen view of the text itself: it runs to hundreds of
-           kilobytes and reading it in a browser pane helps nobody. The size is
-           the one number worth seeing, and the file is one click below. -->
-      <p class="mrv-note">
-        <template v-if="markdownLength">
-          The manuscript converted to <strong>{{ markdownLength.toLocaleString() }}</strong>
-          characters of text. Download it under Technical detail to check whether something you
-          expected is actually in there.
-        </template>
-        <template v-else>
-          No converted text was recorded for this run.
-        </template>
-      </p>
-      <p v-if="markdownFileId">
+      <MarkdownViewer
+        :content="markdown"
+        :length="markdownLength"
+        :loading="markdownLoading"
+        :error="markdownError"
+      />
+      <p v-if="markdownFileId" class="mrv-actions">
         <button type="button" class="mrv-btn" @click="downloadMarkdown">Download the converted text</button>
       </p>
       <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
@@ -534,7 +583,14 @@ const tabConflicts = computed(() => {
 </template>
 
 <style scoped>
-.mrv { padding: 1.25rem 1.5rem 3rem; max-width: 100%; }
+.mrv { padding: 0 1.5rem 3rem; max-width: 100%; }
+/* The back link and the step strip stay put: these pages scroll a long way,
+   and losing the way out of one is what made the modal frustrating. */
+.mrv-sticky {
+  position: sticky; top: 0; z-index: 20;
+  background: #f9fafb; padding: 1.25rem 0 0.25rem;
+  border-bottom: 1px solid #e5e7eb; margin-bottom: 1rem;
+}
 .mrv-files { margin-bottom: 0.5rem; }
 .mrv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .mrv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
@@ -544,7 +600,10 @@ const tabConflicts = computed(() => {
   padding: 0.1rem 0.45rem; border-radius: 0.25rem; font-size: 0.72rem; font-weight: 600;
   background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
 }
-.mrv-modules { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 1rem; }
+.mrv-modules { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.75rem; }
+/* Pushed right, on the same line as the title. */
+.mrv-files-links { margin-left: auto; }
+.mrv-actions { margin: 0.6rem 0 0; }
 .mrv-module {
   padding: 0.2rem 0.5rem; border-radius: 0.3rem; border: 1px solid #e5e7eb;
   font-size: 0.72rem; color: #374151; background: #fff; text-decoration: none;

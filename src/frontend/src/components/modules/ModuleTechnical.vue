@@ -55,11 +55,23 @@ onMounted(async () => {
  * file — materials alone picks between two prompts depending on whether the
  * KRT had anything to seed with, so a static map would be wrong half the time.
  */
+/**
+ * What the prompt DOES, per module. The file name alone does not say whether it
+ * detects, consolidates or compares, and "Detection prompt" on the
+ * consolidation step would be wrong.
+ */
+const PROMPT_LABELS = {
+  das_extraction: 'Statement extraction prompt',
+  krt_grounding: 'Second-look prompt',
+  pdf_analysis: 'Consolidation prompt',
+  suggestion_generation: 'Comparison prompt'
+}
+
 const prompts = computed(() => {
   if (!source.value) return []
   const m = meta.value
   return [
-    ['Detection prompt', m.promptFile],
+    [PROMPT_LABELS[props.jobType] || 'Detection prompt', m.promptFile],
     ['Signal extraction prompt', m.signalsPromptFile]
   ]
     .filter(([, file]) => file)

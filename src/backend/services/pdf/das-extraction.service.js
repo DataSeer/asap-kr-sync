@@ -143,6 +143,8 @@ async function extractDAS(markdownText, { prompt } = {}) {
 }
 
 module.exports = {
+  // Exported so a run can record which prompt produced its statement.
+  PROMPT_FILE,
   extractDAS,
   hasPrompt,
   // Exposed for tests
