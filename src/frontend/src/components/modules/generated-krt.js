@@ -57,6 +57,23 @@ const SOURCE_BADGES = {
 export const sourceBadge = (source) => SOURCE_BADGES[source] || 'badge-neutral'
 
 /**
+ * The badge class for a resource CATEGORY, keyed by the tab-group names the
+ * resource-types store returns.
+ *
+ * The same four colours the module badges use, for the same reason: a row's
+ * category and the module that found it are the same fact seen from two sides,
+ * and they should not be two different colours on one screen.
+ */
+const GROUP_BADGES = {
+  Datasets: 'badge-datasets',
+  'Software/code': 'badge-software',
+  Protocols: 'badge-protocols',
+  'Lab Materials': 'badge-materials'
+}
+
+export const groupBadge = (tabGroup) => GROUP_BADGES[tabGroup] || 'badge-neutral'
+
+/**
  * Display-side scrub of internal references that leak into LM reasons —
  * candidate "ref" numbers and raw KRT row UUIDs. Applied at render time so
  * already-saved results read cleanly too.

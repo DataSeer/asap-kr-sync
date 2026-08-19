@@ -15,7 +15,8 @@ import Papa from 'papaparse'
 import HighlightText from '@/components/submission/HighlightText.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { useColumnResize } from '@/composables/useColumnResize'
-import { sourceLabel, sourceBadge, cleanReason } from '@/components/modules/generated-krt'
+import { sourceLabel, sourceBadge, groupBadge, cleanReason } from '@/components/modules/generated-krt'
+import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 
 const props = defineProps({
   /** Contributor rows, already filtered and carrying `displayParity`. */
@@ -41,6 +42,13 @@ const props = defineProps({
 const WIDTHS_KEY = 'moduleView.columnWidths'
 
 const colResize = useColumnResize(WIDTHS_KEY)
+
+/**
+ * The category the merged row ended up in, so its badge can say which of the
+ * disagreeing candidates won — in that category's own colour.
+ */
+const resourceTypesStore = useResourceTypesStore()
+const typeBadge = (resourceType) => groupBadge(resourceTypesStore.getTabGroup(resourceType || ''))
 
 // Defaults chosen to fit a 1440px screen without a horizontal scrollbar; every
 // one of them is draggable, and the width a user sets is remembered.
@@ -236,9 +244,11 @@ function downloadJson() {
               <!-- The kept row has no detector of its own: it IS the merge. -->
               <span
                 v-if="row.isResult"
-                class="badge badge-own"
-                title="The row that went into the Generated KRT. The lines below are the detections it was built from — where they disagree, this is what was kept."
-              >kept</span>
+                class="badge"
+                :class="typeBadge(row.resourceType)"
+                :title="`The row that went into the Generated KRT, as ${row.resourceType || 'an untyped resource'}. `
+                  + 'The lines below are the detections it was built from — where they disagree, this is what was kept.'"
+              >merged</span>
               <span
                 v-else-if="row.source"
                 class="badge"
