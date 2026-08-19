@@ -75,6 +75,16 @@ const DROPPED_COLS = [
   { key: 'reason', label: 'Reason dropped', width: 260 }
 ]
 
+/**
+ * What a badge means, spelled out on hover: the label alone reads as a
+ * category ("Materials") when it is actually a module that ran.
+ */
+const SOURCE_TITLES = {
+  author_krt: 'Carried from your KRT — no detector found this in the manuscript'
+}
+const sourceTitle = (source) => SOURCE_TITLES[source]
+  || `Found by the ${sourceLabel(source)} detection module`
+
 /** How many KRT rows were built from more than one module. */
 const mergedGroups = computed(() => props.allRows.filter(
   (r) => r.isGroupStart && r.groupSize > 1
@@ -200,9 +210,7 @@ function downloadJson() {
                 v-if="row.source"
                 class="gk-badge"
                 :class="row.source === 'author_krt' ? 'gk-badge-carried' : 'gk-badge-source'"
-                :title="row.source === 'author_krt'
-                  ? 'Carried from your KRT — no detector found this in the manuscript'
-                  : undefined"
+                :title="sourceTitle(row.source)"
               >{{ sourceLabel(row.source) }}</span>
               <span v-else>—</span>
             </td>
@@ -261,7 +269,12 @@ function downloadJson() {
           <tbody>
             <tr v-for="(d, i) in dropped" :key="i">
               <td>
-                <span v-for="s in (d.sources || [])" :key="s" class="gk-badge gk-badge-source gk-badge-gap">{{ sourceLabel(s) }}</span>
+                <span
+                  v-for="s in (d.sources || [])"
+                  :key="s"
+                  class="gk-badge gk-badge-source gk-badge-gap"
+                  :title="sourceTitle(s)"
+                >{{ sourceLabel(s) }}</span>
                 <span v-if="!d.sources || !d.sources.length">—</span>
               </td>
               <td class="gk-xs"><HighlightText :text="d.resourceType" :query="search" /></td>
@@ -331,6 +344,7 @@ function downloadJson() {
 }
 .gk-badge-gap { margin-right: 0.25rem; }
 .gk-badge-source { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.gk-badge { cursor: help; }
 /* Not a detection: amber, because it means nothing confirmed this row. */
 .gk-badge-carried { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
 .gk-badge-new { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }

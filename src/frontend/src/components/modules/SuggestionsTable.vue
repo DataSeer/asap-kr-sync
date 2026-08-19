@@ -12,7 +12,7 @@
 import { computed } from 'vue'
 import HighlightText from '@/components/submission/HighlightText.vue'
 import { useColumnResize } from '@/composables/useColumnResize'
-import { cleanReason } from '@/components/modules/generated-krt'
+import { cleanReason, sourceLabel } from '@/components/modules/generated-krt'
 
 const props = defineProps({
   /** Display rows, already filtered and grouped by the caller. */
@@ -38,28 +38,38 @@ const ROW_COLUMNS = [
 const COLS = [
   { key: 'decision', label: 'Decision', width: 90 },
   { key: 'reason', label: 'Reason', width: 210 },
-  { key: 'item', label: 'Item', width: 80 },
+  // "From" rather than "Item": the cell says which side of the comparison this
+  // line is, and both answers are a source, not a kind of thing.
+  { key: 'from', label: 'From', width: 80 },
   ...ROW_COLUMNS.map((c) => ({
     key: c.key,
     label: c.label,
     width: c.key === 'resourceName' ? 190 : (c.key === 'newReuse' ? 80 : 135)
   })),
-  { key: 'modules', label: 'Modules', width: 110 }
+  { key: 'detectedBy', label: 'Detected by', width: 130 }
 ]
 
-const SOURCE_SHORT = {
-  software_detection: 'SW',
-  datasets_detection: 'DS',
-  materials_detection: 'MAT',
-  protocols_detection: 'PROT',
-  identifier_detection: 'ID',
-  krt_grounding: 'GND',
-  pdf_analysis: 'PDF'
-}
+/**
+ * Which modules backed a decision, in the same words and the same badges the
+ * Generated KRT uses. They were "SW, DS, MAT" here and "Software, Datasets,
+ * Materials" there — the same fact, written two ways, on two pages a curator
+ * reads side by side.
+ */
+const detectedBy = (d) => (d.sources || [])
 
-const modules = (d) => ((d.sources && d.sources.length)
-  ? d.sources.map((s) => SOURCE_SHORT[s] || s).join(', ')
-  : '—')
+/** Grounding and consolidation are steps, not detectors; say so on hover. */
+const SOURCE_TITLES = {
+  krt_grounding: 'KRT Grounding — reconciled this row against the manuscript',
+  pdf_analysis: 'PDF Analysis — consolidated this row into the Generated KRT'
+}
+const sourceTitle = (source) => SOURCE_TITLES[source]
+  || `Found by the ${sourceLabel(source)} detection module`
+
+/**
+ * Which side this line came from. "Generated" named the table it sits in; what
+ * a reader wants to know is who proposed it — them, or the model.
+ */
+const fromLabel = (row) => (row.side === 'author' ? 'Author' : 'LM')
 
 const isEmpty = computed(() => props.rows.length === 0)
 </script>
@@ -105,7 +115,7 @@ const isEmpty = computed(() => props.rows.length === 0)
               />
             </td>
             <td class="st-xs">
-              <span v-if="r.role" class="st-role" :class="'st-role-' + r.side">{{ r.role }}</span>
+              <span v-if="r.role" class="st-role" :class="'st-role-' + r.side">{{ fromLabel(r) }}</span>
             </td>
             <td
               v-for="c in ROW_COLUMNS"
@@ -119,7 +129,17 @@ const isEmpty = computed(() => props.rows.length === 0)
                 :query="search"
               />
             </td>
-            <td class="st-xs">{{ r.isGroupStart ? modules(r.decision) : '' }}</td>
+            <td class="st-xs">
+              <template v-if="r.isGroupStart">
+                <span
+                  v-for="src in detectedBy(r.decision)"
+                  :key="src"
+                  class="st-badge"
+                  :title="sourceTitle(src)"
+                >{{ sourceLabel(src) }}</span>
+                <span v-if="!detectedBy(r.decision).length">—</span>
+              </template>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -173,6 +193,13 @@ const isEmpty = computed(() => props.rows.length === 0)
 }
 .st-role-author { background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
 .st-role-generated { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+/* The same badge the Generated KRT uses for a contributing module. */
+.st-badge {
+  display: inline-block; margin-right: 0.25rem; padding: 0.05rem 0.35rem;
+  border-radius: 0.25rem; font-size: 0.68rem; font-weight: 600;
+  text-transform: uppercase; cursor: help;
+  background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;
+}
 /* The two sides of a change, marked rather than merged into a diff string:
    the author's value is what exists, the generated one is what is proposed. */
 .st-diff-old :deep(*), .st-diff-old { color: #b91c1c; text-decoration: line-through; }

@@ -126,9 +126,13 @@ const stats = computed(() => Object.entries(counts.value)
   .filter(([, v]) => typeof v === 'number')
   .map(([k, v]) => [k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()), v]))
 
+/**
+ * Durations, named so they cannot be read as counts: they share a list with
+ * "Total 67" now, and two rows labelled "Total" say nothing.
+ */
 const timings = computed(() => [
-  ['Total', ms(result.value.timing?.totalMs ?? meta.value.totalMs)],
-  ['Model call', ms(meta.value.geminiMs)]
+  ['Total time', ms(result.value.timing?.totalMs ?? meta.value.totalMs)],
+  ['Model call time', ms(meta.value.geminiMs)]
 ].filter(([, v]) => v))
 
 // ── what went in ───────────────────────────────────────────────────────
@@ -292,10 +296,21 @@ const responseUrl = (name) =>
     </button>
 
     <div v-if="open" class="mt-body">
-      <!-- What went in, before what came out. Every entry is a link to the
-           thing itself, so a surprising result can be read against its input. -->
-      <div v-if="inputs.length || inputCounts.length || inputArtefacts.length" class="mt-block">
-        <h3>What this step read</h3>
+      <div v-if="config.length" class="mt-block">
+        <h3>Configuration</h3>
+        <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
+      </div>
+      <div v-if="stats.length || timings.length" class="mt-block">
+        <h3>Statistics</h3>
+        <!-- Durations sit with the counts: both are "what this run did", and a
+             column of its own for two numbers was a column too many. -->
+        <dl>
+          <template v-for="([k, v]) in stats" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
+          <template v-for="([k, v]) in timings" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
+        </dl>
+      </div>
+      <div v-if="inputs.length || inputCounts.length || inputArtefacts.length || prompts.length" class="mt-block">
+        <h3>Module inputs</h3>
         <ul v-if="inputs.length" class="mt-files">
           <li v-for="(i, n) in inputs" :key="n">
             <button v-if="i.fileId" type="button" class="mt-linkish" @click="openFile(i.fileId)">
@@ -304,6 +319,14 @@ const responseUrl = (name) =>
             <RouterLink v-else-if="i.route" :to="i.route">{{ i.label }} ↗</RouterLink>
             <span v-else>{{ i.label }}</span>
             <span v-if="i.note" class="mt-files-note">{{ i.note }}</span>
+          </li>
+        </ul>
+        <!-- The prompt is an input too, linked to the file it came from on the
+             branch this deployment runs. -->
+        <ul v-if="prompts.length" class="mt-files">
+          <li v-for="p in prompts" :key="p.file">
+            <a :href="p.url" target="_blank" rel="noopener" :title="p.file">{{ p.name }} ↗</a>
+            <span class="mt-files-note">{{ p.label }}</span>
           </li>
         </ul>
         <ul v-if="inputArtefacts.length" class="mt-files">
@@ -320,51 +343,19 @@ const responseUrl = (name) =>
           input; elsewhere an edit made after the run will show here even though the run never saw it.
         </p>
       </div>
-
-      <div v-if="config.length" class="mt-block">
-        <h3>How this run was configured</h3>
-        <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
-      </div>
-
-      <div v-if="stats.length" class="mt-block">
-        <h3>What it counted</h3>
-        <dl><template v-for="([k, v]) in stats" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
-      </div>
-
-      <div v-if="timings.length" class="mt-block">
-        <h3>Timing</h3>
-        <dl><template v-for="([k, v]) in timings" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
-      </div>
-
-      <div v-if="prompts.length" class="mt-block">
-        <h3>Prompts used</h3>
-        <!-- The exact file, on the branch this deployment runs. -->
-        <ul class="mt-files">
-          <li v-for="p in prompts" :key="p.file">
-            <a :href="p.url" target="_blank" rel="noopener" :title="p.file">{{ p.name }} ↗</a>
-            <span class="mt-files-note">{{ p.label }}</span>
-          </li>
-        </ul>
-      </div>
-
-      <!-- Files the module PRODUCED, as opposed to the raw exchange below.
-           A slot rather than a prop: only the caller knows what its module
-           stored and how to hand it over. -->
-      <div v-if="$slots.files" class="mt-block">
-        <h3>Files</h3>
+      <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block">
+        <h3>Module outputs</h3>
+        <!-- What the module produced and stored. A slot rather than a prop:
+             only the caller knows what its module kept and how to hand it over. -->
         <slot name="files" />
-      </div>
-
-      <div v-if="canViewInternals && artefacts.length" class="mt-block">
-        <h3>Saved by this run</h3>
         <!-- Real links: ctrl-click opens one in a tab like anything else, and
              the browser handles the download rather than a click handler. -->
-        <ul class="mt-files">
+        <ul v-if="canViewInternals && artefacts.length" class="mt-files">
           <li v-for="name in artefacts" :key="name">
             <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
           </li>
         </ul>
-        <p class="mt-note">
+        <p v-if="canViewInternals && artefacts.length" class="mt-note">
           These are what the module sent to, or received from, the external service — the
           unedited record of this run.
         </p>

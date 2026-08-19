@@ -128,21 +128,32 @@ const tab = ref('all')
  * which is the same lesson the resource types taught above.
  */
 const authors = ref([])
+const authorsLoading = ref(false)
+const authorsError = ref('')
 onMounted(async () => {
   if (jobType.value !== 'orcid_extraction') return
+  authorsLoading.value = true
   try {
     authors.value = (await orcidService.getAuthors(submissionId.value))?.authors || []
-  } catch {
-    // Leaves the table empty rather than the page broken; Technical detail
-    // still shows what the run itself produced.
+  } catch (e) {
+    // Swallowing this made a failed request look exactly like a manuscript with
+    // no authors — an empty table either way, and no way to tell which.
+    authorsError.value = e?.response?.status === 403
+      ? 'You do not have access to this submission\'s authors.'
+      : 'The author list could not be loaded. The run\'s own record is under Technical detail.'
+  } finally {
+    authorsLoading.value = false
   }
 })
 
 const visibleAuthors = computed(() => {
   const q = search.value.trim().toLowerCase()
   if (!q) return authors.value
-  return authors.value.filter((a) => [a.name, a.orcid, a.affiliation, a.source]
-    .some((v) => String(v ?? '').toLowerCase().includes(q)))
+  // `fullName` is what the endpoint returns; searching `name` matched nothing
+  // and made the table look empty for any non-blank query.
+  return authors.value.filter((a) => [
+    a.fullName, a.firstName, a.lastName, a.orcid, a.affiliation, a.source
+  ].some((v) => String(v ?? '').toLowerCase().includes(q)))
 })
 
 /** The Data Availability Statement, verbatim. Empty string when none was found. */
@@ -558,7 +569,9 @@ const tabConflicts = computed(() => {
         <span class="mrv-count">{{ authors.length }} author{{ authors.length === 1 ? '' : 's' }}</span>
         <SearchInput v-model="search" placeholder="Search authors…" class="mrv-search" />
       </div>
-      <div class="mrv-table-frame">
+      <p v-if="authorsLoading" class="mrv-empty">Loading the author list…</p>
+      <p v-else-if="authorsError" class="mrv-error">{{ authorsError }}</p>
+      <div v-else class="mrv-table-frame">
         <AuthorsTable :authors="visibleAuthors" :search="search" />
       </div>
       <ModuleTechnical
@@ -674,6 +687,10 @@ const tabConflicts = computed(() => {
   background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
 }
 .mrv-empty { color: #6b7280; font-size: 0.9rem; padding: 1.5rem 0; }
+.mrv-error {
+  color: #b91c1c; font-size: 0.85rem; padding: 0.6rem 0.75rem; margin: 0 0 1rem;
+  background: #fef2f2; border: 1px solid #fecaca; border-radius: 0.375rem;
+}
 .mrv-count { font-size: 0.78rem; color: #6b7280; }
 .mrv-btn {
   height: 1.85rem; padding: 0 0.65rem; border-radius: 0.375rem;
