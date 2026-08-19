@@ -277,6 +277,10 @@ async function consolidateWithLM(candidates, jobLogger = null) {
 
 module.exports = {
   PROMPT_FILE,
+  // Exported so the audit verifier can rebuild this module's prompt through the
+  // same shaping the pipeline uses. A reimplementation there would drift and
+  // start passing for the wrong reason.
+  candidateForPrompt,
   isConfigured,
   consolidateWithLM,
   // Pure helper (exported for tests)

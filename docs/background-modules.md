@@ -386,6 +386,40 @@ The module pages render both in **Technical detail**, with `promptFile` as a Git
 deployment runs (`GET /api/config/source`). Three modules legitimately record no prompt because they call no
 model: `markdown_convert`, `orcid_extraction` and `identifier_detection`.
 
+### 2.1g The audit record: `inputs.json`
+
+Every run also writes an **`inputs.json`** artefact — what it was given, frozen, so an old result stays
+explainable. The rule is **freeze what can change, reference what cannot**:
+
+| kind | how it is stored | why |
+|---|---|---|
+| author rows, seeds, candidate pool, Generated KRT, grounding outcomes | copied verbatim under `frozen` | they are edited, or replaced by any re-run, underneath a stored result |
+| the markdown and the PDF | `fileId` + `version` + **SHA-256** under `documents` | `File` rows are immutable and versioned; a copy per detector per run would duplicate the manuscript for no added proof |
+| upstream detections | contributing **job ids** under `upstream` | stable references now that artefact keys are per run |
+| the prompt | template path + digest, **plus the digest of the assembled prompt as sent** | everything needed to rebuild it is in the same file, so the digest turns a reconstruction into proof |
+
+**Artefact keys carry the job row id**: `…/round-N/jobs/<jobType>/<jobId>/<name>.json`. Without it a re-run
+overwrote the previous run's files while `runAllProcesses` created a fresh job row — the older row survived
+pointing at keys whose contents had been replaced, showing the newer run's data under the older run's timestamps.
+
+The prompt is stored as a digest rather than as text, which is only defensible while it can actually be rebuilt.
+`scripts/verify-run-audit.js` does exactly that — it rebuilds each prompt from `inputs.json` alone, through the
+same assembly helpers the pipeline uses, and compares:
+
+```bash
+node scripts/verify-run-audit.js --manuscript DA1-000463-013-org-D-3
+node scripts/verify-run-audit.js --all      # exit 1 if anything fails
+```
+
+Run it after changing a prompt or the code that assembles one. A failure means the prompt started using an input
+the record does not carry, and that input has to be added to that module's `saveRunInputs` call — the digests
+prove nothing without it. It has already caught three: a template hashed untrimmed while every loader trims it,
+DAS's section name, and datasets consolidation's derived signals (which live in the raw `langextract-signals`
+artefact, not in the derived form the prompt embeds).
+
+`krt_grounding` is the one module with no single assembled prompt: its second look sends one per batch of
+not-yet-located rows, so it records the batch size, which with the frozen rows reproduces the same split.
+
 ### 2.2 Fail-soft: the On / Demo / Off + Done / Fail model
 
 Every detector wraps its work in **`runWithDemoFallback`** (`services/demo-fallback.service.js`), driven by two

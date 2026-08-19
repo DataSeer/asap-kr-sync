@@ -663,6 +663,10 @@ async function getPersistedGroundings(submissionId, round) {
 }
 
 module.exports = {
+  // Exported for the audit verifier: it rebuilds this prompt through the same
+  // shaping the pipeline uses, rather than a copy that could drift.
+  authorRowForPrompt,
+  generatedRowForPrompt,
   queueSuggestionGeneration,
   processSuggestionGeneration,
   generateSuggestions,
