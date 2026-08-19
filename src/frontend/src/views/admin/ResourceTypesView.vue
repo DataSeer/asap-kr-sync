@@ -77,11 +77,14 @@ function getCategoryLabel(type) {
 }
 
 function getCategoryBadgeClass(type) {
+  // Kept in step with assets/styles/badges.css, which takes its vocabulary from
+  // this page. Lab materials moved off amber: that is the app's "waiting"
+  // status colour, and a reagent class should not look like a running job.
   const classes = {
     dataset: 'bg-blue-100 text-blue-700',
     software: 'bg-green-100 text-green-700',
     protocol: 'bg-purple-100 text-purple-700',
-    lab_material: 'bg-amber-100 text-amber-700'
+    lab_material: 'bg-teal-100 text-teal-700'
   }
   return classes[type] || 'bg-gray-100 text-gray-700'
 }
