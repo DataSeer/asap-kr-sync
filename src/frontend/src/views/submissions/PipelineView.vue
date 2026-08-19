@@ -17,7 +17,8 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useRoute } from 'vue-router'
 import { useJobPoller } from '@/composables'
-import SubmissionLinks from '@/components/modules/SubmissionLinks.vue'
+import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import { useSubmissionStore } from '@/stores/submission.store'
 import configService from '@/services/config.service'
 import { labelFor, purposeFor, stageLabel } from '@/components/modules/module-meta'
 
@@ -25,8 +26,17 @@ const route = useRoute()
 const submissionId = computed(() => route.params.id)
 const { jobs } = useJobPoller(submissionId)
 
+const submissionStore = useSubmissionStore()
+
+
+
 const graph = ref({ nodes: [], stageCount: 0 })
 onMounted(async () => {
+  // A page opened directly has no submission loaded — and opening directly is
+  // the reason these are pages.
+  if (submissionStore.currentSubmission?.id !== submissionId.value) {
+    submissionStore.fetchSubmission(submissionId.value).catch(() => {})
+  }
   try {
     graph.value = await configService.getPipeline()
   } catch {
@@ -156,12 +166,18 @@ const activeStage = computed(() => {
 
 <template>
   <div class="pv">
+    <SubmissionHeader
+      :submission="submissionStore.currentSubmission"
+      :latest-files="submissionStore.latestFiles"
+      step-title="Processing pipeline"
+      step-description="Every step that runs on this submission, in the order it runs."
+    />
+
     <div class="pv-head">
       <RouterLink :to="{ name: 'submission-pdf', params: { id: submissionId } }" class="pv-back">
         ← Back to the submission
       </RouterLink>
       <h1 class="pv-title">Processing pipeline</h1>
-      <SubmissionLinks :submission-id="submissionId" current="pipeline" class="sl-right" />
     </div>
 
     <p class="pv-intro">
@@ -257,7 +273,7 @@ const activeStage = computed(() => {
 
 <style scoped>
 .pv { padding: 1.25rem 1.5rem 3rem; }
-.sl-right { margin-left: auto; }
+.pv-files { margin-bottom: 0.5rem; }
 .pv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
 .pv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
 .pv-back:hover { text-decoration: underline; }

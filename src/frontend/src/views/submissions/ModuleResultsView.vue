@@ -15,7 +15,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
-import SubmissionLinks from '@/components/modules/SubmissionLinks.vue'
+import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import { useSubmissionStore } from '@/stores/submission.store'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
@@ -30,6 +31,10 @@ const jobType = computed(() => route.params.type)
 const resourceTypesStore = useResourceTypesStore()
 
 const { jobs } = useJobPoller(submissionId)
+
+const submissionStore = useSubmissionStore()
+
+
 const job = computed(() => (jobs.value || {})[jobType.value] || null)
 const explainer = computed(() => explainerFor(jobType.value))
 
@@ -41,6 +46,11 @@ const explainer = computed(() => explainerFor(jobType.value))
  */
 const steps = ref([])
 onMounted(async () => {
+  // A page opened directly has no submission loaded — and opening directly is
+  // the reason these are pages.
+  if (submissionStore.currentSubmission?.id !== submissionId.value) {
+    submissionStore.fetchSubmission(submissionId.value).catch(() => {})
+  }
   // Resource-type categories drive the tab groups, and getTabGroup falls back to
   // "Lab Materials" for a type it does not know — so without this every row
   // lands in one tab. The panel loads them because its parent view does; a page
@@ -111,12 +121,24 @@ const tabConflicts = computed(() => {
 
 <template>
   <div class="mrv">
+    <!-- The source material first: these results are read against it. -->
+    <!-- The submission's own header: title, manuscript id, and links to the
+         KRT and PDF files. Reused rather than rebuilt, so these pages carry the
+         same identity and the same file links as every step view. -->
+    <SubmissionHeader
+      :submission="submissionStore.currentSubmission"
+      :latest-files="submissionStore.latestFiles"
+      :step-title="label"
+      step-description="Results of one processing step, read against the manuscript."
+    />
+
     <div class="mrv-head">
       <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
         ← Pipeline
       </RouterLink>
       <h1 class="mrv-title">{{ label }}</h1>
-      <SubmissionLinks :submission-id="submissionId" current="" class="sl-right" />
+      <!-- Beside the title, not off in a corner: it is a fact about THIS
+           module's result, not a property of the page. -->
       <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
         ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
       </span>
@@ -186,7 +208,7 @@ const tabConflicts = computed(() => {
 
 <style scoped>
 .mrv { padding: 1.25rem 1.5rem 3rem; max-width: 100%; }
-.sl-right { margin-left: auto; }
+.mrv-files { margin-bottom: 0.5rem; }
 .mrv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .mrv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
 .mrv-back:hover { text-decoration: underline; }
