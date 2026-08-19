@@ -67,6 +67,13 @@ const stages = computed(() => {
   return out
 })
 
+/** Gate names, in the words a reader can act on. */
+const GATE_LABELS = {
+  krt_curated: 'the Key Resources Table to be validated',
+  markdown_ready: 'the manuscript to be converted to text'
+}
+const gateLabel = (name) => GATE_LABELS[name] || name
+
 const jobFor = (jobType) => (jobs.value || {})[jobType] || null
 
 /** Status as one word plus a colour, from the job if it has run. */
@@ -273,7 +280,11 @@ const activeStage = computed(() => {
                   <span v-if="conflictsFor(node.jobType) > 0" class="pv-conflicts">
                     ⚠ {{ conflictsFor(node.jobType) }} conflict{{ conflictsFor(node.jobType) === 1 ? '' : 's' }}
                   </span>
-                  <span v-if="node.gate" class="pv-gate" :title="'Waits for a condition on the submission: ' + node.gate">gated</span>
+                  <span
+                    v-if="node.gates?.length"
+                    class="pv-gate"
+                    :title="'Waits for: ' + node.gates.map(gateLabel).join(', ')"
+                  >gated</span>
                   <span v-if="!node.autoAdvances" class="pv-gate" title="Can pause and wait for you before it runs.">may pause</span>
                   <span v-if="HAS_PAGE.has(node.jobType)" class="pv-open">open ↗</span>
                 </div>

@@ -39,8 +39,16 @@ const RECONCILE_GRACE_MS = 5 * 60 * 1000; // 5 minutes
  */
 
 /**
- * Submission-state gates, by name. Each receives the Submission (id, status)
- * and returns whether the gated step may start.
+ * Gates, by name. Each receives `(submission, jobsByType)` and returns whether
+ * the gated step may start.
+ *
+ * A gate is not a failure: an unsatisfied one keeps the step in `waiting`, and
+ * the reconciler re-checks it every sweep, so the step starts by itself the
+ * moment the condition holds. That is the difference from `canAutoAdvance`,
+ * which parks a step in `pending_input` awaiting a human decision.
+ *
+ * A step may list several (`gate: ['a', 'b']`); the first unsatisfied one is
+ * what blocks it, and is what the jobs API reports.
  */
 const GATES = {
   // Nothing that reads the author's KRT may start until the author has
@@ -57,13 +65,52 @@ const GATES = {
   // The gate is on submission STATE, not on the presence of a KRT: a
   // submission with no KRT at all passes it the moment the author moves on, so
   // the no-KRT mode is unaffected.
-  krt_curated: (submission) => !['draft', 'step_krt'].includes(submission.status)
+  krt_curated: (submission) => !['draft', 'step_krt'].includes(submission.status),
+
+  // Nothing that reads the manuscript may run when there is no manuscript text.
+  //
+  // Conversion is fail-soft: when the converter errors or returns nothing, the
+  // job still completes, with `markdownLength: 0` and `detected: false`. Every
+  // downstream module then ran happily against an empty document and reported
+  // zero findings — which reads as "your manuscript mentions none of this",
+  // when the truth is that the app never read the manuscript. Observed on a
+  // real run: 11/11 steps "complete", 0 datasets, 0 materials, 0 protocols, and
+  // all 12 author rows reported as not detected.
+  //
+  // So the detectors hold in `waiting` instead. Re-running conversion releases
+  // them automatically; until then the panel says the pipeline is blocked and
+  // why.
+  markdown_ready: (submission, jobsByType) => {
+    const job = jobsByType?.get(JOB_TYPES.MARKDOWN_CONVERT);
+    // No conversion job in this map (e.g. a partial view): do not claim to
+    // know. The dependency check already keeps the step waiting.
+    if (!job) return true;
+    if (job.status !== 'complete') return true;
+    return (job.result?.data?.markdownLength || 0) > 0;
+  }
 };
+
+/** A step's gates, however it declared them. */
+const gatesOf = (step) => (Array.isArray(step.gate) ? step.gate : (step.gate ? [step.gate] : []));
+
+/**
+ * The first gate stopping this step, or null.
+ *
+ * @returns {string|null} gate name
+ */
+function blockingGate(step, submission, jobsByType) {
+  for (const name of gatesOf(step)) {
+    const fn = GATES[name];
+    if (!fn) continue;
+    if (submission && !fn(submission, jobsByType)) return name;
+  }
+  return null;
+}
 const PIPELINE = [
   // DAS extraction now reads the converted markdown (Gemini-based, replaces
   // the Modal Llama fine-tune that ate the PDF directly), so it depends on
   // MARKDOWN_CONVERT just like the other Gemini-based detectors.
-  { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
+  { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'markdown_ready' },
   // Softcite reads the PDF and could start immediately, but the module's second
   // engine — the LM pass — reads the converted markdown, and without this
   // dependency it would race conversion and skip on nearly every run. Waiting
@@ -71,19 +118,19 @@ const PIPELINE = [
   // KRT_GROUNDING, which waits for the markdown-dependent detectors regardless.
   // Gated with the rest of detection so the whole detection stage starts at one
   // moment rather than trickling in around the KRT step.
-  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
+  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
   { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [] },
   { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [] },
   // Every text detector waits for BOTH the markdown and the curated KRT: the
   // seeded prompts carry the author's rows, so starting earlier would seed
   // from a table the author is still editing.
-  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
-  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
-  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
+  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
   // Identifier detection scans the post-conversion markdown against the
   // curated enrichment list. Cross-category — produces software/materials/
   // datasets/protocols items in one pass and lets pdf-analysis consolidate.
-  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
+  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
   {
     // Grounding reconciles the author's KRT against the candidate pool: for
     // every author row it decides confirmed / incomplete / not_detected, and
@@ -98,7 +145,7 @@ const PIPELINE = [
       JOB_TYPES.PROTOCOLS_DETECTION,
       JOB_TYPES.IDENTIFIER_DETECTION
     ],
-    gate: 'krt_curated'
+    gate: ['markdown_ready', 'krt_curated']
   },
   {
     // PDF Analysis is the consolidator: it merges every detection's items
@@ -268,9 +315,10 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   // the status-change handler / reconciler re-drives once the state changes.
   // Debug level: the reconciler sweep re-checks gated jobs every interval and
   // an info log per sweep per job would be pure noise.
-  if (step.gate && GATES[step.gate] && submission && !GATES[step.gate](submission)) {
+  const blocked = blockingGate(step, submission, jobsByType);
+  if (blocked) {
     logger.debug('Pipeline step gated, staying in waiting', {
-      submissionId, jobType: step.jobType, gate: step.gate,
+      submissionId, jobType: step.jobType, gate: blocked,
       submissionStatus: submission.status, triggeredBy
     });
     return false;
@@ -554,10 +602,10 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
  * @param {object} submission - needs `status`
  * @returns {boolean}
  */
-function isGateBlocked(jobType, submission) {
+function isGateBlocked(jobType, submission, jobsByType) {
   const step = PIPELINE.find(s => s.jobType === jobType);
-  if (!step || !step.gate || !GATES[step.gate]) return false;
-  return !GATES[step.gate](submission);
+  if (!step) return null;
+  return blockingGate(step, submission, jobsByType);
 }
 
 module.exports = {

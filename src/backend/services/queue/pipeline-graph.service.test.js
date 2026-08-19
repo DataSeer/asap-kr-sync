@@ -46,11 +46,19 @@ test('roots are stage 0, and stageCount covers every stage', () => {
 test('gates are reported by name, and pausing steps are flagged', () => {
   const { nodes } = buildPipelineGraph();
   const grounding = nodes.find((n) => n.jobType === 'krt_grounding');
-  assert.equal(grounding.gate, 'krt_curated', 'the client needs to know a gate applies, and which');
+  assert.deepEqual(grounding.gates.sort(), ['krt_curated', 'markdown_ready'],
+    'the client needs to know which gates apply');
+  const detector = nodes.find((n) => n.jobType === 'materials_detection');
+  assert.ok(detector.gates.includes('krt_curated'),
+    'the seeded detectors wait for the KRT to be validated');
+  assert.ok(detector.gates.includes('markdown_ready'),
+    'nothing that reads the manuscript runs without converted text');
+  const convert = nodes.find((n) => n.jobType === 'markdown_convert');
+  assert.deepEqual(convert.gates, [], 'the step that PRODUCES the text cannot wait for it');
   const analysis = nodes.find((n) => n.jobType === 'pdf_analysis');
   assert.equal(analysis.autoAdvances, false, 'it can park in pending_input awaiting a DAS');
   // A function must never be serialised to the client.
-  for (const n of nodes) assert.notEqual(typeof n.gate, 'function');
+  for (const n of nodes) for (const g of n.gates) assert.equal(typeof g, 'string');
 });
 
 test('computeStages does not hang on a cycle', () => {

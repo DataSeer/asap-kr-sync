@@ -52,7 +52,7 @@ function computeStages(pipeline) {
  * The pipeline, described.
  *
  * @returns {{nodes: Array<object>, stageCount: number}}
- *   nodes: { jobType, dependsOn, gate, stage, autoAdvances }
+ *   nodes: { jobType, dependsOn, gates, stage, autoAdvances }
  */
 function buildPipelineGraph() {
   const stages = computeStages(PIPELINE);
@@ -60,8 +60,11 @@ function buildPipelineGraph() {
     jobType: step.jobType,
     dependsOn: [...(step.dependsOn || [])],
     // Named, not the function: a gate is a server-side condition and the client
-    // only needs to know one applies and which.
-    gate: step.gate || null,
+    // only needs to know which ones apply. Always an array — a step can carry
+    // several (a detector waits for both the converted text and the curated
+    // KRT), and a field that is sometimes a string and sometimes a list is a
+    // bug waiting to be written on the client.
+    gates: Array.isArray(step.gate) ? [...step.gate] : (step.gate ? [step.gate] : []),
     // Whether this step can park in `pending_input` awaiting a human decision.
     autoAdvances: typeof step.canAutoAdvance !== 'function',
     stage: stages.get(step.jobType) ?? 0

@@ -80,9 +80,15 @@ detector that started while the table was still being edited would answer a ques
 exists, and spend an LM call doing it. The gate is on submission **state**, not on the presence of a KRT: a
 submission with no KRT at all passes it as soon as the author moves on, so the no-KRT mode is unaffected.
 
-While a step is gated the jobs API reports `waitingReason: 'krt_validation'`, and the processes panel turns that
-into a banner — *"Analysis is waiting for your Key Resources Table to be validated… Click Continue"* — rather than
-leaving the user to read "waiting" and wonder what stalled.
+A second gate, **`markdown_ready`**, holds the same steps (plus `das_extraction`) when `markdown_convert`
+completed with `markdownLength: 0`. Conversion is fail-soft — a converter error still completes the job — and
+before this gate every downstream module ran against an empty document and reported zero findings, which a reader
+cannot tell apart from a manuscript that genuinely mentions nothing. This gate does **not** clear by itself:
+conversion has already finished, unsuccessfully, so it takes a re-run.
+
+While a step is gated the jobs API reports `waitingReason` — `'krt_validation'` or `'markdown_missing'` — and the
+processes panel turns that into a banner where the progress bar would be, rather than leaving the user to read
+"waiting" and wonder what stalled.
 
 > **Two pipelines, one engine.** `seeded-v1` (the default, every user) seeds `datasets`/`materials`/`protocols`
 > with the author's rows; `blind-v1` (admin-only, not enabled for anyone yet) shows the detectors nothing and

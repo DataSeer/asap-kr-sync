@@ -40,6 +40,21 @@ const jobs = inject('submissionJobs', ref({}))
  */
 const waitingOnKrt = computed(() =>
   jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === 'krt_validation'))
+
+/**
+ * The pipeline is stopped because there is no manuscript text.
+ *
+ * Unlike the KRT gate this one does NOT clear by itself: conversion has already
+ * finished, unsuccessfully. Everything downstream would run against an empty
+ * document and report zero findings, which reads as "your manuscript mentions
+ * none of this" — so the steps hold instead, and this says why.
+ */
+const blockedOnMarkdown = computed(() =>
+  jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === 'markdown_missing'))
+
+/** How many steps that has stopped — the scale of the problem, not just its name. */
+const blockedCount = computed(() =>
+  jobList.value.filter((j) => j.status === 'waiting' && j.waitingReason === 'markdown_missing').length)
 const restartJobFn = inject('restartJob', null)
 // Cancel-processing action, provided by BackgroundProcesses (#15).
 const cancelProcessingFn = inject('cancelProcessing', null)
@@ -944,6 +959,10 @@ function getJobDetail(job) {
   if (job.status === 'waiting') {
     if (job.waitingReason === 'krt_validation') {
       return 'Waiting for the Key Resources Table to be validated — complete the KRT step to start this analysis.'
+    }
+    if (job.waitingReason === 'markdown_missing') {
+      return 'Blocked: the manuscript has no converted text. This step is held rather than run against an '
+        + 'empty document — re-run Markdown Convert or re-upload the PDF.'
     }
     const deps = getWaitingFor(job)
     if (deps.length) {
@@ -2028,6 +2047,21 @@ async function downloadMarkdownFile(fileId) {
       <p v-if="anyInFlight" class="job-status-eta-hint">
         You can keep editing the Key Resources Table while these finish — suggestions will appear once they're done.
       </p>
+      <!-- A real problem, in the place the progress bar would be: the pipeline
+           has stopped and will not restart on its own. -->
+      <div v-if="blockedOnMarkdown" class="job-status-blocked">
+        <svg class="job-status-blocked-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
+        </svg>
+        <span>
+          <strong>Analysis is blocked: the manuscript could not be converted to text.</strong>
+          {{ blockedCount }} step{{ blockedCount === 1 ? '' : 's' }}
+          {{ blockedCount === 1 ? 'is' : 'are' }} held rather than run against an empty document —
+          they would report no findings whatever the manuscript says. Re-run
+          <strong>Markdown Convert</strong> below, or re-upload the PDF; the rest of the pipeline
+          starts by itself once there is text.
+        </span>
+      </div>
       <!-- Not an error: the pipeline is waiting on the user, and says so. -->
       <p v-if="waitingOnKrt" class="job-status-krt-gate">
         <svg class="job-status-krt-gate-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3125,6 +3159,27 @@ async function downloadMarkdownFile(fileId) {
 .job-status-waiting {
   background: #fef3c7;
   color: #92400e;
+}
+
+.job-status-blocked {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #fecaca;
+  border-radius: 0.375rem;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.job-status-blocked-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
 }
 
 .job-status-krt-gate {

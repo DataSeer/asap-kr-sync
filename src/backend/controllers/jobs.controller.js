@@ -37,11 +37,24 @@ function resolveRound(req) {
  * queue config). Other roles (PM, ds_annotator, admin) get the full technical
  * details so they can debug pipeline behavior.
  */
+/**
+ * Gate name → the reason the UI shows. Named separately because the gate is an
+ * implementation detail of the pipeline table and the reason is a contract with
+ * the frontend: renaming a gate must not silently change what users read.
+ */
+const WAITING_REASONS = {
+  krt_curated: 'krt_validation',
+  markdown_ready: 'markdown_missing'
+};
+
 async function getJobs(req, res, next) {
   try {
     const round = resolveRound(req);
     const jobs = await SubmissionJob.getForSubmission(req.params.id, round);
     const includeInternals = req.user?.role !== ROLES.AUTHOR;
+    // Gates can read a dependency's result — "is there any converted text?" —
+    // so they need the run, not just the submission.
+    const jobsByType = new Map(jobs.map(j => [j.jobType, j]));
 
     res.json({
       round,
@@ -70,8 +83,8 @@ async function getJobs(req, res, next) {
           status: job.status,
           // Explains a `waiting` status the dependency graph can't: the step
           // is gated on submission state (e.g. KRT not yet validated).
-          waitingReason: job.status === 'waiting' && orchestrator.isGateBlocked(job.jobType, req.submission)
-            ? 'krt_validation'
+          waitingReason: job.status === 'waiting'
+            ? WAITING_REASONS[orchestrator.isGateBlocked(job.jobType, req.submission, jobsByType)] || null
             : null,
           referenceId: job.referenceId,
           result: safeResult,

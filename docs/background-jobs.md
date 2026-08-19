@@ -146,6 +146,23 @@ call doing it. Software and Identifier detection read no KRT themselves, but are
 gated with the rest so the stage starts as one moment rather than trickling in
 around the KRT step.
 
+**Nothing reads the manuscript when there is no manuscript.** A second gate,
+`markdown_ready`, holds every markdown-dependent step — DAS extraction, the five
+detectors and KRT Grounding — while `markdown_convert` has completed with
+`markdownLength: 0`. Conversion is fail-soft, so a converter error or an empty
+response still completes the job; before this gate existed, every downstream
+module ran against an empty document and reported zero findings, which reads as
+*"your manuscript mentions none of this"* rather than *"we never read your
+manuscript"*. Observed on a real run: 11/11 steps complete, 0 datasets, 0
+materials, 0 protocols, and all 12 author rows reported not detected.
+
+Unlike the KRT gate this one does **not** clear by itself — conversion has
+already finished, unsuccessfully. The jobs API reports
+`waitingReason: 'markdown_missing'` and the processes panel shows a blocked
+banner where the progress bar would be, naming the re-run that fixes it.
+Re-running `markdown_convert` successfully releases every held step
+automatically.
+
 Until the submission status moves past `draft`/`step_krt` those jobs stay in
 `waiting` and the jobs API reports `waitingReason: 'krt_validation'`, which the
 processes panel surfaces as a banner telling the user to click **Continue**. Unlike
@@ -170,13 +187,13 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 |----------|-----------|-----------------------|------------------------|
 | Markdown Convert | (none) | — | Always |
 | ORCID Extraction | (none) | — | Always |
-| DAS Extraction | Markdown Convert | — | Always |
-| Software Detection | Markdown Convert | `krt_curated` | Always (Softcite reads the PDF; the LM pass reads the markdown) |
-| Identifier Detection | Markdown Convert | `krt_curated` | Always |
-| Datasets Detection | Markdown Convert | `krt_curated` | Always (falls back gracefully if markdown unavailable) |
-| Materials Detection | Markdown Convert | `krt_curated` | Always |
-| Protocols Detection | Markdown Convert | `krt_curated` | Always |
-| KRT Grounding | Software + Datasets + Materials + Protocols + Identifier Detection | `krt_curated` | Always |
+| DAS Extraction | Markdown Convert | `markdown_ready` | Always |
+| Software Detection | Markdown Convert | `markdown_ready`, `krt_curated` | Always (Softcite reads the PDF; the LM pass reads the markdown) |
+| Identifier Detection | Markdown Convert | `markdown_ready`, `krt_curated` | Always |
+| Datasets Detection | Markdown Convert | `markdown_ready`, `krt_curated` | Always |
+| Materials Detection | Markdown Convert | `markdown_ready`, `krt_curated` | Always |
+| Protocols Detection | Markdown Convert | `markdown_ready`, `krt_curated` | Always |
+| KRT Grounding | Software + Datasets + Materials + Protocols + Identifier Detection | `markdown_ready`, `krt_curated` | Always |
 | PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection + KRT Grounding | — (inherited transitively) | Only if DAS extraction `result.status.detected === true` |
 | Suggestion Generation | PDF Analysis | — (inherited transitively) | Always (runs last in the pipeline) |
 
