@@ -110,7 +110,10 @@ const routes = [
         path: 'submissions/:id/pipeline/:type',
         name: 'submission-module',
         component: () => import('@/views/submissions/ModuleResultsView.vue'),
-        meta: { requiresAuth: true }
+        // The whole page IS the `:type` param, so moving between modules with
+        // the step strip must produce a fresh component rather than reuse this
+        // one with a new param. See the RouterView in AppLayout.
+        meta: { requiresAuth: true, remountOnRouteChange: true }
       },
       {
         path: 'submissions/:id/report',

@@ -131,18 +131,16 @@ const authors = ref([])
 const authorsLoading = ref(false)
 const authorsError = ref('')
 /**
- * Keyed on the module, not on mount.
+ * Mount-time is enough here, and only because the route is keyed.
  *
- * The step strip navigates between module pages with RouterLink, and every one
- * of them is THIS component — so Vue reuses the instance and only the route
- * param changes. Anything fetched in onMounted therefore ran for whichever
- * module happened to be opened first: arriving at ORCID from another module's
- * page left the table empty, while a reload populated it.
+ * The step strip navigates with RouterLink and every module page is this same
+ * component, so Vue would reuse the instance and change only the param —
+ * leaving whatever was loaded on mount belonging to the module opened first.
+ * `meta.remountOnRouteChange` on this route makes a param change build a new
+ * instance instead. Remove that and this silently stops running.
  */
-watch(jobType, async () => {
+onMounted(async () => {
   if (jobType.value !== 'orcid_extraction') return
-  authors.value = []
-  authorsError.value = ''
   authorsLoading.value = true
   try {
     authors.value = (await orcidService.getAuthors(submissionId.value))?.authors || []
@@ -155,7 +153,7 @@ watch(jobType, async () => {
   } finally {
     authorsLoading.value = false
   }
-}, { immediate: true })
+})
 
 const visibleAuthors = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -179,10 +177,9 @@ const markdownFileName = ref('converted manuscript')
 const markdown = ref('')
 const markdownLoading = ref(false)
 const markdownError = ref('')
-watch(jobType, async () => {
+// Mount-time for the same reason as the author list above: the route is keyed.
+onMounted(async () => {
   if (jobType.value !== 'markdown_convert') return
-  markdown.value = ''
-  markdownError.value = ''
   markdownLoading.value = true
   try {
     const data = await markdownService.getContent(submissionId.value)
@@ -195,7 +192,7 @@ watch(jobType, async () => {
   } finally {
     markdownLoading.value = false
   }
-}, { immediate: true })
+})
 
 /**
  * The converted text, as the stored file rather than the raw LM artefact — this
@@ -231,17 +228,6 @@ const decisions = computed(() => {
  * the skips burying them.
  */
 const decisionFilter = ref(new Set())
-
-/**
- * Filters belong to the module being looked at, so they reset with it. Carrying
- * a search term from Materials to Datasets showed an empty table on a module
- * that had results — the same "nothing here" the stale fetch produced.
- */
-watch(jobType, () => {
-  search.value = ''
-  tab.value = 'all'
-  decisionFilter.value = new Set()
-})
 
 const toggleDecision = (label) => {
   const next = new Set(decisionFilter.value)
