@@ -796,20 +796,16 @@ function getDataSummary(job, r) {
     }
     case 'krt_grounding': {
       const rows = r.counts?.authorRows || 0
-      const notDetected = r.counts?.notDetected || 0
       const unmatched = r.counts?.unmatchedCandidates || 0
       // No author KRT is a valid mode, not an empty result: say what the step
       // did do, which is find candidates nobody has claimed yet.
       if (rows === 0) return `No author KRT — ${unmatched} candidate${unmatched === 1 ? '' : 's'} found`
       // "Found" is counted from the DIRECT search of the manuscript, the same
       // measure the editor badges each row with — not from candidate matching,
-      // which asks a different question and answers it differently. Older
-      // results have no presence stats; those fall back to the verdicts.
+      // which asks a different question and answers it differently.
       const partial = r.counts?.partial || 0
-      const found = typeof r.counts?.present === 'number'
-        ? r.counts.present
-        : (r.counts?.confirmed || 0) + (r.counts?.incomplete || 0) + partial
-      const missing = typeof r.counts?.absent === 'number' ? r.counts.absent : notDetected
+      const found = r.counts?.present || 0
+      const missing = r.counts?.absent || 0
       const parts = [`${found}/${rows} KRT row${rows === 1 ? '' : 's'} found in the manuscript`]
       if (partial > 0) parts.push(`${partial} partial match${partial === 1 ? '' : 'es'}`)
       if (missing > 0) parts.push(`${missing} not in the text`)
@@ -1265,11 +1261,7 @@ function itemEngines(item) {
   return [...origins]
 }
 
-/**
- * Which halves of the open grounding result may be shown (from meta.grounding).
- * Null for results produced before pipelines existed — treated as showing
- * everything, which is what those runs meant.
- */
+/** Which halves of the open grounding result may be shown (from meta.grounding). */
 const modalGroundingPolicy = ref(null)
 
 /**
@@ -1281,7 +1273,10 @@ const modalGroundingPolicy = ref(null)
  * Presence is unaffected — it searches the manuscript directly and never
  * consults the candidate pool — so it is shown in every pipeline.
  */
-const showGroundingValues = computed(() => modalGroundingPolicy.value?.surfaceValues !== false)
+// Default-deny. Every grounding run stamps its policy, so a missing one is a
+// defect — and the safe failure for a defect is to withhold the candidate
+// verdicts, not to show ones that may be contaminated.
+const showGroundingValues = computed(() => modalGroundingPolicy.value?.surfaceValues === true)
 
 /** Columns for the grounding table — same two-row shape as the detectors. */
 /**
@@ -1356,7 +1351,9 @@ function groundingLabel(o) { return GROUNDING_LABELS[o?.outcome] || o?.outcome |
  * @returns {{label: string, cls: string, title: string}}
  */
 function foundVerdict(o) {
-  if (!o?.presence) return { label: '—', cls: 'grounding-unknown', title: 'Not recorded for this run.' }
+  // Every run records presence, so a row without it is a defect rather than an
+  // old result. Say nothing rather than guess a verdict from the other fields.
+  if (!o?.presence) return { label: '—', cls: 'grounding-unknown', title: 'Presence was not recorded for this row.' }
 
   const p = o.presence
   const conflicts = o.conflicts?.length || 0

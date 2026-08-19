@@ -342,7 +342,7 @@ async function groundSubmission(submission, jobLogger) {
       presence: { ...presence.stats, available: presence.available, missedByDetection },
       // Which halves of this result may be shown. Stamped on the run rather
       // than looked up at render time, so a result always says how it should be
-      // read — including after the submission's pipeline changes.
+      // read even after the submission's pipeline changes.
       pipeline: pipeline.id,
       grounding: pipeline.grounding,
       hasAuthorKrt: authorRows.length > 0,
