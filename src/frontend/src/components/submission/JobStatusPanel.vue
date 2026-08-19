@@ -1236,6 +1236,26 @@ const modalTabCounts = computed(() => {
 })
 
 /**
+ * Rows with a conflicting value, per tab group.
+ *
+ * The count alone does not tell a reader WHERE to look: a table of 300 rows
+ * with three conflicts hides them completely, and the tab counts only say how
+ * many rows each group holds. Putting the conflicts on the tabs turns "there
+ * are three" into "they are in Datasets and Key Lab Materials".
+ */
+const modalTabConflicts = computed(() => {
+  const counts = { all: 0 }
+  if (modalTableType.value !== 'grounding') return counts
+  for (const o of (modalItems.value || [])) {
+    if (!(o.conflicts?.length > 0)) continue
+    const g = resourceTypesStore.getTabGroup(o.resourceType || '')
+    counts[g] = (counts[g] || 0) + 1
+    counts.all++
+  }
+  return counts
+})
+
+/**
  * Which detection engine(s) produced an item.
  *
  * Software detection unions two engines, and after dedupe a resource found by
@@ -1300,7 +1320,11 @@ const GROUNDING_ALL_COLS = [
   // row's fields was located, so the badge carries its own justification.
   { key: 'found', label: 'Found', always: true },
   { key: 'matchedBy', label: 'Matched by' },
-  { key: 'fills', label: 'More information' }
+  // Always shown. Its main content is the verdict's own reasoning, which comes
+  // from the direct search and is therefore honest in every pipeline — unlike
+  // the fills beneath it, which are candidate-derived and withheld when the
+  // detection prompts were seeded.
+  { key: 'fills', label: 'More information', always: true }
 ]
 const GROUNDING_COLS = computed(() => (showGroundingValues.value
   ? GROUNDING_ALL_COLS
@@ -2201,6 +2225,12 @@ async function downloadMarkdownFile(fileId) {
                   >
                     {{ tab.label }}
                     <span class="job-modal-tab-count">{{ modalTabCounts[tab.key] || 0 }}</span>
+                    <!-- Where the defects are, not just how many rows. -->
+                    <span
+                      v-if="modalTabConflicts[tab.key] > 0"
+                      class="job-modal-tab-conflicts"
+                      :title="modalTabConflicts[tab.key] + ' row(s) here hold a value the manuscript contradicts.'"
+                    >⚠ {{ modalTabConflicts[tab.key] }}</span>
                   </button>
                 </div>
                 <!-- Decision filter: toggle chips, multi-select. No chip
@@ -2249,18 +2279,27 @@ async function downloadMarkdownFile(fileId) {
                           </span>
                         </td>
                         <td v-if="showGroundingValues" class="text-xs">{{ groundingMatchedBy(o) }}</td>
-                        <td v-if="showGroundingValues" class="text-xs">
-                          <template v-if="groundingHasFindings(o)">
+                        <td class="text-xs">
+                          <!-- The verdict's reasoning, spelled out rather than
+                               hidden behind a hover. A reader scanning for the
+                               row that needs attention should not have to point
+                               at each badge to find out what it means. -->
+                          <div class="grounding-why">{{ foundVerdict(o).title }}</div>
+                          <template v-if="showGroundingValues">
                             <div v-for="(f, fi) in groundingFills(o)" :key="'f' + fi" class="grounding-fill" title="Your row leaves this empty; the manuscript supplies it. Offered as a suggestion.">
                               {{ f }}
                             </div>
-                            <div v-for="(c, ci) in groundingConflicts(o)" :key="'c' + ci" class="grounding-conflict" title="The manuscript disagrees with your row. Your value is kept — this is for you to check.">
-                              ⚠ {{ c.text }}
-                            </div>
                           </template>
-                          <span v-else class="grounding-fill-empty" :title="groundingFillsEmptyTitle(o)">
-                            {{ groundingFillsEmptyLabel(o) }}
-                          </span>
+                          <!-- Conflicts travel in every pipeline: a value that
+                               contradicts the manuscript is a defect either way,
+                               and does not depend on trusting candidate
+                               matching. -->
+                          <div
+                            v-for="(c, ci) in groundingConflicts(o)"
+                            :key="'c' + ci"
+                            class="grounding-conflict"
+                            title="The manuscript disagrees with your row. Your value is kept — this is for you to check."
+                          >⚠ {{ c.text }}</div>
                         </td>
                       </tr>
                       <!-- Context line under every row that has one, exactly as
@@ -3118,9 +3157,12 @@ async function downloadMarkdownFile(fileId) {
   /* Detection-result tables can be wide (8+ columns). Give the modal room
      to breathe — 90% of the viewport, capped at 1600px on ultra-wide
      screens so columns don't get unreadably stretched. */
-  width: 90vw;
-  max-width: 1600px;
-  max-height: 90vh;
+  /* Wider than it was: the grounding table now carries the author's full KRT
+     row AND a written explanation per line, and reading the page behind the
+     modal is not something anyone does while inspecting results. */
+  width: 95vw;
+  max-width: 1900px;
+  max-height: 94vh;
   display: flex;
   flex-direction: column;
 }
@@ -3950,6 +3992,21 @@ async function downloadMarkdownFile(fileId) {
   background: #fff7ed;
   color: #c2410c;
   border: 1px solid #fed7aa;
+}
+.job-modal-tab-conflicts {
+  margin-left: 0.35rem;
+  padding: 0 0.35rem;
+  border-radius: 0.25rem;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.grounding-why {
+  color: #4b5563;
+  line-height: 1.35;
+  max-width: 34rem;
 }
 .job-conflict-badge {
   background: #fef2f2;
