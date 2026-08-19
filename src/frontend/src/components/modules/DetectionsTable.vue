@@ -247,14 +247,23 @@ function getMergedFromContext(originalItem) {
                              The section path is the compact form; the full
                              passage is on the context line below. -->
             <td class="text-xs">
+              <!-- A sentence rather than a bare path: the column held things
+                   like "Methods > Immunostaining" with no indication of what
+                   that was, or where it came from. -->
               <span v-if="item.evidence?.section" class="evidence-section-cell" :title="item.evidence.section">
-                {{ item.evidence.section }}
+                Found in the <strong>{{ item.evidence.section }}</strong> section of the manuscript
               </span>
-              <span v-else-if="item.evidence?.quote" class="text-gray-400">(no section)</span>
+              <!-- Context counts as located too: an "embellished" row has no
+                   quote of its own but does have the paragraph the resource
+                   appears in, and printing a bare dash next to the caveat badge
+                   said nothing. -->
+              <span v-else-if="item.evidence?.quote || item.evidence?.context" class="text-gray-400">
+                Found in the manuscript — the section it sits in could not be determined
+              </span>
               <span v-else class="text-gray-300">—</span>
               <span
                 v-if="item.evidence?.match === 'partial'"
-                class="badge dt-badge-weak"
+                class="badge badge-warning"
                 title="Only the leading part of the quote was located in the manuscript"
               >partial</span>
               <!-- The model's quote is not in the manuscript, but
@@ -263,7 +272,7 @@ function getMergedFromContext(originalItem) {
                                highlighted because it was never found. -->
               <span
                 v-else-if="item.evidence?.verification?.status === 'embellished'"
-                class="badge dt-badge-weak"
+                class="badge badge-warning"
                 title="The resource is in the manuscript, but the sentence the model quoted is not verbatim. The paragraph below is where the resource actually appears."
               >not verbatim</span>
             </td>
@@ -334,10 +343,13 @@ function getMergedFromContext(originalItem) {
    assets/styles/module-tables.css. */
 .dt-badge-icon { display: inline-flex; align-items: center; gap: 0.2rem; }
 .dt-badge-button { cursor: pointer; font-family: inherit; }
-/* Evidence qualifiers ("partial", "not verbatim") are a caveat on a finding
-   rather than a category, so they stay muted and take no category colour. */
-.dt-badge-weak {
-  background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb;
-  text-transform: none;
-}
+/* The sentence wraps rather than truncating — it is a statement about where a
+   row came from, and half of it says nothing. (Its only styling used to live in
+   JobStatusPanel's SCOPED block, so on a module page it had none.) */
+.evidence-section-cell { line-height: 1.4; }
+.evidence-section-cell strong { font-weight: 600; color: #374151; }
+
+/* The evidence caveats keep their lower-case wording — "not verbatim" reads as
+   a phrase, not a label — while taking the shared warning colour. */
+.badge-warning { text-transform: none; }
 </style>
