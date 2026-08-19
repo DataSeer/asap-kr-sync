@@ -234,7 +234,15 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   // artefact beside this one.
   await runInputs.saveRunInputs(jobLogger, {
     documents: { markdown: runInputs.fileRef(mdFile, mdBuffer) },
-    frozen: { seeds: resolved.input.seeds || [] },
+    // The consolidation prompt embeds the DERIVED signals, not the raw
+    // extractions — so the raw `langextract-signals` artefact beside this one is
+    // not enough to rebuild it. One file has to be sufficient, or the digest
+    // proves nothing on its own.
+    frozen: {
+      seeds: resolved.input.seeds || [],
+      datasetNames,
+      extractedRows
+    },
     prompt: runInputs.promptRef(resolved.input.meta?.promptFile || null, promptDigest),
     signalsPrompt: runInputs.promptRef(resolved.input.meta?.signalsPromptFile || null),
     meta: {

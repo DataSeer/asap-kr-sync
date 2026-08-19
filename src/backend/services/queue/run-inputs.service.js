@@ -69,10 +69,12 @@ function fileRef(file, content = null) {
 function promptRef(repoRelative, assembled = null) {
   let templateSha = null;
   let templateBytes = null;
+  let resolvedTemplate = '';
   try {
     const buf = fs.readFileSync(absolutePath(repoRelative));
     templateSha = sha256(buf);
     templateBytes = buf.length;
+    resolvedTemplate = buf.toString('utf-8').trim();
   } catch {
     // A prompt that cannot be read is a bigger problem than a missing digest,
     // and the caller has already failed by the time it matters.
@@ -81,6 +83,11 @@ function promptRef(repoRelative, assembled = null) {
     promptFile: repoRelative,
     templateSha256: templateSha,
     templateBytes,
+    // The text as the module USES it. Every prompt loader trims, so a rebuilder
+    // reading the file raw differs by a trailing newline and the digests miss —
+    // which is what happened the first time this was checked. Recording the
+    // resolved form removes the guess.
+    templateResolvedSha256: templateSha === null ? null : sha256(resolvedTemplate),
     // The proof: rebuild the prompt from the rest of this file, hash it, and
     // compare. Equal means the reconstruction is the prompt that was sent.
     assembledSha256: typeof assembled === 'string' ? sha256(assembled) : (assembled?.sha256 || null),

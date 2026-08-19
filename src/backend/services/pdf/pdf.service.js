@@ -590,7 +590,9 @@ async function runDasExtractor(submission, jobLogger) {
   await runInputs.saveRunInputs(jobLogger, {
     documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
     prompt: runInputs.promptRef(repoPath(dasExtractionService.PROMPT_FILE), extracted?.promptDigest || null),
-    meta: { model: dasExtractionConfig.model }
+    // The section name is interpolated into the prompt, so a rebuild needs it.
+    // Without it the digest could not be reproduced from this file alone.
+    meta: { model: dasExtractionConfig.model, section: dasExtractionConfig.section }
   });
   jobLogger?.log('das_api_done', 'DAS extractor returned', {
     dasLength: extracted?.content?.length || 0,
