@@ -418,6 +418,7 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
     generated_krt: generatedKrt.map((g, i) => generatedRowForPrompt(g, i))
   };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
+  const promptDigest = { sha256: runInputs.sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -457,7 +458,7 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
       });
     }
     const text = response.text || '';
-    return { lmDecisions: parseLMResponse(text), rawResponse: text };
+    return { lmDecisions: parseLMResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for KRT comparison', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
@@ -506,11 +507,13 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
     authorCount: authorRows.length, generatedCount: generatedKrt.length,
     groundedRowCount: groundingOutcomes.length
   });
+  const { lmDecisions, rawResponse, promptDigest } = await callGeminiForComparison(authorRows, generatedKrt);
+  await jobLogger?.saveRawResponse('krt-comparison', rawResponse || lmDecisions);
   // Both tables as this run saw them: the author's is edited constantly, and the
   // Generated one is replaced by any re-run of consolidation.
   await runInputs.saveRunInputs(jobLogger, {
     frozen: { authorRows, generatedKrt, groundingOutcomes },
-    prompt: runInputs.promptRef(repoPath(PROMPT_FILE)),
+    prompt: runInputs.promptRef(repoPath(PROMPT_FILE), promptDigest || null),
     meta: {
       model: krtComparisonConfig.model,
       authorCount: authorRows.length,
@@ -518,9 +521,6 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
       groundedRowCount: groundingOutcomes.length
     }
   });
-
-  const { lmDecisions, rawResponse } = await callGeminiForComparison(authorRows, generatedKrt);
-  await jobLogger?.saveRawResponse('krt-comparison', rawResponse || lmDecisions);
 
   const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, groundingOutcomes);
   const unreviewedCount = decisions.filter(d => d.action === 'unreviewed').length;

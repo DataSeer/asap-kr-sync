@@ -289,7 +289,15 @@ async function groundSubmission(submission, jobLogger) {
     frozen: { authorRows, candidates },
     upstream: runInputs.upstreamRefs(contributions),
     prompt: runInputs.promptRef(repoPath(PROMPT_FILE)),
-    meta: { model: groundingConfig.model, authorRowCount: authorRows.length, candidateCount: candidates.length }
+    meta: {
+      model: groundingConfig.model,
+      authorRowCount: authorRows.length,
+      candidateCount: candidates.length,
+      // The second look sends one prompt PER BATCH of not-yet-located rows, so
+      // there is no single assembled prompt to digest. The batch size is what a
+      // rebuilder needs to reproduce the same split from the frozen rows.
+      secondLookBatchSize: SECOND_LOOK_BATCH_SIZE
+    }
   });
 
   // ── Step 2: presence — the manuscript searched directly, independent of what

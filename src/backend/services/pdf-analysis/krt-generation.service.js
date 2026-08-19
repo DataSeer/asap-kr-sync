@@ -221,6 +221,8 @@ async function callGeminiForKrt(candidates) {
   const prompt = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   const payload = { candidates: candidates.map((c, i) => candidateForPrompt(c, i)) };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
+  const { sha256 } = require('../queue/run-inputs.service');
+  const promptDigest = { sha256: sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
   const response = await generateContentWithRetry(ai, {
     model: krtGenConfig.model,
     contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
@@ -249,7 +251,7 @@ async function callGeminiForKrt(candidates) {
       return resources.length > 0 || dropped.length > 0;
     }
   });
-  return { lmOutput: parseLMResponse(response.text || ''), rawResponse: response.text || '' };
+  return { lmOutput: parseLMResponse(response.text || ''), rawResponse: response.text || '', promptDigest };
 }
 
 /**
@@ -262,10 +264,10 @@ async function consolidateWithLM(candidates, jobLogger = null) {
     return { items: candidates.map(c => ({ ...c, reason: 'kept (rule-based merge)' })), dropped: [], usedLM: false };
   }
   try {
-    const { lmOutput, rawResponse } = await callGeminiForKrt(candidates);
+    const { lmOutput, rawResponse, promptDigest } = await callGeminiForKrt(candidates);
     const { items, dropped } = buildKrtFromLM(candidates, lmOutput);
     jobLogger?.log('krt_llm_done', 'LM consolidation complete', { kept: items.length, dropped: dropped.length });
-    return { items, dropped, usedLM: true, rawResponse };
+    return { items, dropped, usedLM: true, rawResponse, promptDigest };
   } catch (err) {
     logger.error('KRT generation LM failed — falling back to rule-based merge', { error: err.message });
     jobLogger?.log('krt_llm_failed', 'LM consolidation failed; using rule-based merge', { error: err.message });
