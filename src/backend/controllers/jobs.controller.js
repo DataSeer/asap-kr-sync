@@ -242,8 +242,15 @@ async function getJobResponse(req, res, next) {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    const s3Key = job.result?.files?.[responseName];
-    if (!s3Key) {
+    // hasOwnProperty, not a bare lookup: `files` is a plain object, so
+    // `.../responses/constructor` returned an inherited function, sailed past a
+    // truthiness check, and blew up in the S3 client with a TypeError — a 500
+    // where a 404 belongs.
+    const files = job.result?.files;
+    const s3Key = files && Object.prototype.hasOwnProperty.call(files, responseName)
+      ? files[responseName]
+      : null;
+    if (typeof s3Key !== 'string' || !s3Key) {
       return res.status(404).json({ error: 'Response not found' });
     }
 

@@ -10,7 +10,7 @@ const s3Service = require('../services/storage/s3.service');
 const parserService = require('../services/krt/parser.service');
 const krtService = require('../services/krt/krt.service');
 const jobAdminService = require('../services/queue/job-admin.service');
-const { KRT_COLUMNS } = require('../config/constants');
+const { KRT_COLUMNS, SUBMISSION_STATUSES } = require('../config/constants');
 const logger = require('../utils/logger');
 
 /**
@@ -33,6 +33,13 @@ async function list(req, res, next) {
     // Add optional status filter (supports comma-separated values)
     if (req.query.status) {
       const statuses = req.query.status.split(',').map(s => s.trim()).filter(Boolean);
+      // Allowlisted against the ENUM: an unknown value reached Postgres and came
+      // back as a 500 for what is a caller's typo. The sort column next to this
+      // was already allowlisted; the filter had been missed.
+      const unknown = statuses.filter((st) => !SUBMISSION_STATUSES.includes(st));
+      if (unknown.length > 0) {
+        throw new ValidationError(`Unknown status: ${unknown.join(', ')}`);
+      }
       if (statuses.length === 1) {
         filter.status = statuses[0];
       } else if (statuses.length > 1) {

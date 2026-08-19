@@ -4,7 +4,7 @@
 
 const { Op } = require('sequelize');
 const { Team, UserTeam, TeamEmail, Submission, User } = require('../models');
-const { NotFoundError, ConflictError, ValidationError } = require('../utils/errors');
+const { NotFoundError, ConflictError, ValidationError, AuthorizationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
 const teamEmailService = require('../services/teams/team-email.service');
 const { ROLES } = require('../config/constants');
@@ -285,13 +285,40 @@ async function importCsv(req, res, next) {
  * List (team, email) roster mappings
  * GET /api/teams/email-mappings?team=XX&email=foo
  */
+/**
+ * Which teams this caller may act on in the roster, or null for "all of them".
+ *
+ * An `asap_pm` is defined as a super-author SCOPED TO THEIR TEAMS
+ * (docs/roles-and-permissions.md), but the roster endpoints checked only that
+ * the team existed. A PM could therefore map their own email into any team code
+ * — `GET /api/teams/codes` lists them all to any authenticated user — and since
+ * `authenticate` reloads memberships on every request, that granted read AND
+ * write access to another lab's submissions on the very next call. Admins and
+ * ds_annotators keep the global view; they are the roster's owners.
+ *
+ * @returns {string[]|null} allowed team codes, or null when unrestricted
+ */
+function rosterScopeFor(user) {
+  return user?.role === ROLES.ASAP_PM ? (user.teams || []) : null;
+}
+
 async function listEmailMappings(req, res, next) {
   try {
     const { page, limit, offset } = parsePagination(req.query);
 
     const whereClause = {};
+    // A PM sees their own labs' roster only; it is other people's names and
+    // email addresses otherwise.
+    const scope = rosterScopeFor(req.user);
+    if (scope) {
+      whereClause.team = { [Op.in]: scope };
+    }
     if (req.query.team) {
-      whereClause.team = String(req.query.team).trim();
+      const asked = String(req.query.team).trim();
+      if (scope && !scope.includes(asked)) {
+        throw new AuthorizationError('You can only view the roster for your own team(s).');
+      }
+      whereClause.team = asked;
     }
     if (req.query.email) {
       whereClause.email = String(req.query.email).trim().toLowerCase();
@@ -338,6 +365,16 @@ async function createEmailMappings(req, res, next) {
     const unknownTeams = [...new Set(mappings.map(m => m.team).filter(team => !validTeams.has(team)))];
     if (unknownTeams.length > 0) {
       throw new ValidationError(`Unknown team(s): ${unknownTeams.join(', ')}. Create the team(s) first.`);
+    }
+
+    const scope = rosterScopeFor(req.user);
+    if (scope) {
+      const outside = [...new Set(mappings.map(m => m.team).filter(team => !scope.includes(team)))];
+      if (outside.length > 0) {
+        throw new AuthorizationError(
+          `You can only manage the roster for your own team(s): ${outside.join(', ')} is not one of them.`
+        );
+      }
     }
 
     let created = 0;
@@ -404,6 +441,13 @@ async function deleteEmailMapping(req, res, next) {
   try {
     const mapping = await TeamEmail.findByPk(req.params.id);
     if (!mapping) {
+      throw new NotFoundError('Email mapping');
+    }
+
+    // Deleting a mapping also revokes the matching account's membership, so an
+    // unscoped delete let a PM cut off another lab's members.
+    const scope = rosterScopeFor(req.user);
+    if (scope && !scope.includes(mapping.team)) {
       throw new NotFoundError('Email mapping');
     }
 

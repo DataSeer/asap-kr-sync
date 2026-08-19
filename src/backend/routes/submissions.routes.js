@@ -89,6 +89,7 @@ router.get('/:id/das-suggestions',
 
 // POST /api/submissions/:id/das-suggestions/regenerate - re-run the DAS check
 router.post('/:id/das-suggestions/regenerate',
+  lmApiLimiter,
   canAccessSubmission,
   dasSuggestionsController.regenerate
 );
@@ -259,6 +260,7 @@ router.post('/:id/pdf/extract-das',
 
 // POST /api/submissions/:id/reports/generate - Generate report
 router.post('/:id/reports/generate',
+  lmApiLimiter,
   canAccessSubmission,
   validateBody('generateReport'),
   reportsController.generate
