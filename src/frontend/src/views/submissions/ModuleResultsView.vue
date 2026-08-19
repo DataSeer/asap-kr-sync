@@ -473,7 +473,10 @@ const tabConflicts = computed(() => {
         <GroundingTable v-if="jobType === 'krt_grounding'" :outcomes="visible" :policy="policy" :search="search" />
         <DetectionsTable v-else :items="visible" :search="search" :job-type="jobType" />
       </div>
-      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+      <ModuleTechnical
+        :job="job" :submission-id="submissionId" :job-type="jobType"
+        :jobs="jobs || {}" :files="latestFiles"
+      />
     </template>
 
     <template v-else-if="isSuggestions">
@@ -513,7 +516,10 @@ const tabConflicts = computed(() => {
         </button>
       </div>
       <SuggestionsTable :rows="visibleDecisionRows" :search="search" />
-      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+      <ModuleTechnical
+        :job="job" :submission-id="submissionId" :job-type="jobType"
+        :jobs="jobs || {}" :files="latestFiles"
+      />
     </template>
 
     <template v-else-if="isKrt">
@@ -541,7 +547,10 @@ const tabConflicts = computed(() => {
         :dropped="krtDropped"
         :search="search"
       />
-      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+      <ModuleTechnical
+        :job="job" :submission-id="submissionId" :job-type="jobType"
+        :jobs="jobs || {}" :files="latestFiles"
+      />
     </template>
 
     <template v-else-if="jobType === 'orcid_extraction'">
@@ -552,7 +561,10 @@ const tabConflicts = computed(() => {
       <div class="mrv-table-frame">
         <AuthorsTable :authors="visibleAuthors" :search="search" />
       </div>
-      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+      <ModuleTechnical
+        :job="job" :submission-id="submissionId" :job-type="jobType"
+        :jobs="jobs || {}" :files="latestFiles"
+      />
     </template>
 
     <template v-else-if="jobType === 'das_extraction'">
@@ -562,7 +574,10 @@ const tabConflicts = computed(() => {
       <p v-else class="mrv-empty">
         No Data Availability Statement was located in the converted manuscript.
       </p>
-      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType" />
+      <ModuleTechnical
+        :job="job" :submission-id="submissionId" :job-type="jobType"
+        :jobs="jobs || {}" :files="latestFiles"
+      />
     </template>
 
     <template v-else-if="jobType === 'markdown_convert'">
@@ -572,7 +587,10 @@ const tabConflicts = computed(() => {
         :loading="markdownLoading"
         :error="markdownError"
       />
-      <ModuleTechnical :job="job" :submission-id="submissionId" :job-type="jobType">
+      <ModuleTechnical
+        :job="job" :submission-id="submissionId" :job-type="jobType"
+        :jobs="jobs || {}" :files="latestFiles"
+      >
         <template v-if="markdownFileId" #files>
           <ul class="mrv-filelist">
             <li>

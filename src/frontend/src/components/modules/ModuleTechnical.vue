@@ -13,6 +13,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth.store'
 import configService from '@/services/config.service'
+import fileService from '@/services/file.service'
+import { labelFor } from '@/components/modules/module-meta'
+import { RouterLink } from 'vue-router'
 
 const props = defineProps({
   job: { type: Object, required: true },
@@ -25,7 +28,11 @@ const props = defineProps({
    * `job.type` here produced download URLs with "undefined" in the path. The
    * caller always knows which module it is showing, so it says so.
    */
-  jobType: { type: String, required: true }
+  jobType: { type: String, required: true },
+  /** Every job for this submission, keyed by type — an input often IS another step's output. */
+  jobs: { type: Object, default: () => ({}) },
+  /** `{ krt, pdf }` as the submission endpoint returns them. */
+  files: { type: Object, default: () => ({}) }
 })
 
 const authStore = useAuthStore()
@@ -124,6 +131,124 @@ const timings = computed(() => [
   ['Model call', ms(meta.value.geminiMs)]
 ].filter(([, v]) => v))
 
+// ── what went in ───────────────────────────────────────────────────────
+/**
+ * What each module reads.
+ *
+ * Written down here because no run records it: a module's inputs are implied by
+ * its code, and a reader looking at a surprising result has no way to see which
+ * document was actually read. Every entry below resolves to something that
+ * still exists — an S3 file, the author's table, or another step's stored
+ * result — so these are links, not descriptions.
+ */
+const READS = {
+  markdown_convert: ['pdf'],
+  orcid_extraction: ['pdf'],
+  das_extraction: ['markdown'],
+  software_detection: ['pdf', 'markdown'],
+  datasets_detection: ['markdown', 'seeds'],
+  materials_detection: ['markdown', 'seeds'],
+  protocols_detection: ['markdown', 'seeds'],
+  identifier_detection: ['markdown'],
+  krt_grounding: ['markdown', 'krt', 'candidates'],
+  pdf_analysis: ['candidates'],
+  suggestion_generation: ['krt', 'generatedKrt']
+}
+
+/** The detectors whose items make up the candidate pool. */
+const CANDIDATE_SOURCES = [
+  'software_detection', 'datasets_detection', 'materials_detection',
+  'protocols_detection', 'identifier_detection'
+]
+
+const jobOf = (type) => props.jobs?.[type] || null
+
+/**
+ * The counts a run recorded about its OWN input — how many seeds it was given,
+ * how many candidates it merged. Read from meta rather than recomputed, so this
+ * says what that run saw and not what the submission looks like today.
+ */
+const INPUT_COUNTS = [
+  ['seedCount', 'Author rows used as seeds'],
+  ['authorCount', 'Author KRT rows read'],
+  ['candidateCount', 'Candidates considered'],
+  ['contributorCount', 'Detections merged'],
+  ['generatedCount', 'Generated KRT rows read'],
+  ['groundedRowCount', 'Grounding verdicts read'],
+  ['markdownLength', 'Characters of converted text']
+]
+
+const inputCounts = computed(() => INPUT_COUNTS
+  .filter(([k]) => typeof meta.value[k] === 'number')
+  .map(([k, label]) => [label, meta.value[k].toLocaleString()]))
+
+/**
+ * The documents this run read, as links.
+ *
+ * A `null` href means the thing exists but this page cannot link to it — said
+ * plainly rather than omitted, because "no link" and "no input" are very
+ * different facts.
+ */
+const inputs = computed(() => {
+  const out = []
+  for (const kind of (READS[props.jobType] || [])) {
+    if (kind === 'pdf' && props.files?.pdf) {
+      out.push({ label: 'The manuscript PDF', fileId: props.files.pdf.id, note: 'as uploaded' })
+    } else if (kind === 'markdown') {
+      const md = jobOf('markdown_convert')
+      const len = md?.result?.data?.markdownLength
+      out.push({
+        label: 'The converted manuscript text',
+        fileId: md?.result?.data?.fileId || null,
+        route: { name: 'submission-module', params: { id: props.submissionId, type: 'markdown_convert' } },
+        note: len ? `${len.toLocaleString()} characters` : 'not converted'
+      })
+    } else if (kind === 'krt' || kind === 'seeds') {
+      out.push({
+        label: kind === 'seeds' ? 'Your KRT rows, as prompt seeds' : 'Your Key Resources Table',
+        fileId: props.files?.krt?.id || null,
+        note: kind === 'seeds' && meta.value.seedCount === 0
+          ? 'no rows to seed with — the discovery prompt was used instead'
+          : 'the file you uploaded'
+      })
+    } else if (kind === 'candidates') {
+      for (const t of CANDIDATE_SOURCES) {
+        const j = jobOf(t)
+        if (!j) continue
+        out.push({
+          label: labelFor(t),
+          route: { name: 'submission-module', params: { id: props.submissionId, type: t } },
+          note: `${j.result?.data?.items?.length ?? 0} items`
+        })
+      }
+    } else if (kind === 'generatedKrt') {
+      const j = jobOf('pdf_analysis')
+      out.push({
+        label: 'The Generated KRT',
+        route: { name: 'submission-module', params: { id: props.submissionId, type: 'pdf_analysis' } },
+        note: `${j?.result?.data?.items?.length ?? 0} rows`
+      })
+    }
+  }
+  return out
+})
+
+/**
+ * Artefacts whose content IS an input rather than a result. Only grounding
+ * stores one today; the rest of this section links to where the input lives
+ * instead, because nothing else is saved a second time.
+ */
+const INPUT_ARTEFACTS = new Set(['grounding-inputs'])
+
+/** Every artefact name this run saved, before the input/result split. */
+const savedNames = computed(() => {
+  const files = result.value.files
+  if (!files || typeof files !== 'object') return []
+  return Array.isArray(files) ? files.filter((f) => typeof f === 'string') : Object.keys(files)
+})
+
+const inputArtefacts = computed(() => savedNames.value.filter((n) => INPUT_ARTEFACTS.has(n)))
+
 /**
  * Saved artefacts. `files` is written by the job logger as it runs, so this
  * lists what THIS run actually saved rather than what the module usually saves.
@@ -131,11 +256,7 @@ const timings = computed(() => [
  * It is stored as an OBJECT keyed by name — not an array — so the keys are the
  * names the download endpoint expects.
  */
-const artefacts = computed(() => {
-  const files = result.value.files
-  if (!files || typeof files !== 'object') return []
-  return Array.isArray(files) ? files.filter((f) => typeof f === 'string') : Object.keys(files)
-})
+const artefacts = computed(() => savedNames.value.filter((n) => !INPUT_ARTEFACTS.has(n)))
 
 /**
  * A link straight to the artefact.
@@ -143,6 +264,21 @@ const artefacts = computed(() => {
  * `?redirect=1` because without it the endpoint answers with JSON describing
  * where the file is, and the reader lands on that JSON instead of the file.
  */
+/**
+ * Open a stored file. The presigned URL is minted on click, not on render: one
+ * minted at page load would have expired by the time a reader working through
+ * a long table reaches it.
+ */
+async function openFile(fileId) {
+  if (!fileId) return
+  try {
+    const data = await fileService.download(props.submissionId, fileId)
+    if (data.url) window.open(data.url, '_blank', 'noopener,noreferrer')
+  } catch {
+    // The module page below offers the same file with full error handling.
+  }
+}
+
 const responseUrl = (name) =>
   `/api/submissions/${props.submissionId}/jobs/${props.jobType}`
   + `/responses/${encodeURIComponent(name)}?redirect=1`
@@ -156,6 +292,35 @@ const responseUrl = (name) =>
     </button>
 
     <div v-if="open" class="mt-body">
+      <!-- What went in, before what came out. Every entry is a link to the
+           thing itself, so a surprising result can be read against its input. -->
+      <div v-if="inputs.length || inputCounts.length || inputArtefacts.length" class="mt-block">
+        <h3>What this step read</h3>
+        <ul v-if="inputs.length" class="mt-files">
+          <li v-for="(i, n) in inputs" :key="n">
+            <button v-if="i.fileId" type="button" class="mt-linkish" @click="openFile(i.fileId)">
+              {{ i.label }} ↗
+            </button>
+            <RouterLink v-else-if="i.route" :to="i.route">{{ i.label }} ↗</RouterLink>
+            <span v-else>{{ i.label }}</span>
+            <span v-if="i.note" class="mt-files-note">{{ i.note }}</span>
+          </li>
+        </ul>
+        <ul v-if="inputArtefacts.length" class="mt-files">
+          <li v-for="name in inputArtefacts" :key="name">
+            <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
+            <span class="mt-files-note">the exact input this run was given</span>
+          </li>
+        </ul>
+        <dl v-if="inputCounts.length">
+          <template v-for="([k, v]) in inputCounts" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
+        </dl>
+        <p class="mt-note">
+          These are the documents as they are stored now. Only KRT Grounding keeps a copy of its own
+          input; elsewhere an edit made after the run will show here even though the run never saw it.
+        </p>
+      </div>
+
       <div v-if="config.length" class="mt-block">
         <h3>How this run was configured</h3>
         <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
@@ -229,6 +394,11 @@ const responseUrl = (name) =>
 .mt-files { list-style: none; margin: 0; padding: 0; font-size: 0.75rem; }
 .mt-files a { color: #2563eb; text-decoration: none; }
 .mt-files a:hover { text-decoration: underline; }
+.mt-linkish {
+  background: none; border: 0; padding: 0;
+  color: #2563eb; font-size: inherit; cursor: pointer;
+}
+.mt-linkish:hover { text-decoration: underline; }
 .mt-files-note { color: #9ca3af; margin-left: 0.4rem; font-size: 0.7rem; }
 .mt-note { font-size: 0.7rem; color: #9ca3af; margin: 0.4rem 0 0; max-width: 22rem; line-height: 1.4; }
 </style>
