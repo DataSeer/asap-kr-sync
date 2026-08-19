@@ -567,7 +567,13 @@ function recount(outcomes, candidateCount, unmatchedCount) {
     partial: 0,
     notDetected: 0,
     candidates: candidateCount,
-    unmatchedCandidates: unmatchedCount
+    unmatchedCandidates: unmatchedCount,
+    // Rows whose values disagree with the manuscript. Counted per ROW, not per
+    // differing value, because that is what the reader acts on: one row to go
+    // and check. Surfaced on the module card — a contradiction between the KRT
+    // and the paper means one of the two is wrong, and that should not need
+    // opening a modal to discover.
+    conflicts: 0
   };
   // Explicit per outcome: a catch-all `else` here would quietly report every
   // partial-name match as "not detected" in the job stats and the UI summary.
@@ -576,6 +582,7 @@ function recount(outcomes, candidateCount, unmatchedCount) {
     else if (outcome.outcome === 'incomplete') stats.incomplete++;
     else if (outcome.outcome === 'partial') stats.partial++;
     else stats.notDetected++;
+    if (outcome.conflicts && outcome.conflicts.length > 0) stats.conflicts++;
   }
   return stats;
 }

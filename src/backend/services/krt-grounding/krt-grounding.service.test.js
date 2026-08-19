@@ -62,8 +62,27 @@ test('recount tallies outcomes after the second look upgraded rows', () => {
     partial: 1,
     notDetected: 1,
     candidates: 12,
-    unmatchedCandidates: 9
+    unmatchedCandidates: 9,
+    conflicts: 0
   });
+});
+
+test('recount counts conflicting ROWS, not conflicting values', () => {
+  // A row with three disagreeing cells is one row to go and check, which is
+  // what the card's badge asks the reader to do. Counting values would inflate
+  // it and mean something else.
+  const stats = recount(
+    [
+      { outcome: 'confirmed', conflicts: [{ field: 'identifier' }, { field: 'source' }] },
+      { outcome: 'confirmed', conflicts: [] },
+      { outcome: 'incomplete', conflicts: [{ field: 'identifier' }] },
+      { outcome: 'not_detected' }
+    ],
+    4,
+    0
+  );
+  assert.equal(stats.conflicts, 2, 'two rows disagree, across three values');
+  assert.equal(stats.confirmed, 2, 'a conflict does not change the located verdict');
 });
 
 test('recount handles the no-KRT mode', () => {

@@ -801,13 +801,18 @@ function getDataSummary(job, r) {
       // No author KRT is a valid mode, not an empty result: say what the step
       // did do, which is find candidates nobody has claimed yet.
       if (rows === 0) return `No author KRT — ${unmatched} candidate${unmatched === 1 ? '' : 's'} found`
-      // Every verdict except `not_detected` means the row WAS located, so all
-      // three belong in the numerator — otherwise the parts don't sum to `rows`.
+      // "Found" is counted from the DIRECT search of the manuscript, the same
+      // measure the editor badges each row with — not from candidate matching,
+      // which asks a different question and answers it differently. Older
+      // results have no presence stats; those fall back to the verdicts.
       const partial = r.counts?.partial || 0
-      const found = (r.counts?.confirmed || 0) + (r.counts?.incomplete || 0) + partial
+      const found = typeof r.counts?.present === 'number'
+        ? r.counts.present
+        : (r.counts?.confirmed || 0) + (r.counts?.incomplete || 0) + partial
+      const missing = typeof r.counts?.absent === 'number' ? r.counts.absent : notDetected
       const parts = [`${found}/${rows} KRT row${rows === 1 ? '' : 's'} found in the manuscript`]
       if (partial > 0) parts.push(`${partial} partial match${partial === 1 ? '' : 'es'}`)
-      if (notDetected > 0) parts.push(`${notDetected} not detected`)
+      if (missing > 0) parts.push(`${missing} not in the text`)
       if (unmatched > 0) parts.push(`${unmatched} unmatched candidate${unmatched === 1 ? '' : 's'}`)
       return parts.join(', ')
     }
@@ -852,6 +857,22 @@ function getLiveConfigTitle(job) {
 /**
  * Get the result tooltip text for line 2.
  */
+/**
+ * Rows whose values contradict the manuscript.
+ *
+ * Shown on the card rather than only inside the modal: a conflict means the KRT
+ * and the paper disagree, so one of the two is wrong. That is a defect to
+ * resolve, not a detail to browse for, and it should not need opening a table
+ * to discover.
+ *
+ * @param {object} job
+ * @returns {number} 0 when there are none, or the job is not grounding
+ */
+function conflictCount(job) {
+  if (job.type !== 'krt_grounding' || job.status !== 'complete') return 0
+  return job.result?.counts?.conflicts || 0
+}
+
 function getResultTitle(job) {
   const summary = getResultSummary(job)
   const base = `Results of ${job.label}`
@@ -2025,6 +2046,14 @@ async function downloadMarkdownFile(fileId) {
             {{ getResultBadgeText(job) }}
           </span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
+          <!-- A KRT/manuscript disagreement is a defect, not a statistic, so it
+               gets its own badge in the error colour rather than a clause at
+               the end of a grey summary line. -->
+          <span
+            v-if="conflictCount(job) > 0"
+            class="job-summary-badge job-conflict-badge"
+            :title="conflictCount(job) + ' KRT row(s) hold a value the manuscript contradicts. One of the two is wrong — open the module to see which values differ.'"
+          >{{ conflictCount(job) }} conflict{{ conflictCount(job) === 1 ? '' : 's' }}</span>
         </div>
       </div>
     </div>
@@ -3924,6 +3953,11 @@ async function downloadMarkdownFile(fileId) {
   background: #fff7ed;
   color: #c2410c;
   border: 1px solid #fed7aa;
+}
+.job-conflict-badge {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
 }
 .grounding-error {
   background: #fef2f2;

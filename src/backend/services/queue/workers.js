@@ -729,7 +729,8 @@ async function initializeWorkers() {
           confirmed: m.confirmed || 0,
           incomplete: m.incomplete || 0,
           notDetected: m.notDetected || 0,
-          unmatchedCandidates: m.unmatchedCandidates || 0
+          unmatchedCandidates: m.unmatchedCandidates || 0,
+          conflicts: m.conflicts || 0
         });
 
         await submissionJob?.markComplete({
@@ -743,7 +744,13 @@ async function initializeWorkers() {
             confirmed: m.confirmed || 0,
             incomplete: m.incomplete || 0,
             notDetected: m.notDetected || 0,
-            unmatchedCandidates: m.unmatchedCandidates || 0
+            unmatchedCandidates: m.unmatchedCandidates || 0,
+            conflicts: m.conflicts || 0,
+            // From the direct search of the manuscript, not from candidate
+            // matching — the same measure the editor's badge uses, so the card
+            // and the modal cannot disagree about how many rows were found.
+            present: m.presence?.present || 0,
+            absent: m.presence?.absent || 0
           },
           timing: { totalMs: m.totalMs || 0 }
         });
