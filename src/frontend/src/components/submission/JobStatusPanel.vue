@@ -1448,10 +1448,34 @@ function groundingMatchedBy(o) {
 function groundingFills(o) {
   return Object.keys(o?.foundValues || {}).map(k => `${k}: ${o.foundValues[k]}`)
 }
+/**
+ * Split two values into common prefix / difference / common suffix.
+ *
+ * Conflicts are usually near-misses — one digit in an RRID, a suffix on a
+ * catalogue number — and read as a wall of identical characters with the part
+ * that matters buried inside. Highlighting only what differs turns
+ * "RRID:AB_2687579 vs RRID:AB_2687580" into a single visible character.
+ *
+ * @returns {{a: {pre,mid,post}, b: {pre,mid,post}}}
+ */
+function valueDiff(left, right) {
+  const a = String(left ?? '')
+  const b = String(right ?? '')
+  let pre = 0
+  while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++
+  let post = 0
+  while (post < a.length - pre && post < b.length - pre
+         && a[a.length - 1 - post] === b[b.length - 1 - post]) post++
+  const cut = (v) => ({ pre: v.slice(0, pre), mid: v.slice(pre, v.length - post), post: v.slice(v.length - post) })
+  return { a: cut(a), b: cut(b) }
+}
+
 function groundingConflicts(o) {
   return (o?.conflicts || []).map(c => ({
     field: c.field,
-    text: `${c.field}: "${c.manuscriptValue}" — your row has "${c.authorValue}"`
+    author: String(c.authorValue ?? ''),
+    manuscript: String(c.manuscriptValue ?? ''),
+    diff: valueDiff(c.authorValue, c.manuscriptValue)
   }))
 }
 function groundingHasFindings(o) {
@@ -2298,8 +2322,20 @@ async function downloadMarkdownFile(fileId) {
                             v-for="(c, ci) in groundingConflicts(o)"
                             :key="'c' + ci"
                             class="grounding-conflict"
-                            title="The manuscript disagrees with your row. Your value is kept — this is for you to check."
-                          >⚠ {{ c.text }}</div>
+                            title="The manuscript disagrees with your row. Your value is kept unchanged — this is for you to check."
+                          >
+                            <div class="conflict-field">⚠ {{ c.field }}</div>
+                            <div class="conflict-line">
+                              <span class="conflict-side">your row</span>
+                              <span class="conflict-value conflict-value-author"
+                              ><span>{{ c.diff.a.pre }}</span><mark v-if="c.diff.a.mid">{{ c.diff.a.mid }}</mark><span>{{ c.diff.a.post }}</span></span>
+                            </div>
+                            <div class="conflict-line">
+                              <span class="conflict-side">manuscript</span>
+                              <span class="conflict-value conflict-value-paper"
+                              ><span>{{ c.diff.b.pre }}</span><mark v-if="c.diff.b.mid">{{ c.diff.b.mid }}</mark><span>{{ c.diff.b.post }}</span></span>
+                            </div>
+                          </div>
                         </td>
                       </tr>
                       <!-- Context line under every row that has one, exactly as
@@ -3992,6 +4028,39 @@ async function downloadMarkdownFile(fileId) {
   background: #fff7ed;
   color: #c2410c;
   border: 1px solid #fed7aa;
+}
+.conflict-field {
+  font-weight: 600;
+  color: #b91c1c;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+}
+.conflict-line {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+.conflict-side {
+  flex: 0 0 5.5rem;
+  color: #9ca3af;
+  font-size: 0.68rem;
+}
+/* Monospace so the two values line up character for character — which is the
+   whole point when one digit differs. */
+.conflict-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+.conflict-value-author { color: #b91c1c; }
+.conflict-value-paper { color: #047857; }
+.conflict-value mark {
+  background: #fde68a;
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+  font-weight: 700;
 }
 .job-modal-tab-conflicts {
   margin-left: 0.35rem;
