@@ -83,8 +83,10 @@ const rawLines = computed(() => {
     <p v-else-if="error" class="mv-note mv-error">{{ error }}</p>
     <p v-else-if="!content" class="mv-note">No converted text is stored for this submission.</p>
 
-    <!-- eslint-disable-next-line vue/no-v-html -- renderMarkdown escapes its
-         input before any rule runs; the only tags here are ones it emitted. -->
+    <!-- renderMarkdown escapes its input before any rule runs, so the only tags
+         reaching the DOM here are ones it emitted itself. See
+         components/modules/markdown-render.js. -->
+    <!-- eslint-disable-next-line vue/no-v-html -->
     <div v-else-if="view === 'rendered'" class="mv-frame mv-rendered" v-html="html"></div>
 
     <div v-else class="mv-frame mv-raw">
