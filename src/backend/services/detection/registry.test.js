@@ -94,3 +94,20 @@ test('unknown ids throw rather than falling back', () => {
   assert.throws(() => getStrategy('does-not-exist'), /Unknown detection strategy/);
   assert.equal(getPipeline().id, DEFAULT_PIPELINE_ID);   // empty means default
 });
+
+test('materials falls back to a discovery prompt when there is nothing to seed', () => {
+  // dev skipped materials entirely for a submission whose KRT lists no
+  // materials, leaving the module with zero capacity in the case that needs it
+  // most. The fallback needs a DIFFERENT prompt, not just an empty seed list:
+  // the seeded prompt still says "do not re-derive a materials list from
+  // scratch", which handed no seeds is an instruction to find nothing.
+  const materials = allStrategies().find((s) => s.id === 'materials.seeded');
+  assert.equal(materials.promptFiles.length, 2, 'a seeded prompt and a discovery fallback');
+
+  const [seeded, discovery] = materials.promptFiles.map((f) => fs.readFileSync(f, 'utf-8'));
+  assert.notEqual(seeded, discovery);
+  assert.ok(/SEED FIRST|AUTHOR-PROVIDED/i.test(seeded), 'the seeded prompt bases on the author rows');
+  assert.ok(!/SEED FIRST|AUTHOR-PROVIDED/i.test(discovery),
+    'the fallback must not reference rows it will never be given');
+  assert.ok(/DISCOVERY/i.test(discovery), 'and must actually ask for discovery');
+});

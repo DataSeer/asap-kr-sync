@@ -170,7 +170,11 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const { resources: rawItems, rawResponse } = await callGeminiForMaterials(markdownText, {
     prompt: resolved.input.prompt,
     seeds: resolved.input.seeds,
-    seedTitle: resolved.strategy.seedTitle ? SEED_TITLES[resolved.strategy.seedTitle] : null
+    // No seeds means the discovery prompt is in play, so there is no block to
+    // title. seedBlock() already omits an empty block, but passing the title
+    // here would be a lie about what the prompt expects.
+    seedTitle: (resolved.strategy.seedTitle && resolved.input.seeds?.length)
+      ? SEED_TITLES[resolved.strategy.seedTitle] : null
   });
   const geminiMs = Date.now() - geminiStartTime;
   await jobLogger?.saveRawResponse('gemini-materials', rawResponse || rawItems);
