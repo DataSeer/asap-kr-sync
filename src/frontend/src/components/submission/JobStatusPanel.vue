@@ -1305,7 +1305,7 @@ function presenceLabel(o) {
  * because it comes from searching the manuscript rather than from a detector.
  */
 function groundingContext(o) {
-  if (showGroundingValues.value && o?.evidence?.quote) return o.evidence
+  if (showGroundingValues.value && (o?.evidence?.quote || o?.evidence?.context)) return o.evidence
   const mention = o?.presence?.mentions?.[0]
   return mention?.context ? mention : null
 }
@@ -1385,15 +1385,6 @@ function groundingFillsEmptyTitle(o) {
 // editor's order, then type-filtered and searched across visible columns.
 const displayedModalItems = computed(() => {
   if (modalTableType.value === 'grounding') {
-    const q = modalSearch.value.trim().toLowerCase()
-    const rows = modalItems.value || []
-    if (!q) return rows
-    return rows.filter(o => rowMatchesSearch([
-      o.resourceName, o.resourceType, groundingLabel(o), groundingMatchedBy(o),
-      o.evidence?.section, o.evidence?.quote, o.reason
-    ], q))
-  }
-  if (modalTableType.value === 'grounding') {
     // Same tab groups as the KRT editor, over the author's own resource type.
     let rows = [...(modalItems.value || [])]
       .sort((a, b) => compareTypes(a.resourceType || '', b.resourceType || ''))
@@ -1403,7 +1394,8 @@ const displayedModalItems = computed(() => {
     const gq = modalSearch.value.trim().toLowerCase()
     if (gq) {
       rows = rows.filter(o => rowMatchesSearch([
-        o.resourceType, o.resourceName, o.source, o.identifier, o.newReuse
+        o.resourceType, o.resourceName, o.source, o.identifier, o.newReuse,
+        groundingLabel(o), groundingMatchedBy(o), o.evidence?.section, o.evidence?.quote, o.reason
       ], gq))
     }
     return rows
@@ -2234,6 +2226,18 @@ async function downloadMarkdownFile(fileId) {
                         <td class="text-xs"><HighlightText :text="item.resourceType || item.resource_type || 'Software/code'" :query="modalSearch" /></td>
                         <td class="font-medium">
                           <HighlightText :text="getMentionName(item)" :query="modalSearch" />
+                          <!-- Under a seeded pipeline the prompt was handed the
+                               author's rows and told to emit every one, so a row
+                               here may be one the model copied back rather than
+                               found. The evidence column says which. Absent
+                               entirely when nothing was seeded. -->
+                          <span
+                            v-if="item.detectorMeta?.fromAuthorKrt"
+                            class="grounding-badge grounding-from-krt"
+                            :title="item.evidence?.verification?.status === 'verified'
+                              ? 'In the author KRT, and the model located it in the manuscript.'
+                              : 'In the author KRT. The model returned it, but did not locate it in the manuscript.'"
+                          >KRT</span>
                           <!-- Which engine found this. Software runs Softcite
                                (names in prose) and an optional LM pass
                                (identifiers, repo links, custom code) unioned;
@@ -2288,6 +2292,15 @@ async function downloadMarkdownFile(fileId) {
                             class="grounding-badge grounding-partial"
                             title="Only the leading part of the quote was located in the manuscript"
                           >partial</span>
+                          <!-- The model's quote is not in the manuscript, but
+                               the resource is. The paragraph below shows where
+                               it appears; the sentence the model wrote is not
+                               highlighted because it was never found. -->
+                          <span
+                            v-else-if="item.evidence?.verification?.status === 'embellished'"
+                            class="grounding-badge grounding-partial"
+                            title="The resource is in the manuscript, but the sentence the model quoted is not verbatim. The paragraph below is where the resource actually appears."
+                          >not verbatim</span>
                         </td>
                         <td v-if="showMentionsAdditionalInfo" class="text-xs text-gray-500"><HighlightText :text="item.additionalInformation || item.additional_information" :query="modalSearch" /></td>
                       </tr>
@@ -2295,9 +2308,16 @@ async function downloadMarkdownFile(fileId) {
                            the sentence, expandable to the paragraph. Falls back
                            to the detector's raw context string for results
                            produced before evidence grounding existed. -->
-                      <tr v-if="item.evidence?.quote || item.detectorMeta?.context || item.context" class="context-row">
+                      <!-- `quote` alone is the wrong gate. An EMBELLISHED item —
+                           the model's quote did not verify, but the resource IS
+                           in the manuscript — deliberately carries an empty
+                           quote so an unverified claim never occupies the
+                           located-text field. It still has the paragraph where
+                           the resource appears, and that is worth more to a
+                           curator than a blank row. -->
+                      <tr v-if="item.evidence?.quote || item.evidence?.context || item.detectorMeta?.context || item.context" class="context-row">
                         <td :colspan="RESIZE_MENTIONS_COLS.length" class="context-cell">
-                          <EvidenceContext v-if="item.evidence?.quote" :evidence="item.evidence" :show-section="false" />
+                          <EvidenceContext v-if="item.evidence?.quote || item.evidence?.context" :evidence="item.evidence" :show-section="false" />
                           <template v-else>{{ item.detectorMeta?.context || item.context }}</template>
                         </td>
                       </tr>
@@ -3835,6 +3855,11 @@ async function downloadMarkdownFile(fileId) {
 .grounding-confirmed { background: #dcfce7; color: #15803d; }
 .grounding-incomplete { background: #fef3c7; color: #b45309; }
 .grounding-not-detected { background: #fee2e2; color: #b91c1c; }
+.grounding-from-krt {
+  background: #eef2ff;
+  color: #4338ca;
+  border: 1px solid #c7d2fe;
+}
 .grounding-partial { background: #e5e7eb; color: #4b5563; }
 /* Outcome verdict: located, but only by a partial name match. Blue reads as
    "found, low confidence" rather than the grey of a degraded quote. */

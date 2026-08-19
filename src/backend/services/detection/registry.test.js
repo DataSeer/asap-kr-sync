@@ -111,3 +111,23 @@ test('materials falls back to a discovery prompt when there is nothing to seed',
     'the fallback must not reference rows it will never be given');
   assert.ok(/DISCOVERY/i.test(discovery), 'and must actually ask for discovery');
 });
+
+test('tagAuthorRows marks only rows the author listed, and only when seeded', () => {
+  const { tagAuthorRows } = require('./tag-author-rows');
+  const items = [
+    { resourceName: 'Rabbit anti-TH' },
+    { resourceName: 'Something the model found', detectorMeta: { relevance: 'HIGH' } }
+  ];
+  const seeds = [{ name: 'rabbit  ANTI-TH' }];   // case and spacing differ
+
+  const tagged = tagAuthorRows(items, seeds);
+  assert.equal(tagged[0].detectorMeta.fromAuthorKrt, true, 'matched despite case and spacing');
+  assert.equal(tagged[1].detectorMeta.fromAuthorKrt, undefined, 'a genuine discovery is not tagged');
+  assert.equal(tagged[1].detectorMeta.relevance, 'HIGH', 'existing detectorMeta survives');
+
+  // A blind pipeline seeds nothing, and must carry no tag at all rather than a
+  // tag that is always false.
+  const untagged = tagAuthorRows(items, []);
+  assert.equal(untagged[0].detectorMeta, undefined);
+  assert.deepEqual(tagAuthorRows(items, null), items);
+});

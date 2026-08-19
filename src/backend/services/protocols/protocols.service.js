@@ -35,6 +35,7 @@ const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const { resolveDetection } = require('../detection/resolve');
+const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
@@ -189,7 +190,7 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
 
   // ── Step 2: buildKrtItems
-  const krtItems = buildKrtItemsProtocols(rawItems);
+  const krtItems = tagAuthorRows(buildKrtItemsProtocols(rawItems), resolved.input.seeds);
 
   // ── Step 3: ground every claim against the manuscript
   const evidenceIndex = buildEvidenceIndex(markdownText);
