@@ -64,6 +64,107 @@ export const MODULE_EXPLAINERS = {
     ]
   },
 
+  software_detection: {
+    title: 'Software Detection',
+    summary: 'Finds the software and code this study used, by two methods at once: a name '
+      + 'recogniser trained on scientific prose, and a language model reading the manuscript.',
+    points: [
+      {
+        q: 'Why two engines',
+        a: 'They miss different things. Softcite recognises tool names written in ordinary '
+          + 'sentences; the LM pass is better at identifiers, repository links and code written '
+          + 'for this paper. A row found by both is stronger evidence than either alone, and the '
+          + 'badges say which found it.'
+      },
+      {
+        q: 'The "Softcite" and "LM" badges',
+        a: 'Which engine found the row. Two badges means both did, independently — the row was '
+          + 'merged rather than counted twice.'
+      },
+      {
+        q: 'What it will miss',
+        a: 'Software mentioned only in a figure, in an image, or in words that never name it. '
+          + 'It reads the converted text of the PDF, so anything lost in conversion is invisible.'
+      }
+    ]
+  },
+
+  datasets_detection: {
+    title: 'Datasets Detection',
+    summary: 'Finds the datasets this study generated or reused, and the repositories they live '
+      + 'in — accessions, DOIs and repository links.',
+    points: [
+      {
+        q: 'How a dataset is recognised',
+        a: 'A first pass pulls candidate mentions from the manuscript with their exact position '
+          + 'in the text. A second pass consolidates those into one row per dataset, merging the '
+          + 'same dataset mentioned several ways.'
+      },
+      {
+        q: 'Why some mentions do not appear',
+        a: 'A candidate whose span cannot be located in the manuscript is dropped before you see '
+          + 'it. That guard exists because the model once padded a sparse paper with examples '
+          + 'from its own instructions — real-looking accessions for datasets the paper never '
+          + 'mentions.'
+      },
+      {
+        q: 'Generated or reused',
+        a: 'NEW/REUSE reflects what the manuscript says about the dataset, not where it is '
+          + 'stored. A dataset deposited by this study is new; one downloaded from a public '
+          + 'repository is reuse.'
+      }
+    ]
+  },
+
+  protocols_detection: {
+    title: 'Protocols Detection',
+    summary: 'Finds the experimental protocols and methods this study used, including protocols '
+      + 'published on dedicated venues.',
+    points: [
+      {
+        q: 'What counts as a protocol',
+        a: 'A repeatable procedure describing HOW something was done — usually one per Methods '
+          + 'sub-section. A single software invocation is not a protocol; a multi-step '
+          + 'bespoke workflow can be.'
+      },
+      {
+        q: 'Published protocols',
+        a: 'A DOI from a protocol-publishing venue is recognised on sight, so a cited protocol '
+          + 'is found even where the manuscript does not describe its steps.'
+      },
+      {
+        q: 'What it will miss',
+        a: 'A method described only in supplementary material that was not converted, and '
+          + 'procedures referred to purely by citation with no description.'
+      }
+    ]
+  },
+
+  identifier_detection: {
+    title: 'Identifiers Detection',
+    summary: 'Scans the manuscript for identifiers it already knows — RRIDs, DOIs, accessions and '
+      + 'catalogue numbers — and reports what each one refers to.',
+    points: [
+      {
+        q: 'How this differs from the other detectors',
+        a: 'No language model is involved. It matches identifiers in the text against a curated '
+          + 'list, so a result here means the identifier is literally in the manuscript. That '
+          + 'also makes it the only detector whose output is identical on every run.'
+      },
+      {
+        q: 'Why it spans every resource type',
+        a: 'An identifier says what a thing IS, so one scan produces software, datasets, '
+          + 'materials and protocols together — which is why this table has type tabs and the '
+          + 'others do not.'
+      },
+      {
+        q: 'What it will miss',
+        a: 'Any identifier not on the list, and any resource the manuscript names without '
+          + 'citing an identifier for it.'
+      }
+    ]
+  },
+
   materials_detection: {
     title: 'Materials Detection',
     summary: 'Reads the manuscript and reports the lab materials it can evidence — antibodies, '

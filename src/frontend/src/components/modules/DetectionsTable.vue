@@ -308,10 +308,15 @@ function getMergedFromContext(originalItem) {
 </template>
 
 <style scoped>
-.dt-wrapper { min-width: max-content; }
+/* NOT min-width: max-content. That sizes the wrapper to the widest the content
+   could ever be — with a paragraph in a cell, thousands of pixels — so the
+   table overflowed its frame and every column but the first was pushed out of
+   view. The table sets its own width (100% until a column is dragged); the
+   wrapper only needs to let the frame scroll when it exceeds that. */
+.dt-wrapper { min-width: 0; }
 .dt-table { width: 100%; font-size: 0.8rem; }
 .dt-table--resizable { table-layout: fixed; }
-.dt-table--resizable td { overflow-wrap: anywhere; }
+.dt-table td { overflow-wrap: anywhere; word-break: break-word; }
 .dt-table th {
   position: sticky; top: 0; z-index: 1;
   background: #f9fafb; text-align: left; font-weight: 600; color: #6b7280;

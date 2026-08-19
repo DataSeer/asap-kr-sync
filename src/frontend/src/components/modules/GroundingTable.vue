@@ -251,7 +251,12 @@ defineExpose({ foundVerdict })
 <style scoped>
 /* No scrolling of its own: the caller provides the scroll frame, and a nested
    scroll container would take the sticky header with it. */
-.gt-wrapper { min-width: max-content; }
+/* NOT min-width: max-content. That sizes the wrapper to the widest the content
+   could ever be — with a paragraph in a cell, thousands of pixels — so the
+   table overflowed its frame and every column but the first was pushed out of
+   view. The table sets its own width (100% until a column is dragged); the
+   wrapper only needs to let the frame scroll when it exceeds that. */
+.gt-wrapper { min-width: 0; }
 .gt-table { width: 100%; font-size: 0.8rem; }
 .gt-table th {
   position: sticky; top: 0; z-index: 1;
@@ -279,7 +284,7 @@ defineExpose({ foundVerdict })
 /* Fixed layout is what makes a dragged width hold: without it the browser
    re-fits every column to its content and the drag appears to do nothing. */
 .gt-table--resizable { table-layout: fixed; }
-.gt-table--resizable td { overflow-wrap: anywhere; }
+.gt-table td { overflow-wrap: anywhere; word-break: break-word; }
 .gt-table th { position: relative; }
 .gt-col-resize {
   position: absolute; top: 0; right: -3px; width: 7px; height: 100%;

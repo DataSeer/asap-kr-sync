@@ -78,6 +78,17 @@ const policy = computed(() => job.value?.result?.data?.meta?.grounding || null)
 
 const search = ref('')
 const tab = ref('all')
+
+/**
+ * Which modules span more than one resource category.
+ *
+ * Materials, protocols, datasets and software each produce exactly one kind, so
+ * a tab strip there is four tabs reading 0 and one reading everything. Only the
+ * identifier scan (cross-category by design) and grounding (the author's whole
+ * KRT) genuinely mix them.
+ */
+const MULTI_CATEGORY = new Set(['krt_grounding', 'identifier_detection'])
+const showTabs = computed(() => MULTI_CATEGORY.has(jobType.value))
 const TABS = [
   { key: 'all', label: 'All' },
   { key: 'Datasets', label: 'Datasets' },
@@ -95,7 +106,8 @@ const rows = computed(() => (isDetection.value ? detections.value : outcomes.val
 const visible = computed(() => {
   const q = search.value.trim().toLowerCase()
   return rows.value.filter((o) => {
-    if (tab.value !== 'all' && resourceTypesStore.getTabGroup(o.resourceType || '') !== tab.value) return false
+    if (showTabs.value && tab.value !== 'all'
+        && resourceTypesStore.getTabGroup(o.resourceType || '') !== tab.value) return false
     return matches(o, q)
   })
 })
@@ -176,7 +188,7 @@ const tabConflicts = computed(() => {
       <!-- Filters and search on one line: they do the same job, and splitting
            them over two rows pushed the table itself below the fold. -->
       <div class="mrv-toolbar">
-        <div class="mrv-tabs">
+        <div v-if="showTabs" class="mrv-tabs">
           <button
             v-for="t in TABS"
             :key="t.key"
