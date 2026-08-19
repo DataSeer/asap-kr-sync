@@ -11,13 +11,15 @@
  * so far has been a missing explanation rather than a wrong number, and there
  * was nowhere in a modal to put one without crowding the table.
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
+import { labelFor } from '@/components/modules/module-meta'
+import configService from '@/services/config.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 
 const route = useRoute()
@@ -29,20 +31,25 @@ const { jobs } = useJobPoller(submissionId)
 const job = computed(() => (jobs.value || {})[jobType.value] || null)
 const explainer = computed(() => explainerFor(jobType.value))
 
-const MODULE_LABELS = {
-  das_extraction: 'DAS Extraction',
-  software_detection: 'Software Detection',
-  markdown_convert: 'Markdown Convert',
-  orcid_extraction: 'ORCID Extraction',
-  materials_detection: 'Materials Detection',
-  datasets_detection: 'Datasets Detection',
-  protocols_detection: 'Protocols Detection',
-  identifier_detection: 'Identifiers Detection',
-  krt_grounding: 'KRT Grounding',
-  pdf_analysis: 'PDF Analysis',
-  suggestion_generation: 'AI Suggestions'
-}
-const label = computed(() => MODULE_LABELS[jobType.value] || jobType.value)
+/**
+ * Every step, in pipeline order, so the tab strip shows the whole shape rather
+ * than only the steps that happen to have a page today. Steps without one are
+ * shown greyed instead of hidden: a reader should be able to see that Materials
+ * Detection exists and simply is not viewable here yet.
+ */
+const steps = ref([])
+onMounted(async () => {
+  try {
+    steps.value = (await configService.getPipeline()).nodes
+  } catch {
+    // The page still renders its own module; only the tab strip is lost.
+  }
+})
+
+/** Modules with a page. A tab that goes nowhere is worse than a greyed one. */
+const HAS_PAGE = new Set(['krt_grounding'])
+
+const label = computed(() => labelFor(jobType.value))
 
 // ── grounding data ─────────────────────────────────────────────────────
 const outcomes = computed(() => job.value?.result?.data?.outcomes || [])
@@ -98,14 +105,32 @@ const tabConflicts = computed(() => {
 <template>
   <div class="mrv">
     <div class="mrv-head">
-      <RouterLink :to="{ name: 'submission-pdf', params: { id: submissionId } }" class="mrv-back">
-        ← Back to the submission
+      <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
+        ← Pipeline
       </RouterLink>
       <h1 class="mrv-title">{{ label }}</h1>
       <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
         ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
       </span>
     </div>
+
+    <!-- Every step, as links. RouterLink rather than a click handler so
+         ctrl-click opens a second tab, which is the point of these pages. -->
+    <nav v-if="steps.length" class="mrv-modules" aria-label="Pipeline steps">
+      <template v-for="s in steps" :key="s.jobType">
+        <RouterLink
+          v-if="HAS_PAGE.has(s.jobType)"
+          :to="{ name: 'submission-module', params: { id: submissionId, type: s.jobType } }"
+          class="mrv-module"
+          :class="{ 'mrv-module-active': s.jobType === jobType }"
+        >
+          {{ labelFor(s.jobType) }}
+        </RouterLink>
+        <span v-else class="mrv-module mrv-module-off" title="This step does not have a page yet — open it from the processes panel.">
+          {{ labelFor(s.jobType) }}
+        </span>
+      </template>
+    </nav>
 
     <ModuleExplainer
       v-if="explainer"
@@ -153,6 +178,14 @@ const tabConflicts = computed(() => {
   padding: 0.1rem 0.45rem; border-radius: 0.25rem; font-size: 0.72rem; font-weight: 600;
   background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
 }
+.mrv-modules { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 1rem; }
+.mrv-module {
+  padding: 0.2rem 0.5rem; border-radius: 0.3rem; border: 1px solid #e5e7eb;
+  font-size: 0.72rem; color: #374151; background: #fff; text-decoration: none;
+}
+.mrv-module:hover { border-color: #bfdbfe; }
+.mrv-module-active { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; font-weight: 600; }
+.mrv-module-off { color: #d1d5db; background: #fafafa; cursor: default; }
 .mrv-controls { margin-bottom: 0.75rem; max-width: 32rem; }
 .mrv-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
 .mrv-tab {
