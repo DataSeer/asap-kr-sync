@@ -15,8 +15,6 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
-import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
-import { useSubmissionStore } from '@/stores/submission.store'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
@@ -32,8 +30,6 @@ const resourceTypesStore = useResourceTypesStore()
 
 const { jobs } = useJobPoller(submissionId)
 
-const submissionStore = useSubmissionStore()
-
 
 const job = computed(() => (jobs.value || {})[jobType.value] || null)
 const explainer = computed(() => explainerFor(jobType.value))
@@ -46,11 +42,6 @@ const explainer = computed(() => explainerFor(jobType.value))
  */
 const steps = ref([])
 onMounted(async () => {
-  // A page opened directly has no submission loaded — and opening directly is
-  // the reason these are pages.
-  if (submissionStore.currentSubmission?.id !== submissionId.value) {
-    submissionStore.fetchSubmission(submissionId.value).catch(() => {})
-  }
   // Resource-type categories drive the tab groups, and getTabGroup falls back to
   // "Lab Materials" for a type it does not know — so without this every row
   // lands in one tab. The panel loads them because its parent view does; a page
@@ -125,14 +116,6 @@ const tabConflicts = computed(() => {
     <!-- The submission's own header: title, manuscript id, and links to the
          KRT and PDF files. Reused rather than rebuilt, so these pages carry the
          same identity and the same file links as every step view. -->
-    <!-- Identity only: the title, manuscript id and file links these pages are
-         read against. The step navigator and help checklist belong to the flow,
-         not here. -->
-    <SubmissionHeader
-      :submission="submissionStore.currentSubmission"
-      :latest-files="submissionStore.latestFiles"
-      :identity-only="true"
-    />
 
     <div class="mrv-head">
       <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
