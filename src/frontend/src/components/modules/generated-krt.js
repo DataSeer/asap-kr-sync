@@ -91,6 +91,12 @@ export function buildKrtRows(items) {
   for (const merged of items || []) {
     const contributors = merged.detectedBy || []
     const isDuplicate = contributors.length > 1
+    // When several detections were merged, the row that reaches the KRT is not
+    // necessarily any one of them: consolidation may take the type from one
+    // candidate and the name from another, or write its own. Showing only the
+    // contributors left the actual answer invisible — a block whose lines read
+    // "Software/code" and "Protocol" gave no clue which was kept.
+    const showResult = contributors.length > 1
     const groupSize = Math.max(contributors.length, 1)
     const base = {
       reason: cleanReason(merged.reason),
@@ -100,6 +106,23 @@ export function buildKrtRows(items) {
       finalName: merged.resourceName || '',
       groupSize
     }
+    if (showResult) {
+      rows.push({
+        ...base,
+        isResult: true,
+        source: null,
+        resourceType: merged.resourceType || '',
+        resourceName: merged.resourceName || '',
+        identifier: merged.identifier || '',
+        sourceUrl: merged.sourceUrl || '',
+        newReuse: (merged.newReuse || '').toLowerCase(),
+        additionalInformation: merged.additionalInformation || '',
+        isDuplicate: false,
+        isGroupStart: true,
+        isGroupEnd: false
+      })
+    }
+
     if (contributors.length === 0) {
       rows.push({
         ...base,
@@ -134,7 +157,8 @@ export function buildKrtRows(items) {
         newReuse: String(d.newReuse || d.new_reuse || merged.newReuse || '').toLowerCase(),
         additionalInformation: d.additionalInformation || d.additional_information || merged.additionalInformation || '',
         isDuplicate,
-        isGroupStart: j === 0,
+        // The result row above already opened the block when there is one.
+        isGroupStart: j === 0 && !showResult,
         isGroupEnd: j === contributors.length - 1
       })
     })

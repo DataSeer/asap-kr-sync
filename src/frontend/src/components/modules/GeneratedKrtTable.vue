@@ -10,9 +10,10 @@
  * Below it, the candidates that did NOT make it in, with the reason each was
  * dropped — the half of consolidation that is otherwise invisible.
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import Papa from 'papaparse'
 import HighlightText from '@/components/submission/HighlightText.vue'
+import SearchInput from '@/components/common/SearchInput.vue'
 import { useColumnResize } from '@/composables/useColumnResize'
 import { sourceLabel, sourceBadge, cleanReason } from '@/components/modules/generated-krt'
 
@@ -63,6 +64,15 @@ const ALL_COLS = [
 const showAdditionalInfo = computed(() => props.allRows.some(
   (r) => String(r?.additionalInformation || '').trim().length > 0
 ))
+
+/**
+ * The contributor rows only.
+ *
+ * A merged block carries a "kept" row that is the outcome rather than a
+ * detection, so counting it would inflate "N detections" and add a sourceless
+ * line to the export.
+ */
+const detectionRows = computed(() => props.allRows.filter((r) => !r.isResult))
 const cols = computed(() => (showAdditionalInfo.value
   ? ALL_COLS
   : ALL_COLS.filter((c) => c.key !== 'additionalInformation')))
@@ -87,8 +97,25 @@ const sourceTitle = (source) => SOURCE_TITLES[source]
 
 /** How many KRT rows were built from more than one module. */
 const mergedGroups = computed(() => props.allRows.filter(
-  (r) => r.isGroupStart && r.groupSize > 1
+  (r) => r.isResult
 ).length)
+
+/**
+ * The dropped list has its own search, not the page's.
+ *
+ * It answers a different question — "why is X not in my KRT?" — and is often
+ * the longer of the two tables. Sharing the page's box would mean filtering the
+ * KRT to nothing to look something up down here.
+ */
+const droppedSearch = ref('')
+const visibleDropped = computed(() => {
+  const q = droppedSearch.value.trim().toLowerCase()
+  if (!q) return props.dropped
+  return props.dropped.filter((d) => [
+    d.resourceType, d.resourceName, d.identifier, cleanReason(d.reason),
+    ...(d.sources || []).map(sourceLabel)
+  ].some((v) => String(v ?? '').toLowerCase().includes(q)))
+})
 
 function triggerBlobDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
@@ -102,8 +129,8 @@ function triggerBlobDownload(blob, filename) {
 }
 
 function downloadCsv() {
-  if (!props.allRows.length) return
-  const csvData = props.allRows.map((r) => ({
+  if (!detectionRows.value.length) return
+  const csvData = detectionRows.value.map((r) => ({
     // Rows sharing "KRT Row" are the SAME final row — one line per module that
     // found it. "Final KRT Name" is what the row carries; "Detected Name" is
     // what that module produced.
@@ -146,8 +173,8 @@ function downloadJson() {
       <div class="gk-summary">
         <div>
           <strong>{{ items.length }}</strong> KRT row{{ items.length === 1 ? '' : 's' }}
-          consolidated from <strong>{{ allRows.length }}</strong>
-          detection{{ allRows.length === 1 ? '' : 's' }}<span v-if="mergedGroups > 0">
+          consolidated from <strong>{{ detectionRows.length }}</strong>
+          detection{{ detectionRows.length === 1 ? '' : 's' }}<span v-if="mergedGroups > 0">
             — {{ mergedGroups }} merged from multiple modules</span>
         </div>
         <div class="gk-summary-hint">
@@ -187,7 +214,8 @@ function downloadJson() {
             :class="{
               'mt-row-start': row.isGroupStart,
               'mt-row-end': row.isGroupEnd,
-              'mt-row-alt': row.displayParity === 1
+              'mt-row-alt': row.displayParity === 1,
+              'gk-result': row.isResult
             }"
           >
             <!-- The row number appears once per group so a merged group reads
@@ -205,8 +233,14 @@ function downloadJson() {
               </template>
             </td>
             <td>
+              <!-- The kept row has no detector of its own: it IS the merge. -->
               <span
-                v-if="row.source"
+                v-if="row.isResult"
+                class="badge badge-own"
+                title="The row that went into the Generated KRT. The lines below are the detections it was built from — where they disagree, this is what was kept."
+              >kept</span>
+              <span
+                v-else-if="row.source"
                 class="badge"
                 :class="sourceBadge(row.source)"
                 :title="sourceTitle(row.source)"
@@ -242,9 +276,12 @@ function downloadJson() {
         Dropped candidates
         <span class="gk-dropped-count">{{ dropped.length }}</span>
       </h3>
-      <p class="gk-dropped-hint">
-        These detections were not kept in the Generated KRT — with the reason for each.
-      </p>
+      <div class="gk-dropped-bar">
+        <p class="gk-dropped-hint">
+          These detections were not kept in the Generated KRT — with the reason for each.
+        </p>
+        <SearchInput v-model="droppedSearch" placeholder="Search dropped…" class="gk-dropped-search" />
+      </div>
       <div class="mtable-frame gk-frame-dropped">
         <table class="mtable mtable--fixed" :style="colResize.tableStyle('dropped', DROPPED_COLS)">
           <thead>
@@ -265,7 +302,7 @@ function downloadJson() {
           </thead>
           <tbody>
             <tr
-              v-for="(d, i) in dropped"
+              v-for="(d, i) in visibleDropped"
               :key="i"
               class="mt-row mt-row-start mt-row-end"
               :class="{ 'mt-row-alt': i % 2 === 1 }"
@@ -280,13 +317,14 @@ function downloadJson() {
                 >{{ sourceLabel(s) }}</span>
                 <span v-if="!d.sources || !d.sources.length">—</span>
               </td>
-              <td class="gk-xs"><HighlightText :text="d.resourceType" :query="search" /></td>
-              <td class="gk-name"><HighlightText :text="d.resourceName" :query="search" /></td>
-              <td class="gk-xs"><HighlightText :text="d.identifier" :query="search" /></td>
-              <td class="gk-reason"><HighlightText :text="cleanReason(d.reason)" :query="search" /></td>
+              <td class="gk-xs"><HighlightText :text="d.resourceType" :query="droppedSearch" /></td>
+              <td class="gk-name"><HighlightText :text="d.resourceName" :query="droppedSearch" /></td>
+              <td class="gk-xs"><HighlightText :text="d.identifier" :query="droppedSearch" /></td>
+              <td class="gk-reason"><HighlightText :text="cleanReason(d.reason)" :query="droppedSearch" /></td>
             </tr>
           </tbody>
         </table>
+        <p v-if="!visibleDropped.length" class="mtable-empty">No dropped candidate matches that.</p>
       </div>
     </section>
   </div>
@@ -319,6 +357,9 @@ function downloadJson() {
 .gk-reason { font-size: 0.74rem; color: #6b7280; }
 .gk-krtnum { font-weight: 600; color: #374151; font-size: 0.76rem; }
 .gk-merge-label { font-size: 0.66rem; color: #1d4ed8; margin-top: 0.1rem; }
+/* The kept row is the answer; the detections under it are the working. */
+.gk-result > td { font-weight: 600; color: #111827; }
+.gk-result > td.gk-reason { font-weight: 400; }
 .gk-dropped { margin-top: 1.25rem; }
 .gk-dropped-title {
   display: flex; align-items: center; gap: 0.4rem;
@@ -328,5 +369,13 @@ function downloadJson() {
   padding: 0 0.35rem; border-radius: 0.25rem; font-size: 0.7rem;
   background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb;
 }
-.gk-dropped-hint { font-size: 0.75rem; color: #6b7280; margin: 0 0 0.5rem; }
+.gk-dropped-bar {
+  display: flex; align-items: center; gap: 0.75rem;
+  flex-wrap: wrap; margin-bottom: 0.5rem;
+}
+.gk-dropped-hint { font-size: 0.75rem; color: #6b7280; margin: 0; flex: 1 1 20rem; }
+.gk-dropped-search { margin-left: auto; flex: 0 1 18rem; min-width: 11rem; }
+.gk-dropped-search :deep(input) {
+  height: 1.85rem; font-size: 0.78rem; padding-top: 0; padding-bottom: 0;
+}
 </style>
