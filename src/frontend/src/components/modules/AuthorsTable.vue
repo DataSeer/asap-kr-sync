@@ -26,7 +26,7 @@ const colResize = useColumnResize(WIDTHS_KEY)
  * be blue and amber, which now mean Datasets and Lab materials.
  */
 function sourceClass(source) {
-  return source === 'grobid' ? 'badge-own' : 'badge-derived'
+  return source === 'grobid' ? 'rbadge-own' : 'rbadge-derived'
 }
 
 function formatOrcidSource(source) {
@@ -72,7 +72,7 @@ const COLS = [
           </td>
           <td><HighlightText :text="item.affiliation" :query="search" /></td>
           <td>
-            <span v-if="item.source" class="badge" :class="sourceClass(item.source)">
+            <span v-if="item.source" class="rbadge" :class="sourceClass(item.source)">
               {{ formatOrcidSource(item.source) }}
             </span>
             <span v-else>—</span>

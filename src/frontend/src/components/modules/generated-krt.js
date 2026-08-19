@@ -17,7 +17,7 @@
  *
  * `author_krt` is not a detector: it marks a row carried over from the author's
  * own table because nothing re-found it in the PDF. That is the most important
- * badge on the table — it says "we did not confirm this" — so it must not fall
+ * rbadge on the table — it says "we did not confirm this" — so it must not fall
  * through to the raw key.
  */
 export const SOURCE_LABELS = {
@@ -36,28 +36,28 @@ export const SOURCE_LABELS = {
 export const sourceLabel = (source) => SOURCE_LABELS[source] || source
 
 /**
- * The badge class for a contributing source.
+ * The rbadge class for a contributing source.
  *
- * A detector takes the colour of what it finds, so a "Materials" badge matches
+ * A detector takes the colour of what it finds, so a "Materials" rbadge matches
  * a Lab Materials row wherever both appear. Identifier detection spans every
  * category and the author's own table is not a finding at all, so neither
  * borrows a category colour.
  */
 const SOURCE_BADGES = {
-  software_detection: 'badge-software',
-  datasets_detection: 'badge-datasets',
-  materials_detection: 'badge-materials',
-  protocols_detection: 'badge-protocols',
-  identifier_detection: 'badge-neutral',
-  krt_grounding: 'badge-neutral',
-  pdf_analysis: 'badge-neutral',
-  author_krt: 'badge-own'
+  software_detection: 'rbadge-software',
+  datasets_detection: 'rbadge-datasets',
+  materials_detection: 'rbadge-materials',
+  protocols_detection: 'rbadge-protocols',
+  identifier_detection: 'rbadge-neutral',
+  krt_grounding: 'rbadge-neutral',
+  pdf_analysis: 'rbadge-neutral',
+  author_krt: 'rbadge-own'
 }
 
-export const sourceBadge = (source) => SOURCE_BADGES[source] || 'badge-neutral'
+export const sourceBadge = (source) => SOURCE_BADGES[source] || 'rbadge-neutral'
 
 /**
- * The badge class for a resource CATEGORY, keyed by the tab-group names the
+ * The rbadge class for a resource CATEGORY, keyed by the tab-group names the
  * resource-types store returns.
  *
  * The same four colours the module badges use, for the same reason: a row's
@@ -65,13 +65,13 @@ export const sourceBadge = (source) => SOURCE_BADGES[source] || 'badge-neutral'
  * and they should not be two different colours on one screen.
  */
 const GROUP_BADGES = {
-  Datasets: 'badge-datasets',
-  'Software/code': 'badge-software',
-  Protocols: 'badge-protocols',
-  'Lab Materials': 'badge-materials'
+  Datasets: 'rbadge-datasets',
+  'Software/code': 'rbadge-software',
+  Protocols: 'rbadge-protocols',
+  'Lab Materials': 'rbadge-materials'
 }
 
-export const groupBadge = (tabGroup) => GROUP_BADGES[tabGroup] || 'badge-neutral'
+export const groupBadge = (tabGroup) => GROUP_BADGES[tabGroup] || 'rbadge-neutral'
 
 /**
  * Display-side scrub of internal references that leak into LM reasons —

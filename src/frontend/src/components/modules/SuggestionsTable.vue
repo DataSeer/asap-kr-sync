@@ -129,8 +129,8 @@ const isEmpty = computed(() => props.rows.length === 0)
             <td class="st-xs">
               <span
                 v-if="r.role"
-                class="badge"
-                :class="r.side === 'author' ? 'badge-own' : 'badge-derived'"
+                class="rbadge"
+                :class="r.side === 'author' ? 'rbadge-own' : 'rbadge-derived'"
               >{{ fromLabel(r) }}</span>
             </td>
             <td
@@ -150,7 +150,7 @@ const isEmpty = computed(() => props.rows.length === 0)
                 <span
                   v-for="src in detectedBy(r.decision)"
                   :key="src"
-                  class="badge"
+                  class="rbadge"
                   :class="sourceBadge(src)"
                   :title="sourceTitle(src)"
                 >{{ sourceLabel(src) }}</span>

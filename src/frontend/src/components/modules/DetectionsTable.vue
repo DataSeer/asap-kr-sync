@@ -131,7 +131,7 @@ function isFieldFromEnrichment(item, field) {
 }
 
 /**
- * Tooltip text for the "enriched" badge — explains which fields were filled.
+ * Tooltip text for the "enriched" rbadge — explains which fields were filled.
  */
 function enrichmentBadgeTitle(item) {
   const filled = getEnrichmentMeta(item)?.filledFields || []
@@ -173,8 +173,13 @@ function getMergedFromContext(originalItem) {
 </script>
 
 <template>
-  <div v-if="items.length" class="dt-wrapper">
-    <table class="mtable mtable--fixed" :style="colResize.tableStyle('mentions', cols)">
+  <div class="dt-wrapper">
+    <!-- The empty state used to sit INSIDE a `v-if="items.length"` root, so it
+         could never render: a search matching nothing left an empty bordered box
+         with no text at all, while the grounding table beside it said "No rows
+         match the current filters." -->
+    <p v-if="!items.length" class="mtable-empty">No rows match the current filters.</p>
+    <table v-else class="mtable mtable--fixed" :style="colResize.tableStyle('mentions', cols)">
       <thead>
         <tr>
           <th
@@ -200,7 +205,7 @@ function getMergedFromContext(originalItem) {
                                entirely when nothing was seeded. -->
               <span
                 v-if="item.detectorMeta?.fromAuthorKrt"
-                class="badge badge-own"
+                class="rbadge rbadge-own"
                 :title="item.evidence?.verification?.status === 'verified'
                   ? 'In the author KRT, and the model located it in the manuscript.'
                   : 'In the author KRT. The model returned it, but did not locate it in the manuscript.'"
@@ -212,13 +217,13 @@ function getMergedFromContext(originalItem) {
               <span
                 v-for="engine in itemEngines(item)"
                 :key="engine"
-                class="badge"
-                :class="engine === 'lm' ? 'badge-derived' : 'badge-own'"
+                class="rbadge"
+                :class="engine === 'lm' ? 'rbadge-derived' : 'rbadge-own'"
                 :title="ENGINE_TITLES[engine]"
               >{{ ENGINE_LABELS[engine] }}</span>
               <span
                 v-if="getEnrichmentMeta(item)?.matched"
-                class="badge badge-neutral dt-badge-icon"
+                class="rbadge rbadge-neutral dt-badge-icon"
                 :title="enrichmentBadgeTitle(item)"
               >
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -229,7 +234,7 @@ function getMergedFromContext(originalItem) {
               <button
                 v-if="getMergedFromCount(item) > 1"
                 type="button"
-                class="badge badge-neutral dt-badge-button"
+                class="rbadge rbadge-neutral dt-badge-button"
                 :title="`Merged from ${getMergedFromCount(item)} pre-dedup mentions — click to expand`"
                 @click="toggleMergedRow(i)"
               >
@@ -255,7 +260,7 @@ function getMergedFromContext(originalItem) {
               </span>
               <!-- Context counts as located too: an "embellished" row has no
                    quote of its own but does have the paragraph the resource
-                   appears in, and printing a bare dash next to the caveat badge
+                   appears in, and printing a bare dash next to the caveat rbadge
                    said nothing. -->
               <span v-else-if="item.evidence?.quote || item.evidence?.context" class="text-gray-400">
                 Found in the manuscript — the section it sits in could not be determined
@@ -263,7 +268,7 @@ function getMergedFromContext(originalItem) {
               <span v-else class="text-gray-300">—</span>
               <span
                 v-if="item.evidence?.match === 'partial'"
-                class="badge badge-warning"
+                class="rbadge rbadge-warning"
                 title="Only the leading part of the quote was located in the manuscript"
               >partial</span>
               <!-- The model's quote is not in the manuscript, but
@@ -272,7 +277,7 @@ function getMergedFromContext(originalItem) {
                                highlighted because it was never found. -->
               <span
                 v-else-if="item.evidence?.verification?.status === 'embellished'"
-                class="badge badge-warning"
+                class="rbadge rbadge-warning"
                 title="The resource is in the manuscript, but the sentence the model quoted is not verbatim. The paragraph below is where the resource actually appears."
               >not verbatim</span>
             </td>
@@ -325,7 +330,6 @@ function getMergedFromContext(originalItem) {
         </template>
       </tbody>
     </table>
-    <div v-if="!items.length" class="job-modal-filter-empty">No rows match the current filters.</div>
   </div>
   <!-- Enrichment summary note. The "already in KRT" judgment now
                    lives solely in the AI Suggestions section, which is fed by
@@ -346,10 +350,24 @@ function getMergedFromContext(originalItem) {
 /* The sentence wraps rather than truncating — it is a statement about where a
    row came from, and half of it says nothing. (Its only styling used to live in
    JobStatusPanel's SCOPED block, so on a module page it had none.) */
+/* Two more classes styled only in JobStatusPanel's SCOPED block, so on a module
+   page the enrichment marker was invisible and the chevron never turned. Same
+   bug as .evidence-section-cell below — missed twice. */
+.cell-from-enrichment {
+  background: #f0fdf4;
+  box-shadow: inset 2px 0 0 #86efac;
+}
+.merged-from-chevron {
+  display: inline-block;
+  margin-left: 0.15rem;
+  transition: transform 0.12s ease;
+}
+.merged-from-chevron.open { transform: rotate(180deg); }
+
 .evidence-section-cell { line-height: 1.4; }
 .evidence-section-cell strong { font-weight: 600; color: #374151; }
 
 /* The evidence caveats keep their lower-case wording — "not verbatim" reads as
    a phrase, not a label — while taking the shared warning colour. */
-.badge-warning { text-transform: none; }
+.rbadge-warning { text-transform: none; }
 </style>

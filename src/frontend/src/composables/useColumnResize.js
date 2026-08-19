@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, onScopeDispose } from 'vue'
 
 /**
  * Drag-to-resize table columns, persisted to localStorage.
@@ -86,6 +86,15 @@ export function useColumnResize(storageKey, minWidth = 60) {
     window.removeEventListener('mouseup', onEnd)
     persist()
   }
+
+  // A drag attaches window listeners that only onEnd removes. If the component
+  // goes away mid-drag — a modal closing, a route change — they outlived it and
+  // kept writing to a detached ref. onScopeDispose rather than onUnmounted so
+  // this also works when the composable is used outside a component setup.
+  onScopeDispose(() => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onEnd)
+  })
 
   return { headStyle, tableStyle, startResize, hasCustomWidths }
 }

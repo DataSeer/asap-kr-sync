@@ -44,7 +44,7 @@ const WIDTHS_KEY = 'moduleView.columnWidths'
 const colResize = useColumnResize(WIDTHS_KEY)
 
 /**
- * The category the merged row ended up in, so its badge can say which of the
+ * The category the merged row ended up in, so its rbadge can say which of the
  * disagreeing candidates won — in that category's own colour.
  */
 const resourceTypesStore = useResourceTypesStore()
@@ -244,14 +244,14 @@ function downloadJson() {
               <!-- The kept row has no detector of its own: it IS the merge. -->
               <span
                 v-if="row.isResult"
-                class="badge"
+                class="rbadge"
                 :class="typeBadge(row.resourceType)"
                 :title="`The row that went into the Generated KRT, as ${row.resourceType || 'an untyped resource'}. `
                   + 'The lines below are the detections it was built from — where they disagree, this is what was kept.'"
               >merged</span>
               <span
                 v-else-if="row.source"
-                class="badge"
+                class="rbadge"
                 :class="sourceBadge(row.source)"
                 :title="sourceTitle(row.source)"
               >{{ sourceLabel(row.source) }}</span>
@@ -321,7 +321,7 @@ function downloadJson() {
                 <span
                   v-for="s in (d.sources || [])"
                   :key="s"
-                  class="badge"
+                  class="rbadge"
                   :class="sourceBadge(s)"
                   :title="sourceTitle(s)"
                 >{{ sourceLabel(s) }}</span>

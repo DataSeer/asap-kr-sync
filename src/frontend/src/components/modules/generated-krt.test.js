@@ -108,20 +108,20 @@ describe('labels and colours', () => {
   })
 
   it('gives a detector the colour of what it finds', () => {
-    expect(sourceBadge('datasets_detection')).toBe('badge-datasets')
-    expect(sourceBadge('materials_detection')).toBe('badge-materials')
-    expect(groupBadge('Lab Materials')).toBe('badge-materials')
-    expect(groupBadge('Datasets')).toBe('badge-datasets')
+    expect(sourceBadge('datasets_detection')).toBe('rbadge-datasets')
+    expect(sourceBadge('materials_detection')).toBe('rbadge-materials')
+    expect(groupBadge('Lab Materials')).toBe('rbadge-materials')
+    expect(groupBadge('Datasets')).toBe('rbadge-datasets')
   })
 
   it('gives anything cross-category or unknown the neutral colour', () => {
-    expect(sourceBadge('identifier_detection')).toBe('badge-neutral')
-    expect(sourceBadge('something_else')).toBe('badge-neutral')
-    expect(groupBadge('Nonsense')).toBe('badge-neutral')
+    expect(sourceBadge('identifier_detection')).toBe('rbadge-neutral')
+    expect(sourceBadge('something_else')).toBe('rbadge-neutral')
+    expect(groupBadge('Nonsense')).toBe('rbadge-neutral')
   })
 
   it('marks the author-carried row as the document\'s own, not as a finding', () => {
-    expect(sourceBadge('author_krt')).toBe('badge-own')
+    expect(sourceBadge('author_krt')).toBe('rbadge-own')
   })
 })
 

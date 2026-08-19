@@ -100,7 +100,11 @@ const routes = [
         path: 'submissions/:id/pipeline',
         name: 'submission-pipeline',
         component: () => import('@/views/submissions/PipelineView.vue'),
-        meta: { requiresAuth: true }
+        // Same reason as the module route below: everything this page shows
+        // belongs to `:id`, and it loads all of it on mount. Without the key,
+        // moving between two submissions' pipelines in one tab would leave the
+        // first one's jobs and title under the second one's URL.
+        meta: { requiresAuth: true, remountOnRouteChange: true }
       },
       {
         // One step's results, nested under the pipeline it belongs to. A real

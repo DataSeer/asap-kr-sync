@@ -154,6 +154,14 @@ export function useJobPoller(submissionId) {
   function scheduleNextPoll() {
     pollTimer = setTimeout(async () => {
       await fetchJobs()
+      // `fetchJobs` may have called stopPolling() — on the duration cap, or
+      // because nothing is running any more. Re-arming on `isAnyRunning` alone
+      // ignored that: the cap logged its warning, cleared the timer, and this
+      // callback immediately set a new one. Worse, stopPolling() nulls
+      // pollStartTime, and startPolling (the only thing that sets it) is gated
+      // on !pollTimer — so the cap could never fire again and a wedged job
+      // polled for ever.
+      if (pollTimer === null) return
       // If still running, schedule next poll with backoff
       if (isAnyRunning.value) {
         currentIntervalMs = Math.min(currentIntervalMs * BACKOFF_FACTOR, MAX_POLL_MS)

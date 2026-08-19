@@ -154,6 +154,18 @@ function valueDiff(left, right) {
 }
 
 
+/**
+ * What the manuscript supplies that the author's row leaves empty.
+ *
+ * Left behind when this table was extracted from the processes panel, which
+ * still has it. The template called it regardless, so the whole table threw as
+ * soon as a pipeline surfaced candidate values — invisible under the default
+ * pipeline, which withholds them, and fatal under the blind one, which does not.
+ */
+function groundingFills(o) {
+  return Object.keys(o?.foundValues || {}).map((k) => `${k}: ${o.foundValues[k]}`)
+}
+
 function groundingConflicts(o) {
   return (o?.conflicts || []).map(c => ({
     field: c.field,
