@@ -38,8 +38,19 @@ const jobs = inject('submissionJobs', ref({}))
  * Without this the panel says "waiting" and gives no way to find out what for,
  * which reads as a stall. The pipeline is in fact waiting on the user.
  */
-const waitingOnKrt = computed(() =>
-  jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === 'krt_validation'))
+/**
+ * Everything that could run has run, and what is left is waiting on the KRT.
+ *
+ * The count of gated jobs alone would show this the moment the pipeline
+ * started, next to steps that are visibly working — telling the user to click
+ * Continue while conversion is still going. It is only useful once nothing is
+ * moving, because only then is the user the reason nothing is happening.
+ */
+const waitingOnKrt = computed(() => {
+  const jobs = jobList.value
+  if (jobs.some((j) => j.status === 'queued' || j.status === 'processing')) return false
+  return jobs.some((j) => j.status === 'waiting' && j.waitingReason === 'krt_validation')
+})
 
 /**
  * The pipeline is stopped because there is no manuscript text.
@@ -2004,16 +2015,16 @@ async function downloadMarkdownFile(fileId) {
         <svg class="job-status-eta-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <span class="job-status-eta-label">Background processes</span>
-        <!-- The pipeline overview. A link, so ctrl-click opens it beside the
-             submission — which is how you read a result against the KRT. -->
+        <!-- The title IS the link to the pipeline overview. RouterLink, so
+             ctrl-click opens it beside the submission — which is how you read a
+             result against the KRT. -->
         <RouterLink
           :to="{ name: 'submission-pipeline', params: { id: submissionId } }"
-          class="job-pipeline-link"
+          class="job-status-eta-label job-status-eta-label-link"
           title="See the whole pipeline: every step, what it waits for, and what it produced"
           @click.stop
         >
-          view pipeline ↗
+          Background processes ↗
         </RouterLink>
         <!-- No estimate while the pipeline is stopped: nothing is going to
              finish, and "Finishing up…" over a blocked run is a lie. -->
@@ -2039,6 +2050,20 @@ async function downloadMarkdownFile(fileId) {
           </span>
         </div>
       </div>
+      <!-- Not an error: the pipeline is waiting on the user, and says so. -->
+      <div v-if="waitingOnKrt" class="job-status-krt-gate">
+        <svg class="job-status-krt-gate-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
+        </svg>
+        <!-- One span: the flex row has two children, the icon and the text.
+             Inline elements left loose here became flex items of their own and
+             the emphasised words drifted to the far right. -->
+        <span>
+          Analysis is waiting for your Key Resources Table to be validated before it can finish —
+          the detection modules are seeded with your rows, so they start once you are done editing.
+          Click <strong>Continue</strong> to proceed.
+        </span>
+      </div>
       <div v-if="etaVisible && !blockedOnMarkdown" class="job-status-eta-track">
         <div
           class="job-status-eta-fill"
@@ -2062,20 +2087,6 @@ async function downloadMarkdownFile(fileId) {
           they would report no findings whatever the manuscript says. Re-run
           <strong>Markdown Convert</strong> below, or re-upload the PDF; the rest of the pipeline
           starts by itself once there is text.
-        </span>
-      </div>
-      <!-- Not an error: the pipeline is waiting on the user, and says so. -->
-      <div v-if="waitingOnKrt" class="job-status-krt-gate">
-        <svg class="job-status-krt-gate-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
-        </svg>
-        <!-- One span: the flex row has two children, the icon and the text.
-             Inline elements left loose here became flex items of their own and
-             the emphasised words drifted to the far right. -->
-        <span>
-          Analysis is waiting for your Key Resources Table to be validated before it can finish —
-          the detection modules are seeded with your rows, so they start once you are done editing.
-          Click <strong>Continue</strong> to proceed.
         </span>
       </div>
       <div class="job-status-eta-footer">
@@ -2943,6 +2954,13 @@ async function downloadMarkdownFile(fileId) {
 .job-status-eta-label {
   font-weight: 600;
   color: #1e40af;
+}
+/* The title carries the link now, so it must not look like body text. */
+.job-status-eta-label-link {
+  text-decoration: none;
+}
+.job-status-eta-label-link:hover {
+  text-decoration: underline;
 }
 .job-status-eta-remaining {
   color: #2563eb;
@@ -4224,14 +4242,6 @@ async function downloadMarkdownFile(fileId) {
   line-height: 1.35;
   max-width: 34rem;
 }
-.job-pipeline-link {
-  margin-left: 0.6rem;
-  font-size: 0.7rem;
-  color: #2563eb;
-  text-decoration: none;
-  white-space: nowrap;
-}
-.job-pipeline-link:hover { text-decoration: underline; }
 .job-status-item-link { text-decoration: none; color: inherit; display: block; }
 .job-conflict-badge {
   background: #fef2f2;
