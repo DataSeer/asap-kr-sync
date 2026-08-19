@@ -12,6 +12,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { repoPath } = require('../../detection/repo-path');
 const { loadAuthorSeeds } = require('../../krt/author-krt-seeds.service');
 const { GROUP } = require('../../detection/resource-groups');
 
@@ -33,7 +34,7 @@ module.exports = {
       prompt: fs.readFileSync(PROMPT, 'utf-8'),
       signalsPrompt: fs.readFileSync(SIGNALS_PROMPT, 'utf-8'),
       seeds,
-      meta: { seedCount: seeds.length }
+      meta: { seedCount: seeds.length, promptFile: repoPath(PROMPT), signalsPromptFile: repoPath(SIGNALS_PROMPT) }
     };
   }
 };

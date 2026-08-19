@@ -23,6 +23,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { repoPath } = require('../../detection/repo-path');
 const { loadAuthorSeeds } = require('../../krt/author-krt-seeds.service');
 const { GROUP } = require('../../detection/resource-groups');
 
@@ -48,7 +49,12 @@ module.exports = {
     return {
       prompt: fs.readFileSync(seeded ? SEEDED_PROMPT : DISCOVERY_PROMPT, 'utf-8'),
       seeds,
-      meta: { seedCount: seeds.length, mode: seeded ? 'seeded' : 'discovery' }
+      meta: {
+        seedCount: seeds.length,
+        mode: seeded ? 'seeded' : 'discovery',
+        // The prompt this run ACTUALLY used — materials picks between two.
+        promptFile: repoPath(seeded ? SEEDED_PROMPT : DISCOVERY_PROMPT)
+      }
     };
   }
 };

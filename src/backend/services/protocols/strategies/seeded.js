@@ -9,6 +9,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { repoPath } = require('../../detection/repo-path');
 const { loadAuthorSeeds } = require('../../krt/author-krt-seeds.service');
 const { GROUP } = require('../../detection/resource-groups');
 
@@ -25,6 +26,10 @@ module.exports = {
   async buildInput({ submissionId, round, options = {} }) {
     let seeds = await loadAuthorSeeds(submissionId, round, GROUP.protocol);
     if (typeof options.filterSeeds === 'function') seeds = seeds.filter(options.filterSeeds);
-    return { prompt: fs.readFileSync(PROMPT, 'utf-8'), seeds, meta: { seedCount: seeds.length } };
+    return {
+      prompt: fs.readFileSync(PROMPT, 'utf-8'),
+      seeds,
+      meta: { seedCount: seeds.length, promptFile: repoPath(PROMPT) }
+    };
   }
 };

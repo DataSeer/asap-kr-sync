@@ -8,6 +8,8 @@ import api from './api'
 
 /** Cached: the pipeline shape cannot change without a redeploy. */
 let _pipeline = null
+/** Same: where the code lives cannot change without a redeploy. */
+let _source = null
 
 export default {
   /**
@@ -17,6 +19,12 @@ export default {
    * per component. Mirroring it in the client is what this replaces: two
    * hand-written copies had already drifted from the table that runs.
    */
+  /** Repo and branch this deployment runs, for linking results to their prompts. */
+  async getSource() {
+    if (!_source) _source = (await api.get('/config/source')).data
+    return _source
+  },
+
   async getPipeline() {
     if (!_pipeline) _pipeline = (await api.get('/config/pipeline')).data
     return _pipeline

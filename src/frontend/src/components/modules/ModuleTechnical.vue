@@ -10,8 +10,9 @@
  * Everything is read from the stored result. Nothing is recomputed, so what is
  * shown is what the run actually recorded.
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth.store'
+import configService from '@/services/config.service'
 
 const props = defineProps({
   job: { type: Object, required: true },
@@ -36,6 +37,39 @@ const authStore = useAuthStore()
 const canViewInternals = computed(() => authStore.canViewJobInternals)
 
 const open = ref(false)
+
+/**
+ * Where the code lives, so a result can be read against the prompt that
+ * produced it. Fetched rather than assumed: which branch a deployment runs is a
+ * property of the deployment.
+ */
+const source = ref(null)
+onMounted(async () => {
+  try { source.value = await configService.getSource() } catch { /* links simply omitted */ }
+})
+
+/**
+ * The prompts this run used, linked on GitHub.
+ *
+ * Read from the run's own meta, not from a table of which module uses which
+ * file — materials alone picks between two prompts depending on whether the
+ * KRT had anything to seed with, so a static map would be wrong half the time.
+ */
+const prompts = computed(() => {
+  if (!source.value) return []
+  const m = meta.value
+  return [
+    ['Detection prompt', m.promptFile],
+    ['Signal extraction prompt', m.signalsPromptFile]
+  ]
+    .filter(([, file]) => file)
+    .map(([label, file]) => ({
+      label,
+      file,
+      name: file.split('/').pop(),
+      url: `${source.value.repoUrl}/blob/${source.value.branch}/${file}`
+    }))
+})
 
 const result = computed(() => props.job?.result || {})
 const meta = computed(() => result.value.data?.meta || {})
@@ -118,6 +152,17 @@ const responseUrl = (name) =>
         <dl><template v-for="([k, v]) in timings" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
       </div>
 
+      <div v-if="prompts.length" class="mt-block">
+        <h3>Prompts used</h3>
+        <!-- The exact file, on the branch this deployment runs. -->
+        <ul class="mt-files">
+          <li v-for="p in prompts" :key="p.file">
+            <a :href="p.url" target="_blank" rel="noopener" :title="p.file">{{ p.name }} ↗</a>
+            <span class="mt-files-note">{{ p.label }}</span>
+          </li>
+        </ul>
+      </div>
+
       <div v-if="canViewInternals && artefacts.length" class="mt-block">
         <h3>Saved by this run</h3>
         <!-- Real links: ctrl-click opens one in a tab like anything else, and
@@ -157,5 +202,6 @@ const responseUrl = (name) =>
 .mt-files { list-style: none; margin: 0; padding: 0; font-size: 0.75rem; }
 .mt-files a { color: #2563eb; text-decoration: none; }
 .mt-files a:hover { text-decoration: underline; }
+.mt-files-note { color: #9ca3af; margin-left: 0.4rem; font-size: 0.7rem; }
 .mt-note { font-size: 0.7rem; color: #9ca3af; margin: 0.4rem 0 0; max-width: 22rem; line-height: 1.4; }
 </style>

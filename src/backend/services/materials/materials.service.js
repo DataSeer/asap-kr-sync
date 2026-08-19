@@ -208,7 +208,10 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
       model: materialsConfig.model,
       // Stamped on the result so a run records which configuration produced it.
       pipeline: resolved.pipeline.id,
-      strategy: resolved.strategy.id
+      strategy: resolved.strategy.id,
+      // The prompt this run used, repo-relative, so the UI can link to it.
+      promptFile: resolved.input.meta?.promptFile || null,
+      signalsPromptFile: resolved.input.meta?.signalsPromptFile || null
     }
   };
 }

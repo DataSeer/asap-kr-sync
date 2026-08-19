@@ -36,6 +36,25 @@ router.get('/krt-template', (req, res) => {
 });
 
 /**
+ * GET /api/config/source
+ *
+ * Where this deployment's code lives, so the UI can link a result to the prompt
+ * that produced it.
+ *
+ * The branch follows the environment because that is how the deployments are
+ * built: production runs what is on main, everything else runs dev. Both are
+ * overridable, since a deployment that tracks neither should not link readers
+ * to code it is not running.
+ */
+router.get('/source', (req, res) => {
+  const repoUrl = (process.env.SOURCE_REPO_URL || 'https://github.com/DataSeer/asap-kr-sync')
+    .replace(/\/+$/, '');
+  const branch = process.env.SOURCE_BRANCH
+    || (process.env.NODE_ENV === 'production' ? 'main' : 'dev');
+  res.json({ repoUrl, branch });
+});
+
+/**
  * GET /api/config/pipeline
  *
  * The processing pipeline as a graph: which steps exist, what each waits for,

@@ -7,6 +7,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { repoPath } = require('../../detection/repo-path');
 
 const PROMPT = path.join(__dirname, '../../../data/prompts/blind/datasets-consolidation.txt');
 const SIGNALS_PROMPT = path.join(__dirname, '../../../data/prompts/blind/datasets-signals-extraction.txt');
@@ -22,7 +23,7 @@ module.exports = {
       prompt: fs.readFileSync(PROMPT, 'utf-8'),
       signalsPrompt: fs.readFileSync(SIGNALS_PROMPT, 'utf-8'),
       seeds: [],
-      meta: { seedCount: 0 }
+      meta: { seedCount: 0, promptFile: repoPath(PROMPT), signalsPromptFile: repoPath(SIGNALS_PROMPT) }
     };
   }
 };

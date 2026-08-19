@@ -215,7 +215,10 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
       totalMs: Date.now() - startTime,
       model: protocolsConfig.model,
       pipeline: resolved.pipeline.id,
-      strategy: resolved.strategy.id
+      strategy: resolved.strategy.id,
+      // The prompt this run used, repo-relative, so the UI can link to it.
+      promptFile: resolved.input.meta?.promptFile || null,
+      signalsPromptFile: resolved.input.meta?.signalsPromptFile || null
     }
   };
 }

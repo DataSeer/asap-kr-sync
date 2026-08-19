@@ -8,6 +8,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { repoPath } = require('../../detection/repo-path');
 
 const PROMPT = path.join(__dirname, '../../../data/prompts/blind/materials-detection.txt');
 
@@ -20,6 +21,10 @@ module.exports = {
   async shouldRun() { return { run: true }; },
 
   async buildInput() {
-    return { prompt: fs.readFileSync(PROMPT, 'utf-8'), seeds: [], meta: { seedCount: 0 } };
+    return {
+      prompt: fs.readFileSync(PROMPT, 'utf-8'),
+      seeds: [],
+      meta: { seedCount: 0, promptFile: repoPath(PROMPT) }
+    };
   }
 };
