@@ -166,11 +166,13 @@ const activeStage = computed(() => {
 
 <template>
   <div class="pv">
+    <!-- Identity only: the title, manuscript id and file links these pages are
+         read against. The step navigator and help checklist belong to the flow,
+         not here. -->
     <SubmissionHeader
       :submission="submissionStore.currentSubmission"
       :latest-files="submissionStore.latestFiles"
-      step-title="Processing pipeline"
-      step-description="Every step that runs on this submission, in the order it runs."
+      :identity-only="true"
     />
 
     <div class="pv-head">

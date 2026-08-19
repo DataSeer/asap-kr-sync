@@ -125,11 +125,13 @@ const tabConflicts = computed(() => {
     <!-- The submission's own header: title, manuscript id, and links to the
          KRT and PDF files. Reused rather than rebuilt, so these pages carry the
          same identity and the same file links as every step view. -->
+    <!-- Identity only: the title, manuscript id and file links these pages are
+         read against. The step navigator and help checklist belong to the flow,
+         not here. -->
     <SubmissionHeader
       :submission="submissionStore.currentSubmission"
       :latest-files="submissionStore.latestFiles"
-      :step-title="label"
-      step-description="Results of one processing step, read against the manuscript."
+      :identity-only="true"
     />
 
     <div class="mrv-head">

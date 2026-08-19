@@ -39,10 +39,10 @@ const props = defineProps({
     type: Object,
     default: () => ({})
   },
-  /** Title for the current step */
+  /** Title for the current step. Unused, and not expected, when identityOnly. */
   stepTitle: {
     type: String,
-    required: true
+    default: ''
   },
   /** Optional description for the current step */
   stepDescription: {
@@ -73,6 +73,20 @@ const props = defineProps({
   helpItems: {
     type: Array,
     default: () => []
+  },
+  /**
+   * Render ONLY the article identity — title, manuscript id, KRT and PDF links.
+   *
+   * For pages that are not steps in the submission flow. They want the same
+   * identity strip and the same file links, and none of the step navigator,
+   * page title or help checklist that surrounds it. A flag here rather than a
+   * second component because the file buttons open modals that live in this
+   * component; extracting them would mean moving those too, and two components
+   * offering the same files is how they start behaving differently.
+   */
+  identityOnly: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -322,7 +336,7 @@ async function downloadCurrentKRT(round) {
             </div>
           </div>
         </div>
-        <div class="flex items-center space-x-4">
+        <div v-if="!identityOnly" class="flex items-center space-x-4">
           <!-- Step Navigator -->
           <div class="flex flex-col items-center">
             <!-- Version label on top -->
@@ -385,7 +399,7 @@ async function downloadCurrentKRT(round) {
     </div>
 
     <!-- ─── REST — page title, description, help panel (NOT sticky) ─── -->
-    <div class="submission-header-rest" style="overflow: visible;">
+    <div v-if="!identityOnly" class="submission-header-rest" style="overflow: visible;">
       <!-- Page title and actions -->
       <div class="flex items-center justify-between">
         <div class="flex items-center">
