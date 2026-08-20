@@ -46,3 +46,4 @@ Return ONE JSON array with exactly one object per rule_id above, in the same ord
 - `applies`: boolean.
 - `reason`: a short, specific sentence. When applies is false, explain why the DAS already satisfies the rule (this is shown to the user as the reason the check passed).
 - Do not add, remove, or rename rules. Do not include markdown, commentary, or code fences — output only the JSON array.
+- **Always return the array, with all nine verdicts in it.** A rule you judge not to apply is a verdict — `"applies": false` with the reason it is already satisfied — not a rule to leave out. An empty or missing body is treated as a failed call and retried; it is never read as "every check passed".

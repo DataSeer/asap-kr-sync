@@ -794,7 +794,14 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   did not produce primary data" both satisfy the no-new-data check).
 - **Engine:** **Google Gemini** — LM-only, **with a legacy-rules fallback.** When `DAS_SUGGESTIONS_ENABLED` is off
   / no key (or the LM fails), the `/availability` view falls back to the same rules computed **in-browser**, and
-  **Continue is not blocked**.
+  **Continue is not blocked**. The fallback now announces itself: silently, it presented a weaker set of checks in
+  the same cards as the model's verdicts, with no way to tell which one you were reading.
+- **Zero verdicts is a failed run, not a clean statement.** `readVerdicts` throws when the body carries no
+  readable verdicts. This is the opposite rule to the detection modules, where an empty list *is* an answer
+  ("this manuscript mentions no antibodies") — here the rulebook is fixed and every rule gets a verdict, so
+  empty means the call failed. It has to fail loudly because `buildSuggestions` defaults an unmentioned rule to
+  `applies: false`, which renders as a green "check passed" box: an unparseable response drew **nine passed
+  checks** over a statement nobody had managed to check. Pinned by `das-suggestions.service.test.js`.
 - **A pipeline step, gated to the Availability step.** It depends on `das_extraction` for the statement, and the
   `availability_ready` gate holds it there rather than letting it run when extraction finishes. The gate has two
   conditions — the submission has reached `step_as`, **and** it carries a real statement (extraction is fail-soft

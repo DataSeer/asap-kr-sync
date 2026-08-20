@@ -170,6 +170,38 @@ function parseFindings(text) {
 }
 
 /**
+ * Parse the response and refuse an unreadable one.
+ *
+ * `validate` retries an empty body, but after the last attempt
+ * generateContentWithRetry returns the best-effort response rather than
+ * throwing — so this is where an unparseable body has to become a failure.
+ *
+ * It cannot be allowed through. `buildSuggestions` defaults every rule the LM
+ * did not mention to `applies: false`, which the /availability view renders as
+ * a green "check passed" box. Zero verdicts therefore rendered as NINE passed
+ * checks: a statement nobody managed to check, shown as a statement with
+ * nothing wrong with it — the one outcome the module exists to prevent.
+ *
+ * Unlike the detection modules, where an empty list is a real answer ("this
+ * manuscript mentions no antibodies"), an empty list here cannot be: the
+ * rulebook is fixed and every rule gets a verdict. Empty means the call failed.
+ *
+ * @param {string} text - the raw response body
+ * @returns {object[]} the per-rule verdicts, never empty
+ * @throws {ExternalServiceError} when nothing readable came back
+ */
+function readVerdicts(text) {
+  const findings = parseFindings(text);
+  if (findings.length === 0) {
+    logger.error('DAS suggestions: no readable verdicts after retries', {
+      preview: String(text || '').slice(0, 300)
+    });
+    throw new ExternalServiceError('Gemini', 'empty or unparseable response after retries');
+  }
+  return findings;
+}
+
+/**
  * Merge the LM per-rule verdicts onto the fixed rulebook, producing the exact
  * suggestion shape the /availability view renders. A rule the LM omitted
  * defaults to not-applicable (the frontend still has its legacy full fallback
@@ -220,8 +252,9 @@ async function callGeminiForDas(dasText, signals) {
       validate: (res) => parseFindings(res?.text || '').length > 0
     });
     const text = response.text || '';
-    return { findings: parseFindings(text), rawResponse: text, promptDigest };
+    return { findings: readVerdicts(text), rawResponse: text, promptDigest };
   } catch (error) {
+    if (error instanceof ExternalServiceError) throw error;
     logger.error('Gemini API call failed for DAS suggestions', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
   }
@@ -410,5 +443,6 @@ module.exports = {
   getPersistedDasSuggestions,
   computeKrtSignals,
   buildSuggestions,
+  readVerdicts,
   DAS_RULES
 };

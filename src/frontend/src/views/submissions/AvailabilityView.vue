@@ -75,6 +75,15 @@ let pollTimer = null
 const isGeneratingSuggestions = computed(() => RUNNING_STATUSES.includes(dasJobStatus.value))
 const usingLmSuggestions = computed(() => dasJobStatus.value === 'complete' && lmSuggestions.value.length > 0)
 
+// The page falls back to the built-in browser rules whenever the LM check did
+// not produce verdicts. That fallback is fine — but silent, it is a lie by
+// omission: a weaker set of checks presented in the same green-and-amber cards
+// as the model's, with no way to tell which one you are reading. Say so.
+const lmCheckFailed = computed(() =>
+  ['failed', 'cancelled'].includes(dasJobStatus.value) ||
+  (dasJobStatus.value === 'complete' && lmSuggestions.value.length === 0)
+)
+
 async function fetchDasSuggestions() {
   try {
     const data = await dasSuggestionsService.get(route.params.id)
@@ -551,6 +560,20 @@ async function handleBack() {
             ground truth. A checklist item fires from these — e.g. if there is no row that is both Software/code and
             marked “new”, the no-new-code checks apply regardless of the statement wording.
             <span v-if="lmMeta?.model"> Checked by {{ lmMeta.model }}.</span>
+          </p>
+        </div>
+      </div>
+
+      <!-- The AI check did not produce verdicts — say which rules are on screen -->
+      <div v-if="lmCheckFailed && !isGeneratingSuggestions" class="das-fallback-notice">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+        </svg>
+        <div>
+          <p class="das-fallback-title">The AI check did not run — these are the built-in checks</p>
+          <p class="das-fallback-sub">
+            They are simpler than the model's and will not catch everything it would.
+            <button type="button" class="das-fallback-retry" @click="regenerateDasSuggestions">Try the AI check again</button>
           </p>
         </div>
       </div>
@@ -1186,6 +1209,19 @@ async function handleBack() {
   font-size: 0.75rem;
   color: #6b7280;
   line-height: 1.5;
+}
+
+.das-fallback-notice {
+  @apply flex items-start gap-3 p-4 mb-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800;
+}
+.das-fallback-title {
+  @apply text-sm font-semibold;
+}
+.das-fallback-sub {
+  @apply text-sm mt-0.5;
+}
+.das-fallback-retry {
+  @apply underline font-medium hover:text-amber-900;
 }
 
 .das-loader {
