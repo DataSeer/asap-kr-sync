@@ -9,14 +9,14 @@
  *
  * Offline: no LM calls, no database.
  *
- * Usage: node scripts/build-ab-arms-xlsx.js
+ * Usage: node scripts/dev/build-ab-arms-xlsx.js
  */
 
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');
 // NOT inside tmp/ab-arms: those directories are created by the container running
 // as root, so the host user cannot write into them. A sibling keeps this

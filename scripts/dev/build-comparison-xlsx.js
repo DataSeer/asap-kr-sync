@@ -16,7 +16,7 @@
  * workbook adapts to whatever the runner produced.
  *
  * Usage:
- *   node scripts/build-comparison-xlsx.js [resultsDir] [outFile] [reportsDir]
+ *   node scripts/dev/build-comparison-xlsx.js [resultsDir] [outFile] [reportsDir]
  * Defaults:
  *   resultsDir   tmp/datasets-detection/results
  *   outFile      <resultsDir>/comparison.xlsx
@@ -26,7 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
-const { loadReportDatasets } = require('./lib/report-datasets');
+const { loadReportDatasets } = require('../lib/report-datasets');
 
 const resultsDir = path.resolve(process.argv[2] || 'tmp/datasets-detection/results');
 const outFile = path.resolve(process.argv[3] || path.join(resultsDir, 'comparison.xlsx'));
@@ -265,7 +265,7 @@ function fillSummarySheet(ws, perDoc) {
 
 async function main() {
   if (VERSIONS.length === 0) {
-    console.error(`No version folders (${ALL_VERSIONS.join('/')}) under ${resultsDir} — run scripts/compare-datasets-prompts.js first.`);
+    console.error(`No version folders (${ALL_VERSIONS.join('/')}) under ${resultsDir} — run scripts/dev/compare-datasets-prompts.js first.`);
     process.exit(1);
   }
   console.error(`Versions found: ${VERSIONS.join(', ')}`);

@@ -29,14 +29,14 @@
  *
  * Offline: no LM calls, no database.
  *
- * Usage: node scripts/build-krt-linkage.js [--only <name>]
+ * Usage: node scripts/dev/build-krt-linkage.js [--only <name>]
  */
 
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const B = path.join(ROOT, 'src/backend');
 const DOCS = path.join(ROOT, 'src/frontend/public/demo-files');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');

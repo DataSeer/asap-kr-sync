@@ -131,6 +131,9 @@ asap-kr-sync/
 ├── deploy/                 Deployment files (systemd, entrypoint)
 ├── docs/                   Documentation
 ├── migrations/             Sequelize database migrations
+├── scripts/                Operational tools — run against a real instance
+│   ├── dev/                Localhost-only: feature development & quality evaluation
+│   └── lib/                Shared helpers (spreadsheets, author KRT, report shapes)
 ├── seeders/                Database seed data
 ├── src/
 │   ├── backend/

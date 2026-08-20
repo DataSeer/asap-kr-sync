@@ -11,7 +11,7 @@
  * materials, identifiers.
  *
  * Usage:
- *   node scripts/benchmark-detections.js [options]
+ *   node scripts/dev/benchmark-detections.js [options]
  *
  * Options:
  *   --concurrency N       Max parallel manuscripts (default: 3)
@@ -44,24 +44,24 @@
 const fs = require('fs');
 const path = require('path');
 
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
-const { newWorkbook, addObjectSheet, writeWorkbook } = require('./lib/sheets');
+const { newWorkbook, addObjectSheet, writeWorkbook } = require('../lib/sheets');
 
 // Paths
-const DEMO_FINDINGS_DIR = path.join(__dirname, '../src/backend/data/demo-findings');
-const DEMO_PDF_DIR      = path.join(__dirname, '../src/frontend/public/demo-files');
-const IDENTIFIERS_DIR   = path.join(__dirname, '../tmp/identifiers');
+const DEMO_FINDINGS_DIR = path.join(__dirname, '../../src/backend/data/demo-findings');
+const DEMO_PDF_DIR      = path.join(__dirname, '../../src/frontend/public/demo-files');
+const IDENTIFIERS_DIR   = path.join(__dirname, '../../tmp/identifiers');
 
 // Pipeline imports — single source of truth for what each detector emits.
-const { dedupeKrtItems } = require('../src/backend/services/pdf-analysis/dedupe-krt-items.service');
-const { createCsvProvider } = require('../src/backend/services/enrichment-list-providers');
-const protocolsService = require('../src/backend/services/protocols/protocols.service');
-const datasetsService  = require('../src/backend/services/datasets/datasets.service');
-const softwareService  = require('../src/backend/services/software/software.service');
-const materialsService = require('../src/backend/services/materials/materials.service');
-const identifierService = require('../src/backend/services/identifier-detection/identifier-detection.service');
-const knownIdentifierIndex = require('../src/backend/services/identifier-detection/known-identifier-index.service');
+const { dedupeKrtItems } = require('../../src/backend/services/pdf-analysis/dedupe-krt-items.service');
+const { createCsvProvider } = require('../../src/backend/services/enrichment-list-providers');
+const protocolsService = require('../../src/backend/services/protocols/protocols.service');
+const datasetsService  = require('../../src/backend/services/datasets/datasets.service');
+const softwareService  = require('../../src/backend/services/software/software.service');
+const materialsService = require('../../src/backend/services/materials/materials.service');
+const identifierService = require('../../src/backend/services/identifier-detection/identifier-detection.service');
+const knownIdentifierIndex = require('../../src/backend/services/identifier-detection/known-identifier-index.service');
 
 // ===================== CLI ARGS =====================
 
@@ -156,13 +156,13 @@ function checkServiceAvailability() {
     }
   };
 
-  const PROMPTS = path.join(__dirname, '../src/backend/data/prompts');
-  tryConfig('das',       '../src/backend/config/pdf-das-extractor-api');
-  tryConfig('markdown',  '../src/backend/config/pdf-markdown-api');
-  tryConfig('protocols', '../src/backend/config/protocols-detection-api', path.join(PROMPTS, 'blind', 'protocols-detection.txt'));
-  tryConfig('datasets',  '../src/backend/config/datasets-detection-api',  path.join(PROMPTS, 'blind', 'datasets-consolidation.txt'));
-  tryConfig('materials', '../src/backend/config/materials-detection-api', path.join(PROMPTS, 'blind', 'materials-detection.txt'));
-  tryConfig('software',  '../src/backend/config/softcite-api');
+  const PROMPTS = path.join(__dirname, '../../src/backend/data/prompts');
+  tryConfig('das',       '../../src/backend/config/pdf-das-extractor-api');
+  tryConfig('markdown',  '../../src/backend/config/pdf-markdown-api');
+  tryConfig('protocols', '../../src/backend/config/protocols-detection-api', path.join(PROMPTS, 'blind', 'protocols-detection.txt'));
+  tryConfig('datasets',  '../../src/backend/config/datasets-detection-api',  path.join(PROMPTS, 'blind', 'datasets-consolidation.txt'));
+  tryConfig('materials', '../../src/backend/config/materials-detection-api', path.join(PROMPTS, 'blind', 'materials-detection.txt'));
+  tryConfig('software',  '../../src/backend/config/softcite-api');
 
   // identifier-scan: local module, available iff curated CSVs exist for all
   // four categories. Missing CSVs degrade gracefully (empty index) but the
@@ -183,13 +183,27 @@ function checkServiceAvailability() {
 // enrich → dedupe) and returns canonical KrtEntry[]. Enrichment uses the
 // CSV provider so we don't need a database.
 
-async function runDAS(pdfBuffer, fileName) {
-  const { extractDAS } = require('../src/backend/services/pdf/pdf-das-extractor-client.service');
-  return (await extractDAS(pdfBuffer, fileName)) || '';
+/**
+ * DAS extraction reads the converted MARKDOWN, not the PDF.
+ *
+ * This called `pdf-das-extractor-client.service` with a PDF buffer — a module
+ * that no longer exists under a signature that no longer applies, left behind
+ * when extraction moved off the Modal fine-tune that ate the PDF directly. It
+ * threw MODULE_NOT_FOUND the moment the DAS step ran, and the failure was
+ * caught into `result.dasReal = 'ERROR'`, so every benchmark reported an error
+ * for DAS and nobody had to notice.
+ *
+ * @param {string} markdownText
+ * @returns {Promise<string>}
+ */
+async function runDAS(markdownText) {
+  const { extractDAS } = require('../../src/backend/services/pdf/das-extraction.service');
+  const extracted = await extractDAS(markdownText);
+  return extracted?.content || '';
 }
 
 async function runMarkdownConvert(pdfBuffer, fileName) {
-  const { convertToMarkdown } = require('../src/backend/services/pdf/pdf-markdown-client.service');
+  const { convertToMarkdown } = require('../../src/backend/services/pdf/pdf-markdown-client.service');
   return (await convertToMarkdown(pdfBuffer, fileName)) || '';
 }
 
@@ -350,18 +364,9 @@ async function processManuscript(ms, serviceStatus) {
   const fileName = `${ms.manuscriptId}.pdf`;
   let realMarkdown = null;
 
-  // --- DAS Extraction ---
-  if (isTypeEnabled('das') && serviceStatus.das?.available && pdfBuffer) {
-    try {
-      console.log(`  [${ms.manuscriptId}] DAS…`);
-      result.dasReal = (await runDAS(pdfBuffer, fileName)).trim();
-    } catch (err) {
-      result.dasReal = 'ERROR';
-      result.errors.push(`DAS: ${err.message}`);
-    }
-  }
-
   // --- Markdown Convert ---
+  // Runs first: everything below reads the converted text, DAS extraction
+  // included. It used to sit after DAS, from when DAS read the PDF itself.
   if (isTypeEnabled('markdown') && serviceStatus.markdown?.available && pdfBuffer) {
     try {
       console.log(`  [${ms.manuscriptId}] markdown…`);
@@ -370,6 +375,17 @@ async function processManuscript(ms, serviceStatus) {
     } catch (err) {
       result.mdLengthReal = 'ERROR';
       result.errors.push(`Markdown: ${err.message}`);
+    }
+  }
+
+  // --- DAS Extraction ---
+  if (isTypeEnabled('das') && serviceStatus.das?.available && realMarkdown) {
+    try {
+      console.log(`  [${ms.manuscriptId}] DAS…`);
+      result.dasReal = (await runDAS(realMarkdown)).trim();
+    } catch (err) {
+      result.dasReal = 'ERROR';
+      result.errors.push(`DAS: ${err.message}`);
     }
   }
 
@@ -545,7 +561,7 @@ async function main() {
   const outputPath = OUTPUT_PATH || path.join(__dirname, `benchmark-results-${today}.xlsx`);
   await writeWorkbook(wb, outputPath);
 
-  console.log(`\n=== Done ===`);
+  console.log('\n=== Done ===');
   console.log(`Processed: ${results.length} manuscript(s)`);
   const errorCount = results.filter(r => r.errors.length > 0).length;
   if (errorCount > 0) console.log(`Errors: ${errorCount} manuscript(s) had errors`);

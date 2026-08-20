@@ -13,13 +13,13 @@
  *
  * Offline: no LM calls, no database.
  *
- * Usage: node scripts/compare-dev-vs-branch.js
+ * Usage: node scripts/dev/compare-dev-vs-branch.js
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const BRANCH_DIR = path.join(ROOT, 'tmp/batch-check');
 const DEV_DIR = path.join(ROOT, 'tmp/batch-check/devrun');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');

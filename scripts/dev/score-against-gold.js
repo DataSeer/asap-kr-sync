@@ -46,7 +46,7 @@
  * "performance on rows whose linkage is unambiguous", never as overall
  * performance.
  *
- * Usage: node scripts/score-against-gold.js [--run 1,2] [--arms A,B,C]
+ * Usage: node scripts/dev/score-against-gold.js [--run 1,2] [--arms A,B,C]
  *   --include-unsettled   also score rows still awaiting review
  *   --min-coverage <pct>  drop documents below this share of settled rows
  *                         (default 45)
@@ -56,7 +56,7 @@ const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const GOLD = path.join(ROOT, 'tmp/krt-linkage');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');
 const OUT = path.join(ROOT, 'tmp/krt-linkage/scores');

@@ -44,7 +44,7 @@
  *   A module with no key simply yields nothing (same as the app).
  *
  * Usage:
- *   node scripts/eval-suggestions-quality.js [options]
+ *   node scripts/dev/eval-suggestions-quality.js [options]
  * Options:
  *   --dir DIR         input root (default: tmp/suggestions-quality)
  *   --out DIR         output dir (default: <dir>/results)
@@ -102,13 +102,13 @@ for (const method of ['log', 'info', 'warn', 'error', 'debug']) {
   console[method] = tagWithDocId(orig);
 }
 
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
 // The pipeline services log through the app's winston logger (a singleton the
 // service requires all share). Wrap its level methods the same way so their
 // lines carry the PDF name too. Required here — after dotenv — so the logger
 // reads its env config once, before any service does.
-const appLogger = require('../src/backend/utils/logger');
+const appLogger = require('../../src/backend/utils/logger');
 for (const level of ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']) {
   if (typeof appLogger[level] !== 'function') continue;
   const orig = appLogger[level].bind(appLogger);
@@ -116,23 +116,23 @@ for (const level of ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly
 }
 
 // ── Pipeline imports (same code the app runs) ───────────────────────────────
-const { convertToMarkdown } = require('../src/backend/services/pdf/pdf-markdown-client.service');
-const markdownFilter = require('../src/backend/services/pdf/markdown-filter.service');
-const softwareService = require('../src/backend/services/software/software.service');
-const datasetsService = require('../src/backend/services/datasets/datasets.service');
-const protocolsService = require('../src/backend/services/protocols/protocols.service');
-const materialsService = require('../src/backend/services/materials/materials.service');
-const identifierService = require('../src/backend/services/identifier-detection/identifier-detection.service');
-const knownIdentifierIndex = require('../src/backend/services/identifier-detection/known-identifier-index.service');
-const { createCsvProvider } = require('../src/backend/services/enrichment-list-providers');
-const { dedupeKrtItems } = require('../src/backend/services/pdf-analysis/dedupe-krt-items.service');
-const { mergeDetections } = require('../src/backend/services/pdf-analysis/merge-detections.service');
-const { consolidateWithLM } = require('../src/backend/services/pdf-analysis/krt-generation.service');
-const { compareKrts } = require('../src/backend/services/suggestion/kr-comparison.service');
-const { buildAuthorSeeds } = require('../src/backend/services/krt/author-krt-seeds.service');
-const { normalizeName, identifiersMatch } = require('../src/backend/services/pdf-analysis/identifier-normalize.service');
+const { convertToMarkdown } = require('../../src/backend/services/pdf/pdf-markdown-client.service');
+const markdownFilter = require('../../src/backend/services/pdf/markdown-filter.service');
+const softwareService = require('../../src/backend/services/software/software.service');
+const datasetsService = require('../../src/backend/services/datasets/datasets.service');
+const protocolsService = require('../../src/backend/services/protocols/protocols.service');
+const materialsService = require('../../src/backend/services/materials/materials.service');
+const identifierService = require('../../src/backend/services/identifier-detection/identifier-detection.service');
+const knownIdentifierIndex = require('../../src/backend/services/identifier-detection/known-identifier-index.service');
+const { createCsvProvider } = require('../../src/backend/services/enrichment-list-providers');
+const { dedupeKrtItems } = require('../../src/backend/services/pdf-analysis/dedupe-krt-items.service');
+const { mergeDetections } = require('../../src/backend/services/pdf-analysis/merge-detections.service');
+const { consolidateWithLM } = require('../../src/backend/services/pdf-analysis/krt-generation.service');
+const { compareKrts } = require('../../src/backend/services/suggestion/kr-comparison.service');
+const { buildAuthorSeeds } = require('../../src/backend/services/krt/author-krt-seeds.service');
+const { normalizeName, identifiersMatch } = require('../../src/backend/services/pdf-analysis/identifier-normalize.service');
 
-const IDENTIFIERS_DIR = path.join(__dirname, '../tmp/identifiers');
+const IDENTIFIERS_DIR = path.join(__dirname, '../../tmp/identifiers');
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -143,7 +143,7 @@ if (argv.includes('--help')) {
 const getArg = (name, def) => { const i = argv.indexOf(name); return (i !== -1 && i + 1 < argv.length) ? argv[i + 1] : def; };
 const has = (name) => argv.includes(name);
 
-const ROOT = path.resolve(getArg('--dir', path.join(__dirname, '../tmp/suggestions-quality')));
+const ROOT = path.resolve(getArg('--dir', path.join(__dirname, '../../tmp/suggestions-quality')));
 const DOC_DIR = path.join(ROOT, 'documents');
 const OUT_DIR = path.resolve(getArg('--out', path.join(ROOT, 'results')));
 const ONLY_DOCS = (getArg('--doc', '') || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -828,7 +828,7 @@ async function processDoc(doc, summaryAll) {
 
   const summaryRows = summaryAll.filter(s => s.key === doc.key);
   const authorRows = await parseKrtFile(doc.krtFile);
-  if (!authorRows.length) { console.log(`  ! KRT parsed to 0 rows — skipping`); return null; }
+  if (!authorRows.length) { console.log('  ! KRT parsed to 0 rows — skipping'); return null; }
 
   // Pass B removal plan (computed offline, used for both plan + run)
   const removed = SKIP_MODIFIED ? [] : chooseRemovals(authorRows, summaryRows);

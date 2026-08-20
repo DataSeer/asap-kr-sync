@@ -182,3 +182,23 @@ what ships in the image.
 | `brace-expansion@1.1.15` (high, DoS) | Reached only as `exceljs → archiver → glob@7 → minimatch@3`. Not fixable by an override on npm 11 — every selector form (`@1`, `@1.x`, `@<2`, `@<=1.1.17`, the requested-range `@^1.1.7`, and a nested override under `minimatch@3`) leaves the resolution at 1.1.15, and `npm audit fix` reports "up to date". It is a denial-of-service in brace expansion over glob patterns the **application** constructs, never a user, so it is not reachable. It clears when `exceljs` moves off `archiver@5`. |
 | ~~`xlsx@0.18.5`~~ | **Removed.** It had no fix on npm at all — SheetJS moved distribution off the registry, so `npm audit fix` could never resolve it. The three scripts that used it were ported to `exceljs`, which the runtime already used, and the dependency is gone. `exceljs` is now the only spreadsheet library in the tree. |
 | `js-yaml`, `shell-quote` | Dev tree only (tooling), not in the image. |
+
+## `scripts/` — what ships and what does not
+
+| | |
+|---|---|
+| `scripts/*.js` | **Operational.** Run against a real instance: `create-user`, `init-db`, `generate-jwt-secret`, `import-user-teams`, `purge-orphaned-jobs`, `verify-run-audit`, `upload-documents`, the enrichment-list tools, and the demo-corpus generators (the demo data ships with the app). These are copied into the image. |
+| `scripts/dev/*.js` | **Localhost only.** Feature development and quality evaluation: the gold linkage, the scoring harness, the A/B prompt arms, the benchmark and the dev-vs-branch comparisons. Excluded from the image via `.dockerignore` — they never run against a deployed instance. |
+| `scripts/lib/*.js` | Shared helpers for both. |
+
+The split is enforced by `.dockerignore`, not by convention: a script that needs
+to run on a host belongs in `scripts/`, and putting it in `dev/` means it will
+not be there.
+
+`scripts/.eslintrc.js` covers all of them. Before it existed the folder was
+checked by nothing but `node --check` — syntax only, which does not notice a
+`require` of a module that has been renamed away. Two had: `generate-demo-data`
+and `dev/benchmark-detections` both still called
+`pdf-das-extractor-client.service`, removed when DAS extraction moved to reading
+the converted markdown, so both threw `MODULE_NOT_FOUND` on their first line of
+real work.

@@ -30,13 +30,13 @@
  *
  * Offline: no LM calls, no database.
  *
- * Usage: node scripts/evaluate-pipelines.js [--csv]
+ * Usage: node scripts/dev/evaluate-pipelines.js [--csv]
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const BRANCH_DIR = path.join(ROOT, 'tmp/batch-check');
 const DEV_DIR = path.join(ROOT, 'tmp/batch-check/devrun');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');

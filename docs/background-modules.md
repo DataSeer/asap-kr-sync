@@ -607,7 +607,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 
 > **`services/krt/author-krt-seeds.service.js` is no longer on the detection path.** Software, Protocols, Materials
 > and Datasets all used to call it to inject the author's rows into their prompts. None do now. The module is kept
-> because the A/B harness `scripts/compare-datasets-prompts.js` still uses it to reproduce the seeded prompt and
+> because the A/B harness `scripts/dev/compare-datasets-prompts.js` still uses it to reproduce the seeded prompt and
 > measure it against the current one — it is eval scaffolding, not production code. Author rows now enter at
 > `krt_grounding` (§3.7b).
 
@@ -903,7 +903,7 @@ the DAS has the described problem (i.e. the suggestion is shown to the author).
 Two scripts, deliberately split so the expensive half runs once and the cheap
 half runs as often as you like.
 
-**`scripts/batch-detection-check.js`** — runs the real pipeline end to end over
+**`scripts/dev/batch-detection-check.js`** — runs the real pipeline end to end over
 the demo corpus by calling the pure stage functions directly. No
 `SubmissionJob`, no `krt_data`, no S3, so it is safe against a live environment.
 Markdown is cached under `tmp/batch-check/markdown/`, so re-runs skip the slow
@@ -921,17 +921,17 @@ rather than counts is what makes the next question free: an earlier run recorded
 matcher catch?" could only be answered by paying for the whole run again.
 
 ```bash
-node scripts/batch-detection-check.js                 # the default corpus
-node scripts/batch-detection-check.js --only <name>   # one document
-node scripts/batch-detection-check.js --max-mb 8      # skip oversized PDFs
+node scripts/dev/batch-detection-check.js                 # the default corpus
+node scripts/dev/batch-detection-check.js --only <name>   # one document
+node scripts/dev/batch-detection-check.js --max-mb 8      # skip oversized PDFs
 ```
 
 Run it in the container (`docker compose run --rm --no-deps app-tools
-scripts/batch-detection-check.js`) so it picks up `.env` and can reach the
+scripts/dev/batch-detection-check.js`) so it picks up `.env` and can reach the
 services. Put `-e VAR=…` **before** the service name — after it, node's own `-e`
 flag swallows it and the container exits having done nothing.
 
-**`scripts/build-krt-report-xlsx.js`** — reads those artifacts and writes
+**`scripts/dev/build-krt-report-xlsx.js`** — reads those artifacts and writes
 reviewer-facing workbooks to `tmp/batch-check/reports/`:
 
 | file | contents |

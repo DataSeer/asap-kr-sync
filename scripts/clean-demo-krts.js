@@ -133,7 +133,7 @@ const DECISIONS = [
 const isKrtFile = (f) => /\.(csv|xlsx)$/i.test(f) && !/-DS\d+\.xlsx$/i.test(f);
 
 const colIndex = (header, name) =>
-  header.findIndex((h) => String(h || '').replace(/^﻿/, '').trim().toUpperCase() === name);
+  header.findIndex((h) => String(h || '').replace(/^\uFEFF/, '').trim().toUpperCase() === name);
 
 /**
  * Read a CSV without changing what it is.

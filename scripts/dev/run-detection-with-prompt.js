@@ -8,7 +8,7 @@
  * checked-in default.
  *
  * Usage:
- *   node scripts/run-detection-with-prompt.js <type> <inputFile> [promptFile] [signalsPromptFile] [signalsExamplesFile]
+ *   node scripts/dev/run-detection-with-prompt.js <type> <inputFile> [promptFile] [signalsPromptFile] [signalsExamplesFile]
  *
  *   type          das | protocols | datasets | materials
  *   inputFile     manuscript markdown (.md/.txt) for das/protocols/datasets/materials
@@ -19,23 +19,23 @@
  *                         few-shot examples JSON
  *
  * Examples:
- *   node scripts/run-detection-with-prompt.js protocols ./paper.md ./my-protocols-prompt.txt
- *   node scripts/run-detection-with-prompt.js datasets  ./paper.md ./consolidation.txt ./signals.txt ./examples.json
- *   node scripts/run-detection-with-prompt.js materials ./paper.pdf ./materials-prompt.txt
+ *   node scripts/dev/run-detection-with-prompt.js protocols ./paper.md ./my-protocols-prompt.txt
+ *   node scripts/dev/run-detection-with-prompt.js datasets  ./paper.md ./consolidation.txt ./signals.txt ./examples.json
+ *   node scripts/dev/run-detection-with-prompt.js materials ./paper.pdf ./materials-prompt.txt
  *
  * Omit promptFile to run with the committed default (sanity check):
- *   node scripts/run-detection-with-prompt.js protocols ./paper.md
+ *   node scripts/dev/run-detection-with-prompt.js protocols ./paper.md
  */
 
 const fs = require('fs');
 const path = require('path');
 
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
-const protocolsService = require('../src/backend/services/protocols/protocols.service');
-const datasetsService = require('../src/backend/services/datasets/datasets.service');
-const materialsService = require('../src/backend/services/materials/materials.service');
-const dasService = require('../src/backend/services/pdf/das-extraction.service');
+const protocolsService = require('../../src/backend/services/protocols/protocols.service');
+const datasetsService = require('../../src/backend/services/datasets/datasets.service');
+const materialsService = require('../../src/backend/services/materials/materials.service');
+const dasService = require('../../src/backend/services/pdf/das-extraction.service');
 
 function readOrNull(file) {
   if (!file) return undefined; // undefined → detector falls back to its default file
@@ -46,7 +46,7 @@ async function main() {
   const [type, inputFile, promptFile, signalsPromptFile, signalsExamplesFile] = process.argv.slice(2);
 
   if (!type || !inputFile) {
-    console.error('Usage: node scripts/run-detection-with-prompt.js <das|protocols|datasets|materials> <inputFile> [promptFile] [signalsPromptFile] [signalsExamplesFile]');
+    console.error('Usage: node scripts/dev/run-detection-with-prompt.js <das|protocols|datasets|materials> <inputFile> [promptFile] [signalsPromptFile] [signalsExamplesFile]');
     process.exit(1);
   }
 

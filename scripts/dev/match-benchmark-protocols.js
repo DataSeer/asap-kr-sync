@@ -16,14 +16,14 @@
  *   Matches. Each line in Matches describes one demo hit.
  *
  * Usage:
- *   node scripts/match-benchmark-protocols.js <input.xlsx> [output.xlsx]
+ *   node scripts/dev/match-benchmark-protocols.js <input.xlsx> [output.xlsx]
  *
  * Default output: <input>_matched.xlsx alongside the input.
  */
 
 const fs = require('fs');
 const path = require('path');
-const { readWorkbook, newWorkbook, writeWorkbook, sheetToObjects, addObjectSheet } = require('./lib/sheets');
+const { readWorkbook, newWorkbook, writeWorkbook, sheetToObjects, addObjectSheet } = require('../lib/sheets');
 
 // ===================== CONFIG =====================
 
@@ -184,7 +184,7 @@ async function main() {
   const args = process.argv.slice(2);
   const inputPath = args[0];
   if (!inputPath) {
-    console.error('Usage: node scripts/match-benchmark-protocols.js <input.xlsx> [output.xlsx]');
+    console.error('Usage: node scripts/dev/match-benchmark-protocols.js <input.xlsx> [output.xlsx]');
     process.exit(1);
   }
   if (!fs.existsSync(inputPath)) {

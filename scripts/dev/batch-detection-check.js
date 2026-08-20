@@ -16,9 +16,9 @@
  *   - second look: attempted / recovered / quotes rejected as unverifiable
  *
  * Usage:
- *   node scripts/batch-detection-check.js                 # the default corpus
- *   node scripts/batch-detection-check.js --only PD1-000580-029-org-D-4
- *   node scripts/batch-detection-check.js --max-mb 8
+ *   node scripts/dev/batch-detection-check.js                 # the default corpus
+ *   node scripts/dev/batch-detection-check.js --only PD1-000580-029-org-D-4
+ *   node scripts/dev/batch-detection-check.js --max-mb 8
  *
  * Markdown is cached under tmp/batch-check/markdown/ so re-runs skip the
  * (slow, external) conversion and only re-exercise the parts under test.
@@ -26,9 +26,9 @@
 
 const path = require('path');
 const fs = require('fs');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 // The one and only demo corpus: the directory the frontend serves, and the one
 // whose KRT RESOURCE TYPE values were normalised by
 // scripts/patch-krt-resource-types.js. Not git-tracked (.gitignore), so treat

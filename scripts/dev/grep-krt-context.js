@@ -17,17 +17,17 @@
  * Offline: no LM calls, no database.
  *
  * Usage:
- *   node scripts/grep-krt-context.js                    # every row awaiting review
- *   node scripts/grep-krt-context.js --all              # every row, decided or not
- *   node scripts/grep-krt-context.js --doc WH1-000282-023-org-P-2
- *   node scripts/grep-krt-context.js --find "zoo" --doc WH1-000282-023-org-P-2
- *   node scripts/grep-krt-context.js --width 90         # context either side
+ *   node scripts/dev/grep-krt-context.js                    # every row awaiting review
+ *   node scripts/dev/grep-krt-context.js --all              # every row, decided or not
+ *   node scripts/dev/grep-krt-context.js --doc WH1-000282-023-org-P-2
+ *   node scripts/dev/grep-krt-context.js --find "zoo" --doc WH1-000282-023-org-P-2
+ *   node scripts/dev/grep-krt-context.js --width 90         # context either side
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const GOLD = path.join(ROOT, 'tmp/krt-linkage');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');
 const OUT = path.join(GOLD, 'context');

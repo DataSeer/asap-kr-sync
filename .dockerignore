@@ -22,3 +22,11 @@ coverage/
 src/frontend/public/demo-files/*
 !src/frontend/public/demo-files/.gitkeep
 !src/frontend/public/demo-files/README.md
+
+# Localhost-only tooling — feature development and quality evaluation. It runs
+# against a developer's machine (gold linkage, A/B prompt arms, scoring,
+# benchmarks), never against a deployed instance, and several of these pull in
+# heavy dev-only dependencies. `scripts/` itself still ships: create-user,
+# init-db, the roster import, the queue purge and the run auditor are all
+# operational tools that belong on the host.
+scripts/dev/

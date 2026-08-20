@@ -15,14 +15,14 @@
  * artifacts rather than only counts.
  *
  * Usage:
- *   node scripts/build-krt-report-xlsx.js
+ *   node scripts/dev/build-krt-report-xlsx.js
  */
 
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const IN = path.join(ROOT, 'tmp/batch-check');
 const OUT = path.join(IN, 'reports');
 

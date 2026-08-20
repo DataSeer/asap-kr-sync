@@ -15,7 +15,7 @@
  * isn't polluted by ordering noise.
  *
  * Usage:
- *   node scripts/snapshot-detections.js --phase <label> [options]
+ *   node scripts/dev/snapshot-detections.js --phase <label> [options]
  *
  * Options:
  *   --phase LABEL         Output dir name under tmp/detection-snapshots/ (required)
@@ -31,23 +31,23 @@
 const fs = require('fs');
 const path = require('path');
 
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
-const DEMO_FINDINGS_DIR = path.join(__dirname, '../src/backend/data/demo-findings');
-const DEMO_PDF_DIR      = path.join(__dirname, '../src/frontend/public/demo-files');
-const IDENTIFIERS_DIR   = path.join(__dirname, '../tmp/identifiers');
-const SNAPSHOTS_ROOT    = path.join(__dirname, '../tmp/detection-snapshots');
+const DEMO_FINDINGS_DIR = path.join(__dirname, '../../src/backend/data/demo-findings');
+const DEMO_PDF_DIR      = path.join(__dirname, '../../src/frontend/public/demo-files');
+const IDENTIFIERS_DIR   = path.join(__dirname, '../../tmp/identifiers');
+const SNAPSHOTS_ROOT    = path.join(__dirname, '../../tmp/detection-snapshots');
 
 // Pipeline imports
-const { sortKrtItems } = require('../src/backend/services/pdf-analysis/krt-entry');
-const { dedupeKrtItems } = require('../src/backend/services/pdf-analysis/dedupe-krt-items.service');
-const { createCsvProvider } = require('../src/backend/services/enrichment-list-providers');
-const protocolsService = require('../src/backend/services/protocols/protocols.service');
-const datasetsService  = require('../src/backend/services/datasets/datasets.service');
-const softwareService  = require('../src/backend/services/software/software.service');
-const materialsService = require('../src/backend/services/materials/materials.service');
-const identifierService = require('../src/backend/services/identifier-detection/identifier-detection.service');
-const knownIdentifierIndex = require('../src/backend/services/identifier-detection/known-identifier-index.service');
+const { sortKrtItems } = require('../../src/backend/services/pdf-analysis/krt-entry');
+const { dedupeKrtItems } = require('../../src/backend/services/pdf-analysis/dedupe-krt-items.service');
+const { createCsvProvider } = require('../../src/backend/services/enrichment-list-providers');
+const protocolsService = require('../../src/backend/services/protocols/protocols.service');
+const datasetsService  = require('../../src/backend/services/datasets/datasets.service');
+const softwareService  = require('../../src/backend/services/software/software.service');
+const materialsService = require('../../src/backend/services/materials/materials.service');
+const identifierService = require('../../src/backend/services/identifier-detection/identifier-detection.service');
+const knownIdentifierIndex = require('../../src/backend/services/identifier-detection/known-identifier-index.service');
 
 const csvProvider = createCsvProvider(IDENTIFIERS_DIR);
 
@@ -142,11 +142,11 @@ function checkServiceAvailability() {
       status[key] = { available: false, reason: 'Config not found' };
     }
   };
-  const PROMPTS = path.join(__dirname, '../src/backend/data/prompts');
-  tryConfig('protocols', '../src/backend/config/protocols-detection-api', path.join(PROMPTS, 'blind', 'protocols-detection.txt'));
-  tryConfig('datasets',  '../src/backend/config/datasets-detection-api',  path.join(PROMPTS, 'blind', 'datasets-consolidation.txt'));
-  tryConfig('materials', '../src/backend/config/materials-detection-api', path.join(PROMPTS, 'blind', 'materials-detection.txt'));
-  tryConfig('software',  '../src/backend/config/softcite-api');
+  const PROMPTS = path.join(__dirname, '../../src/backend/data/prompts');
+  tryConfig('protocols', '../../src/backend/config/protocols-detection-api', path.join(PROMPTS, 'blind', 'protocols-detection.txt'));
+  tryConfig('datasets',  '../../src/backend/config/datasets-detection-api',  path.join(PROMPTS, 'blind', 'datasets-consolidation.txt'));
+  tryConfig('materials', '../../src/backend/config/materials-detection-api', path.join(PROMPTS, 'blind', 'materials-detection.txt'));
+  tryConfig('software',  '../../src/backend/config/softcite-api');
 
   const requiredCsvs = ['software', 'materials', 'datasets', 'protocols']
     .map(c => path.join(IDENTIFIERS_DIR, `curated-${c}.csv`));

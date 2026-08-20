@@ -15,13 +15,13 @@
  *
  * Offline: no LM calls.
  *
- * Usage: node scripts/analyze-ab-arms.js
+ * Usage: node scripts/dev/analyze-ab-arms.js
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const IN = path.join(ROOT, 'tmp/ab-arms');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');
 

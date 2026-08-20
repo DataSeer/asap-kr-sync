@@ -14,10 +14,10 @@
 
 const path = require('path');
 const fs = require('fs');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
-const B = path.join(__dirname, '../src/backend');
-const IN = path.join(__dirname, '../tmp/batch-check');
+const B = path.join(__dirname, '../../src/backend');
+const IN = path.join(__dirname, '../../tmp/batch-check');
 const krComparison = require(path.join(B, 'services/suggestion/kr-comparison.service'));
 
 (async () => {

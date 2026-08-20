@@ -9,14 +9,14 @@
  *
  * Offline: no LM calls, no database. Rebuild as often as you like.
  *
- * Usage: node scripts/build-dev-vs-branch-xlsx.js
+ * Usage: node scripts/dev/build-dev-vs-branch-xlsx.js
  */
 
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const BRANCH_DIR = path.join(ROOT, 'tmp/batch-check');
 const DEV_DIR = path.join(ROOT, 'tmp/batch-check/devrun');
 const MD_DIR = path.join(ROOT, 'tmp/batch-check/markdown');

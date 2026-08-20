@@ -13,7 +13,7 @@
  *   datasets-signals-examples_<ver>.json    -> langextract few-shot examples
  *
  * Usage:
- *   node scripts/compare-datasets-prompts.js [pdfDir] [resourcesDir] [outDir] [limit]
+ *   node scripts/dev/compare-datasets-prompts.js [pdfDir] [resourcesDir] [outDir] [limit]
  *
  * Defaults:
  *   pdfDir       src/frontend/public/demo-files
@@ -34,13 +34,13 @@
 const fs = require('fs');
 const path = require('path');
 
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
-const { convertToMarkdown } = require('../src/backend/services/pdf/pdf-markdown-client.service');
-const datasetsService = require('../src/backend/services/datasets/datasets.service');
-const { dedupeKrtItems } = require('../src/backend/services/pdf-analysis/dedupe-krt-items.service');
-const { loadReportDatasets, findReportFile } = require('./lib/report-datasets');
-const { loadAuthorKrtDatasets, findAuthorKrtFile } = require('./lib/author-krt');
+const { convertToMarkdown } = require('../../src/backend/services/pdf/pdf-markdown-client.service');
+const datasetsService = require('../../src/backend/services/datasets/datasets.service');
+const { dedupeKrtItems } = require('../../src/backend/services/pdf-analysis/dedupe-krt-items.service');
+const { loadReportDatasets, findReportFile } = require('../lib/report-datasets');
+const { loadAuthorKrtDatasets, findAuthorKrtFile } = require('../lib/author-krt');
 
 // Args: positional [pdfDir] [resourcesDir] [outDir] [limit] [reportsDir], plus
 // an optional --versions=v3 flag (or COMPARE_VERSIONS env) to run a subset of

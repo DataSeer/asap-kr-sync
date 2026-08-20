@@ -25,14 +25,14 @@
  *   discovery  items found that are NOT author rows
  *   echo       author rows the detector "found" whose evidence does not verify
  *
- * Usage: node scripts/ab-prompt-arms.js [--only <name>] [--arms A,B,C]
+ * Usage: node scripts/dev/ab-prompt-arms.js [--only <name>] [--arms A,B,C]
  */
 
 const path = require('path');
 const fs = require('fs');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '../..');
 const B = path.join(ROOT, 'src/backend');
 const DOCS = path.join(ROOT, 'src/frontend/public/demo-files');
 const MD_CACHE = path.join(ROOT, 'tmp/batch-check/markdown');

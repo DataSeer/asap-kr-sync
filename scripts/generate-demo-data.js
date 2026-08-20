@@ -436,9 +436,14 @@ async function runApiMode() {
   }
 
   // Import API clients and configs
-  const dasExtractorConfig = require('../src/backend/config/pdf-das-extractor-api');
+  // DAS extraction reads the converted MARKDOWN, not the PDF. This required
+  // `pdf-das-extractor-{api,client.service}` — modules that no longer exist,
+  // left behind when extraction moved off the Modal fine-tune that ate the PDF
+  // directly. Both `--update-api-data` and `--refresh-all` threw
+  // MODULE_NOT_FOUND on their first line of real work.
+  const dasConfig = require('../src/backend/config/das-extraction-api');
   const markdownConfig = require('../src/backend/config/pdf-markdown-api');
-  const dasExtractorClient = require('../src/backend/services/pdf/pdf-das-extractor-client.service');
+  const dasExtractionService = require('../src/backend/services/pdf/das-extraction.service');
   const pdfMarkdownClient = require('../src/backend/services/pdf/pdf-markdown-client.service');
 
   // Discover PDFs
@@ -459,7 +464,7 @@ async function runApiMode() {
     skippedCount = totalPdfCount - pdfFiles.length;
   }
 
-  const dasConfigured = dasExtractorConfig.isConfigured();
+  const dasConfigured = dasConfig.isConfigured();
   const markdownConfigured = markdownConfig.isConfigured();
 
   console.log(`\n=== Update API Data${dryRun ? ' (DRY RUN)' : ''}${onlyMissing ? ' (ONLY MISSING)' : ''} ===`);
@@ -491,7 +496,7 @@ async function runApiMode() {
     if (fs.existsSync(backendJsonPath)) {
       demoData = JSON.parse(fs.readFileSync(backendJsonPath, 'utf-8'));
     } else {
-      console.log(`  No existing demo JSON found, creating minimal one`);
+      console.log('  No existing demo JSON found, creating minimal one');
       demoData = buildDemoJson(manuscriptId, '', 'N/A', [], [], [], []);
     }
 
@@ -505,39 +510,42 @@ async function runApiMode() {
 
     const pdfBuffer = fs.readFileSync(path.join(DEMO_FILES_DIR, pdfFile));
 
-    // --- DAS Extraction ---
-    if (dasConfigured) {
-      try {
-        console.log(`  Calling DAS Extractor API...`);
-        const extractedDas = await dasExtractorClient.extractDAS(pdfBuffer, pdfFile);
-        if (extractedDas && extractedDas.trim()) {
-          demoData.das = extractedDas.trim();
-          console.log(`  DAS extracted (${demoData.das.length} chars)`);
-        } else {
-          demoData.das = 'N/A';
-          console.log(`  DAS not found, set to N/A`);
-        }
-      } catch (err) {
-        console.error(`  DAS extraction failed: ${err.message}`);
-        demoData.das = 'N/A';
-      }
-    }
-
     // --- Markdown Conversion ---
+    // First: DAS extraction below reads its output, as the pipeline does.
+    let markdownText = '';
     if (markdownConfigured) {
       try {
         console.log(`  Calling Markdown API (${markdownConfig.provider})...`);
         const markdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile);
         if (markdown && markdown.trim()) {
+          markdownText = markdown;
           writeDemoMarkdown(manuscriptId, markdown);
           console.log(`  Markdown converted (${markdown.length} chars)`);
         } else {
           writeDemoMarkdown(manuscriptId, '');
-          console.log(`  Markdown empty, wrote empty file`);
+          console.log('  Markdown empty, wrote empty file');
         }
       } catch (err) {
         console.error(`  Markdown conversion failed: ${err.message}`);
         writeDemoMarkdown(manuscriptId, '');
+      }
+    }
+
+    // --- DAS Extraction (reads the markdown above) ---
+    if (dasConfigured && markdownText) {
+      try {
+        console.log('  Calling DAS Extraction...');
+        const extracted = await dasExtractionService.extractDAS(markdownText);
+        if (extracted?.content && extracted.content.trim()) {
+          demoData.das = extracted.content.trim();
+          console.log(`  DAS extracted (${demoData.das.length} chars)`);
+        } else {
+          demoData.das = 'N/A';
+          console.log('  DAS not found, set to N/A');
+        }
+      } catch (err) {
+        console.error(`  DAS extraction failed: ${err.message}`);
+        demoData.das = 'N/A';
       }
     }
 
@@ -602,12 +610,17 @@ async function runRefreshAll() {
   }
 
   // Import API clients and configs
-  const dasExtractorConfig = require('../src/backend/config/pdf-das-extractor-api');
+  // DAS extraction reads the converted MARKDOWN, not the PDF. This required
+  // `pdf-das-extractor-{api,client.service}` — modules that no longer exist,
+  // left behind when extraction moved off the Modal fine-tune that ate the PDF
+  // directly. Both `--update-api-data` and `--refresh-all` threw
+  // MODULE_NOT_FOUND on their first line of real work.
+  const dasConfig = require('../src/backend/config/das-extraction-api');
   const markdownConfig = require('../src/backend/config/pdf-markdown-api');
-  const dasExtractorClient = require('../src/backend/services/pdf/pdf-das-extractor-client.service');
+  const dasExtractionService = require('../src/backend/services/pdf/das-extraction.service');
   const pdfMarkdownClient = require('../src/backend/services/pdf/pdf-markdown-client.service');
 
-  const dasConfigured = dasExtractorConfig.isConfigured();
+  const dasConfigured = dasConfig.isConfigured();
   const markdownConfigured = markdownConfig.isConfigured();
 
   console.log(`\n=== Refresh All Demo Data${dryRun ? ' (DRY RUN)' : ''}${onlyMissing ? ' (ONLY MISSING)' : ''} ===`);
@@ -661,7 +674,7 @@ async function runRefreshAll() {
         console.log(`    Datasets: ${datasetItems.length}, Software: ${softwareItems.length}, Protocols: ${protocolItems.length}, Materials: ${materialItems.length}`);
       }
     } else {
-      console.log(`  No DS1 report found, loading existing demo JSON`);
+      console.log('  No DS1 report found, loading existing demo JSON');
       const existingPath = path.join(BACKEND_DIR, manuscriptId.toLowerCase() + '-demo.json');
       demoData = fs.existsSync(existingPath)
         ? JSON.parse(fs.readFileSync(existingPath, 'utf-8'))
@@ -679,39 +692,42 @@ async function runRefreshAll() {
 
     const pdfBuffer = fs.readFileSync(path.join(DEMO_FILES_DIR, pdfFile));
 
-    // --- DAS Extraction ---
-    if (dasConfigured) {
-      try {
-        console.log(`  Calling DAS Extractor API...`);
-        const extractedDas = await dasExtractorClient.extractDAS(pdfBuffer, pdfFile);
-        if (extractedDas && extractedDas.trim()) {
-          demoData.das = extractedDas.trim();
-          console.log(`  DAS extracted (${demoData.das.length} chars)`);
-        } else {
-          demoData.das = 'N/A';
-          console.log(`  DAS not found, set to N/A`);
-        }
-      } catch (err) {
-        console.error(`  DAS extraction failed: ${err.message}`);
-        demoData.das = 'N/A';
-      }
-    }
-
     // --- Markdown Conversion ---
+    // First: DAS extraction below reads its output, as the pipeline does.
+    let markdownText = '';
     if (markdownConfigured) {
       try {
         console.log(`  Calling Markdown API (${markdownConfig.provider})...`);
         const markdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile);
         if (markdown && markdown.trim()) {
+          markdownText = markdown;
           writeDemoMarkdown(manuscriptId, markdown);
           console.log(`  Markdown converted (${markdown.length} chars)`);
         } else {
           writeDemoMarkdown(manuscriptId, '');
-          console.log(`  Markdown empty, wrote empty file`);
+          console.log('  Markdown empty, wrote empty file');
         }
       } catch (err) {
         console.error(`  Markdown conversion failed: ${err.message}`);
         writeDemoMarkdown(manuscriptId, '');
+      }
+    }
+
+    // --- DAS Extraction (reads the markdown above) ---
+    if (dasConfigured && markdownText) {
+      try {
+        console.log('  Calling DAS Extraction...');
+        const extracted = await dasExtractionService.extractDAS(markdownText);
+        if (extracted?.content && extracted.content.trim()) {
+          demoData.das = extracted.content.trim();
+          console.log(`  DAS extracted (${demoData.das.length} chars)`);
+        } else {
+          demoData.das = 'N/A';
+          console.log('  DAS not found, set to N/A');
+        }
+      } catch (err) {
+        console.error(`  DAS extraction failed: ${err.message}`);
+        demoData.das = 'N/A';
       }
     }
 
