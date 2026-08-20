@@ -797,8 +797,12 @@ function getJobDetail(job) {
       return 'Waiting for the Key Resources Table to be validated — complete the KRT step to start this analysis.'
     }
     if (job.waitingReason === 'markdown_missing') {
+      // Only staff get the Restart button (`canRestartJobs`), so only staff are
+      // told to press it. Telling an author to re-run a module they cannot see
+      // a button for is worse than saying nothing.
       return 'Blocked: the manuscript has no converted text. This step is held rather than run against an '
-        + 'empty document — re-run Markdown Convert or re-upload the PDF.'
+        + 'empty document — '
+        + (canRestartJobs.value ? 're-run Markdown Convert or re-upload the PDF.' : 're-upload the PDF to try again.')
     }
     const deps = getWaitingFor(job)
     if (deps.length) {
@@ -1182,7 +1186,8 @@ async function downloadMarkdownFile(fileId) {
           <strong>Analysis is blocked: the manuscript could not be converted to text.</strong>
           {{ blockedCount }} step{{ blockedCount === 1 ? '' : 's' }}
           {{ blockedCount === 1 ? 'is' : 'are' }} held rather than run against an empty document.
-          Re-run <strong>Markdown Convert</strong> below, or re-upload the PDF.
+          <template v-if="canRestartJobs">Re-run <strong>Markdown Convert</strong> below, or re-upload the PDF.</template>
+          <template v-else>Re-upload the PDF to try the conversion again.</template>
         </span>
         <span v-else-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
         <div class="job-header-badges">
