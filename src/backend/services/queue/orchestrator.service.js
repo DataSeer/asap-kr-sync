@@ -631,6 +631,15 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
       if (job.status === 'queued' || job.status === 'processing' || job.status === 'cancelled') continue;
       job.status = 'waiting';
       job.pgBossJobId = null;
+      // Same rule as requeueStep, and it was missing here: a job queued to run
+      // again carries nothing from the run before it. Without this, a step that
+      // had FAILED was reset to `waiting` still holding its error, and the panel
+      // showed that failure against a job that was about to re-run — the exact
+      // complaint requeueStep was fixed for, one function along. Seen live: a
+      // Gemini 503 on suggestion_generation stayed on screen after a grounding
+      // re-run had already reset it.
+      job.result = null;
+      job.errorMessage = null;
       await job.save({ transaction: t });
       reset.push(jobType);
     }

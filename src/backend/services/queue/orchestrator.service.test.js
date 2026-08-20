@@ -394,6 +394,48 @@ test('a dependency that has genuinely failed does release its dependents', async
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// cascadeRestart — invalidating what a re-run makes stale
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a cascaded reset drops the previous run\'s error and result', async (t) => {
+  // Found live: re-running grounding reset suggestion_generation from `failed`
+  // to `waiting`, and the panel kept showing its Gemini 503 against a job that
+  // was about to run again. requeueStep had already been fixed for exactly this
+  // complaint; cascadeRestart, one function along, had not.
+  const rows = pipelineRows({
+    [JOB_TYPES.SUGGESTION_GENERATION]: {
+      status: 'failed',
+      errorMessage: 'Gemini error: 503 UNAVAILABLE',
+      result: { data: { suggestions: [1, 2, 3] } }
+    }
+  });
+  mockDb(t, rows);
+  t.mock.method(SubmissionJob, 'findOne', async ({ where }) => rows.get(where.jobType) || null);
+  t.mock.method(require('../../models').sequelize, 'transaction', async (fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }));
+
+  await orchestrator.cascadeRestart('sub-1', JOB_TYPES.KRT_GROUNDING, 1);
+
+  const sug = rows.get(JOB_TYPES.SUGGESTION_GENERATION);
+  assert.equal(sug.status, 'waiting');
+  assert.equal(sug.errorMessage, null, 'a failure from the previous run must not be shown against the next one');
+  assert.equal(sug.result, null, 'nor its result');
+});
+
+test('a cascaded reset leaves in-flight work alone', async (t) => {
+  // Resetting a running job would orphan the worker holding it.
+  const rows = pipelineRows({
+    [JOB_TYPES.SUGGESTION_GENERATION]: { status: 'processing', errorMessage: null }
+  });
+  mockDb(t, rows);
+  t.mock.method(SubmissionJob, 'findOne', async ({ where }) => rows.get(where.jobType) || null);
+  t.mock.method(require('../../models').sequelize, 'transaction', async (fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }));
+
+  await orchestrator.cascadeRestart('sub-1', JOB_TYPES.KRT_GROUNDING, 1);
+
+  assert.equal(rows.get(JOB_TYPES.SUGGESTION_GENERATION).status, 'processing');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // requeueStep — one way to re-run a step, for every step
 // ─────────────────────────────────────────────────────────────────────────────
 

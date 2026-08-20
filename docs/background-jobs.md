@@ -389,6 +389,12 @@ the wrong row, and the real one sits in `waiting` for ever while the run reports
 complete. That is what shipped a Generated KRT containing 98 author rows and
 zero detections while datasets detection alone had found 96 items.
 
+`cascadeRestart` — which resets everything downstream of the step being re-run —
+follows the same rule: a job it resets to `waiting` keeps **neither** the
+previous run's result **nor** its error. That was missing, and the symptom was
+the one `requeueStep` had already been fixed for, one function along: a step
+reset from `failed` still showed its failure while queued to run again.
+
 `markdown_convert` and `orcid_extraction` kept their own insert-a-row restarts
 after `pdf_analysis` was converted, and disagreed with `requeueStep` about
 in-flight work — a re-run requested while a conversion was running started a
