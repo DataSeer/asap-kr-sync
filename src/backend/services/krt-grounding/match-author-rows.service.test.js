@@ -394,3 +394,56 @@ test('a complete, agreeing row is still confirmed', () => {
   assert.equal(outcomes[0].outcome, 'confirmed');
   assert.equal(outcomes[0].conflicts.length, 0);
 });
+
+// ── what may contradict the author ──────────────────────────────────────────
+// This module checks the KRT against the PDF, so it may only disagree with the
+// author about things genuinely read FROM the PDF and genuinely comparable.
+
+test('a differing identifier IS an incoherence', () => {
+  const { conflicts } = compareWithCandidates(
+    authorRow({ identifier: 'RRID:SCR_111111' }),
+    [{ candidate: candidate({ identifier: 'RRID:SCR_999999' }) }]
+  );
+
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].field, 'identifier');
+});
+
+test('a differing SOURCE is not', () => {
+  // Detectors do populate source — the repository for a dataset, the supplier
+  // for a material — but that is inferred from where a thing lives, not
+  // asserted by the manuscript about the author's row. Telling a curator their
+  // supplier contradicts the paper is not a finding.
+  const { conflicts } = compareWithCandidates(
+    authorRow({ source: 'Addgene' }),
+    [{ candidate: candidate({ source: 'Zenodo' }) }]
+  );
+
+  assert.deepEqual(conflicts, []);
+});
+
+test('a differing NEW/REUSE is not, and is not offered as a fill either', () => {
+  // No detector reads new-versus-reuse from the manuscript; every one
+  // hard-codes a default. A "found value" for it was our own default handed
+  // back, so both the conflict and the fill were invented.
+  const { conflicts, missingFields, foundValues } = compareWithCandidates(
+    authorRow({ newReuse: 'new' }),
+    [{ candidate: candidate({ newReuse: 'reuse' }) }]
+  );
+
+  assert.deepEqual(conflicts, []);
+  assert.ok(!missingFields.includes('newReuse'));
+  assert.equal(foundValues.newReuse, undefined);
+});
+
+test('an empty source is still offered as a fill', () => {
+  // Excluded from conflicts, kept as a fill: proposing a repository for an
+  // empty cell is useful and is not an accusation.
+  const { missingFields, foundValues } = compareWithCandidates(
+    authorRow({ source: '' }),
+    [{ candidate: candidate({ source: 'Zenodo' }) }]
+  );
+
+  assert.ok(missingFields.includes('source'));
+  assert.equal(foundValues.source, 'Zenodo');
+});

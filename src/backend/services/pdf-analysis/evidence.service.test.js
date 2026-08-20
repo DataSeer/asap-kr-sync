@@ -22,6 +22,7 @@ const {
   locateQuote,
   extractContext,
   identifierNeedle,
+  identifierNeedles,
   findAllOccurrences,
   findNormalisedOccurrences,
   isCitationSection,
@@ -517,4 +518,40 @@ test('findNormalisedOccurrences: too short to be safe is refused', () => {
 test('findNormalisedOccurrences: absent is still absent', () => {
   const index = buildEvidenceIndex(NORMALISED_MD);
   assert.equal(findNormalisedOccurrences(index, 'ZzzNotInThisPaper999', 3).length, 0);
+});
+
+// ── compound identifier cells ───────────────────────────────────────────────
+
+test('identifierNeedles returns EVERY part of a compound cell', () => {
+  // The real shape of an author's cell. Searching only the first part made a
+  // row's "found in the manuscript" verdict depend on the order they typed it.
+  assert.deepEqual(
+    identifierNeedles('Cat#: N0502-At488-L ; RRID: AB_2744623'),
+    ['N0502-At488-L', 'AB_2744623']
+  );
+});
+
+test('the order in the cell does not decide whether a token is searched', () => {
+  const both = identifierNeedles('Cat#: N0502-At488-L ; RRID: AB_2744623');
+  const swapped = identifierNeedles('RRID: AB_2744623 ; Cat#: N0502-At488-L');
+  assert.deepEqual([...both].sort(), [...swapped].sort());
+});
+
+test('it splits on commas as well as semicolons, and de-duplicates', () => {
+  assert.deepEqual(identifierNeedles('AB_1, AB_2'), ['AB_1', 'AB_2']);
+  assert.deepEqual(identifierNeedles('AB_1; AB_1'), ['AB_1']);
+});
+
+test('it drops parts too short to search on', () => {
+  // MIN_MENTION_CHARS guards against a one-character "needle" matching
+  // everywhere; a short part must not drag the whole cell down with it.
+  const out = identifierNeedles('x; RRID: AB_2744623');
+  assert.ok(!out.includes('x'));
+  assert.ok(out.includes('AB_2744623'));
+});
+
+test('identifierNeedle still returns the first, for callers wanting one', () => {
+  assert.equal(identifierNeedle('Cat#: N0502-At488-L ; RRID: AB_2744623'), 'N0502-At488-L');
+  assert.equal(identifierNeedle(''), '');
+  assert.equal(identifierNeedle(null), '');
 });

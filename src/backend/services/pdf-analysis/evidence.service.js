@@ -672,7 +672,8 @@ function collectMentions(index, item, preferredOffset) {
   const found = new Map();
 
   for (const { needle, via } of [
-    { needle: identifierNeedle(item.identifier), via: 'identifier' },
+    // Every identifier part, not just the first — see identifierNeedles.
+    ...identifierNeedles(item.identifier).map((needle) => ({ needle, via: 'identifier' })),
     { needle: item.resourceName, via: 'name' }
   ]) {
     if (!needle) continue;
@@ -718,16 +719,49 @@ function findAllOccurrences(index, needle, cap = MAX_MENTIONS) {
 }
 
 /**
- * The searchable core of an identifier: the bare token, since a manuscript
- * writes "RRID: AB_123" / "RRID:AB_123" / "AB_123" interchangeably.
+ * The searchable core of ONE identifier part: the bare token, since a
+ * manuscript writes "RRID: AB_123" / "RRID:AB_123" / "AB_123" interchangeably.
+ * @param {string} part
+ * @returns {string}
+ */
+function needleFromPart(part) {
+  const raw = String(part || '').trim();
+  if (!raw) return '';
+  const token = raw.replace(/^\s*(RRID|DOI|Cat|Catalog)[\s:#]*/i, '').trim();
+  return token.length >= MIN_MENTION_CHARS ? token : '';
+}
+
+/**
+ * EVERY searchable token in an identifier cell.
+ *
+ * Author cells routinely carry more than one — "Cat#: N0502-At488-L ; RRID:
+ * AB_2744623" is an ordinary row. Searching only the first part meant whether
+ * a row counted as "found in the manuscript" depended on the order the author
+ * happened to type their cell: put the RRID second and the manuscript's RRID
+ * was never looked for. The deterministic matcher already reads every token
+ * (identifier-normalize.extractIdentifierTokens); this is the presence side
+ * catching up.
+ *
+ * @param {string} identifier
+ * @returns {string[]} unique, non-empty needles, in cell order
+ */
+function identifierNeedles(identifier) {
+  const parts = String(identifier || '').split(/[;,]/);
+  const out = [];
+  for (const part of parts) {
+    const needle = needleFromPart(part);
+    if (needle && !out.includes(needle)) out.push(needle);
+  }
+  return out;
+}
+
+/**
+ * The first searchable token. Kept for callers that genuinely want one needle.
  * @param {string} identifier
  * @returns {string}
  */
 function identifierNeedle(identifier) {
-  const raw = String(identifier || '').split(/[;,]/)[0].trim();
-  if (!raw) return '';
-  const token = raw.replace(/^\s*(RRID|DOI|Cat|Catalog)[\s:#]*/i, '').trim();
-  return token.length >= MIN_MENTION_CHARS ? token : '';
+  return identifierNeedles(identifier)[0] || '';
 }
 
 /**
@@ -774,6 +808,7 @@ module.exports = {
   findAllOccurrences,
   collectMentions,
   identifierNeedle,
+  identifierNeedles,
   isCitationSection,
   extractContext,
   sentenceBoundsAround,

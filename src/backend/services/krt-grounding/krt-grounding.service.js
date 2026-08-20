@@ -46,7 +46,7 @@ const { NotFoundError } = require('../../utils/errors');
 const { matchAuthorRows } = require('./match-author-rows.service');
 const { getPipeline } = require('../../config/pipelines');
 const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
-  findNormalisedOccurrences, identifierNeedle } = require('../pdf-analysis/evidence.service');
+  findNormalisedOccurrences, identifierNeedles } = require('../pdf-analysis/evidence.service');
 const { sanitizeJsonEscapes, extractJsonBlock } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
@@ -178,9 +178,11 @@ function presenceForRows(index, authorRows) {
     // match of a normalised form, not a similarity score, so it cannot drift.
     let normalised = false;
     if (!viaIdentifier) {
-      const needle = identifierNeedle(row.identifier);
-      const hits = needle ? findNormalisedOccurrences(index, needle, MAX_NORMALISED) : [];
-      if (hits.length) {
+      // Every part of the cell. Searching only the first made a row's "found in
+      // the manuscript" verdict depend on the order the author typed it.
+      for (const needle of identifierNeedles(row.identifier)) {
+        const hits = findNormalisedOccurrences(index, needle, MAX_NORMALISED);
+        if (!hits.length) continue;
         viaIdentifier = true;
         normalised = true;
         mentions.push(...hits.map((h) => ({ ...h, via: 'identifier' })));

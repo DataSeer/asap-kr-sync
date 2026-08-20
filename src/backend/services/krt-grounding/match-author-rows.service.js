@@ -109,8 +109,38 @@ function isVersionedType(typeKey) {
   return typeKey === 'software/code';
 }
 
-/** Author fields grounding may PROPOSE a value for, when the author left them empty. */
-const FILLABLE_FIELDS = ['source', 'identifier', 'newReuse'];
+/**
+ * Author fields grounding may PROPOSE a value for, when the author left the cell
+ * empty. Proposing is not an accusation — the curator sees an empty cell and a
+ * candidate for it.
+ *
+ * `newReuse` is deliberately absent. NO detector reads new-versus-reuse from the
+ * manuscript; every one hard-codes a default (lm-resource, software, datasets).
+ * So a "found value" for it was never a finding — it was our own default handed
+ * back, and filling an empty cell from it invented data.
+ */
+const FILLABLE_FIELDS = ['source', 'identifier'];
+
+/**
+ * Author fields grounding may declare an INCOHERENCE on — a disagreement
+ * between the author's cell and the manuscript.
+ *
+ * Narrower than FILLABLE_FIELDS on purpose. This module checks the KRT against
+ * the PDF, so it may only contradict the author about things that are genuinely
+ * read from the PDF and genuinely comparable:
+ *
+ *   - identifier — extracted verbatim from the text; comparable.
+ *   - resourceName — how a row is matched in the first place, so a mismatch
+ *     shows up as "not detected" rather than as a conflict.
+ *
+ * `source` is excluded even though detectors do populate it: for a dataset it
+ * is the repository ("Zenodo"), for a material the supplier ("Sigma"). Those
+ * are inferred from where a thing lives, not asserted by the manuscript about
+ * the author's row, so a difference is not evidence the author is wrong. It
+ * remains fillable — offering a repository for an empty cell is useful; telling
+ * a curator their supplier contradicts the paper is not.
+ */
+const COMPARABLE_FIELDS = ['identifier'];
 
 /**
  * Reconcile author KRT rows against detection candidates.
@@ -403,7 +433,8 @@ function compareWithCandidates(row, entries) {
       continue;
     }
 
-    if (valuesConflict(field, authorValue, foundValue)) {
+    // Only fields we can genuinely compare may contradict the author.
+    if (COMPARABLE_FIELDS.includes(field) && valuesConflict(field, authorValue, foundValue)) {
       conflicts.push({ field, authorValue, manuscriptValue: foundValue, source: supplier.candidate.origin || null });
     }
   }
