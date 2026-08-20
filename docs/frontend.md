@@ -281,7 +281,14 @@ A handful of admin views (notably `UsersView.vue`) call the `api` instance direc
   actually has: status, notice bar, process logs, raw responses and any error. Gated jobs render *"Waiting for the
   Key Resources Table to be validated"* from the API's `waitingReason`, in place of the remaining-time estimate.
 - **BackgroundProcesses** — the panel's wrapper: overall progress, the "view pipeline" link, and the message shown
-  when every runnable module has finished and the rest are held at a gate.
+  when every runnable module has finished and the rest are held at a gate. **Rendered on the PDF step only.** It
+  was on the KRT step too, where it mostly showed either nothing (the pipeline does not start until the PDF is
+  uploaded, which happens on the *next* step) or a row of modules waiting for the very validation the user was in
+  the middle of doing. KRTView still USES the poller — the curator edits their table while analysis runs, and the
+  suggestions and the DAS should appear without a refresh — it just no longer displays it.
+- **SubmissionHeader** — the identity strip present on every submission page, and therefore where the link to the
+  pipeline lives now that the statuses are on one step. Title · edit · **Pipeline** on the first line; manuscript
+  id · KRT · PDF · all-files on the second.
 - **EditMetadataModal** — edit submission title and DAS
 - **NewRoundModal** — start a new submission round (revision)
 

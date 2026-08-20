@@ -9,7 +9,7 @@ import api from '@/services/api'
 import pdfService from '@/services/pdf.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
-import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
+import { useJobPoller } from '@/composables'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,9 +27,20 @@ const krtTemplateUrl = ref('')
 const submission = computed(() => submissionStore.currentSubmission)
 const latestFiles = computed(() => submissionStore.latestFiles)
 
-// Shared BackgroundProcesses wrapper handles the job poller, service status
-// fetch, and the inject contract — KRTView and PDFView use it identically.
-const bgProcessesRef = ref(null)
+/**
+ * The poller WITHOUT the panel.
+ *
+ * This step no longer shows module statuses — they live on the PDF step and the
+ * pipeline page. But the page still has to REACT to the pipeline: the curator
+ * edits their table here while analysis runs, and the suggestions and the
+ * header's statement should appear when it finishes rather than on a refresh.
+ *
+ * So the poller is used directly. What was removed is the display, not the
+ * behaviour.
+ */
+const { onJobComplete, onJobFailed, onJobPendingInput, refresh: refreshJobs } = useJobPoller(
+  computed(() => route.params.id)
+)
 
 const krtRows = computed(() => krtStore.rows)
 const summary = computed(() => krtStore.summary)
@@ -249,25 +260,21 @@ const proceedBlockedReason = computed(() => {
 const showAckModal = ref(false)
 
 /**
- * Wire job-completion side-effects into the shared BackgroundProcesses
- * wrapper. Mirrors PDFView::registerJobCallbacks — the user can sit on
- * Step 2 while the background pipeline runs, and suggestions should
- * populate automatically the moment pdf_analysis finishes. Without
- * this, the curator has to refresh the page to see anything
- * (the empty-state hint stays put even after "8/8 done").
+ * Wire job-completion side-effects into the poller. Mirrors
+ * PDFView::registerJobCallbacks — the curator sits on this step editing their
+ * table while the background pipeline runs, and suggestions should populate the
+ * moment pdf_analysis finishes. Without this they have to refresh the page to
+ * see anything.
  */
 function registerJobCallbacks() {
-  const bg = bgProcessesRef.value
-  if (!bg) return
-
-  bg.onJobComplete('pdf_analysis', async () => {
+  onJobComplete('pdf_analysis', async () => {
     await krtStore.fetchAiSuggestions(route.params.id)
     notificationStore.success('AI suggestions ready')
   })
-  bg.onJobFailed('pdf_analysis', () => {
+  onJobFailed('pdf_analysis', () => {
     notificationStore.error('Manuscript analysis failed — suggestions unavailable')
   })
-  bg.onJobPendingInput('pdf_analysis', () => {
+  onJobPendingInput('pdf_analysis', () => {
     notificationStore.info(
       'Availability Statement not found — please enter it manually, then start the analysis.',
       30000
@@ -276,7 +283,7 @@ function registerJobCallbacks() {
   // DAS extraction updates submission.dataAvailabilityStatement; refresh
   // the cached submission so the header (and any "DAS detected" pill)
   // picks up the new text without requiring a navigation away and back.
-  bg.onJobComplete('das_extraction', async () => {
+  onJobComplete('das_extraction', async () => {
     await submissionStore.fetchSubmission(route.params.id)
   })
 }
@@ -292,10 +299,7 @@ onMounted(async () => {
   // Clear previous KRT data before loading new submission
   krtStore.clearKRT()
 
-  // BackgroundProcesses child mounts before the parent, so its ref is
-  // bound by the time we get here — wire our callbacks into the shared
-  // poller now so we don't miss any job-completion events that fire
-  // before the initial fetch settles.
+  // Registered before the first fetch settles, so no completion is missed.
   registerJobCallbacks()
 
   await submissionStore.fetchSubmission(route.params.id)
@@ -378,8 +382,8 @@ async function handlePdfUpload(event) {
   uploadingPdf.value = true
   try {
     await pdfService.upload(route.params.id, file)
-    // Refresh the background processes panel so the new job set is visible.
-    bgProcessesRef.value?.refresh?.()
+    // Pick up the new job set, so the callbacks above fire for this run.
+    refreshJobs()
     notificationStore.success('PDF replaced — analysis restarted')
   } catch (error) {
     notificationStore.error(error.response?.data?.error || 'Failed to replace PDF')
@@ -576,7 +580,7 @@ function scrollToFirstWarning() {
       :submission="submission"
       :latest-files="latestFiles"
       step-title="Step 2: Fix the Key Resources Table"
-      step-description="Review and fix your Key Resources Table while background processes run"
+      step-description="Review and fix your Key Resources Table — the analysis runs in the background and needs nothing from you here"
       :help-items="helpItems"
       :show-navigation="true"
       :can-go-back="false"
@@ -644,14 +648,6 @@ function scrollToFirstWarning() {
         </button>
       </template>
     </SubmissionHeader>
-
-    <!-- Background processes panel — embeds the wait-time ETA in its header
-         and exposes a "More details" toggle that reveals the per-job grid.
-         Same component used on step 3 so the UX is consistent. -->
-    <BackgroundProcesses
-      ref="bgProcessesRef"
-      :submission-id="route.params.id"
-    />
 
     <!-- Quick Fixes Section - Carousel Navigation -->
     <div v-if="allQuickFixes.length > 0 || krtStore.validating" class="card">

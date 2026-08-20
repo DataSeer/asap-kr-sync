@@ -255,6 +255,22 @@ async function downloadCurrentKRT(round) {
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                 </svg>
               </button>
+
+              <!-- The pipeline, reachable from every step. The module statuses
+                   themselves live on the PDF step and on the pipeline page —
+                   this header is on every submission page, so it is the one
+                   place a link to them works from anywhere. -->
+              <span class="mx-2 text-gray-300">|</span>
+              <RouterLink
+                :to="{ name: 'submission-pipeline', params: { id: submission.id } }"
+                class="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 hover:underline transition-colors"
+                title="See every processing step, what it produced, and what it is waiting for"
+              >
+                <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+                </svg>
+                Pipeline
+              </RouterLink>
             </div>
             <div class="flex items-center mt-0.5">
               <!-- Manuscript ID or placeholder -->
