@@ -126,7 +126,7 @@ cp .env.example .env
 | `S3_BUCKET_PREFIX` | Key prefix (`dev/`, `prod/`) — lets one bucket serve multiple environments. |
 | `S3_ENDPOINT` | Set to `http://localhost:9000` for **MinIO** local dev; leave empty for real AWS S3. |
 | `PYTHON_BIN` | Python 3 binary used by the **MarkItDown** converter and the **LangExtract** datasets helper. Must have those packages installed. |
-| `LOG_LEVEL` | `info` (default) / `debug` / etc. `debug` surfaces verbose diagnostics (e.g. the Auth0 ID-token claim dump). |
+| `LOG_LEVEL` | `http` (default — includes request logs) / `info` (drops them) / `debug` etc. Levels are ordered `error < warn < info < http < verbose < debug` and only what is at or below the chosen level is emitted, so `info` silently discards every request log. `debug` surfaces verbose diagnostics (e.g. the Auth0 ID-token claim dump). |
 | `LOG_FILE` | File path for the production file transport (default `logs/app.log`, relative to the container workdir `/app`). |
 | `KRT_TEMPLATE_URL` | Link shown in the UI for the blank KRT spreadsheet template. |
 

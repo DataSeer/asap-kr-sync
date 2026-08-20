@@ -228,7 +228,7 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `LOG_LEVEL` | Winston log level (`error`, `warn`, `info`, `http`, `debug`) | `info` | No |
+| `LOG_LEVEL` | Winston log level (`error`, `warn`, `info`, `http`, `verbose`, `debug`) | `http` | No |
 | `LOG_FILE` | Log file path | `logs/app.log` | No |
 
 ## KRT
