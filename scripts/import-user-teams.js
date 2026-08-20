@@ -19,7 +19,10 @@
  *   node scripts/import-user-teams.js --file="tmp/user-team.csv" [--dry-run]
  */
 
-require('dotenv').config({ path: '.env' });
+const path = require('path');
+// Anchored on the script, not the cwd — see create-user.js. This one writes
+// team memberships, which drive document visibility.
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const fs = require('fs');
 const Papa = require('papaparse');

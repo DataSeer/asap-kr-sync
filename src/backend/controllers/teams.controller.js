@@ -413,7 +413,12 @@ async function createEmailMappings(req, res, next) {
  */
 async function exportEmailMappings(req, res, next) {
   try {
+    // Scoped like list/create/delete. This handler was the one that was not,
+    // so a PM exporting the roster received every lab's names and addresses —
+    // exactly what listEmailMappings withholds from them.
+    const scope = rosterScopeFor(req.user);
     const rows = await TeamEmail.findAll({
+      where: scope ? { team: { [Op.in]: scope } } : {},
       order: [['team', 'ASC'], ['email', 'ASC']],
       raw: true
     });

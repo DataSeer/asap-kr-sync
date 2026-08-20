@@ -432,8 +432,13 @@ async function exportCsv(req, res, next) {
       ].join(','));
     }
 
+    // `resourceType` comes from the query string and lands in a response
+    // header. Node rejects CR/LF outright, so this was a self-inflicted 500
+    // rather than header injection — but a quote still lets the caller shape
+    // the header, and the sanitised form matches what krt.service exports do.
+    const safeType = String(resourceType || '').replace(/[^\w.-]+/g, '_');
     const filename = resourceType
-      ? `${category}-${resourceType}.csv`
+      ? `${category}-${safeType}.csv`
       : `${category}-list.csv`;
 
     res.setHeader('Content-Type', 'text/csv');

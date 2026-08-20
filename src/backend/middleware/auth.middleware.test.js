@@ -143,7 +143,7 @@ test('a token signed with a DIFFERENT algorithm is refused', async (t) => {
   // same secret — and this verifier runs alongside an RS256 one, which is the
   // classic algorithm-confusion setup.
   mockUser(t);
-  t.mock.method(auth0Service, 'isConfigured', () => false);
+  t.mock.method(auth0Service, 'isEnabled', () => false);
 
   for (const algorithm of ['HS384', 'HS512']) {
     const token = jwt.sign({ userId: USER_ID, type: 'access' }, SECRET, { algorithm });
@@ -173,7 +173,7 @@ test('any unexpected token class is refused, not just refresh', async (t) => {
 
 test('a well-formed token for a user who no longer exists is refused', async (t) => {
   t.mock.method(User, 'findOne', async () => null);
-  t.mock.method(auth0Service, 'isConfigured', () => false);
+  t.mock.method(auth0Service, 'isEnabled', () => false);
 
   const { err, req: r } = await run(authenticate, req(sign({ userId: 'deleted-user', type: 'access' })));
 
@@ -183,7 +183,7 @@ test('a well-formed token for a user who no longer exists is refused', async (t)
 
 test('a garbage cookie value is refused rather than crashing', async (t) => {
   mockUser(t);
-  t.mock.method(auth0Service, 'isConfigured', () => false);
+  t.mock.method(auth0Service, 'isEnabled', () => false);
   for (const value of ['not-a-jwt', 'a.b.c', '...', '{}']) {
     const { err } = await run(authenticate, req(value));
     assert.ok(err, `"${value}" must not authenticate`);
@@ -225,7 +225,7 @@ test('optionalAuth continues anonymously on a BAD token, rather than trusting it
   // The important half: an invalid token must not become an identity just
   // because the route tolerates anonymity.
   t.mock.method(User, 'findOne', async () => null);
-  t.mock.method(auth0Service, 'isConfigured', () => false);
+  t.mock.method(auth0Service, 'isEnabled', () => false);
 
   const foreign = jwt.sign({ userId: USER_ID, type: 'access' }, 'not-the-secret', { algorithm: 'HS256' });
   const { err, req: r } = await run(optionalAuth, req(foreign));
@@ -239,7 +239,7 @@ test('optionalAuth continues anonymously on a BAD token, rather than trusting it
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('an Auth0 token identifies the linked local user', async (t) => {
-  t.mock.method(auth0Service, 'isConfigured', () => true);
+  t.mock.method(auth0Service, 'isEnabled', () => true);
   t.mock.method(auth0Service, 'verifyAccessToken', async () => ({ sub: 'auth0|abc' }));
   t.mock.method(User, 'findOne', async () => userRow({ auth0Sub: 'auth0|abc' }));
 
@@ -250,7 +250,7 @@ test('an Auth0 token identifies the linked local user', async (t) => {
 });
 
 test('an Auth0 token with no linked local user is refused', async (t) => {
-  t.mock.method(auth0Service, 'isConfigured', () => true);
+  t.mock.method(auth0Service, 'isEnabled', () => true);
   t.mock.method(auth0Service, 'verifyAccessToken', async () => ({ sub: 'auth0|nobody' }));
   t.mock.method(User, 'findOne', async () => null);
 
@@ -260,11 +260,39 @@ test('an Auth0 token with no linked local user is refused', async (t) => {
 });
 
 test('the Auth0 path is not tried when Auth0 is not configured', async (t) => {
-  t.mock.method(auth0Service, 'isConfigured', () => false);
+  t.mock.method(auth0Service, 'isEnabled', () => false);
   const verify = t.mock.method(auth0Service, 'verifyAccessToken', async () => ({ sub: 'auth0|abc' }));
   t.mock.method(User, 'findOne', async () => null);
 
   await run(authenticate, req('some-token'));
 
   assert.equal(verify.mock.callCount(), 0);
+});
+
+test('an Auth0 token is refused when Auth0 is switched OFF', async (t) => {
+  // The flag has to actually turn it off. The fallback was gated on
+  // `isConfigured` — credentials present — so an operator who set
+  // AUTH0_ENABLED=false while leaving the credentials in place still accepted
+  // any live Auth0 token whose `sub` matched a linked local user.
+  t.mock.method(auth0Service, 'isEnabled', () => false);
+  const verify = t.mock.method(auth0Service, 'verifyAccessToken', async () => ({ sub: 'auth0|abc' }));
+  t.mock.method(User, 'findOne', async () => userRow({ auth0Sub: 'auth0|abc' }));
+
+  const { err, req: r } = await run(authenticate, req('an-auth0-token'));
+
+  assert.ok(err, 'the switch must be honoured');
+  assert.equal(r.userId, undefined);
+  assert.equal(verify.mock.callCount(), 0, 'it must not even be verified');
+});
+
+test('credentials present but the flag off is still off', async (t) => {
+  // The precise combination that was broken: configured, not enabled.
+  t.mock.method(auth0Service, 'isConfigured', () => true);
+  t.mock.method(auth0Service, 'isEnabled', () => false);
+  t.mock.method(auth0Service, 'verifyAccessToken', async () => ({ sub: 'auth0|abc' }));
+  t.mock.method(User, 'findOne', async () => userRow({ auth0Sub: 'auth0|abc' }));
+
+  const { err } = await run(authenticate, req('an-auth0-token'));
+
+  assert.ok(err);
 });

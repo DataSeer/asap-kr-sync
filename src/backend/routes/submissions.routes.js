@@ -110,8 +110,11 @@ router.delete('/:id',
 );
 
 // POST /api/submissions/:id/new-round - Start a new round (process new version)
+// Re-runs the whole processing chain, so it belongs on the LM budget rather
+// than only the generous per-IP baseline.
 router.post('/:id/new-round',
   canAccessSubmission,
+  lmApiLimiter,
   validateBody('processNewVersion'),
   submissionsController.processNewVersion
 );
@@ -119,12 +122,17 @@ router.post('/:id/new-round',
 // ===== Hide/Unhide Operations =====
 
 // POST /api/submissions/:id/hide - Hide submission for current user
+// Guarded like every other /:id route: without it these were an existence
+// oracle (200 vs 404) over other labs' documents, and wrote hidden-rows
+// pointing at them.
 router.post('/:id/hide',
+  canAccessSubmission,
   submissionsController.hideSubmission
 );
 
 // POST /api/submissions/:id/unhide - Unhide submission for current user
 router.post('/:id/unhide',
+  canAccessSubmission,
   submissionsController.unhideSubmission
 );
 
@@ -483,6 +491,7 @@ router.post('/:id/processes/cancel',
 // finish. canAccessSubmission still scopes this to documents they may see.
 router.post('/:id/jobs/:jobType/advance',
   canAccessSubmission,
+  lmApiLimiter,
   jobsController.advanceJob
 );
 

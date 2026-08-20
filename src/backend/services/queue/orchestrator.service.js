@@ -677,7 +677,11 @@ async function requeueStep(submissionId, jobType, round, userId) {
     job.status = 'waiting';
     job.pgBossJobId = null;
     job.result = null;
-    job.error = null;
+    // `errorMessage`, not `error` — the model has no `error` field, so this
+    // set a plain JS property Sequelize ignores and the previous run's
+    // failure text stayed on the row. The panel then showed a stale error
+    // on a job that had just been queued to run again.
+    job.errorMessage = null;
     await job.save();
   }
 

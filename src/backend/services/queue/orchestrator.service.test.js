@@ -35,7 +35,10 @@ function row(jobType, over = {}) {
     status: 'waiting',
     pgBossJobId: null,
     result: null,
-    error: null,
+    // The model's field is `errorMessage` (column `error_message`). The fixture
+    // said `error`, which is why the test agreed with the bug instead of
+    // catching it.
+    errorMessage: null,
     createdAt: new Date('2026-08-20T00:00:00Z'),
     async save() { saved.push(this); return this; },
     async markCancelled() { this.status = 'cancelled'; saved.push(this); },
@@ -186,7 +189,7 @@ test('requeueStep clears the previous run\'s result before re-running', async (t
     [JOB_TYPES.PDF_ANALYSIS]: {
       status: 'complete',
       result: { data: { items: [{ resourceName: 'stale' }] } },
-      error: 'a previous failure',
+      errorMessage: 'a previous failure',
       pgBossJobId: 'old-queue-id'
     }
   });
@@ -195,7 +198,8 @@ test('requeueStep clears the previous run\'s result before re-running', async (t
   const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.PDF_ANALYSIS, 1, 'user-1');
 
   assert.equal(job.result, null, 'a stale result must not survive a re-run');
-  assert.equal(job.error, null);
+  assert.equal(job.errorMessage, null,
+    'the previous failure text must not survive either — it showed on a job that had just been re-queued');
   assert.equal(job.pgBossJobId, null);
 });
 

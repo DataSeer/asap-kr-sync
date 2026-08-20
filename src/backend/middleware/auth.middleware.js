@@ -62,7 +62,10 @@ async function authenticate(req, res, next) {
     let result = await tryLocalVerification(token);
 
     // Strategy 2: Try Auth0 JWKS verification
-    if (!result && auth0Service.isConfigured()) {
+    // isEnabled, not isConfigured: turning AUTH0_ENABLED off must actually
+    // stop Auth0 tokens being accepted. With credentials still present,
+    // isConfigured stayed true and a live Auth0 token kept authenticating.
+    if (!result && auth0Service.isEnabled()) {
       result = await tryAuth0Verification(token);
     }
 
@@ -146,7 +149,7 @@ async function optionalAuth(req, res, next) {
     });
 
     // Try Auth0 if local fails
-    if (!result && auth0Service.isConfigured()) {
+    if (!result && auth0Service.isEnabled()) {
       result = await tryAuth0Verification(token).catch((err) => {
         logger.debug('optionalAuth: Auth0 verification failed', { error: err.message });
         return null;

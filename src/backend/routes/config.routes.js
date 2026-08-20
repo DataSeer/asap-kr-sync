@@ -4,6 +4,7 @@
  */
 
 const express = require('express');
+const { authenticate } = require('../middleware/auth.middleware');
 const { KRT_TEMPLATE_URL, getResourceTypes } = require('../config/constants');
 const pdfAnalysisConfig = require('../config/pdf-analysis-api');
 const dasExtractionConfig = require('../config/das-extraction-api');
@@ -30,7 +31,17 @@ const router = express.Router();
  * href attributes, so only http(s) URLs leave the server — a stored
  * `javascript:` URL would otherwise become clickable XSS in every consumer.
  */
-router.get('/krt-template', (req, res) => {
+/**
+ * Only `/environment` is public.
+ *
+ * It carries the signup flag the login page needs before a user exists. The
+ * rest describe the deployment — which integrations hold keys, which run on
+ * demo data, the whole job graph — which is a free map of the backend for
+ * anyone who finds the host. Every one of them is consumed after login
+ * (verified against the frontend: the process panel, the pipeline pages and
+ * the KRT template link).
+ */
+router.get('/krt-template', authenticate, (req, res) => {
   const url = /^https?:\/\//i.test(KRT_TEMPLATE_URL) ? KRT_TEMPLATE_URL : '';
   res.json({ url });
 });
@@ -46,7 +57,7 @@ router.get('/krt-template', (req, res) => {
  * overridable, since a deployment that tracks neither should not link readers
  * to code it is not running.
  */
-router.get('/source', (req, res) => {
+router.get('/source', authenticate, (req, res) => {
   const repoUrl = (process.env.SOURCE_REPO_URL || 'https://github.com/DataSeer/asap-kr-sync')
     .replace(/\/+$/, '');
   const branch = process.env.SOURCE_BRANCH
@@ -68,7 +79,7 @@ router.get('/source', (req, res) => {
  * Static for a given deployment, so it is cacheable and carries no submission
  * data.
  */
-router.get('/pipeline', (req, res) => {
+router.get('/pipeline', authenticate, (req, res) => {
   res.json(buildPipelineGraph());
 });
 
@@ -76,7 +87,7 @@ router.get('/pipeline', (req, res) => {
  * GET /api/config/resource-types
  * Returns the list of valid resource types for KRT
  */
-router.get('/resource-types', async (req, res, next) => {
+router.get('/resource-types', authenticate, async (req, res, next) => {
   try {
     const resourceTypes = await getResourceTypes();
     res.json({ resourceTypes });
@@ -109,7 +120,7 @@ router.get('/environment', (req, res) => {
  *   - hasDemoData:  raw demo flag
  * Plus optional subServices (orcid only).
  */
-router.get('/services', (req, res) => {
+router.get('/services', authenticate, (req, res) => {
   const { configState } = require('../services/demo-fallback.service');
   const entry = (isExternalEnabled, demoEnabled, extra = {}) => ({
     state: configState({ isExternalEnabled, demoEnabled }),

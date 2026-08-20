@@ -207,7 +207,8 @@ async function processFile(file) {
     }
 
     if (touched && !DRY) {
-      fs.copyFileSync(full, full + '.bak2');
+      // Guarded: a second run must not overwrite the pristine backup.
+      if (!fs.existsSync(full + '.bak2')) fs.copyFileSync(full, full + '.bak2');
       fs.writeFileSync(full, Papa.unparse(rows, { delimiter, newline }), encoding);
     }
     return;
@@ -248,7 +249,8 @@ async function processFile(file) {
   });
 
   if (touched && !DRY) {
-    fs.copyFileSync(full, full + '.bak2');
+    // Guarded: a second run must not overwrite the pristine backup.
+    if (!fs.existsSync(full + '.bak2')) fs.copyFileSync(full, full + '.bak2');
     await wb.xlsx.writeFile(full);
   }
 }

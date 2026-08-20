@@ -143,7 +143,10 @@ module.exports = {
     'queued',
     'processing',
     'complete',
-    'failed'
+    'failed',
+    // Added with the enum in 20260722120000. Missing here, the admin job
+    // filter had no way to select the cancelled rows it was already listing.
+    'cancelled'
   ],
 
   // Validation severity levels

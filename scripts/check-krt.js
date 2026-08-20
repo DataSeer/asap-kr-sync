@@ -156,7 +156,10 @@ function parseCsv(file) {
       while (grid[gr].length <= c) grid[gr].push('');
       grid[gr][c] = f.to;
     }
-    fs.copyFileSync(file, file + '.bak');
+    // Only if there isn't one already: a second --fix run would otherwise
+    // copy the ALREADY-PATCHED file over the pristine original, and the
+    // author's file is then unrecoverable.
+    if (!fs.existsSync(file + '.bak')) fs.copyFileSync(file, file + '.bak');
     // Same encoding, delimiter and line ending the file arrived with: a fix to
     // one cell must not rewrite the other 300 rows.
     fs.writeFileSync(file, Papa.unparse(grid, {
@@ -199,7 +202,10 @@ async function parseXlsx(file) {
       if (!c) continue;
       ws.getRow(rows[f.rowIndex].sheetRow).getCell(c).value = f.to;
     }
-    fs.copyFileSync(file, file + '.bak');
+    // Only if there isn't one already: a second --fix run would otherwise
+    // copy the ALREADY-PATCHED file over the pristine original, and the
+    // author's file is then unrecoverable.
+    if (!fs.existsSync(file + '.bak')) fs.copyFileSync(file, file + '.bak');
     await wb.xlsx.writeFile(file);
   };
   return { rows, writer };

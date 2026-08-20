@@ -1,6 +1,12 @@
-node_modules/
+# Recursive on purpose. Docker ignore patterns match the whole context-relative
+# path and are NOT applied per-directory, so `node_modules/` and `.env.*` only
+# ever matched the repo root — `src/frontend/.env.development` and the host's
+# `src/frontend/node_modules` were both being copied into the published image.
+**/node_modules
 .env
 .env.*
+**/.env
+**/.env.*
 credentials/
 .git/
 docs/

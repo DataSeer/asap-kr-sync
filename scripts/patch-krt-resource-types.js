@@ -241,7 +241,9 @@ async function patchXlsx(file) {
   }
 
   if (APPLY && changed > 0) {
-    fs.copyFileSync(file, backupPath(file));
+    // Guarded: this backup is the only way to undo an --apply, so a second
+    // run must not replace it with the already-patched file.
+    if (!fs.existsSync(backupPath(file))) fs.copyFileSync(file, backupPath(file));
     await wb.xlsx.writeFile(file);
   }
   return { changed, ambiguous, encoding: 'xlsx' };
