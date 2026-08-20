@@ -55,10 +55,11 @@ Team membership can be auto-assigned from an admin-managed email→team roster
 | View / edit KRT QC & Optional flags | — | — | ✓ | ✓ |
 | Hide / unhide submission | own | teammates' | all | all |
 | Delete submission (hard delete) | — | — | ✓ | ✓ |
-| Trigger AI analysis | own | teammates' | all | all |
+| Trigger AI analysis / re-run a module | own | teammates' | all | all |
+| — capped at, per day | 10 runs | 50 runs | unlimited | unlimited |
 | View job summary status (panel) | ✓ | ✓ | ✓ | ✓ |
 | View job internals (logs, raw responses, timestamps, queue config) | — | ✓ | ✓ | ✓ |
-| Restart / retry jobs (cross-submission queue admin) | — | — | ✓ | ✓ |
+| Cross-submission queue admin (the admin Jobs page) | — | — | ✓ | ✓ |
 | Start a job parked awaiting your own input (`/jobs/:type/advance`) | own | teammates' | all | all |
 | View users (scoped) | — | team | all | all |
 | Create non-admin users | — | — | ✓ | ✓ |
@@ -66,8 +67,7 @@ Team membership can be auto-assigned from an admin-managed email→team roster
 | Create / edit admin users | — | — | — | ✓ |
 | Delete users | — | — | — | ✓ |
 | List / create / edit teams (lab, by leader name) | — | — | ✓ | ✓ |
-| Delete teams (no users/submissions attached) | — | — | ✓ | ✓ |
-| Force-delete teams (with submissions attached) | — | — | — | ✓ |
+| Delete teams (no members) | — | — | ✓ | ✓ |
 | Manage projects (grant codes) + CSV import/export | — | — | ✓ | ✓ |
 | Manage team-email roster (Team Email Assignment) + CSV import/export | — | ✓ | ✓ | ✓ |
 | Manage resource types | — | — | ✓ | ✓ |
@@ -87,7 +87,18 @@ Team membership can be auto-assigned from an admin-managed email→team roster
 - **Coarse role gates** — `src/backend/middleware/role.middleware.js`
   - `requireRole(...roles)`, `requireAdmin`, `canCreateSubmission`.
 - **Feature-specific gates** — `src/backend/middleware/feature-access.middleware.js`
-  - `canViewJobInternals` — blocks authors from `/jobs/:jobType/responses/...`.
+  - `canViewJobInternals` — blocks authors from `/jobs/:jobType/responses/...`
+    and `/jobs/:jobType/prompts`.
+- **The analysis budget** — `src/backend/middleware/rate-limit.middleware.js`
+  - Re-running a module is not a role gate at all. Every trigger route carries
+    `canAccessSubmission` plus `lmApiLimiter` (burst) and `lmApiDailyLimiter`
+    (the policy: 10 runs a day for an author, 50 for a PM, unlimited for staff).
+    The UI used to hide the Restart button from authors and PMs while the server
+    accepted their requests — so the panel told an author in bold to re-run a
+    module and gave them no button, and the person best placed to notice a wrong
+    result was the only one who could not ask for it again. What separates the
+    roles is a budget, which is honest about the real constraint (LM spend) and
+    which a user can see themselves against.
   - (`canManageJobs` was removed. It guarded `/jobs/:jobType/advance` only, and
     that route is not job management: the orchestrator refuses any status but
     `pending_input`, so it can only start a job the pipeline parked awaiting the

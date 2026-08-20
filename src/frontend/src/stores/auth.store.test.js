@@ -21,7 +21,7 @@ const CAPABILITIES = [
   'canCreateSubmission', 'canDeleteSubmission', 'canHideSubmission',
   'canManageUsers', 'canViewUsers', 'canEditAnyUser', 'canEditAdminUsers', 'canDeleteUsers',
   'canManageTeams', 'canManageTeamEmails',
-  'canViewJobInternals', 'canManageJobs',
+  'canViewJobInternals', 'canManageJobs', 'canRestartJobs',
   'canManageEnrichments', 'canManageResourceTypes', 'canManageValidationRules'
 ]
 
@@ -33,7 +33,10 @@ const MATRIX = {
     canManageUsers: false, canViewUsers: false, canEditAnyUser: false,
     canEditAdminUsers: false, canDeleteUsers: false,
     canManageTeams: false, canManageTeamEmails: false,
-    canViewJobInternals: false, canManageJobs: false,
+    // Re-running is open to everyone who can reach the submission — the
+    // server always accepted it, and the author is the person best placed to
+    // notice a wrong result. The role limit is a daily BUDGET, not a button.
+    canViewJobInternals: false, canManageJobs: false, canRestartJobs: true,
     canManageEnrichments: false, canManageResourceTypes: false, canManageValidationRules: false
   },
   asap_pm: {
@@ -42,8 +45,9 @@ const MATRIX = {
     canManageUsers: false, canViewUsers: true, canEditAnyUser: false,
     canEditAdminUsers: false, canDeleteUsers: false,
     canManageTeams: false, canManageTeamEmails: true,
-    // A PM debugs pipeline behaviour, so they see internals — but do not drive jobs.
-    canViewJobInternals: true, canManageJobs: false,
+    // A PM debugs pipeline behaviour, so they see internals — but do not drive
+    // job lifecycle actions beyond re-running.
+    canViewJobInternals: true, canManageJobs: false, canRestartJobs: true,
     canManageEnrichments: false, canManageResourceTypes: false, canManageValidationRules: false
   },
   ds_annotator: {
@@ -53,7 +57,7 @@ const MATRIX = {
     // Only an admin may touch an admin account, or delete a user at all.
     canEditAdminUsers: false, canDeleteUsers: false,
     canManageTeams: true, canManageTeamEmails: true,
-    canViewJobInternals: true, canManageJobs: true,
+    canViewJobInternals: true, canManageJobs: true, canRestartJobs: true,
     canManageEnrichments: true, canManageResourceTypes: true, canManageValidationRules: false
   },
   admin: {
@@ -62,7 +66,7 @@ const MATRIX = {
     canManageUsers: true, canViewUsers: true, canEditAnyUser: true,
     canEditAdminUsers: true, canDeleteUsers: true,
     canManageTeams: true, canManageTeamEmails: true,
-    canViewJobInternals: true, canManageJobs: true,
+    canViewJobInternals: true, canManageJobs: true, canRestartJobs: true,
     canManageEnrichments: true, canManageResourceTypes: true, canManageValidationRules: true
   }
 }

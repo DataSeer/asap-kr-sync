@@ -175,7 +175,7 @@ onUnmounted(() => {
 // responses, no timestamps, no queue config, no restart button. PMs and staff
 // see the full technical detail.
 const canViewInternals = computed(() => authStore.canViewJobInternals)
-const canRestartJobs = computed(() => authStore.canManageJobs)
+const canRestartJobs = computed(() => authStore.canRestartJobs)
 
 // All known job types in display order
 // Job types in display order (grouped logically). Modules whose
@@ -797,9 +797,9 @@ function getJobDetail(job) {
       return 'Waiting for the Key Resources Table to be validated — complete the KRT step to start this analysis.'
     }
     if (job.waitingReason === 'markdown_missing') {
-      // Only staff get the Restart button (`canRestartJobs`), so only staff are
-      // told to press it. Telling an author to re-run a module they cannot see
-      // a button for is worse than saying nothing.
+      // The message follows the button. Everyone signed in has Restart now, so
+      // this reads the same flag rather than assuming — the two drifting apart
+      // is what produced an instruction with nothing to act on.
       return 'Blocked: the manuscript has no converted text. This step is held rather than run against an '
         + 'empty document — '
         + (canRestartJobs.value ? 're-run Markdown Convert or re-upload the PDF.' : 're-upload the PDF to try again.')

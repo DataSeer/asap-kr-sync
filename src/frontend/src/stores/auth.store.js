@@ -59,6 +59,21 @@ export const useAuthStore = defineStore('auth', () => {
   // Manual job lifecycle actions (advance, restart, retry): staff only.
   const canManageJobs = computed(() => isStaff.value)
 
+  /**
+   * Re-running a module: anyone signed in who can reach the submission.
+   *
+   * It used to be staff-only in the UI while the SERVER accepted it from any
+   * owner — the trigger routes carry `canAccessSubmission` and the LM limiter,
+   * not a staff check. So the panel told an author in bold to re-run a module
+   * and gave them no button, and the person best placed to notice a wrong
+   * result was the one person who could not ask for it again.
+   *
+   * What separates the roles is a BUDGET, not a button: `lmApiDailyLimiter`
+   * gives authors 10 runs a day, PMs 50, and staff no limit. A quota is honest
+   * about the constraint (LM spend); a hidden button is not.
+   */
+  const canRestartJobs = computed(() => !!user.value)
+
   // User admin: ds_annotator may edit non-admin users; only admin touches admins.
   const canEditAnyUser = computed(() => isStaff.value)
   const canEditAdminUsers = computed(() => effectiveRole.value === 'admin')
@@ -265,6 +280,7 @@ export const useAuthStore = defineStore('auth', () => {
     canHideSubmission,
     canViewJobInternals,
     canManageJobs,
+    canRestartJobs,
     canEditAnyUser,
     canEditAdminUsers,
     canDeleteUsers,

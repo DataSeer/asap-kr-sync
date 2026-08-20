@@ -25,7 +25,11 @@ const { canAccessSubmission, attachSubmissionFilter } = require('../middleware/t
 const { canViewJobInternals } = require('../middleware/feature-access.middleware');
 const { validateBody, validateQuery } = require('../middleware/validation.middleware');
 const { uploadKRT, uploadPDF, handleMulterError } = require('../middleware/upload.middleware');
-const { uploadLimiter, lmApiLimiter } = require('../middleware/rate-limit.middleware');
+// Two budgets on every route that starts analysis work: `lmApiLimiter` stops
+// bursts (per minute), `lmApiDailyLimiter` is the actual policy (per day, per
+// role). Re-running is available to anyone who can reach the submission, so
+// what separates the roles is the budget, not the button.
+const { uploadLimiter, lmApiLimiter, lmApiDailyLimiter } = require('../middleware/rate-limit.middleware');
 
 const router = express.Router();
 
@@ -90,6 +94,7 @@ router.get('/:id/das-suggestions',
 // POST /api/submissions/:id/das-suggestions/regenerate - re-run the DAS check
 router.post('/:id/das-suggestions/regenerate',
   lmApiLimiter,
+  lmApiDailyLimiter,
   canAccessSubmission,
   dasSuggestionsController.regenerate
 );
@@ -115,6 +120,7 @@ router.delete('/:id',
 router.post('/:id/new-round',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   validateBody('processNewVersion'),
   submissionsController.processNewVersion
 );
@@ -254,6 +260,7 @@ router.get('/:id/pdf/findings',
 router.post('/:id/pdf/analyze',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   pdfController.triggerAnalysis
 );
 
@@ -261,6 +268,7 @@ router.post('/:id/pdf/analyze',
 router.post('/:id/pdf/extract-das',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   pdfController.extractDAS
 );
 
@@ -269,6 +277,7 @@ router.post('/:id/pdf/extract-das',
 // POST /api/submissions/:id/reports/generate - Generate report
 router.post('/:id/reports/generate',
   lmApiLimiter,
+  lmApiDailyLimiter,
   canAccessSubmission,
   validateBody('generateReport'),
   reportsController.generate
@@ -304,6 +313,7 @@ router.get('/:id/suggestions',
 router.post('/:id/suggestions/regenerate',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   suggestionController.regenerateSuggestions
 );
 
@@ -347,6 +357,7 @@ router.get('/:id/software',
 router.post('/:id/software/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   softwareController.triggerDetection
 );
 
@@ -362,6 +373,7 @@ router.get('/:id/authors',
 router.post('/:id/authors/extract',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   orcidController.triggerExtraction
 );
 
@@ -377,6 +389,7 @@ router.get('/:id/datasets',
 router.post('/:id/datasets/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   datasetsController.triggerDetection
 );
 
@@ -392,6 +405,7 @@ router.get('/:id/markdown',
 router.post('/:id/markdown/convert',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   markdownController.triggerConvert
 );
 
@@ -407,6 +421,7 @@ router.get('/:id/materials',
 router.post('/:id/materials/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   materialsController.triggerDetection
 );
 
@@ -422,6 +437,7 @@ router.get('/:id/protocols',
 router.post('/:id/protocols/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   protocolsController.triggerDetection
 );
 
@@ -437,6 +453,7 @@ router.get('/:id/identifiers',
 router.post('/:id/identifiers/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   identifierDetectionController.triggerDetection
 );
 
@@ -452,6 +469,7 @@ router.get('/:id/grounding',
 router.post('/:id/grounding/regenerate',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   krtGroundingController.triggerGrounding
 );
 
@@ -467,6 +485,7 @@ router.get('/:id/jobs',
 router.post('/:id/processes/run',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   jobsController.runProcesses
 );
 
@@ -492,6 +511,7 @@ router.post('/:id/processes/cancel',
 router.post('/:id/jobs/:jobType/advance',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   jobsController.advanceJob
 );
 

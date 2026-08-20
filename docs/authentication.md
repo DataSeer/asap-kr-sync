@@ -212,12 +212,47 @@ Rate limit configuration is in `conf/rate-limits.json`.
 | Limiter | Applies To | Limit | Window |
 |---------|-----------|-------|--------|
 | `authLimiter` | Login, register, Auth0 endpoints | 10 requests | 15 min / IP |
-| `refreshLimiter` | Token refresh | 30 requests | 1 min / IP |
-| `apiLimiter` | General API endpoints | 200 requests | 1 min / IP |
+| `refreshLimiter` | Token refresh | 10 requests | 1 min / IP |
+| `apiLimiter` | General API endpoints | 120 requests | 1 min / IP |
 | `uploadLimiter` | File uploads | 20 requests | 1 min / user |
-| `lmApiLimiter` | AI analysis operations | 10 requests | 1 min / user |
+| `lmApiLimiter` | Starting analysis work — burst | 10 requests | 1 min / user |
+| `lmApiDailyLimiter` | Starting analysis work — **the policy** | per role, below | 24 h / user |
 
 Authenticated users bypass `apiLimiter`. Auth endpoints are always rate-limited.
+
+### The daily analysis budget
+
+Re-running a module is available to **anyone who can reach the submission** —
+the trigger routes carry `canAccessSubmission` and the limiters, never a staff
+check. The author is the person best placed to notice a wrong result, and they
+were the one person who could not ask for it again: the UI hid the button while
+the server had always accepted the request.
+
+So what separates the roles is a **budget, not a button**. A quota is honest
+about the real constraint (LM spend) and a user can see where they stand; a
+hidden button just leaves them stuck, and the panel had been telling them in
+bold to press it.
+
+| Role | Runs per day |
+|---|---|
+| `author` | 10 |
+| `asap_pm` | 50 |
+| `ds_annotator` | unlimited |
+| `admin` | unlimited |
+
+**One request is one run.** Starting the whole pipeline and re-running a single
+module both cost 1 — the first queues eleven jobs from one request, so counting
+requests is generous to the common case and simple to explain. A limit a user
+cannot predict is a limit they experience as a fault.
+
+`max: 0` in the config means **unlimited**, and those roles are `skip`ped
+outright: express-rate-limit treats 0 as "block everything", and handing them a
+very large number instead would still record every request in the store for a
+limit that can never be reached. An unknown role is unlimited rather than
+zero-allowance — failing closed there would lock out a role added to the app
+before it is added to the config, and it would look like a broken button rather
+than a policy. Every role in `ROLES` is required to have an entry, which is what
+stops that being silent (`middleware/lm-daily-budget.test.js`).
 
 ## Frontend Route Protection
 
