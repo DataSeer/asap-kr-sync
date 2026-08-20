@@ -72,16 +72,6 @@ function toggleSelectAll() {
   selectedIds.value = new Set(selectedIds.value)
 }
 
-// Narrowing the search must not leave rows selected that the user can no longer
-// see — the count in "Delete selected (N)" would then be about rows that are
-// not on screen.
-watch(visibleSubmissions, (visible) => {
-  if (selectedIds.value.size === 0) return
-  const stillVisible = new Set(visible.map(s => s.id))
-  const kept = new Set([...selectedIds.value].filter(id => stillVisible.has(id)))
-  if (kept.size !== selectedIds.value.size) selectedIds.value = kept
-})
-
 function toggleSelect(id) {
   if (selectedIds.value.has(id)) {
     selectedIds.value.delete(id)
@@ -182,6 +172,16 @@ const visibleSubmissions = computed(() => {
     ].filter(Boolean).join(' ').toLowerCase()
     return haystack.includes(q)
   })
+})
+
+// Narrowing the search must not leave rows selected that the user can no longer
+// see — the count in "Delete selected (N)" would then be about rows that are
+// not on screen.
+watch(visibleSubmissions, (visible) => {
+  if (selectedIds.value.size === 0) return
+  const stillVisible = new Set(visible.map(s => s.id))
+  const kept = new Set([...selectedIds.value].filter(id => stillVisible.has(id)))
+  if (kept.size !== selectedIds.value.size) selectedIds.value = kept
 })
 const loading = computed(() => submissionStore.loading)
 const pagination = computed(() => submissionStore.pagination)
