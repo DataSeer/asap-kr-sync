@@ -52,7 +52,7 @@ async function triggerConvert(req, res, next) {
   try {
     const submission = req.submission;
 
-    const job = await markdownConvertService.queueMarkdownConvert(
+    const { job, alreadyInFlight } = await markdownConvertService.queueMarkdownConvert(
       submission.id,
       submission.currentRound,
       req.userId
@@ -64,9 +64,8 @@ async function triggerConvert(req, res, next) {
     // already in flight is deliberately a no-op — reporting it as "queued"
     // would have the user waiting for a second run that is never going to
     // start.
-    const alreadyRunning = ['queued', 'processing'].includes(job.status);
     res.json({
-      message: alreadyRunning ? 'Markdown conversion is already running' : 'Markdown conversion queued',
+      message: alreadyInFlight ? 'Markdown conversion is already running' : 'Markdown conversion queued',
       status: job.status
     });
   } catch (error) {

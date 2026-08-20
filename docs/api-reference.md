@@ -586,6 +586,9 @@ manuscript, then re-queues conversion through the orchestrator.
 - **Returns**: `{ message, status }` — `status` is the step's job status. A
   re-run asked for while a conversion is already in flight is a no-op, and the
   message says so instead of reporting a queued run that will never start.
+  The distinction is read **before** re-queueing: `requeueStep` leaves a re-run
+  at `queued`, so deciding from the returned row made every re-run report
+  "already running", including ones started that instant.
 
 ---
 

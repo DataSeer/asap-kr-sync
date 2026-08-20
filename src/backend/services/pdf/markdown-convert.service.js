@@ -39,14 +39,22 @@ const runInputs = require('../queue/run-inputs.service');
  */
 async function queueMarkdownConvert(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round);
+  const { SubmissionJob } = require('../../models');
 
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // returned row cannot tell a caller whether it started this run or found one
+  // already going — the endpoints reported "already running" for runs they had
+  // just started this instant.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round);
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round, userId);
 
   logger.info('Markdown conversion re-queued', {
-    submissionId, round, submissionJobId: job.id, status: job.status
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-  return job;
+  return { job, alreadyInFlight };
 }
 
 async function processMarkdownConvert(submissionId, jobLogger = null, { isFinalAttempt = true } = {}) {

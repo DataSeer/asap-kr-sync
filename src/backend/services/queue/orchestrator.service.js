@@ -439,8 +439,65 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
  * @param {{ graceMs?: number }} [opts]
  * @returns {Promise<number>} total jobs re-driven across all submissions
  */
+/**
+ * Rows that say `processing` while their queue entry is gone.
+ *
+ * A worker records `processing` when it picks a job up, and something has to
+ * record the end. Usually the handler does — it completes or it throws. But a
+ * job that **expires** never reaches the handler at all: pg-boss times it out,
+ * and after the final retry it stops redelivering. Nothing then updates our
+ * row, which sits at `processing` for ever: a spinner that never resolves,
+ * `isAnyRunning` permanently true, and the Continue gate held shut.
+ *
+ * The same happens whenever a worker dies mid-job — a deploy, a container
+ * restart, a crash.
+ *
+ * pg-boss's own table is the authority on whether the work is still live, so
+ * this asks it rather than guessing from elapsed time. A row is only failed
+ * when its queue entry is in a terminal state (or has been archived away
+ * entirely); anything still `active` or `created` is left alone, because it IS
+ * running.
+ *
+ * @param {Date} cutoff only rows that started before this are considered
+ * @returns {Promise<number>} how many were failed
+ */
+async function failStrandedProcessingJobs(cutoff) {
+  const candidates = await SubmissionJob.findAll({
+    where: { status: 'processing', startedAt: { [Op.lt]: cutoff } },
+    attributes: ['id', 'submissionId', 'round', 'jobType', 'pgBossJobId']
+  });
+  if (candidates.length === 0) return 0;
+
+  let failed = 0;
+  for (const job of candidates) {
+    // No queue id recorded: nothing can be running, so it cannot recover.
+    let live = false;
+    if (job.pgBossJobId) {
+      const [rows] = await sequelize.query(
+        'SELECT state FROM pgboss.job WHERE id = :id',
+        { replacements: { id: job.pgBossJobId } }
+      );
+      // Absent means archived — pg-boss moves finished jobs out of `job`, so a
+      // missing row is a finished one, not a running one.
+      live = rows.length > 0 && ['created', 'active', 'retry'].includes(rows[0].state);
+    }
+    if (live) continue;
+
+    await job.markFailed('The worker stopped without recording a result (the job expired or the process restarted).');
+    failed++;
+    logger.warn('Reconciler failed a stranded processing job', {
+      submissionId: job.submissionId, jobType: job.jobType, round: job.round
+    });
+  }
+  return failed;
+}
+
 async function reconcileStuckJobs({ graceMs = RECONCILE_GRACE_MS } = {}) {
   const cutoff = new Date(Date.now() - graceMs);
+
+  // Before looking for work to re-drive, heal rows that claim to be running and
+  // are not. Otherwise their dependents wait on a job nothing will ever finish.
+  const stranded = await failStrandedProcessingJobs(cutoff);
 
   // Distinct (submission, round) pairs that have at least one long-waiting job.
   const stuck = await SubmissionJob.findAll({
@@ -730,6 +787,7 @@ module.exports = {
   PIPELINE,
   runAllProcesses,
   requeueStep,
+  failStrandedProcessingJobs,
   checkAndAdvance,
   reconcileSubmission,
   reconcileStuckJobs,
