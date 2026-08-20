@@ -20,12 +20,12 @@ export const MODULE_META = {
   krt_grounding: { label: 'KRT Grounding', purpose: 'Checks each row of your KRT against the manuscript. Never edits a row.' },
   pdf_analysis: { label: 'PDF Analysis', purpose: 'Merges every detection into one Generated KRT.' },
   suggestion_generation: { label: 'AI Suggestions', purpose: 'Compares your KRT with the generated one and proposes changes.' },
-  // Not part of the auto pipeline — you start it from the Availability step,
-  // once your table is final. It still has a page like any other module.
+  // Gated to the Availability step rather than run with the rest, but a
+  // pipeline step like any other. The panel on the KRT and PDF steps does not
+  // show it — its list is its own, and those steps are not where this runs.
   das_suggestions: {
     label: 'DAS Suggestions',
-    purpose: 'Checks your Availability Statement against the ASAP rulebook, using your KRT.',
-    standalone: true
+    purpose: 'Checks your Availability Statement against the ASAP rulebook, using your KRT.'
   }
 }
 
@@ -40,18 +40,14 @@ export const STAGE_LABELS = ['Ingest', 'Detect', 'Reconcile', 'Consolidate', 'Su
 
 
 /**
- * The modules the pipeline runs by itself, in declaration order.
+ * Every module, in declaration order.
  *
- * Excludes the standalone ones: a job nothing schedules does not belong in a
- * list used to describe what the pipeline is doing on its own.
- *
- * (JobStatusPanel keeps its own ordered copy of the tiles. Its order is
- * deliberate — three rows grouped by what runs together — and differs from the
- * order here, so deriving it would rearrange the panel.)
+ * (JobStatusPanel keeps its own ordered copy of the tiles, and deliberately
+ * omits the DAS check: the panel appears on the KRT and PDF steps, which is not
+ * where that one runs. Its order is also its own — three rows grouped by what
+ * runs together — so deriving it would rearrange the panel.)
  */
-export const ALL_JOB_TYPES = Object.entries(MODULE_META)
-  .filter(([, m]) => !m.standalone)
-  .map(([type, m]) => ({ type, label: m.label }))
+export const ALL_JOB_TYPES = Object.entries(MODULE_META).map(([type, m]) => ({ type, label: m.label }))
 
 /**
  * Modules with a dedicated results page. Currently every module has one — the

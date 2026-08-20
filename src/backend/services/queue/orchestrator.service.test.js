@@ -61,7 +61,9 @@ function pipelineRows(over = {}) {
  * Point the model statics at an in-memory map. Returns the map so a test can
  * inspect the rows afterwards.
  */
-function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf' }) {
+const A_STATEMENT = 'Data are available at Zenodo.';
+
+function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: A_STATEMENT }) {
   t.mock.method(SubmissionJob, 'getForSubmission', async () => [...rows.values()]);
   t.mock.method(SubmissionJob, 'getLatest', async (_sub, jobType) => rows.get(jobType) || null);
   t.mock.method(SubmissionJob, 'create', async (attrs) => {
@@ -476,4 +478,89 @@ test('a found Availability Statement lets the consolidator run', async (t) => {
   await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The Availability Statement check — a step gated to a later stage
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('starting a pipeline seeds a row for the DAS check, waiting', async (t) => {
+  // Without a row there is nothing for the gate to release later: tryAdvanceStep
+  // only ever acts on a row that already exists.
+  const rows = pipelineRows();
+  mockDb(t, rows);
+  const created = [];
+  t.mock.method(SubmissionJob, 'create', async (attrs) => {
+    const r = row(attrs.jobType, attrs);
+    created.push(attrs.jobType);
+    return r;
+  });
+
+  await orchestrator.runAllProcesses('sub-1', 'user-1', 1);
+
+  assert.ok(created.includes(JOB_TYPES.DAS_SUGGESTIONS),
+    'the pipeline must create the row it will later release');
+});
+
+test('finishing DAS extraction does NOT start the check before the Availability step', async (t) => {
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  mockDb(t, rows, { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: A_STATEMENT });
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DAS_EXTRACTION, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'waiting',
+    'its dependency is done, but the step it is about has not been reached');
+  assert.equal(enqueued.length, 0);
+});
+
+test('reaching the Availability step releases it', async (t) => {
+  // This is what the status-change handler does: re-drive the pipeline once the
+  // submission moves.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT });
+
+  await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'queued');
+});
+
+test('but not without a statement to check', async (t) => {
+  for (const das of ['', '   ', null, 'Not found']) {
+    const rows = pipelineRows();
+    completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+    mockDb(t, rows, { id: 'sub-1', status: 'step_as', dataAvailabilityStatement: das });
+
+    await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+
+    assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'waiting',
+      `${JSON.stringify(das)} is not a statement — running would burn an LM call on nothing`);
+    t.mock.restoreAll();
+  }
+});
+
+test('a statement typed in later releases it, with no new row', async (t) => {
+  // The extraction result still says "not found"; the gate reads the
+  // submission's current statement, which is what the author just edited.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  rows.get(JOB_TYPES.DAS_EXTRACTION).result = { status: { detected: false } };
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as', dataAvailabilityStatement: 'I wrote this myself.' });
+  const before = rows.get(JOB_TYPES.DAS_SUGGESTIONS);
+
+  const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_SUGGESTIONS, 1, 'user-1');
+
+  assert.equal(job, before, 'the re-run reuses the round\'s row');
+  assert.equal(SubmissionJob.create.mock.callCount(), 0);
+  assert.equal(job.status, 'queued');
+});
+
+test('nothing downstream waits for it', async (t) => {
+  // It is gated to the last stage, so anything depending on it would inherit
+  // that gate and stall for a reason of its own that has nothing to do with it.
+  for (const step of orchestrator.PIPELINE) {
+    assert.ok(!step.dependsOn.includes(JOB_TYPES.DAS_SUGGESTIONS),
+      `${step.jobType} must not depend on the DAS check`);
+  }
 });

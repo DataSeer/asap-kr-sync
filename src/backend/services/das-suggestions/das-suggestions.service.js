@@ -305,17 +305,20 @@ async function queueDasSuggestions(submissionId, round = 1) {
     return null;
   }
 
-  const job = await SubmissionJob.create({
-    submissionId, jobType: JOB_TYPES.DAS_SUGGESTIONS, status: 'queued', round
-  });
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.DAS_SUGGESTIONS,
-    { submissionId, submissionJobId: job.id }
+  // Through the orchestrator, not around it: this is a pipeline step now, so
+  // re-running it must reuse the round's row rather than insert a rival one.
+  // (Inserting a second row is exactly what made PDF Analysis report a finished
+  // run whose result had been consolidated from nothing — getForSubmission
+  // keeps only the newest row per type, and the pipeline's real one was left
+  // stranded behind it.)
+  const orchestrator = require('../queue/orchestrator.service');
+  const job = await orchestrator.requeueStep(
+    submissionId, JOB_TYPES.DAS_SUGGESTIONS, round, null
   );
-  job.pgBossJobId = jobId;
-  await job.save();
-  logger.info('DAS suggestions queued', { submissionId, submissionJobId: job.id, jobId });
-  return jobId;
+  logger.info('DAS suggestions re-queued', {
+    submissionId, submissionJobId: job.id, status: job.status
+  });
+  return job.pgBossJobId || null;
 }
 
 /** Read the persisted DAS suggestions + job status for a submission/round. */

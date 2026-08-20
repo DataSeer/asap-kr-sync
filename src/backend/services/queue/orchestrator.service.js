@@ -10,6 +10,7 @@ const { Op } = require('sequelize');
 const { sequelize, SubmissionJob, Submission } = require('../../models');
 const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ConflictError, ValidationError } = require('../../utils/errors');
+const { NO_DAS_SENTINEL } = require('../das-suggestions/das-suggestions.service');
 const jobQueue = require('./job-queue.service');
 const logger = require('../../utils/logger');
 
@@ -66,6 +67,29 @@ const GATES = {
   // submission with no KRT at all passes it the moment the author moves on, so
   // the no-KRT mode is unaffected.
   krt_curated: (submission) => !['draft', 'step_krt'].includes(submission.status),
+
+  // The Availability Statement check waits for the step it is about.
+  //
+  // Two conditions, one gate, because either alone would run it pointlessly:
+  //
+  //   - the submission has REACHED the Availability step. Before that the
+  //     author is still editing the table the check reads, and the check's
+  //     whole subject — their statement — is not in front of them yet.
+  //   - there IS a statement to check. Extraction is fail-soft: it always
+  //     persists something, writing NO_DAS_SENTINEL when it found nothing. The
+  //     manual queue path already refused to run on that; now that the pipeline
+  //     can start the job itself, the refusal has to live where the pipeline
+  //     will see it, or every submission without a statement burns an LM call
+  //     against an empty string.
+  //
+  // Reads the submission's CURRENT statement rather than the extraction result,
+  // so an author who types one by hand releases the gate — the extraction
+  // result still says "not found" and always will.
+  availability_ready: (submission) => {
+    if (!['step_as', 'step_report', 'completed'].includes(submission.status)) return false;
+    const das = (submission.dataAvailabilityStatement || '').trim();
+    return das.length > 0 && das !== NO_DAS_SENTINEL;
+  },
 
   // Nothing that reads the manuscript may run when there is no manuscript text.
   //
@@ -181,11 +205,28 @@ const PIPELINE = [
     jobType: JOB_TYPES.SUGGESTION_GENERATION,
     dependsOn: [JOB_TYPES.PDF_ANALYSIS]
   }
-  // NOTE: DAS_SUGGESTIONS is intentionally NOT in the auto pipeline. It is a
-  // standalone, re-triggerable job started by the /availability view once the
-  // user has finished review (so the DAS is extracted and the KRT is final).
-  // Keeping it out of the pipeline avoids it sitting in `waiting` and blocking
-  // the earlier steps' "all processes finished" gate.
+  ,
+  {
+    // The Availability Statement check. It needs the extracted statement, so it
+    // depends on DAS_EXTRACTION — but it is ABOUT the Availability step, and
+    // its gate holds it there rather than running it the moment extraction
+    // finishes.
+    //
+    // It used to sit outside the pipeline entirely, precisely so it could not
+    // wait: a `waiting` job counts as outstanding work, and it would have held
+    // the KRT and PDF steps' "all processes finished" gate shut. That is now
+    // handled where it belongs — a job blocked by a gate the submission has not
+    // reached is not outstanding work for the step the user is on, and the API
+    // says so via `waitingReason` so the client can tell the difference.
+    //
+    // `displayStage` is presentation only: its dependency is early (extraction,
+    // stage 1) but its gate makes it the last thing that happens, and a reader
+    // following the page top to bottom should find it where it actually runs.
+    jobType: JOB_TYPES.DAS_SUGGESTIONS,
+    dependsOn: [JOB_TYPES.DAS_EXTRACTION],
+    gate: ['availability_ready'],
+    displayStage: 4
+  }
 ];
 
 // Map jobType to the queue name used by pg-boss — shared, derived map so it
@@ -262,7 +303,8 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
 
   // Submission state is needed to evaluate step gates
   const submission = await Submission.findByPk(submissionId, {
-    attributes: ['id', 'status']
+    // `availability_ready` reads the statement itself, not just the status.
+    attributes: ['id', 'status', 'dataAvailabilityStatement']
   });
 
   for (const step of dependentSteps) {
@@ -367,7 +409,8 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
   const jobsByType = new Map(allJobs.map(j => [j.jobType, j]));
 
   const sub = submission || await Submission.findByPk(submissionId, {
-    attributes: ['id', 'status']
+    // `availability_ready` reads the statement itself, not just the status.
+    attributes: ['id', 'status', 'dataAvailabilityStatement']
   });
 
   let advanced = 0;
@@ -641,7 +684,9 @@ async function requeueStep(submissionId, jobType, round, userId) {
   const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
   const jobsByType = new Map(allJobs.map((j) => [j.jobType, j]));
   jobsByType.set(jobType, job);
-  const submission = await Submission.findByPk(submissionId, { attributes: ['id', 'status'] });
+  const submission = await Submission.findByPk(submissionId, {
+    attributes: ['id', 'status', 'dataAvailabilityStatement']
+  });
 
   await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, 'manual');
   return job;

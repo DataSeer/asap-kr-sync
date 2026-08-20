@@ -80,3 +80,62 @@ test('markdown_convert itself is never gated on its own output', () => {
     null
   );
 });
+
+// ── the Availability Statement check ────────────────────────────────────────
+// Two conditions in one gate. Either alone runs the check pointlessly: too
+// early, against a table the author is still editing; or with no statement, an
+// LM call against an empty string.
+
+const A_REAL_STATEMENT = 'Data are available at Zenodo.';
+// No default parameter: one of the cases below passes `undefined` on purpose,
+// and a default would quietly turn it into the good statement.
+const withDas = (status, das) => ({ status, dataAvailabilityStatement: das });
+
+test('the DAS check waits until the submission reaches the Availability step', () => {
+  for (const status of ['draft', 'step_krt', 'step_pdf', 'step_review']) {
+    assert.equal(
+      orchestrator.isGateBlocked(JOB_TYPES.DAS_SUGGESTIONS, withDas(status, A_REAL_STATEMENT), new Map()),
+      'availability_ready',
+      `${status} is before the step the check is about`
+    );
+  }
+});
+
+test('and runs from that step onward', () => {
+  for (const status of ['step_as', 'step_report', 'completed']) {
+    assert.equal(
+      orchestrator.isGateBlocked(JOB_TYPES.DAS_SUGGESTIONS, withDas(status, A_REAL_STATEMENT), new Map()),
+      null,
+      `${status} has reached the Availability step`
+    );
+  }
+});
+
+test('it does not run without a statement to check', () => {
+  // Extraction is fail-soft and always persists something, so "there is a row"
+  // is not "there is a statement".
+  for (const das of ['', '   ', null, undefined, 'Not found']) {
+    assert.equal(
+      orchestrator.isGateBlocked(JOB_TYPES.DAS_SUGGESTIONS, withDas('step_as', das), new Map()),
+      'availability_ready',
+      `${JSON.stringify(das)} is not a statement to check`
+    );
+  }
+});
+
+test('a statement typed in by hand releases it', () => {
+  // The extraction result still says "not found" and always will, so the gate
+  // reads the submission's current statement instead.
+  assert.equal(
+    orchestrator.isGateBlocked(JOB_TYPES.DAS_SUGGESTIONS, withDas('step_as', 'I wrote this myself.'), new Map()),
+    null
+  );
+});
+
+test('the check is gated on its own step, not on the KRT or the manuscript', () => {
+  // It reads the author's table and their statement — neither the converted
+  // text nor KRT validation is its business, and inheriting those gates would
+  // stall it for reasons that have nothing to do with it.
+  const step = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.DAS_SUGGESTIONS);
+  assert.deepEqual(step.gate, ['availability_ready']);
+});

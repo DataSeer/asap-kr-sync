@@ -26,7 +26,7 @@ import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
-import { labelFor, hasModulePage, MODULE_META } from '@/components/modules/module-meta'
+import { labelFor, hasModulePage } from '@/components/modules/module-meta'
 import { buildKrtRows } from '@/components/modules/generated-krt'
 import {
   decisionLabel, decisionType, decisionMatchesSearch, buildDecisionRows, DECISION_ORDER
@@ -48,15 +48,10 @@ const jobType = computed(() => route.params.type)
 const resourceTypesStore = useResourceTypesStore()
 const submissionStore = useSubmissionStore()
 
-const { jobs, getAnyJob } = useJobPoller(submissionId)
+const { jobs } = useJobPoller(submissionId)
 
 
-/**
- * `getAnyJob` rather than the pipeline map: the DAS check is a standalone job,
- * deliberately kept out of that map so it cannot hold the KRT/PDF steps' gate
- * shut. It still has a page, and the page still needs its result.
- */
-const job = computed(() => getAnyJob(jobType.value))
+const job = computed(() => (jobs.value || {})[jobType.value] || null)
 const explainer = computed(() => explainerFor(jobType.value))
 
 /**
@@ -99,15 +94,14 @@ const label = computed(() => labelFor(jobType.value))
 /**
  * What "no result" means for THIS module.
  *
- * For a scheduled step, no result means it has not run yet and something is
- * presumably still coming. For a standalone one, nothing is coming until the
- * user asks — so saying "not produced a result yet" would leave them waiting
- * for a job nobody has started.
+ * The DAS check waits for the Availability step, so on a submission that has
+ * not got there "has not produced a result yet" reads as a stall. Say what it
+ * is waiting for instead.
  */
 const emptyMessage = computed(() => (
-  MODULE_META[jobType.value]?.standalone
-    ? 'This check has not been run for this submission yet. It is started from the '
-      + 'Availability Statement step, once your Key Resources Table is final.'
+  jobType.value === 'das_suggestions'
+    ? 'This check runs when you reach the Availability Statement step — it reads the '
+      + 'statement itself, so there is nothing for it to check before then.'
     : 'This module has not produced a result for this submission yet.'
 ))
 

@@ -23,7 +23,7 @@ import { mount } from '@vue/test-utils'
 const getJobs = vi.fn()
 vi.mock('@/services/job.service', () => ({ default: { getJobs: (...a) => getJobs(...a) } }))
 
-const { useJobPoller } = await import('./useJobPoller')
+const { useJobPoller, isFutureStepJob } = await import('./useJobPoller')
 
 const job = (jobType, status) => ({ jobType, status })
 const reply = (...jobs) => ({ jobs })
@@ -317,57 +317,35 @@ describe('reading the jobs back', () => {
   })
 })
 
-describe('the standalone DAS check', () => {
-  it('is kept out of the pipeline map and the running flag', async () => {
-    // `das_suggestions` belongs to the /availability step. Counted here, a
-    // queued DAS check keeps "all processes finished" false and blocks the
-    // Continue button on the KRT and PDF steps.
-    getJobs.mockResolvedValue(reply(
-      job('markdown_convert', 'complete'),
-      job('das_suggestions', 'processing')
-    ))
+describe('a step waiting for a later stage of the submission', () => {
+  // The DAS check is gated to the Availability step. It IS a pipeline job — it
+  // appears in `jobs` and on the pipeline page — but while it is parked behind
+  // a stage the user has not reached it is not outstanding work, and counting
+  // it would hold the KRT and PDF steps' "all processes finished" gate shut for
+  // the whole session. That is why it used to be kept out of the pipeline
+  // altogether; the rule now lives in the state, where it belongs.
+  const gated = (jobType) => ({ jobType, status: 'waiting', waitingReason: 'availability_step' })
+
+  it('is present in the jobs map like any other step', async () => {
+    getJobs.mockResolvedValue(reply(job('markdown_convert', 'complete'), gated('das_suggestions')))
     const { api, wrapper } = mountPoller()
     await settle()
 
-    expect(api.getJob('das_suggestions')).toBe(null)
-    expect(api.jobs.value.das_suggestions).toBeUndefined()
+    expect(api.getJob('das_suggestions')?.status).toBe('waiting')
+    wrapper.unmount()
+  })
+
+  it('does NOT count as running', async () => {
+    getJobs.mockResolvedValue(reply(job('markdown_convert', 'complete'), gated('das_suggestions')))
+    const { api, wrapper } = mountPoller()
+    await settle()
+
     expect(api.isAnyRunning.value).toBe(false)
     wrapper.unmount()
   })
 
-  it('is still available to the pages that describe the whole run', async () => {
-    // Kept aside rather than dropped: the pipeline page shows a tile for it and
-    // its module page renders its result.
-    getJobs.mockResolvedValue(reply(
-      job('markdown_convert', 'complete'),
-      job('das_suggestions', 'complete')
-    ))
-    const { api, wrapper } = mountPoller()
-    await settle()
-
-    expect(api.standaloneJobs.value.das_suggestions?.status).toBe('complete')
-    expect(api.getAnyJob('das_suggestions')?.status).toBe('complete')
-    wrapper.unmount()
-  })
-
-  it('getAnyJob answers for pipeline jobs too, and null for neither', async () => {
-    getJobs.mockResolvedValue(reply(job('markdown_convert', 'complete')))
-    const { api, wrapper } = mountPoller()
-    await settle()
-
-    expect(api.getAnyJob('markdown_convert')?.status).toBe('complete')
-    expect(api.getAnyJob('das_suggestions')).toBe(null)
-    expect(api.getAnyJob('nothing_like_this')).toBe(null)
-    wrapper.unmount()
-  })
-
-  it('a running DAS check does not restart polling on a finished pipeline', async () => {
-    // The gate's whole point: once the scheduled work is done the page stops
-    // asking, even though a standalone job is still in flight.
-    getJobs.mockResolvedValue(reply(
-      job('markdown_convert', 'complete'),
-      job('das_suggestions', 'processing')
-    ))
+  it('does not keep the poller running on an otherwise finished pipeline', async () => {
+    getJobs.mockResolvedValue(reply(job('markdown_convert', 'complete'), gated('das_suggestions')))
     const { wrapper } = mountPoller()
     await settle()
     const afterMount = getJobs.mock.calls.length
@@ -376,5 +354,52 @@ describe('the standalone DAS check', () => {
 
     expect(getJobs).toHaveBeenCalledTimes(afterMount)
     wrapper.unmount()
+  })
+
+  it('DOES count once it is actually running', async () => {
+    // The exemption is for "parked behind a later stage", not for the job type.
+    getJobs.mockResolvedValue(reply(
+      job('markdown_convert', 'complete'),
+      job('das_suggestions', 'processing')
+    ))
+    const { api, wrapper } = mountPoller()
+    await settle()
+
+    expect(api.isAnyRunning.value).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('a step waiting for an ordinary reason still counts', async () => {
+    // A detector held by the KRT gate is work the user can release right now,
+    // on the step they are on — quite different from a step they have not
+    // reached.
+    getJobs.mockResolvedValue(reply(
+      { jobType: 'datasets_detection', status: 'waiting', waitingReason: 'krt_validation' }
+    ))
+    const { api, wrapper } = mountPoller()
+    await settle()
+
+    expect(api.isAnyRunning.value).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('a waiting step with no reason at all counts — silence is not an exemption', async () => {
+    getJobs.mockResolvedValue(reply({ jobType: 'pdf_analysis', status: 'waiting' }))
+    const { api, wrapper } = mountPoller()
+    await settle()
+
+    expect(api.isAnyRunning.value).toBe(true)
+    wrapper.unmount()
+  })
+})
+
+describe('isFutureStepJob', () => {
+  it('is true only for a WAITING job with a future-step reason', () => {
+    expect(isFutureStepJob({ status: 'waiting', waitingReason: 'availability_step' })).toBe(true)
+    expect(isFutureStepJob({ status: 'processing', waitingReason: 'availability_step' })).toBe(false)
+    expect(isFutureStepJob({ status: 'waiting', waitingReason: 'krt_validation' })).toBe(false)
+    expect(isFutureStepJob({ status: 'waiting' })).toBe(false)
+    expect(isFutureStepJob(null)).toBe(false)
+    expect(isFutureStepJob(undefined)).toBe(false)
   })
 })

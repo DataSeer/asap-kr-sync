@@ -19,6 +19,7 @@ import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
+import { isFutureStepJob } from '@/composables'
 
 const route = useRoute()
 const router = useRouter()

@@ -18,32 +18,21 @@ import {
   hasModulePage, labelFor, purposeFor, stageLabel
 } from './module-meta'
 
-/** The steps the pipeline schedules and runs by itself. Kept literal on
- *  purpose: if a step is added server-side, this must be updated deliberately
- *  rather than tracking it automatically and asserting nothing. */
-const PIPELINE_MODULES = [
+/** Every pipeline step. Kept literal on purpose: if a step is added
+ *  server-side, this must be updated deliberately rather than tracking it
+ *  automatically and asserting nothing. */
+const EXPECTED_MODULES = [
   'markdown_convert', 'orcid_extraction', 'das_extraction',
   'software_detection', 'datasets_detection', 'materials_detection',
   'protocols_detection', 'identifier_detection',
-  'krt_grounding', 'pdf_analysis', 'suggestion_generation'
+  'krt_grounding', 'pdf_analysis', 'suggestion_generation',
+  // Gated to the Availability step, but scheduled like the rest.
+  'das_suggestions'
 ]
 
-/** Modules nothing schedules — the user starts them. They have pages like any
- *  other module, but they are not part of what the pipeline is doing. */
-const STANDALONE_MODULES = ['das_suggestions']
-
-const EXPECTED_MODULES = [...PIPELINE_MODULES, ...STANDALONE_MODULES]
-
 describe('the module list', () => {
-  it('covers every module — scheduled and standalone', () => {
+  it('covers every pipeline step, and nothing else', () => {
     expect(Object.keys(MODULE_META).sort()).toEqual([...EXPECTED_MODULES].sort())
-  })
-
-  it('marks the standalone ones, and only those', () => {
-    // The flag is what keeps a job nobody schedules out of the lists that
-    // describe what the pipeline is doing on its own.
-    const flagged = Object.entries(MODULE_META).filter(([, m]) => m.standalone).map(([k]) => k)
-    expect(flagged.sort()).toEqual([...STANDALONE_MODULES].sort())
   })
 
   it('gives every module a label and a purpose a reader can use', () => {
@@ -61,17 +50,8 @@ describe('the module list', () => {
 })
 
 describe('the derived lists', () => {
-  it('ALL_JOB_TYPES carries the SCHEDULED modules, in declared order', () => {
-    expect(ALL_JOB_TYPES.map((j) => j.type)).toEqual(PIPELINE_MODULES)
-  })
-
-  it('ALL_JOB_TYPES excludes the standalone ones', () => {
-    // A job nothing schedules must not appear in a list used to say what the
-    // pipeline is running — it would never complete on a submission whose
-    // author never asked for it, and read as an unfinished run.
-    for (const jobType of STANDALONE_MODULES) {
-      expect(ALL_JOB_TYPES.map((j) => j.type)).not.toContain(jobType)
-    }
+  it('ALL_JOB_TYPES carries every module, in declared order', () => {
+    expect(ALL_JOB_TYPES.map((j) => j.type)).toEqual(EXPECTED_MODULES)
   })
 
   it('every entry pairs a type with its label', () => {
@@ -80,14 +60,13 @@ describe('the derived lists', () => {
     }
   })
 
-  it('MODULE_PAGE_TYPES covers every module, standalone included', () => {
-    // Having a page is unrelated to how a module is started.
+  it('MODULE_PAGE_TYPES is exactly the module list', () => {
     expect([...MODULE_PAGE_TYPES].sort()).toEqual([...EXPECTED_MODULES].sort())
   })
 
   it('the lists cannot drift apart, because they share a source', () => {
     expect(MODULE_PAGE_TYPES.size).toBe(EXPECTED_MODULES.length)
-    expect(ALL_JOB_TYPES.length).toBe(MODULE_PAGE_TYPES.size - STANDALONE_MODULES.length)
+    expect(ALL_JOB_TYPES.length).toBe(MODULE_PAGE_TYPES.size)
   })
 })
 
@@ -98,10 +77,8 @@ describe('hasModulePage', () => {
     }
   })
 
-  it('is true for a standalone module too — a page is a page', () => {
-    for (const jobType of STANDALONE_MODULES) {
-      expect(hasModulePage(jobType), jobType).toBe(true)
-    }
+  it('is true for the DAS check, which is gated rather than unscheduled', () => {
+    expect(hasModulePage('das_suggestions')).toBe(true)
   })
 
   it('is false for a step with no page', () => {

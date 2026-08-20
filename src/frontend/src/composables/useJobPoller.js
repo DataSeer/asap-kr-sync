@@ -12,10 +12,21 @@ export function isCancelledJob(job) {
   return job?.status === 'cancelled'
 }
 /**
- * Jobs that exist for a submission but are not driven by the pipeline. Kept out
- * of `jobs` and out of `isAnyRunning`; see `standaloneJobs`.
+ * Waiting reasons that mean "this belongs to a later step", not "this is stuck".
+ *
+ * A step the submission has not reached is not outstanding work for the step
+ * the user is on — it has not been asked to run yet. Counting it would hold the
+ * KRT and PDF steps' "all processes finished" gate shut for the whole session,
+ * which is why the DAS check used to be kept out of the pipeline altogether.
+ * The server names the reason, so the distinction is made where it is known
+ * rather than guessed from the job type.
  */
-const STANDALONE_JOB_TYPES = new Set(['das_suggestions'])
+export const FUTURE_STEP_REASONS = new Set(['availability_step'])
+
+/** Is this job merely queued behind a step the user has not reached? */
+export function isFutureStepJob(job) {
+  return job?.status === 'waiting' && FUTURE_STEP_REASONS.has(job?.waitingReason)
+}
 
 // Terminal statuses: a job that will not change further.
 export function isTerminalStatus(status) {
@@ -32,18 +43,6 @@ export function isTerminalStatus(status) {
  */
 export function useJobPoller(submissionId) {
   const jobs = ref({})
-  /**
-   * Jobs the pipeline does not schedule, kept apart from `jobs` on purpose.
-   *
-   * The DAS check runs from the Availability step, on the user's command. It
-   * must not reach `jobs` or `isAnyRunning`, because both feed the "all
-   * processes finished" gate that unlocks Continue on the KRT and PDF steps —
-   * a queued DAS check counted there holds those steps shut.
-   *
-   * But the pipeline page and its module page still have to SHOW it, so the
-   * data is kept, just in its own place where no gate reads it.
-   */
-  const standaloneJobs = ref({})
   const isAnyRunning = ref(false)
 
   let pollTimer = null
@@ -62,17 +61,6 @@ export function useJobPoller(submissionId) {
    */
   function getJob(type) {
     return jobs.value[type] || null
-  }
-
-  /**
-   * The job for a type whether the pipeline drives it or not — for the pages
-   * that describe the whole run. Deliberately separate from `getJob`, so a
-   * caller asking about the pipeline cannot get a standalone job by accident.
-   * @param {string} type
-   * @returns {object|null}
-   */
-  function getAnyJob(type) {
-    return jobs.value[type] || standaloneJobs.value[type] || null
   }
 
   /**
@@ -112,21 +100,9 @@ export function useJobPoller(submissionId) {
     try {
       const data = await jobService.getJobs(id)
       const jobMap = {}
-      const standaloneMap = {}
       for (const job of data.jobs) {
-        // `das_suggestions` is a standalone job owned by the /availability step
-        // (its own loader + poll). It must not enter the pipeline map, or a
-        // queued/processing DAS check would count toward the KRT/PDF steps'
-        // "all processes finished" gate and block their Continue button. It is
-        // kept aside rather than dropped, so the pages that describe the run
-        // can still show it.
-        if (STANDALONE_JOB_TYPES.has(job.jobType)) {
-          standaloneMap[job.jobType] = job
-          continue
-        }
         jobMap[job.jobType] = job
       }
-      standaloneJobs.value = standaloneMap
 
       // Fire transition callbacks (skip first fetch to avoid spurious triggers)
       if (!isFirstFetch) {
@@ -157,9 +133,11 @@ export function useJobPoller(submissionId) {
       isFirstFetch = false
       jobs.value = jobMap
 
-      // Check if any jobs are still running
+      // Check if any jobs are still running. A job parked behind a step the
+      // submission has not reached does not count — see isFutureStepJob.
       const running = Object.values(jobMap).some(
-        j => j.status === 'waiting' || j.status === 'queued' || j.status === 'processing'
+        j => !isFutureStepJob(j)
+          && (j.status === 'waiting' || j.status === 'queued' || j.status === 'processing')
       )
       isAnyRunning.value = running
 
@@ -234,10 +212,8 @@ export function useJobPoller(submissionId) {
 
   return {
     jobs,
-    standaloneJobs,
     isAnyRunning,
     getJob,
-    getAnyJob,
     onJobComplete,
     onJobFailed,
     onJobPendingInput,

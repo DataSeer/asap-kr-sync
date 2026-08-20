@@ -25,7 +25,7 @@ import { setSubmissionTitle } from '@/router'
 
 const route = useRoute()
 const submissionId = computed(() => route.params.id)
-const { jobs, getAnyJob } = useJobPoller(submissionId)
+const { jobs } = useJobPoller(submissionId)
 
 
 
@@ -70,32 +70,17 @@ const stages = computed(() => {
 /** Gate names, in the words a reader can act on. */
 const GATE_LABELS = {
   krt_curated: 'the Key Resources Table to be validated',
-  markdown_ready: 'the manuscript to be converted to text'
+  markdown_ready: 'the manuscript to be converted to text',
+  availability_ready: 'the Availability Statement step, and a statement to check'
 }
 const gateLabel = (name) => GATE_LABELS[name] || name
 
-/**
- * The standalone jobs are kept out of the poller's pipeline map so they cannot
- * hold the KRT/PDF gate shut — but this page describes the whole run, so it
- * asks for either kind.
- */
-const jobFor = (jobType) => getAnyJob(jobType)
-
-/** Jobs the pipeline does not schedule — the user starts them. */
-const standaloneTypes = computed(
-  () => new Set(graph.value.nodes.filter((n) => n.standalone).map((n) => n.jobType))
-)
-const isStandalone = (jobType) => standaloneTypes.value.has(jobType)
+const jobFor = (jobType) => (jobs.value || {})[jobType] || null
 
 /** Status as one word plus a colour, from the job if it has run. */
 function statusOf(jobType) {
   const job = jobFor(jobType)
-  if (!job || !job.status) {
-    // A standalone job nobody has started is the normal state, not a stall.
-    return isStandalone(jobType)
-      ? { text: 'not run yet', cls: 'st-idle' }
-      : { text: 'not started', cls: 'st-idle' }
-  }
+  if (!job || !job.status) return { text: 'not started', cls: 'st-idle' }
   if (job.status === 'complete' && job.outcomeState === 'fail') return { text: 'failed', cls: 'st-fail' }
   const map = {
     complete: { text: 'done', cls: 'st-done' },
@@ -177,11 +162,11 @@ function groupsForStage(nodes) {
   const by = new Map()
   for (const n of nodes) {
     const consumers = [...(consumersOf.value[n.jobType] || [])].sort()
-    // A standalone job gets its own group even when it shares a stage and a
-    // (empty) consumer list with a scheduled one. The group caption says "N
-    // steps, in parallel", which would be a claim that the pipeline runs this
-    // one alongside the other — it does not run it at all.
-    const key = n.standalone ? `standalone:${n.jobType}` : consumers.join('|')
+    // A gated step gets its own group even when it shares a stage and an
+    // (empty) consumer list with an ungated one: the caption says "N steps, in
+    // parallel", and these do not run together — one waits for a stage the
+    // other has already passed.
+    const key = n.gates?.length ? `gated:${n.jobType}` : consumers.join('|')
     if (!by.has(key)) by.set(key, { key, consumers, nodes: [] })
     by.get(key).nodes.push(n)
   }
@@ -191,10 +176,11 @@ function groupsForStage(nodes) {
 
 /** Where the pipeline currently is, in one line. */
 const state = computed(() => {
-  // Standalone jobs are excluded from the count on purpose: "9 of 12 done"
-  // would never reach 12 on a submission whose author has not asked for the DAS
-  // check, which reads as an unfinished pipeline when nothing is outstanding.
-  const nodes = graph.value.nodes.filter((n) => !n.standalone)
+  // Every step counts here: this page describes the whole run, and a step that
+  // has not run yet is exactly what a reader wants to see. (The KRT and PDF
+  // steps' own "all finished" gates are the ones that must ignore a step parked
+  // behind a later stage — see isFutureStepJob.)
+  const nodes = graph.value.nodes
   const tally = { done: 0, running: 0, waiting: 0, failed: 0, pending: 0, idle: 0 }
   for (const n of nodes) {
     const cls = statusOf(n.jobType).cls
@@ -211,8 +197,7 @@ const state = computed(() => {
 /** The first stage that has not finished — where the work actually is now. */
 const activeStage = computed(() => {
   for (const stage of stages.value) {
-    const scheduled = stage.nodes.filter((n) => !n.standalone)
-    if (scheduled.some((n) => statusOf(n.jobType).cls !== 'st-done')) return stage.index
+    if (stage.nodes.some((n) => statusOf(n.jobType).cls !== 'st-done')) return stage.index
   }
   return -1
 })
@@ -297,12 +282,6 @@ const activeStage = computed(() => {
                 <dl class="pv-io">
                   <dt>in</dt>
                   <dd v-if="node.dependsOn.length">{{ node.dependsOn.map(labelFor).join(' · ') }}</dd>
-                  <!-- A standalone job has no dependencies because nothing
-                       schedules it — saying "the submission itself" would imply
-                       the pipeline feeds it. -->
-                  <dd v-else-if="node.standalone" class="pv-muted">
-                    your Key Resources Table and Availability Statement
-                  </dd>
                   <dd v-else class="pv-muted">the submission itself</dd>
                   <template v-if="outputOf(node.jobType)">
                     <dt>out</dt>
@@ -320,11 +299,6 @@ const activeStage = computed(() => {
                     :title="'Waits for: ' + node.gates.map(gateLabel).join(', ')"
                   >gated</span>
                   <span v-if="!node.autoAdvances" class="pv-gate" title="Can pause and wait for you before it runs.">may pause</span>
-                  <span
-                    v-if="node.standalone"
-                    class="pv-manual"
-                    title="The pipeline never starts this one. Run it from the Availability Statement step, once your table is final."
-                  >you start this</span>
                   <span v-if="hasModulePage(node.jobType)" class="pv-open">open ↗</span>
                 </div>
               </component>

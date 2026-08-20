@@ -76,13 +76,18 @@ All wrapped in `AppLayout` (header + sidebar).
 | `/submissions/:id/module/:type` | ModuleResultsView | One module's results, in full |
 | `/profile` | ProfileView | — |
 
-`das_suggestions` has a page and a tile like any other module, but nothing
-schedules it — the user starts it from the Availability step. It is excluded
-from the pipeline's progress tally and from `isAnyRunning`, because a queued DAS
-check counted there would hold the KRT and PDF steps' "all processes finished"
-gate shut. `useJobPoller` keeps it in a separate `standaloneJobs` map for the
-pages that need to display it (`getAnyJob`), and out of `jobs` for everything
-that gates on it.
+`das_suggestions` is a pipeline step gated to the Availability step. It has a
+page and appears on the pipeline page like any other module; the panel on the
+KRT and PDF steps does not show it, since those are not where it runs.
+
+The rule that makes this safe is in `useJobPoller`: a step **waiting behind a
+stage the submission has not reached** is not outstanding work for the step the
+user is on, and is excluded from `isAnyRunning` and from `PDFView`'s
+`allProcessesFinished`. The server names the reason (`waitingReason:
+'availability_step'`) so the distinction is made where it is known rather than
+guessed from the job type — `isFutureStepJob` is the single place that decides.
+Widening it to any waiting job would exempt a detector held by the KRT gate,
+which is work the user can release right now.
 
 Both pipeline routes set `meta.remountOnRouteChange`. `AppLayout` keys its
 `<RouterView>` on the full path for those routes, because the same component
@@ -287,7 +292,7 @@ longer a second copy of any results table inside a modal. The pages share:
 
 | Piece | What it is |
 |-------|-----------|
-| `module-meta.js` | Every module — label, one-line purpose, stage names, and `standalone` for the ones the pipeline does not schedule. `MODULE_PAGE_TYPES` and `hasModulePage()` cover all of them (having a page is unrelated to how a module starts); `ALL_JOB_TYPES` covers only the scheduled ones. `JobStatusPanel` keeps its own ordered tile list — its three-row grouping is deliberate and differs from the order here. |
+| `module-meta.js` | Every module — label, one-line purpose, stage names. `ALL_JOB_TYPES`, `MODULE_PAGE_TYPES` and `hasModulePage()` all derive from it. `JobStatusPanel` keeps its own ordered tile list: its three-row grouping is deliberate and differs from the order here, and it omits the DAS check because the panel appears on steps where that one does not run. |
 | `module-explainers.js` | The longer "what this step does / how to read it" text, plus the doc anchor each links to. |
 | `ModuleExplainer.vue` | Renders that text above the results. |
 | `ModuleTechnical.vue` | The Technical detail block: configuration, statistics, module inputs and module outputs, on a six-column grid. |

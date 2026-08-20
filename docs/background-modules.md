@@ -13,9 +13,10 @@
 ## 1. The module roster
 
 Each background process is a `submission_jobs` row of a given `job_type` (`config/constants.js` → `JOB_TYPES`),
-run by a worker in `services/queue/workers.js`. Ten modules participate in the analysis pipeline (an eleventh,
-`report_generation`, is ad-hoc; a twelfth, `das_suggestions`, is **standalone** — started from the `/availability`
-step rather than the auto pipeline; see §3.11 and [submission-workflow.md](./submission-workflow.md)).
+run by a worker in `services/queue/workers.js`. Eleven modules participate in the analysis pipeline (a twelfth,
+`report_generation`, is ad-hoc). `das_suggestions` is one of the eleven, but **gated to the Availability step** —
+it depends on `das_extraction` for the statement, and its gate holds it there rather than letting it run when
+extraction finishes; see §3.11 and [submission-workflow.md](./submission-workflow.md).
 
 | Module (`job_type`) | What it finds | Engine | Depends on | Feeds |
 |---------------------|---------------|--------|-----------|-------|
@@ -32,7 +33,7 @@ step rather than the auto pipeline; see §3.11 and [submission-workflow.md](./su
 | `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
 | `das_suggestions` | DAS vs the ASAP rulebook (per-rule verdict) | **LM (Gemini)** — LM-only, **legacy-rules fallback** | — *(standalone; started from `/availability`)* | the `/availability` suggestions list |
 
-Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)). `das_suggestions` is **not** shown here — it is not in the auto pipeline (see §3.11). It *is* shown on the app's own pipeline page, in the Suggest stage, marked "you start this": the page describes what a curator can look at, and the DAS check has a module page like any other. That is a description, not a schedule — the served graph carries it as a `standalone: true` node built beside the executing table, never inside it, so nothing can auto-run it:
+Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)). `das_suggestions` is omitted from the diagram below for readability — it hangs off `das_extraction` and is gated to the Availability step (see §3.11). On the app's own pipeline page it is drawn in the **Suggest** stage rather than beside its dependency, via the step's `displayStage`: it depends on something early but runs last, and a reader following the page top to bottom should find it where it actually runs.
 
 ```mermaid
 flowchart LR
@@ -764,6 +765,23 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   `services/pdf-analysis/diff-suggestions.service.js` remains in the repo but is no longer used in production.)*
 
 ### 3.11 `das_suggestions` — Availability Statement check (DAS Suggestions)
+
+> **Gated, not standalone.** This was outside the pipeline until it was given the
+> `availability_ready` gate. The reason it was outside is worth keeping in mind if
+> the gate is ever touched: a `waiting` job counts as outstanding work, so a DAS
+> check waiting from the moment a PDF is uploaded held the KRT and PDF steps'
+> "all processes finished" gate shut for the whole session. That is now handled
+> in the right place — the jobs API reports `waitingReason: 'availability_step'`,
+> and the client excludes a step parked behind a stage the user has not reached
+> from those gates (`isFutureStepJob`). Widen that exemption and the old bug
+> comes back, in a form that looks like a UI glitch rather than a pipeline one.
+>
+> The gate has two conditions, and both matter: the submission must have reached
+> `step_as`, **and** carry a real statement — extraction is fail-soft and writes
+> `NO_DAS_SENTINEL` when it finds none, so "there is a row" is not "there is a
+> statement". The gate reads the submission's current statement rather than the
+> extraction result, so an author who types one by hand releases it; the
+> extraction result would still say "not found" for ever.
 
 - **Purpose:** check the **Data/Code Availability Statement (DAS)** against ASAP's rulebook and return, per rule,
   whether it **applies** (an issue to address) with a reason. Replaces the legacy hardcoded, client-side substring

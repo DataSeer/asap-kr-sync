@@ -80,57 +80,48 @@ test('computeStages does not hang on a cycle', () => {
   assert.equal(stages.size, 2);
 });
 
-// ── standalone jobs ─────────────────────────────────────────────────────────
-// The DAS check is not in the executing table and must never get there — the
-// graph only DESCRIBES it, so a curator can see it and open its page.
+// ── the Availability Statement check ────────────────────────────────────────
+// It IS a pipeline step: it needs the extracted statement, so it depends on
+// extraction. What keeps it from running the moment extraction finishes is its
+// gate, not its absence from the table.
 
-test('the DAS check appears in the graph, marked as standalone', () => {
+test('the DAS check is a pipeline step, depending on extraction', () => {
   const { nodes } = buildPipelineGraph();
   const das = nodes.find((n) => n.jobType === 'das_suggestions');
 
-  assert.ok(das, 'the module a user can open must be described somewhere');
-  assert.equal(das.standalone, true);
-  assert.equal(das.startedFrom, 'availability', 'the card has to say where to start it');
+  assert.ok(das, 'the module a user can open must be described');
+  assert.deepEqual(das.dependsOn, ['das_extraction'],
+    'it reads the extracted statement, so it waits for extraction');
+  assert.deepEqual(das.gates, ['availability_ready'],
+    'and its gate holds it at the step it is about');
 });
 
-test('it is NOT in the executing pipeline', () => {
-  // The load-bearing one. In PIPELINE it would be scheduled, sit in `waiting`,
-  // and hold the KRT/PDF steps' "all processes finished" gate shut.
-  const { PIPELINE } = require('./orchestrator.service');
-  assert.equal(PIPELINE.some((s) => s.jobType === 'das_suggestions'), false);
-});
-
-test('it sits in the last stage, and does not create one of its own', () => {
+test('it is drawn in the last stage, not where its dependency sits', () => {
+  // Its only dependency is stage 1, so derived depth would put it in Detect —
+  // beside the detectors, several stages before it can actually run.
   const { nodes, stageCount } = buildPipelineGraph();
   const das = nodes.find((n) => n.jobType === 'das_suggestions');
+  const extraction = nodes.find((n) => n.jobType === 'das_extraction');
 
-  assert.equal(das.stage, stageCount - 1, 'it belongs beside the other Suggest-stage work');
-  // stageCount is computed from the scheduled steps only: a standalone job must
-  // not stretch the diagram by inventing a stage nothing else occupies.
-  const scheduledMax = Math.max(...nodes.filter((n) => !n.standalone).map((n) => n.stage));
-  assert.equal(stageCount, scheduledMax + 1);
+  assert.equal(das.stage, stageCount - 1);
+  assert.ok(das.stage > extraction.stage + 1,
+    'the point of displayStage: it is drawn well after what it depends on');
 });
 
-test('nothing depends on it, and it depends on nothing', () => {
-  // It is unscheduled in both directions: no step waits for it, and it waits
-  // for no step — otherwise the "waiting for" text would describe an edge the
-  // orchestrator does not have.
+test('nothing depends on it — it is a leaf', () => {
   const { nodes } = buildPipelineGraph();
-  const das = nodes.find((n) => n.jobType === 'das_suggestions');
-
-  assert.deepEqual(das.dependsOn, []);
-  assert.deepEqual(das.gates, []);
   for (const n of nodes) {
     assert.ok(!n.dependsOn.includes('das_suggestions'),
-      `${n.jobType} must not depend on a job nothing schedules`);
+      `${n.jobType} must not wait for a step gated to the last stage`);
   }
 });
 
-test('every scheduled step is still marked as such', () => {
-  const { nodes } = buildPipelineGraph();
-  const scheduled = nodes.filter((n) => !n.standalone).map((n) => n.jobType);
-  const { PIPELINE } = require('./orchestrator.service');
-
-  assert.deepEqual(scheduled.sort(), PIPELINE.map((s) => s.jobType).sort(),
-    'the graph\'s scheduled half must be exactly the executing table');
+test('a displayStage never breaks the stage numbering', () => {
+  const { nodes, stageCount } = buildPipelineGraph();
+  for (const n of nodes) {
+    assert.ok(n.stage >= 0 && n.stage < stageCount, `${n.jobType} is outside the stage range`);
+  }
+  for (let i = 0; i < stageCount; i++) {
+    assert.ok(nodes.some((n) => n.stage === i), `stage ${i} is empty — the diagram would have a hole`);
+  }
 });
