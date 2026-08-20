@@ -278,14 +278,21 @@ A handful of admin views (notably `UsersView.vue`) call the `api` instance direc
 - **JobStatusPanel** — one tile per pipeline step, with its configuration (On / Demo / Off), status and result
   summary. A tile whose job is **complete is a link** to that module's page, so ctrl-click and middle-click open it
   in a tab like any other link. A tile whose job is not complete opens a small modal carrying what such a job
-  actually has: status, notice bar, process logs, raw responses and any error. Gated jobs render *"Waiting for the
-  Key Resources Table to be validated"* from the API's `waitingReason`, in place of the remaining-time estimate.
+  actually has: status, notice bar, process logs, raw responses and any error. A step held because the manuscript
+  produced no text says so in place of the remaining-time estimate — an estimate would be a lie, since nothing is
+  going to finish. (There was an equivalent banner for the KRT gate telling the user to click Continue; it went
+  when the panel left the KRT step, which was the only place it could be acted on.)
 - **BackgroundProcesses** — the panel's wrapper: overall progress, the "view pipeline" link, and the message shown
-  when every runnable module has finished and the rest are held at a gate. **Rendered on the PDF step only.** It
-  was on the KRT step too, where it mostly showed either nothing (the pipeline does not start until the PDF is
-  uploaded, which happens on the *next* step) or a row of modules waiting for the very validation the user was in
-  the middle of doing. KRTView still USES the poller — the curator edits their table while analysis runs, and the
-  suggestions and the DAS should appear without a refresh — it just no longer displays it.
+  when every runnable module has finished and the rest are held at a gate. **Rendered on the PDF step only.**
+
+  It was on the KRT step too. Both files are uploaded when the submission is created, so the pipeline is already
+  running while the author works on their table: conversion, ORCID and DAS extraction go, and the detectors sit
+  waiting on `krt_curated` because their prompts are seeded with the author's rows. Showing that there put a row of
+  modules "waiting for the Key Resources Table to be validated" in front of someone in the middle of validating it
+  — a status they can neither act on nor ignore, about work they do not need to think about.
+
+  KRTView still USES the poller — the curator edits their table while analysis runs, and the suggestions and the
+  extracted statement should appear without a refresh. Only the display was removed.
 - **SubmissionHeader** — the identity strip present on every submission page, and therefore where the link to the
   pipeline lives now that the statuses are on one step. Title · edit · **Pipeline** on the first line; manuscript
   id · KRT · PDF · all-files on the second.

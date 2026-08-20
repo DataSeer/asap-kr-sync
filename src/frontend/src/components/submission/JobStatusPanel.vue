@@ -34,19 +34,15 @@ const jobs = inject('submissionJobs', ref({}))
  * Without this the panel says "waiting" and gives no way to find out what for,
  * which reads as a stall. The pipeline is in fact waiting on the user.
  */
-/**
- * Everything that could run has run, and what is left is waiting on the KRT.
- *
- * The count of gated jobs alone would show this the moment the pipeline
- * started, next to steps that are visibly working — telling the user to click
- * Continue while conversion is still going. It is only useful once nothing is
- * moving, because only then is the user the reason nothing is happening.
- */
-const waitingOnKrt = computed(() => {
-  const jobs = jobList.value
-  if (jobs.some((j) => j.status === 'queued' || j.status === 'processing')) return false
-  return jobs.some((j) => j.status === 'waiting' && j.waitingReason === 'krt_validation')
-})
+// There was a "waiting for your Key Resources Table to be validated — click
+// Continue" banner here. It has no audience left: this panel renders on the PDF
+// step only, and reaching that step is what validates the KRT. A user who walks
+// back to the KRT step does not see the panel at all, so the one place the
+// message could still have applied is a page that no longer shows it.
+//
+// The per-job reason for `krt_validation` is kept below — it DESCRIBES a state
+// rather than instructing the user to do something they cannot do from here,
+// and it stays correct if the state ever occurs.
 
 /**
  * The pipeline is stopped because there is no manuscript text.
@@ -59,8 +55,8 @@ const waitingOnKrt = computed(() => {
 const blockedOnMarkdown = computed(() =>
   jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === 'markdown_missing'))
 
-/** Either reason the pipeline is standing still. */
-const paused = computed(() => waitingOnKrt.value || blockedOnMarkdown.value)
+/** The pipeline is standing still, and will not start again by itself. */
+const paused = computed(() => blockedOnMarkdown.value)
 
 /** How many steps that has stopped — the scale of the problem, not just its name. */
 const blockedCount = computed(() =>
@@ -1139,7 +1135,7 @@ async function downloadMarkdownFile(fileId) {
        when the pipeline is paused on the user, red when it cannot continue. -->
   <div
     class="job-status-wrapper job-status-card"
-    :class="{ 'job-status-card-paused': waitingOnKrt, 'job-status-card-blocked': blockedOnMarkdown }"
+    :class="{ 'job-status-card-blocked': blockedOnMarkdown }"
   >
     <!-- ETA header — always visible. The status summary pills (running /
          waiting / failed / done) sit on the right of the title row no matter
@@ -1172,11 +1168,6 @@ async function downloadMarkdownFile(fileId) {
           {{ blockedCount }} step{{ blockedCount === 1 ? '' : 's' }}
           {{ blockedCount === 1 ? 'is' : 'are' }} held rather than run against an empty document.
           Re-run <strong>Markdown Convert</strong> below, or re-upload the PDF.
-        </span>
-        <span v-else-if="waitingOnKrt" class="job-status-eta-state job-status-eta-state-paused">
-          Analysis is waiting for your Key Resources Table to be validated before it can finish —
-          the detection modules are seeded with your rows, so they start once you are done editing.
-          Click <strong>Continue</strong> to proceed.
         </span>
         <span v-else-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
         <div class="job-header-badges">
@@ -1552,14 +1543,9 @@ async function downloadMarkdownFile(fileId) {
   background: #eff6ff;
   border-color: #bfdbfe;
 }
-/* Paused on the user, and blocked, read at a glance from across the page. */
-.job-status-card-paused,
-.job-status-card-paused.job-status-wrapper {
-  background: #fffbeb;
-  border-color: #fde68a;
-}
-.job-status-card-paused .job-status-eta-label { color: #92400e; }
-.job-status-card-paused .job-status-eta-icon { color: #b45309; }
+/* Blocked, read at a glance from across the page. (There was an amber "paused
+   on the user" treatment beside this one; it went with the KRT-gate banner —
+   nothing pauses this panel on the user any more.) */
 .job-status-card-blocked,
 .job-status-card-blocked.job-status-wrapper {
   background: #fef2f2;
@@ -1575,7 +1561,6 @@ async function downloadMarkdownFile(fileId) {
   font-size: 0.75rem;
   line-height: 1.4;
 }
-.job-status-eta-state-paused { color: #92400e; }
 .job-status-eta-state-blocked { color: #b91c1c; }
 .job-status-eta {
   display: flex;
