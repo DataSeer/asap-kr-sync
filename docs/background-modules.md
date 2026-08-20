@@ -729,6 +729,11 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
     routinely carry semicolon-joined DOI lists; without this they surfaced as blank duplicate suggestions. The
     relaxation is restricted to nameless rows on purpose: two **named** protocols citing one DOI in common must
     stay two rows.
+- **Truncated responses are salvaged per list.** The consolidation body carries two arrays — `resources`
+  (kept) and `dropped` (rejected) — and `salvageTruncatedObjects` takes an array **name**, not just the body.
+  Reading it as one flat stream put rejected candidates into the Generated KRT labelled "kept" and emptied the
+  dropped-candidates audit table. Any future envelope with more than one list must be salvaged the same way;
+  pinned by `utils/gemini-json.test.js`.
 - **Output:** consumed by the **Suggestion Generation** module (§3.10) to produce AI Suggestions.
 - **Config:** `PDF_ANALYSIS_ENABLED` (in-process gate); the LM step: `KRT_GENERATION_ENABLED`,
   `KRT_GENERATION_GEMINI_API_KEY/_MODEL`, `KRT_GENERATION_API_TIMEOUT`. **Prompt:** `data/prompts/pdf-analysis-krt.txt`.

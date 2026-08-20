@@ -139,3 +139,62 @@ test('a truncated body still counts, because the salvage can read it', () => {
 test('a fenced but empty block is not an answer', () => {
   assert.equal(hasParseableBody(`${FENCE}json\n\n${FENCE}`), false);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Which list an object came from
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TWO_LISTS = '{"resources":[{"resourceName":"CellProfiler"},{"resourceName":"Fiji"}],' +
+                  '"dropped":[{"resourceName":"Figure 3","reason":"not a resource"}]}';
+
+test('a rejected candidate does not come back as a kept resource', () => {
+  // The consolidation response carries both lists and they mean opposite
+  // things. Flattening them put "Figure 3" into the Generated KRT as a kept
+  // row, and left the dropped-candidates audit table empty.
+  const kept = salvageTruncatedObjects(TWO_LISTS, 'resources');
+  assert.deepEqual(kept.map(r => r.resourceName), ['CellProfiler', 'Fiji']);
+});
+
+test('the dropped list is recoverable in its own right', () => {
+  const dropped = salvageTruncatedObjects(TWO_LISTS, 'dropped');
+  assert.deepEqual(dropped.map(r => r.resourceName), ['Figure 3']);
+});
+
+test('an absent key yields nothing rather than another list', () => {
+  // Falling back to "whatever array is there" is how the two got confused in
+  // the first place.
+  assert.deepEqual(salvageTruncatedObjects(TWO_LISTS, 'suggestions'), []);
+});
+
+test('with no key, only the first list is read', () => {
+  const out = salvageTruncatedObjects(TWO_LISTS);
+  assert.deepEqual(out.map(r => r.resourceName), ['CellProfiler', 'Fiji']);
+});
+
+test('truncation mid-first-list still keeps what completed', () => {
+  // The case the salvage exists for: `dropped` was never reached.
+  const cut = '{"resources":[{"resourceName":"CellProfiler"},{"resourceName":"Fi';
+  assert.deepEqual(salvageTruncatedObjects(cut, 'resources').map(r => r.resourceName), ['CellProfiler']);
+  assert.deepEqual(salvageTruncatedObjects(cut, 'dropped'), []);
+});
+
+test('truncation mid-SECOND-list keeps both lists apart', () => {
+  const cut = '{"resources":[{"a":1}],"dropped":[{"b":2},{"b":';
+  assert.deepEqual(salvageTruncatedObjects(cut, 'resources'), [{ a: 1 }]);
+  assert.deepEqual(salvageTruncatedObjects(cut, 'dropped'), [{ b: 2 }]);
+});
+
+test('a nested array inside a row is not mistaken for the rows array', () => {
+  const text = '{"resources":[{"name":"X","aliases":[{"v":"Y"}]},{"name":"Z"}]}';
+  assert.deepEqual(salvageTruncatedObjects(text, 'resources').map(r => r.name), ['X', 'Z']);
+});
+
+test('a bare array of objects still works with no key', () => {
+  // kr-comparison accepts `parsed.decisions || parsed`, so the body may have
+  // no envelope at all.
+  assert.deepEqual(salvageTruncatedObjects('[{"row":1},{"row":2},{"row"'), [{ row: 1 }, { row: 2 }]);
+});
+
+test('a bare stream of sibling objects still works', () => {
+  assert.deepEqual(salvageTruncatedObjects('{"row":1},{"row":2},{'), [{ row: 1 }, { row: 2 }]);
+});

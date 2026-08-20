@@ -170,12 +170,18 @@ function parseLMResponse(text) {
     // keeps every candidate, and the Generated KRT silently ships UNCONSOLIDATED
     // — no dedup, no non-resource filtering — with only a log line to say so.
     // The four detection modules already salvage; this one did not.
-    const salvaged = salvageTruncatedObjects(block);
-    if (salvaged.length > 0) {
-      logger.warn('KRT generation JSON was truncated — salvaged completed resources', {
-        error: err.message, salvaged: salvaged.length
+    //
+    // Both lists have to be recovered BY NAME. Salvaging the body as one flat
+    // stream put the `dropped` entries — the candidates the model explicitly
+    // rejected — into `resources`, where they shipped in the Generated KRT
+    // labelled "kept", while the dropped-candidates table rendered empty.
+    const resources = salvageTruncatedObjects(block, 'resources');
+    const dropped = salvageTruncatedObjects(block, 'dropped');
+    if (resources.length > 0 || dropped.length > 0) {
+      logger.warn('KRT generation JSON was truncated — salvaged completed entries', {
+        error: err.message, resources: resources.length, dropped: dropped.length
       });
-      return { resources: salvaged, dropped: [] };
+      return { resources, dropped };
     }
     logger.error('Failed to parse KRT generation JSON', { error: err.message });
     return { resources: [], dropped: [] };

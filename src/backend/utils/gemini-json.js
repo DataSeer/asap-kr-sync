@@ -34,28 +34,48 @@ function sanitizeJsonEscapes(str) {
  * returned 87 materials, hit the cap on the 87th, and the module recorded 0.
  *
  * Raising the cap makes that rarer; this makes it non-fatal. We scan the text
- * for balanced top-level objects (tracking string state so a brace inside a
- * quoted value doesn't confuse the depth count) and keep every object that
- * closed cleanly, discarding the partial tail.
+ * for balanced objects (tracking string state so a brace inside a quoted value
+ * doesn't confuse the depth count) and keep every object that closed cleanly,
+ * discarding the partial tail.
+ *
+ * **Objects are attributed to the array they came from**, which is the whole
+ * reason this is a scanner and not a regex. An envelope can carry more than one
+ * list — `{"resources": [...], "dropped": [...]}` — and they mean opposite
+ * things: `dropped` is the candidates the model REJECTED. Collecting both into
+ * one flat list put rejected candidates into the Generated KRT labelled "kept",
+ * and left the dropped-candidates audit table empty.
+ *
+ * With no `key`, only the first array's elements are returned — for a bare
+ * `[{…},{…}]` stream that is the whole body. Pass a `key` to take a named
+ * array instead; an absent key yields [] rather than silently falling back to
+ * another list.
  *
  * @param {string} text - the (possibly truncated) JSON body
+ * @param {string} [key] - property name of the array to recover
  * @returns {object[]} the objects that were complete, [] if none
  */
-function salvageTruncatedObjects(text) {
+function salvageTruncatedObjects(text, key) {
   const str = String(text || '');
   const objects = [];
   let depth = 0;
   let start = -1;
   let inString = false;
   let escaped = false;
+  let stringStart = -1;
 
   // Rows live inside an array, which itself usually sits inside an envelope
   // object (`{"resources": [ … ]`). That envelope's opening brace means array
   // elements open and close at depth 1, not 0 — so anchor on the depth at which
-  // the first array was entered. With a bare `{…},{…}` stream (no array) this
-  // stays 0 and behaves the same way.
+  // the array was entered. With a bare `{…},{…}` stream (no array) this stays 0
+  // and behaves the same way.
   let elementDepth = 0;
-  let sawArray = false;
+  let arrayDepth = -1;      // depth at which the array we are inside was opened
+  let arrayIndex = -1;      // which array of the envelope this is
+  let currentKey = null;    // the property name that array is the value of
+  let lastString = null;    // candidate key: the most recent string literal
+  let firstArrayKey;        // the key of array 0, resolved once
+
+  const wanted = () => (key === undefined ? arrayIndex === 0 : currentKey === key);
 
   for (let i = 0; i < str.length; i++) {
     const ch = str[i];
@@ -63,18 +83,36 @@ function salvageTruncatedObjects(text) {
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
+      else if (ch === '"') {
+        inString = false;
+        lastString = str.slice(stringStart + 1, i);
+      }
       continue;
     }
 
-    if (ch === '"') { inString = true; continue; }
+    if (ch === '"') { inString = true; stringStart = i; continue; }
 
-    if (ch === '[' && !sawArray) {
-      // Entering the rows array. Anything open before it is the envelope, not a
+    // `"resources":` — the string before a colon names whatever follows it.
+    if (ch === ':') continue;
+
+    if (ch === '[' && arrayDepth === -1) {
+      // Entering a rows array. Anything open before it is the envelope, not a
       // row, so abandon that candidate and re-anchor here.
+      arrayDepth = depth;
       elementDepth = depth;
+      arrayIndex++;
+      currentKey = lastString;
+      if (arrayIndex === 0) firstArrayKey = currentKey;
       start = -1;
-      sawArray = true;
+      continue;
+    }
+
+    if (ch === ']' && depth === arrayDepth) {
+      // The array closed cleanly — a later array is a different list. (A
+      // truncated body never gets here, which is the case that matters.)
+      arrayDepth = -1;
+      currentKey = null;
+      start = -1;
       continue;
     }
 
@@ -88,10 +126,12 @@ function salvageTruncatedObjects(text) {
       depth--;
       if (depth === elementDepth && start >= 0) {
         const candidate = str.slice(start, i + 1);
-        try {
-          objects.push(JSON.parse(sanitizeJsonEscapes(candidate)));
-        } catch {
-          // A malformed complete-looking object is skipped, not fatal.
+        if (wanted()) {
+          try {
+            objects.push(JSON.parse(sanitizeJsonEscapes(candidate)));
+          } catch {
+            // A malformed complete-looking object is skipped, not fatal.
+          }
         }
         start = -1;
       }
@@ -99,6 +139,39 @@ function salvageTruncatedObjects(text) {
     }
   }
 
+  // A bare `{…},{…}` stream never enters an array, so nothing was attributed.
+  // Re-read it as array 0 rather than returning nothing.
+  if (key === undefined && arrayIndex === -1 && firstArrayKey === undefined && objects.length === 0) {
+    return salvageObjectStream(str);
+  }
+
+  return objects;
+}
+
+/** The no-array case: a bare stream of sibling objects at depth 0. */
+function salvageObjectStream(str) {
+  const objects = [];
+  let depth = 0, start = -1, inString = false, escaped = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') { if (depth === 0) start = i; depth++; continue; }
+    if (ch === '}') {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try { objects.push(JSON.parse(sanitizeJsonEscapes(str.slice(start, i + 1)))); } catch { /* skip */ }
+        start = -1;
+      }
+      if (depth < 0) depth = 0;
+    }
+  }
   return objects;
 }
 
