@@ -66,6 +66,11 @@ A bespoke wet-lab-adjacent computational workflow with multiple custom steps in 
 
 ## OUTPUT FORMAT
 
+**If you find nothing, return the empty list — do not return an empty body.**
+`{"resources": []}` is a valid, expected answer: it says you read the manuscript
+and found none of these. A response with no JSON in it is treated as a failed
+call and retried, so silence costs a retry and still produces nothing useful.
+
 Output the structured data as JSON. Each element must have exactly these fields:
 
 {

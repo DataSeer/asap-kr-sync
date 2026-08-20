@@ -139,4 +139,41 @@ function extractJsonBlock(text) {
   return text.trim();
 }
 
-module.exports = { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock };
+/**
+ * Did the model actually answer?
+ *
+ * The distinction this draws is the whole point: a well-formed body containing
+ * an EMPTY array is a real answer — "I read the manuscript and found none of
+ * these" — while a body with no parseable JSON in it at all is a failed call
+ * dressed as a successful one. The detectors used to treat both as "0 items
+ * found", complete the job green, and report `detected: false`; a
+ * safety-blocked or truncated-to-nothing response was then indistinguishable
+ * from a manuscript that genuinely mentions no antibodies.
+ *
+ * Used as the `validate` callback on the LM call, so an unparseable body is
+ * RETRIED rather than accepted. The prompts are explicit that an empty array is
+ * the correct way to report finding nothing, so a model with nothing to say has
+ * a valid response available to it.
+ *
+ * @param {string} text - the raw response body
+ * @returns {boolean} true when the body carries parseable JSON
+ */
+function hasParseableBody(text) {
+  const block = extractJsonBlock(text);
+  if (!block.trim()) return false;
+  try {
+    JSON.parse(sanitizeJsonEscapes(block));
+    return true;
+  } catch {
+    // A truncated body is still an answer if the salvage can recover an object
+    // from it — that path exists precisely for responses cut at the token limit.
+    return salvageTruncatedObjects(block).length > 0;
+  }
+}
+
+module.exports = {
+  sanitizeJsonEscapes,
+  salvageTruncatedObjects,
+  extractJsonBlock,
+  hasParseableBody
+};

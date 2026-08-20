@@ -40,7 +40,7 @@ const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
 const runInputs = require('../queue/run-inputs.service');
 const { buildKrtItemFromLM } = require('../pdf-analysis/lm-resource.service');
 const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
-const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
@@ -323,16 +323,27 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    }, { label: 'datasets consolidation' });
+    }, {
+      label: 'datasets consolidation',
+      // An empty or unparseable body is a FAILED call, not "found
+      // nothing" — retry it. The prompt states that an empty array is
+      // how to report finding nothing, so a model with nothing to say
+      // still has a valid answer available.
+      validate: (res) => hasParseableBody(res?.text)
+    });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (datasets consolidation) — output hit maxOutputTokens');
     }
 
     const text = response.text;
-    if (!text) {
-      logger.warn('Gemini returned empty response for datasets consolidation');
-      return { resources: [], rawResponse: '', promptDigest };
+    if (!hasParseableBody(text)) {
+      // Every retry came back with nothing readable. Reporting zero
+      // resources here would be a wrong answer presented as a finished
+      // one: the job goes green with detected: false, indistinguishable
+      // from a manuscript that genuinely mentions none.
+      logger.error('Gemini returned no parseable body for datasets consolidation after retries');
+      throw new ExternalServiceError('Gemini', 'empty or unparseable response after retries');
     }
 
     logger.debug('Gemini consolidation response preview', { preview: text.substring(0, 500) });

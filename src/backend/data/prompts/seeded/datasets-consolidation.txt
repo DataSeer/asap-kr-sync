@@ -364,6 +364,11 @@ If unsure:
 
 ## OUTPUT FORMAT (STRICT JSON)
 
+**If you find nothing, return the empty list — do not return an empty body.**
+`{"resources": []}` is a valid, expected answer: it says you read the manuscript
+and found none of these. A response with no JSON in it is treated as a failed
+call and retried, so silence costs a retry and still produces nothing useful.
+
 {
 "resources": [
     {

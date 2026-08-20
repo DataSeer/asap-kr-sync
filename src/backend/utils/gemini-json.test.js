@@ -8,7 +8,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('./gemini-json');
+const {
+  sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock, hasParseableBody
+} = require('./gemini-json');
 
 test('salvages complete objects from a truncated array', () => {
   // Mirrors the real failure: cap hit mid-way through an evidence_quote.
@@ -109,4 +111,31 @@ test('a non-string is a string, not a crash', () => {
   assert.equal(extractJsonBlock(null), '');
   assert.equal(extractJsonBlock(undefined), '');
   assert.equal(extractJsonBlock({}), '');
+});
+
+// ── hasParseableBody ────────────────────────────────────────────────────────
+// The distinction the detectors depend on: "I found none of these" is an
+// answer; "no readable body" is a failed call. Treating the second as the first
+// made a safety-blocked response indistinguishable from a clean manuscript.
+
+test('an EMPTY LIST is a real answer', () => {
+  assert.equal(hasParseableBody('{"resources": []}'), true);
+  assert.equal(hasParseableBody('[]'), true);
+  assert.equal(hasParseableBody(`${FENCE}json\n{"resources": []}\n${FENCE}`), true);
+});
+
+test('no readable body is NOT an answer', () => {
+  for (const body of ['', '   ', null, undefined, 'I was unable to complete this request.']) {
+    assert.equal(hasParseableBody(body), false, `${JSON.stringify(body)} must not count as an answer`);
+  }
+});
+
+test('a truncated body still counts, because the salvage can read it', () => {
+  // That path exists for responses cut at the token limit; discarding them
+  // would throw away rows that did complete.
+  assert.equal(hasParseableBody('{"resources":[{"resourceName":"CellProfiler"},{"resourceName":"Fi'), true);
+});
+
+test('a fenced but empty block is not an answer', () => {
+  assert.equal(hasParseableBody(`${FENCE}json\n\n${FENCE}`), false);
 });

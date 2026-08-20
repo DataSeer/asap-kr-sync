@@ -44,7 +44,7 @@ const runInputs = require('../queue/run-inputs.service');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
-const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
@@ -267,16 +267,27 @@ async function callGeminiForProtocols(markdownText, opts = {}) {
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    }, { label: 'protocols' });
+    }, {
+      label: 'protocols',
+      // An empty or unparseable body is a FAILED call, not "found
+      // nothing" — retry it. The prompt states that an empty array is
+      // how to report finding nothing, so a model with nothing to say
+      // still has a valid answer available.
+      validate: (res) => hasParseableBody(res?.text)
+    });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (protocols) — output hit maxOutputTokens');
     }
 
     const text = response.text;
-    if (!text) {
-      logger.warn('Gemini returned empty response for protocols detection');
-      return { resources: [], rawResponse: '', promptDigest };
+    if (!hasParseableBody(text)) {
+      // Every retry came back with nothing readable. Reporting zero
+      // resources here would be a wrong answer presented as a finished
+      // one: the job goes green with detected: false, indistinguishable
+      // from a manuscript that genuinely mentions none.
+      logger.error('Gemini returned no parseable body for protocols detection after retries');
+      throw new ExternalServiceError('Gemini', 'empty or unparseable response after retries');
     }
 
     logger.debug('Gemini raw response preview (protocols)', { preview: text.substring(0, 500) });

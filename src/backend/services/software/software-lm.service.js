@@ -24,7 +24,7 @@ const { GoogleGenAI } = require('@google/genai');
 const softwareLmConfig = require('../../config/software-detection-lm-api');
 const { ExternalServiceError } = require('../../utils/errors');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
-const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock, hasParseableBody } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
 
@@ -80,13 +80,25 @@ async function detectSoftwareLM(markdownText, { prompt } = {}) {
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    }, { label: 'software-lm' });
+    }, {
+      label: 'software-lm',
+      // See the other detectors: an unreadable body is a failed call, and
+      // the prompt gives the model an empty array to answer with.
+      validate: (res) => hasParseableBody(res?.text)
+    });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (software LM) — output hit maxOutputTokens');
     }
 
     const text = response.text || '';
+    if (!hasParseableBody(text)) {
+      // Reporting zero software would be a wrong answer presented as a
+      // finished one — and this module silently degrades to Softcite-only,
+      // which makes it even harder to notice.
+      logger.error('Gemini returned no parseable body for software LM detection after retries');
+      throw new ExternalServiceError('Gemini', 'empty or unparseable response after retries');
+    }
     return { resources: parseResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for software detection', { error: error.message });
