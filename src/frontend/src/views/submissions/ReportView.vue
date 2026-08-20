@@ -7,6 +7,7 @@ import { setSubmissionTitle } from '@/router'
 import reportService from '@/services/report.service'
 import pdfService from '@/services/pdf.service'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import NewRoundModal from '@/components/submission/NewRoundModal.vue'
 
 const route = useRoute()
@@ -56,14 +57,37 @@ const previousRoundsGrouped = computed(() => {
     .map(([roundNum, roundReports]) => ({ round: Number(roundNum), reports: roundReports }))
 })
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its usual content — which reads as a statement about the
+// manuscript rather than as a page that never received it.
+const loadError = ref(null)
+function describeLoadError(err) {
+  const status = err?.response?.status
+  if (status === 403) return { message: 'You do not have access to this submission.', retryable: false }
+  if (status === 404) return { message: 'This submission no longer exists.', retryable: false }
+  return { message: err?.response?.data?.error || err?.message || 'The server did not respond.', retryable: true }
+}
+
+onMounted(loadPage)
+
+async function loadPage() {
   // Reset local state for new submission
   generating.value = false
   reports.value = []
+  loadError.value = null
 
-  await submissionStore.fetchSubmission(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    // "Submission Complete!" over a submission we could not read would be the
+    // most confident wrong answer in the app.
+    loadError.value = describeLoadError(err)
+    return
+  }
   await fetchReports()
-})
+}
 
 // Update page title with submission ID or title
 watch(submission, (sub) => {
@@ -188,8 +212,16 @@ async function handleDownload(report) {
       </template>
     </SubmissionHeader>
 
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
     <!-- Success message -->
-    <div class="card bg-green-50 border-green-200">
+    <div v-else class="card bg-green-50 border-green-200">
       <div class="flex items-center">
         <svg class="w-8 h-8 text-green-500 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />

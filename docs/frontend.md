@@ -95,6 +95,25 @@ instance is reused when only a route PARAM changes — so `onMounted` does not
 re-fire and moving from one module (or submission) to another would leave the
 previous one's data on screen under the new URL.
 
+### A failed load is never rendered as an answer
+
+The four submission-step views (`KRTView`, `PDFView`, `AvailabilityView`,
+`ReportView`) fetch the submission on mount. When that fetch rejects, the rest
+of the chain is skipped and the view falls through to its empty state — which is
+written as a statement of fact: *"No PDF file is associated with this
+submission"*, *"Submission Complete!"*, an availability check reporting a clean
+statement. A 403 or a 500 then reads as something true about the manuscript, and
+the user has no reason to retry.
+
+Each of those views keeps the load in a named `loadPage()` with the submission
+fetch in a `try`, sets a `loadError`, and renders `components/common/LoadError`
+**instead of** the content — not above it. `describeLoadError` decides whether a
+retry is offered: 403 and 404 are not transient, and a "Try again" that will
+always fail teaches the user to ignore the panel. Pinned by `LoadError.test.js`.
+
+The same rule applies to any new page whose content would otherwise read as a
+finding: *if the data did not arrive, say so instead of drawing the empty case.*
+
 ### Admin Routes (role-restricted)
 
 | Path | View | Allowed Roles |

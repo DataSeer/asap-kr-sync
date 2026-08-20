@@ -425,10 +425,29 @@ async function queueDasSuggestions(submissionId, round = 1) {
 
 /** Read the persisted DAS suggestions + job status for a submission/round. */
 async function getPersistedDasSuggestions(submissionId, round) {
-  const { SubmissionJob } = require('../../models');
+  const { SubmissionJob, Submission } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_SUGGESTIONS, round);
+
+  // A bare `waiting` cannot be acted on by the client: waiting for a dependency
+  // and waiting for the gate look identical, and they call for opposite
+  // behaviour. Gated means nothing is running, so the page must NOT block
+  // Continue on it — it did, and the fail-open that would have released it
+  // lives in a poller the gated path never started. Same distinction the jobs
+  // API draws with `waitingReason`.
+  let gated = false;
+  if (job?.status === 'waiting') {
+    const orchestrator = require('../queue/orchestrator.service');
+    const submission = await Submission.findByPk(submissionId, {
+      attributes: ['id', 'status', 'dataAvailabilityStatement']
+    });
+    const all = await SubmissionJob.getForSubmission(submissionId, round);
+    const jobsByType = new Map(all.map(j => [j.jobType, j]));
+    gated = orchestrator.isGateBlocked(JOB_TYPES.DAS_SUGGESTIONS, submission, jobsByType) === 'availability_ready';
+  }
+
   return {
     status: job?.status || 'none',
+    gated,
     suggestions: job?.result?.data?.suggestions || [],
     signals: job?.result?.data?.signals || null,
     meta: job?.result?.data?.meta || null

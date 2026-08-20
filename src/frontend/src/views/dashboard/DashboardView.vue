@@ -50,20 +50,36 @@ const selectedIds = ref(new Set())
 const bulkDeleting = ref(false)
 const showBulkDeleteModal = ref(false)
 
+// Select-all operates on what the table is SHOWING, not on the page behind the
+// search box. `submissions` is the whole fetched page; `visibleSubmissions` is
+// what survives the in-table search. Filtering to two rows, ticking the header
+// box and pressing "Delete selected" deleted all twelve — the checkbox even
+// read as unticked afterwards, because the two visible rows were among those
+// selected but not all of them were.
 const allOnPageSelected = computed(() => {
-  if (submissions.value.length === 0) return false
-  return submissions.value.every(s => selectedIds.value.has(s.id))
+  if (visibleSubmissions.value.length === 0) return false
+  return visibleSubmissions.value.every(s => selectedIds.value.has(s.id))
 })
 
 function toggleSelectAll() {
   if (allOnPageSelected.value) {
-    submissions.value.forEach(s => selectedIds.value.delete(s.id))
+    visibleSubmissions.value.forEach(s => selectedIds.value.delete(s.id))
   } else {
-    submissions.value.forEach(s => selectedIds.value.add(s.id))
+    visibleSubmissions.value.forEach(s => selectedIds.value.add(s.id))
   }
   // Trigger reactivity
   selectedIds.value = new Set(selectedIds.value)
 }
+
+// Narrowing the search must not leave rows selected that the user can no longer
+// see — the count in "Delete selected (N)" would then be about rows that are
+// not on screen.
+watch(visibleSubmissions, (visible) => {
+  if (selectedIds.value.size === 0) return
+  const stillVisible = new Set(visible.map(s => s.id))
+  const kept = new Set([...selectedIds.value].filter(id => stillVisible.has(id)))
+  if (kept.size !== selectedIds.value.size) selectedIds.value = kept
+})
 
 function toggleSelect(id) {
   if (selectedIds.value.has(id)) {

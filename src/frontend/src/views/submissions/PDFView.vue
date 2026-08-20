@@ -17,6 +17,7 @@ import KRTEditor from '@/components/krt/KRTEditor.vue'
 import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isFutureStepJob } from '@/composables'
@@ -122,12 +123,24 @@ async function handleAdvanceAnalysis() {
 }
 
 // Wires job-completion side-effects (refreshing suggestions, surfacing
-// notifications, etc.) into the shared BackgroundProcesses wrapper. Called
-// from onMounted once bgProcessesRef is bound — the wrapper itself runs
-// useJobPoller; we just register PDFView-specific reactions on top.
+// notifications, etc.) into the shared BackgroundProcesses wrapper. The wrapper
+// itself runs useJobPoller; we just register PDFView-specific reactions on top.
+//
+// It cannot simply be called from onMounted. The panel lives inside a `v-else`
+// on `pdfFile`, which comes from the submission — not fetched until later in
+// that same onMounted. So on a COLD load the panel is not rendered yet, the ref
+// is null, and every callback here was silently skipped: the suggestions card
+// sat on "Analyzing…" until the page was reloaded a second time, by which point
+// the store already had the submission and the panel rendered immediately. It
+// looked like a slow first load rather than a wiring bug.
+//
+// So it is driven by the ref instead: registered the moment the panel exists,
+// once.
+let callbacksRegistered = false
 function registerJobCallbacks() {
   const bg = bgProcessesRef.value
-  if (!bg) return
+  if (!bg || callbacksRegistered) return
+  callbacksRegistered = true
 
   bg.onJobComplete('pdf_analysis', async () => {
     analyzing.value = false
@@ -312,8 +325,24 @@ const showRejectModal = ref(false)
 const rejectingFinding = ref(null)
 const rejectionReason = ref('')
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its empty state — which reads as a fact about the manuscript
+// rather than as a page that never received it.
+const loadError = ref(null)
+function describeLoadError(err) {
+  const status = err?.response?.status
+  if (status === 403) return { message: 'You do not have access to this submission.', retryable: false }
+  if (status === 404) return { message: 'This submission no longer exists.', retryable: false }
+  return { message: err?.response?.data?.error || err?.message || 'The server did not respond.', retryable: true }
+}
+
+onMounted(loadPage)
+
+async function loadPage() {
   // Reset state for the new submission
+  loadError.value = null
   replacingPdf.value = false
   analyzing.value = false
   analysisStatus.value = null
@@ -322,16 +351,22 @@ onMounted(async () => {
   // Clear previous KRT data before loading new submission
   krtStore.clearKRT()
 
-  // The BackgroundProcesses child is mounted before the parent, so its ref
-  // is bound by the time we get here — wire our job-completion callbacks
-  // into the shared poller.
+  // Registers now if the panel is already rendered (a warm store); the watcher
+  // below covers the cold load, where it appears only once the submission
+  // arrives.
+  callbacksRegistered = false
   registerJobCallbacks()
 
   // Load resource type categories (non-blocking) — service status is owned
   // by the BackgroundProcesses wrapper now.
   resourceTypesStore.fetchResourceTypeNames().catch(() => {})
 
-  await submissionStore.fetchSubmission(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
   await krtStore.fetchKRT(route.params.id)
   await checkAnalysisStatus()
   await loadSoftwareMentions()
@@ -339,7 +374,12 @@ onMounted(async () => {
   await loadDatasets()
   await loadMaterials()
   await loadProtocols()
-})
+}
+
+// The panel appears only once the submission has loaded (it is inside a v-else
+// on `pdfFile`), so this is what catches the cold load — see the note on
+// registerJobCallbacks.
+watch(bgProcessesRef, () => registerJobCallbacks())
 
 // Update page title with the submission title (manuscriptId is optional).
 watch(submission, (sub) => {
@@ -1186,11 +1226,22 @@ function scrollToFindingRow(finding) {
       </template>
     </SubmissionHeader>
 
+    <!-- The submission never arrived. Shown INSTEAD of the no-PDF message
+         below, which would otherwise state as fact something this page has no
+         way of knowing. -->
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
     <!-- Fallback: if the PDF upload failed during step 1, surface a recovery
          path. Step 1 enforces PDF-required at the form level, but a failed
          upload after submission creation could land the user here without
          one. We send them back to step 2 to retry. -->
-    <div v-if="!pdfFile" class="card text-center py-8">
+    <div v-else-if="!pdfFile" class="card text-center py-8">
       <p class="text-sm text-gray-700 mb-2">
         No PDF file is associated with this submission. The original upload may have failed.
       </p>

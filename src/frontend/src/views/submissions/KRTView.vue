@@ -9,6 +9,7 @@ import api from '@/services/api'
 import pdfService from '@/services/pdf.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import { useJobPoller } from '@/composables'
 
 const route = useRoute()
@@ -288,8 +289,24 @@ function registerJobCallbacks() {
   })
 }
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its usual content — which reads as a statement about the
+// manuscript rather than as a page that never received it.
+const loadError = ref(null)
+function describeLoadError(err) {
+  const status = err?.response?.status
+  if (status === 403) return { message: 'You do not have access to this submission.', retryable: false }
+  if (status === 404) return { message: 'This submission no longer exists.', retryable: false }
+  return { message: err?.response?.data?.error || err?.message || 'The server did not respond.', retryable: true }
+}
+
+onMounted(loadPage)
+
+async function loadPage() {
   // Reset local state for new submission
+  loadError.value = null
   uploading.value = false
   applyingFix.value = false
   showBatchFixModal.value = false
@@ -302,7 +319,12 @@ onMounted(async () => {
   // Registered before the first fetch settles, so no completion is missed.
   registerJobCallbacks()
 
-  await submissionStore.fetchSubmission(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
   if (submission.value && submission.value.status !== 'draft') {
     await krtStore.fetchKRT(route.params.id)
     // Also fetch AI suggestions if analysis was completed
@@ -322,7 +344,7 @@ onMounted(async () => {
   } catch (e) {
     // Resource types are optional, ignore errors
   }
-})
+}
 
 // Update page title with the submission title (manuscriptId is optional, so
 // gate on either identifier — otherwise submissions without a manuscript id
@@ -649,8 +671,16 @@ function scrollToFirstWarning() {
       </template>
     </SubmissionHeader>
 
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
     <!-- Quick Fixes Section - Carousel Navigation -->
-    <div v-if="allQuickFixes.length > 0 || krtStore.validating" class="card">
+    <div v-if="!loadError && (allQuickFixes.length > 0 || krtStore.validating)" class="card">
       <div class="flex items-center justify-between" :class="showQuickFixes ? 'mb-3' : 'mb-0'">
         <div class="flex items-center gap-2">
           <h3 class="text-sm font-medium text-gray-700">Quick Fixes</h3>

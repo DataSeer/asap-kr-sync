@@ -6,6 +6,7 @@ import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import dasSuggestionsService from '@/services/das-suggestions.service'
 
 const route = useRoute()
@@ -62,7 +63,16 @@ async function saveDAS() {
 // poll its status: while it runs we show a loader and block Continue; when it
 // finishes we render its per-rule verdicts. If the LM is disabled or failed we
 // fall back to the legacy in-browser rules (see `allRules` below).
+// Statuses that mean "a run is happening, wait for it". `gated` is deliberately
+// NOT one: the check has been accepted but is held behind its pipeline gate, so
+// nothing is running and there is nothing to wait for. Treating that as running
+// blocked Continue for ever — the fail-open that unblocks it lives in the
+// poller, and the gated branch never started the poller.
 const RUNNING_STATUSES = ['waiting', 'queued', 'processing']
+// What is worth keeping an eye on. Wider than RUNNING_STATUSES: a gated step
+// starts on its own once the statement is saved — which happens on this page —
+// so it is watched without being waited for.
+const POLLABLE_STATUSES = [...RUNNING_STATUSES, 'gated']
 const dasJobStatus = ref('none')
 const lmSuggestions = ref([])
 // The booleans the LM was handed as KRT ground truth, and the run metadata
@@ -84,10 +94,15 @@ const lmCheckFailed = computed(() =>
   (dasJobStatus.value === 'complete' && lmSuggestions.value.length === 0)
 )
 
+// Accepted, but held behind its gate — it needs a saved statement to read.
+const lmCheckGated = computed(() => dasJobStatus.value === 'gated')
+
 async function fetchDasSuggestions() {
   try {
     const data = await dasSuggestionsService.get(route.params.id)
-    dasJobStatus.value = data.status || 'none'
+    // A gated step is accepted but not running — see the note on
+    // RUNNING_STATUSES. Collapsed into one status the rest of the view reads.
+    dasJobStatus.value = data.gated ? 'gated' : (data.status || 'none')
     lmSuggestions.value = Array.isArray(data.suggestions) ? data.suggestions : []
     lmSignals.value = data.signals || null
     lmMeta.value = data.meta || null
@@ -157,7 +172,7 @@ function startPolling() {
       return
     }
     await fetchDasSuggestions()
-    if (!RUNNING_STATUSES.includes(dasJobStatus.value)) stopPolling()
+    if (!POLLABLE_STATUSES.includes(dasJobStatus.value)) stopPolling()
   }, 3000)
 }
 
@@ -169,7 +184,11 @@ async function regenerateDasSuggestions() {
     // so it can be accepted-but-waiting — and polling for a job that is not
     // going to start would leave a loader spinning for ever.
     if (result?.queued === false) {
-      dasJobStatus.value = result.pending ? 'waiting' : 'none'
+      dasJobStatus.value = result.pending ? 'gated' : 'none'
+      // Poll anyway when it is gated: the gate opens on the statement being
+      // saved, and this is the page that saves it. The poller's own time cap
+      // stops it if that never happens.
+      if (result.pending) startPolling()
       return
     }
 
@@ -197,18 +216,41 @@ const helpItems = computed(() => [
   }
 ])
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its usual content — which reads as a statement about the
+// manuscript rather than as a page that never received it.
+const loadError = ref(null)
+function describeLoadError(err) {
+  const status = err?.response?.status
+  if (status === 403) return { message: 'You do not have access to this submission.', retryable: false }
+  if (status === 404) return { message: 'This submission no longer exists.', retryable: false }
+  return { message: err?.response?.data?.error || err?.message || 'The server did not respond.', retryable: true }
+}
+
+onMounted(loadPage)
+
+async function loadPage() {
+  loadError.value = null
   krtStore.clearKRT()
-  await submissionStore.fetchSubmission(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    // The built-in rules are computed from the KRT and the statement. With
+    // neither loaded they would report a clean statement over nothing at all.
+    loadError.value = describeLoadError(err)
+    return
+  }
   await krtStore.fetchKRT(route.params.id)
   await fetchDasSuggestions()
   if (dasJobStatus.value === 'none') {
     // First arrival (the user just finished review) → run the DAS check now.
     await regenerateDasSuggestions()
-  } else if (RUNNING_STATUSES.includes(dasJobStatus.value)) {
+  } else if (POLLABLE_STATUSES.includes(dasJobStatus.value)) {
     startPolling()
   }
-})
+}
 
 onUnmounted(stopPolling)
 
@@ -443,8 +485,16 @@ async function handleBack() {
       @go-next="handleNext"
     />
 
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
     <!-- Original extracted DAS (shown when user has modified it) -->
-    <div v-if="dasWasModified" class="card extracted-das-card">
+    <div v-if="!loadError && dasWasModified" class="card extracted-das-card">
       <div class="text-xs font-semibold uppercase text-gray-500 mb-1">Original extracted text</div>
       <div class="extracted-das-text">{{ extractedDAS }}</div>
     </div>
@@ -560,6 +610,20 @@ async function handleBack() {
             ground truth. A checklist item fires from these — e.g. if there is no row that is both Software/code and
             marked “new”, the no-new-code checks apply regardless of the statement wording.
             <span v-if="lmMeta?.model"> Checked by {{ lmMeta.model }}.</span>
+          </p>
+        </div>
+      </div>
+
+      <!-- Accepted but waiting on a statement to read -->
+      <div v-if="lmCheckGated" class="das-fallback-notice">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div>
+          <p class="das-fallback-title">The AI check is waiting for your statement</p>
+          <p class="das-fallback-sub">
+            Save an Availability Statement above and it runs on its own. The checks below are the built-in ones
+            in the meantime — you are not blocked from continuing.
           </p>
         </div>
       </div>

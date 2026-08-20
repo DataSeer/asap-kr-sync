@@ -1160,6 +1160,24 @@ function inlineShortcutOptions(colKey) {
   if (colKey === 'NEW/REUSE') return NEW_REUSE_OPTIONS
   return []
 }
+/**
+ * A value the author typed that is not one of the options.
+ *
+ * A `<select>` whose value matches no option renders BLANK, so the cell showed
+ * nothing at all — hiding the very thing the curator is here to fix. An
+ * unrecognised resource type or new/reuse value is precisely what the
+ * validation banner is complaining about, and the editor was the one place it
+ * could not be read.
+ *
+ * @param {object} row
+ * @param {string} colKey
+ * @returns {string|null} the off-list value, or null when it is a valid option
+ */
+function offListValue(row, colKey) {
+  const value = row[colKey]
+  if (!value) return null
+  return inlineShortcutOptions(colKey).includes(value) ? null : value
+}
 async function onInlineShortcut(rowId, col, value) {
   if (value === undefined || value === null || value === '') return
   try {
@@ -2310,6 +2328,11 @@ defineExpose({
                       @change="onInlineShortcut(row.id, col, $event.target.value)"
                     >
                       <option value="" disabled>—</option>
+                      <!-- What the author actually wrote, when it is not one of
+                           the options. Without it the cell renders blank. -->
+                      <option v-if="offListValue(row, col.key)" :value="offListValue(row, col.key)" disabled>
+                        {{ offListValue(row, col.key) }} (not a valid value)
+                      </option>
                       <option v-for="opt in inlineShortcutOptions(col.key)" :key="opt" :value="opt">{{ opt }}</option>
                     </select>
                     <span v-else class="cell-text-content">
