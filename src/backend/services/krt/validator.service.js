@@ -614,11 +614,11 @@ async function validateIdentifier(row, submissionId) {
       // post-copy state and doesn't keep complaining.
       const bestValue = pickBestExtractedValue(additionalExtracted, resourceType);
       if (bestValue) {
+        // Set the copied value AND the parse consistent with it, then write
+        // once. This used to save twice — the value, then the parse — which is
+        // two writes per affected row on every validation pass of every KRT,
+        // for no observable difference in the end state.
         row.identifier = bestValue;
-        await row.save();
-        // Persist parsedIdentifiers consistent with the new value and exit
-        // — the next validation cycle (or this caller's outer loop) will
-        // re-validate the row against its now-populated IDENTIFIER.
         const reExtracted = identifierExtractor.extractAll(bestValue);
         const merged = {};
         for (const key of Object.keys(reExtracted)) {
@@ -626,6 +626,8 @@ async function validateIdentifier(row, submissionId) {
         }
         row.parsedIdentifiers = merged;
         await row.save();
+        // The next validation cycle (or this caller's outer loop) re-validates
+        // the row against its now-populated IDENTIFIER.
         return errors;
       }
       // Fell through — no auto-copyable value despite some additional
