@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useTeamsStore } from '@/stores/teams.store'
 import SearchInput from '@/components/common/SearchInput.vue'
+import { formatDate } from '@/utils/format-date'
 
 const authStore = useAuthStore()
 const notificationStore = useNotificationStore()
@@ -71,10 +72,6 @@ async function fetchUsers() {
   } finally {
     loading.value = false
   }
-}
-
-function formatDate(date) {
-  return new Date(date).toLocaleDateString()
 }
 
 function openEditModal(user) {

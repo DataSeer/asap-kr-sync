@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, computed, watch } from 'vue'
+import { formatDateTime } from '@/utils/format-date'
 import { useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useAuthStore } from '@/stores/auth.store'
@@ -855,7 +856,7 @@ const activeFilterCount = computed(() => {
                   v{{ sub.currentRound || 1 }}
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">
-                  {{ new Date(sub.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) }}
+                  {{ formatDateTime(sub.createdAt) }}
                 </td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end space-x-1">

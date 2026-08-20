@@ -10,6 +10,7 @@ import StatusBadge from './StatusBadge.vue'
 import ProjectBadge from './ProjectBadge.vue'
 import StepIndicator from './StepIndicator.vue'
 import EditMetadataModal from './EditMetadataModal.vue'
+import { formatDateTime } from '@/utils/format-date'
 import { statusToStep } from '@/utils/submission'
 
 const props = defineProps({
@@ -38,14 +39,10 @@ const canDelete = computed(() => authStore.canDeleteSubmission)
 const canEdit = computed(() => authStore.canEditSubmission(props.submission))
 const isComplete = computed(() => props.submission.status === 'completed')
 
-const formattedDate = computed(() => {
-  const date = new Date(props.submission.createdAt)
-  return date.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric'
-  })
-})
+// Date AND time, matching the table view — two submissions created the same
+// day are otherwise indistinguishable, and the order they happen to be listed
+// in is the only clue about which came first.
+const formattedDate = computed(() => formatDateTime(props.submission.createdAt))
 
 // Edit modal state
 const showEditModal = ref(false)

@@ -4,6 +4,7 @@ import Papa from 'papaparse'
 import { useTeamsStore } from '@/stores/teams.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import SearchInput from '@/components/common/SearchInput.vue'
+import { formatDate } from '@/utils/format-date'
 
 const teamsStore = useTeamsStore()
 const notificationStore = useNotificationStore()
@@ -52,10 +53,6 @@ async function fetchTeams() {
   } finally {
     loading.value = false
   }
-}
-
-function formatDate(date) {
-  return new Date(date).toLocaleDateString()
 }
 
 async function handleExport() {

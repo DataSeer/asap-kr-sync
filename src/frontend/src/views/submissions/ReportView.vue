@@ -9,6 +9,7 @@ import pdfService from '@/services/pdf.service'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import NewRoundModal from '@/components/submission/NewRoundModal.vue'
+import { formatDateTime as formatDate } from '@/utils/format-date'
 
 const route = useRoute()
 const router = useRouter()
@@ -169,10 +170,6 @@ async function handleNewRound(data) {
   } finally {
     newRoundLoading.value = false
   }
-}
-
-function formatDate(date) {
-  return new Date(date).toLocaleString()
 }
 
 async function handleDownload(report) {

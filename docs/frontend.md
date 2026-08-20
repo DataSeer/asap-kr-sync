@@ -95,6 +95,27 @@ instance is reused when only a route PARAM changes — so `onMounted` does not
 re-fire and moving from one module (or submission) to another would leave the
 previous one's data on screen under the new URL.
 
+### Dates are formatted in one place
+
+`utils/format-date.js` exports two functions, and the split is deliberate:
+
+- `formatDate` — the day, where the day is the fact (an admin list, a created-on
+  column with nothing else on it).
+- `formatDateTime` — the day and the time, where the **moment** matters: the
+  dashboard, a file version, a report. Two rows created the same day are
+  otherwise indistinguishable, and the order they happen to be listed in is the
+  only clue about which came first.
+
+Both name the month and use a 24-hour clock, because `8/20/26` and `20/8/26` are
+the same string to a parser and opposite dates to a reader. Both render a
+missing or unparseable value as `—`, never the literal `Invalid Date`, which
+reads as a data problem rather than an absent value.
+
+This was six copies across the views, already drifted into two behaviours with
+nothing to say which a given table was meant to show — the shared `utils/` that
+would have held them was dead code and got deleted, which is how the copies
+happened. Pinned by `utils/format-date.test.js`.
+
 ### A failed load is never rendered as an answer
 
 The four submission-step views (`KRTView`, `PDFView`, `AvailabilityView`,

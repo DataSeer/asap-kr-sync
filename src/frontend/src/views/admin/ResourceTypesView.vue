@@ -4,6 +4,7 @@ import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import resourceTypesService from '@/services/resourceTypes.service'
 import SearchInput from '@/components/common/SearchInput.vue'
+import { formatDate } from '@/utils/format-date'
 
 const resourceTypesStore = useResourceTypesStore()
 const notificationStore = useNotificationStore()
@@ -66,10 +67,6 @@ async function fetchResourceTypes() {
   } finally {
     loading.value = false
   }
-}
-
-function formatDate(date) {
-  return new Date(date).toLocaleDateString()
 }
 
 function getCategoryLabel(type) {
