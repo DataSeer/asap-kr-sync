@@ -107,6 +107,31 @@ flowchart LR
 - **Services** contain business logic and orchestrate data operations
 - **Models** define database schema and relationships via Sequelize
 
+### Testing a multi-step write
+
+Every controller that writes more than one row wraps the work in a transaction,
+and the failure modes live in the **order** of commit, rollback and whatever
+runs after them — not in the SQL. `test-helpers/fake-transaction.js` provides:
+
+- `fakeTransaction(t)` — patches `sequelize.transaction()` and records the
+  commit/rollback sequence. It supports both shapes the codebase uses (managed,
+  `transaction(async (t) => …)`; and unmanaged, `const t = await transaction()`),
+  and it **rejects a double finish exactly as Sequelize does**.
+- `callController(handler, req)` — runs a handler and resolves with whichever of
+  `res`/`next` it reached, with a timeout, so "the handler neither responded nor
+  called next()" fails the test instead of hanging it.
+
+That last property is not decoration. The bug it exists for: `mergeRows`
+committed, then ran a non-critical re-validation that threw, and the catch
+called `rollback()` on a committed transaction. Sequelize rejected, the
+rejection escaped before `next(error)` ran, Express 4 does not forward an async
+rejection — and a merge that had **succeeded** left the client waiting forever.
+
+A fake that shrugs at a double finish would let that regression straight back
+in. This one did, at first, and a mutation test found the fake at fault rather
+than the code — which is the argument for mutation-checking a harness as well as
+the thing it tests.
+
 ## Frontend Architecture
 
 The frontend is a Single-Page Application (SPA):
