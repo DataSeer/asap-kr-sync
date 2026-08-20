@@ -14,7 +14,6 @@ const { repoPath } = require('../detection/repo-path');
 const runInputs = require('../queue/run-inputs.service');
 const { NO_DAS_SENTINEL } = require('../das-suggestions/das-suggestions.service');
 const dasExtractionConfig = require('../../config/das-extraction-api');
-const jobQueue = require('../queue/job-queue.service');
 const { generateS3Key } = require('../../utils/helpers');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
@@ -285,13 +284,20 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
  */
 async function queueAnalysis(submissionId, userId, round = 1) {
   const orchestrator = require('../queue/orchestrator.service');
+
+  // Read BEFORE re-queueing — requeueStep leaves a re-run at `queued`, so the
+  // returned row cannot distinguish a run we just started from one already
+  // going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.PDF_ANALYSIS, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.PDF_ANALYSIS, round, userId);
 
   logger.info('PDF analysis re-queued', {
-    submissionId, round, submissionJobId: job.id, status: job.status
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
 
-  return job;
+  return { job, alreadyInFlight };
 }
 
 /**
@@ -609,39 +615,31 @@ async function runDasExtractor(submission, jobLogger) {
 }
 
 /**
- * Queue DAS extraction as a background job
+ * Re-run DAS extraction, in the pipeline.
+ *
+ * Through `requeueStep`, like every other step: the round's own row is reused
+ * rather than a second one being inserted beside it. See the note on
+ * `queueAnalysis` above for what a rival row does to the pipeline.
+ *
  * @param {string} submissionId
- * @returns {Promise<string>} Job ID
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
  */
-async function queueDASExtraction(submissionId, round = 1) {
+async function queueDASExtraction(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
+
+  // Read BEFORE re-queueing — requeueStep leaves a re-run at `queued`.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_EXTRACTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
   await orchestrator.cascadeRestart(submissionId, JOB_TYPES.DAS_EXTRACTION, round);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.DAS_EXTRACTION, round, userId);
 
-  // Create SubmissionJob tracking record
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.DAS_EXTRACTION,
-    status: 'queued',
-    round
+  logger.info('DAS extraction re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.DAS_EXTRACTION,
-    {
-      submissionId,
-      submissionJobId: submissionJob.id
-    },
-    {
-      // retryLimit and expireIn derived from JOB_CONFIG (DAS_EXTRACTION_API_TIMEOUT)
-    }
-  );
-
-  // Store pg-boss job ID
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('DAS extraction queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 module.exports = {

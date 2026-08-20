@@ -32,7 +32,6 @@ const { GoogleGenAI } = require('@google/genai');
 // set (the pure pipeline tests don't need the DB at all).
 const s3Service = require('../storage/s3.service');
 const protocolsConfig = require('../../config/protocols-detection-api');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
@@ -68,48 +67,38 @@ function hasPrompt() {
 }
 
 /**
- * Resolve the detection prompt. An explicit `override` (non-empty string) wins
- * — used by tuning/experiment scripts; otherwise the committed default file is
- * read once and cached.
- * @param {string} [override] - optional prompt text to use instead of the file
- * @returns {string}
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
  */
-function getPrompt(override) {
-  if (override != null && String(override).trim()) {
-    return String(override).trim();
-  }
-  if (!_promptCache) {
-    if (!hasPrompt()) {
-      throw new Error(`Prompt file not found: ${PROMPT_FILE} — this prompt is version-controlled; restore it from git to enable protocols detection`);
-    }
-    _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
-    logger.info('Loaded protocols detection prompt', { file: PROMPT_FILE, length: _promptCache.length });
-  }
-  return _promptCache;
-}
-
-async function queueProtocolsDetection(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+async function queueProtocolsDetection(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
+  const { SubmissionJob } = require('../../models');
+
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
   await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round, userId);
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.PROTOCOLS_DETECTION,
-    status: 'queued',
-    round
+  logger.info('Protocols detection re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.PROTOCOLS_DETECTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Protocols detection queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 async function processProtocolsDetection(submissionId, jobLogger = null, { isFinalAttempt = true } = {}) {

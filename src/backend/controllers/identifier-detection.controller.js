@@ -28,12 +28,16 @@ async function getIdentifierMentions(req, res, next) {
 async function triggerDetection(req, res, next) {
   try {
     const submission = req.submission;
-    await identifierDetectionService.queueIdentifierDetection(
+    const { job, alreadyInFlight } = await identifierDetectionService.queueIdentifierDetection(
       submission.id,
-      submission.currentRound
+      submission.currentRound,
+      req.userId
     );
-    logger.info('Identifier detection queued', { submissionId: submission.id });
-    res.json({ message: 'Identifier detection queued' });
+    logger.info('Identifier detection queued', { submissionId: submission.id, status: job.status });
+    res.json({
+      message: alreadyInFlight ? 'Identifier detection is already running' : 'Identifier detection queued',
+      status: job.status
+    });
   } catch (error) {
     next(error);
   }

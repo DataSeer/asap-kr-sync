@@ -16,7 +16,6 @@ const fs = require('fs');
 const path = require('path');
 const { GoogleGenAI } = require('@google/genai');
 const krtComparisonConfig = require('../../config/krt-comparison-api');
-const jobQueue = require('../queue/job-queue.service');
 const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.service');
@@ -568,23 +567,39 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
   };
 }
 
-/** Queue (or re-queue) suggestion generation as a background job. */
-async function queueSuggestionGeneration(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+/**
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
+ */
+async function queueSuggestionGeneration(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId, jobType: JOB_TYPES.SUGGESTION_GENERATION, status: 'queued', round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round, userId);
+
+  logger.info('Suggestion generation re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.SUGGESTION_GENERATION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-  logger.info('Suggestion generation queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 /** Worker entry point. Persists the suggestion list on the SubmissionJob. */

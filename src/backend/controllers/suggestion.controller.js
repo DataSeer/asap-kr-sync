@@ -32,9 +32,14 @@ async function regenerateSuggestions(req, res, next) {
   try {
     const { queueSuggestionGeneration } = require('../services/suggestion/kr-comparison.service');
     const round = req.submission.currentRound;
-    const jobId = await queueSuggestionGeneration(req.params.id, round);
-    logger.info('Suggestion regeneration requested', { submissionId: req.params.id, round, jobId, userId: req.userId });
-    res.status(202).json({ message: 'Suggestion generation queued', jobId });
+    const { job, alreadyInFlight } = await queueSuggestionGeneration(req.params.id, round, req.userId);
+    logger.info('Suggestion regeneration requested', {
+      submissionId: req.params.id, round, status: job.status, alreadyInFlight, userId: req.userId
+    });
+    res.status(202).json({
+      message: alreadyInFlight ? 'Suggestion generation is already running' : 'Suggestion generation queued',
+      status: job.status
+    });
   } catch (error) {
     next(error);
   }

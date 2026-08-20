@@ -375,26 +375,29 @@ Starts (or re-runs) all pipeline processes for a submission. Creates `Submission
 
 Manually advances a `pending_input` job to `queued`. Only works for jobs in `pending_input` status.
 
-### Re-running one step — `requeueStep` is the target, not yet the rule
+### Re-running one step — there is exactly one way, and a test says so
 
 `orchestrator.requeueStep(submissionId, jobType, round, userId)`. It **reuses
 the round's existing row** for that step and only enqueues when the step is
 actually runnable (dependencies terminal, gates satisfied); otherwise it leaves
 it `waiting` for the normal advancement to pick up.
 
-**Four of the twelve steps go through it today**: `pdf_analysis`,
-`markdown_convert`, `orcid_extraction` and `das_suggestions`. The rest — the
-five detectors, `krt_grounding` and `suggestion_generation` — still
-`cascadeRestart` and then INSERT a fresh `queued` row
-(`software.service.js`, `materials.service.js`, `protocols.service.js`,
-`datasets.service.js`, `identifier-detection.service.js`,
-`krt-grounding.service.js`, `kr-comparison.service.js`).
+**Every step goes through it.** That was not true when this section first
+claimed it — only four did, and the sentence generalised from the four whose
+failures had been observed. All twelve now do, and the claim is no longer taken
+on trust: `services/queue/one-restart-path.test.js` reads the source and fails
+if any service creates its own `SubmissionJob` row or defines a `queue*`
+function that skips `requeueStep`. `SubmissionJob.create` is allowed in exactly
+one file — the orchestrator, which seeds the round and creates a row only when a
+step has none at all.
 
-That is a known gap, stated rather than implied: an earlier revision of this
-section claimed there was "exactly one way", which was wrong the day it was
-written. The four were converted because their failures had been observed; the
-other seven carry the same latent risk described below and have not been
-converted yet.
+Each `queue*` function returns `{ job, alreadyInFlight }`. The flag is read
+**before** re-queueing, because `requeueStep` leaves a re-run at `queued` and
+the returned row therefore cannot distinguish a run just started from one
+already going — deciding after the fact made every re-run endpoint answer
+"already running", including for runs started that instant. The same test
+exercises every queue function against a stubbed orchestrator to check the flag
+is computed rather than merely present.
 
 Never insert a second `SubmissionJob` row for a type the pipeline already
 created. `getForSubmission` keeps only the newest row per type, so a rival row

@@ -18,7 +18,6 @@ const fs = require('fs');
 const path = require('path');
 const { GoogleGenAI } = require('@google/genai');
 const dasSuggestionsConfig = require('../../config/das-suggestions-api');
-const jobQueue = require('../queue/job-queue.service');
 const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { generateContentWithRetry } = require('../../utils/gemini');
@@ -402,11 +401,17 @@ async function queueDasSuggestions(submissionId, round = 1) {
   // keeps only the newest row per type, and the pipeline's real one was left
   // stranded behind it.)
   const orchestrator = require('../queue/orchestrator.service');
+
+  // Read BEFORE re-queueing — see the note in any other queue* function.
+  // (SubmissionJob is already in scope from the top of this function.)
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_SUGGESTIONS, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
   const job = await orchestrator.requeueStep(
     submissionId, JOB_TYPES.DAS_SUGGESTIONS, round, null
   );
   logger.info('DAS suggestions re-queued', {
-    submissionId, submissionJobId: job.id, status: job.status
+    submissionId, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
 
   // The step is gated to the Availability step, so asking for it earlier leaves
@@ -416,6 +421,7 @@ async function queueDasSuggestions(submissionId, round = 1) {
   // good statement that they had not provided one.
   return {
     queued: job.status === 'queued',
+    alreadyInFlight,
     reason: job.status === 'waiting' ? 'gated' : null,
     status: job.status,
     jobId: job.pgBossJobId || null,

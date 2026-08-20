@@ -33,9 +33,14 @@ async function getGrounding(req, res, next) {
 async function triggerGrounding(req, res, next) {
   try {
     const submission = req.submission;
-    await krtGroundingService.queueKrtGrounding(submission.id, submission.currentRound);
-    logger.info('KRT grounding queued', { submissionId: submission.id });
-    res.json({ message: 'KRT grounding queued' });
+    const { job, alreadyInFlight } = await krtGroundingService.queueKrtGrounding(
+      submission.id, submission.currentRound, req.userId
+    );
+    logger.info('KRT grounding queued', { submissionId: submission.id, status: job.status });
+    res.json({
+      message: alreadyInFlight ? 'KRT grounding is already running' : 'KRT grounding queued',
+      status: job.status
+    });
   } catch (error) {
     next(error);
   }

@@ -204,7 +204,7 @@ async function triggerAnalysis(req, res, next) {
 
     // Allow re-running analysis from step_pdf or later (for manual re-runs)
 
-    const submissionJob = await pdfService.queueAnalysis(
+    const { job: submissionJob, alreadyInFlight } = await pdfService.queueAnalysis(
       submission.id,
       req.userId,
       submission.currentRound
@@ -213,7 +213,7 @@ async function triggerAnalysis(req, res, next) {
     logger.info('PDF analysis queued', { submissionId: submission.id, submissionJobId: submissionJob.id });
 
     res.json({
-      message: 'Analysis queued',
+      message: alreadyInFlight ? 'Analysis is already running' : 'Analysis queued',
       submissionJobId: submissionJob.id,
       status: submissionJob.status
     });

@@ -29,7 +29,6 @@
 // Sequelize models are lazy-loaded inside the worker functions below — see
 // the matching comment in protocols.service.js for the rationale.
 const s3Service = require('../storage/s3.service');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
@@ -62,32 +61,38 @@ const CATEGORY_FALLBACK_TYPE = {
 };
 
 /**
- * Queue an identifier-detection job for a submission. Same shape as the
- * other queueX functions so the orchestrator's cascade-restart works without
- * special-casing.
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
  */
-async function queueIdentifierDetection(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+async function queueIdentifierDetection(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
+  const { SubmissionJob } = require('../../models');
+
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
   await orchestrator.cascadeRestart(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round, userId);
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.IDENTIFIER_DETECTION,
-    status: 'queued',
-    round
+  logger.info('Identifier detection re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.IDENTIFIER_DETECTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Identifier detection queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 /**

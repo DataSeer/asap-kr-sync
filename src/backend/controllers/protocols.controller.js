@@ -30,15 +30,20 @@ async function triggerDetection(req, res, next) {
   try {
     const submission = req.submission;
 
-    await protocolsService.queueProtocolsDetection(
+    const { job, alreadyInFlight } = await protocolsService.queueProtocolsDetection(
       submission.id,
-      submission.currentRound
+      submission.currentRound,
+      req.userId
     );
 
-    logger.info('Protocols detection queued', { submissionId: submission.id });
+    logger.info('Protocols detection queued', { submissionId: submission.id, status: job.status });
 
+    // Say which of the two happened. A re-run asked for while the step is in
+    // flight is deliberately a no-op; reporting it as "queued" would leave the
+    // user waiting for a second run that is never going to start.
     res.json({
-      message: 'Protocols detection queued'
+      message: alreadyInFlight ? 'Protocols detection is already running' : 'Protocols detection queued',
+      status: job.status
     });
   } catch (error) {
     next(error);
