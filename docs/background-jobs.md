@@ -219,6 +219,36 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 
 - Jobs with no dependencies and no gate start immediately with status `queued`
 - Jobs with dependencies start as `waiting` until all dependencies reach a terminal state (`complete` or `failed`)
+### What Cancel does, and deliberately does not do
+
+**A module already talking to an external API is never interrupted.** It
+finishes its call and records its real result; the pipeline stops there.
+
+| state when Cancel lands | what happens |
+|---|---|
+| `processing` | left alone. Its queue entry is **not** pulled, it completes normally, and its result is kept. |
+| `waiting` / `queued` / `pending_input` | queue entry dropped, row marked `cancelled`. |
+| `complete` / `failed` / `cancelled` | untouched — history, not backlog. |
+
+Four properties make that safe, and each can break on its own, so each is
+pinned in `controllers/cancel-lets-inflight-finish.test.js`:
+
+1. the in-flight module keeps running — a Gemini call already paid for should
+   produce a stored answer rather than be thrown away;
+2. everything not yet started is `cancelled`;
+3. when the in-flight module finishes, its result is recorded (it was never
+   marked cancelled, so `markComplete`'s guard does not apply);
+4. **its dependents still do not start** — `tryAdvanceStep` only ever starts a
+   job that is `waiting`, and they are `cancelled`.
+
+Two guards back that up. `markComplete` **reloads before deciding** and refuses
+to resurrect a cancelled row: a worker that had already dequeued a job when the
+cancel landed would otherwise complete it and restart the pipeline behind the
+user. And `isRoundCancelled` — true if *any* job in the round is cancelled — is
+read by the worker's error path, so a failure caused by the cancel is made
+terminal immediately instead of being retried: pg-boss retries on a throw, and
+retrying would restart the very external work the user asked to stop.
+
 - **`failed` means pg-boss has given up, not "this attempt errored".** A worker
   whose attempt fails with retries left calls `markRetrying`, which keeps the row
   `processing` and records the error for display. Writing `failed` there strands
