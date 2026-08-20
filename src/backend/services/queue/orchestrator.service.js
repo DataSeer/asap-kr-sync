@@ -595,6 +595,59 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
 }
 
 /**
+ * Re-run one pipeline step, respecting the pipeline.
+ *
+ * Reuses the round's existing row for that step instead of inserting a rival
+ * one, and only enqueues when the step is actually runnable — dependencies
+ * terminal and gates satisfied. Otherwise it is left `waiting` for
+ * checkAndAdvance/reconcile to pick up, which is what every other step does.
+ *
+ * This exists because "trigger analysis" used to INSERT a second
+ * SubmissionJob row for a type the pipeline had already created, and
+ * getForSubmission keeps only the newest row per type. Observed on a real run:
+ * uploading a PDF seeds pdf_analysis as `waiting` (it depends on every
+ * detector); POST /pdf/analyze then created a second, `queued` row that ran
+ * within a second — before any detector had produced anything. When the
+ * detectors finished, checkAndAdvance looked up pdf_analysis, found that newer
+ * row `complete`, and advanced nothing. The pipeline reported 11/11 complete
+ * and the Generated KRT contained 98 author rows and ZERO detections, while
+ * datasets detection alone had found 96 items. A wrong answer presented as a
+ * finished one.
+ *
+ * @param {string} submissionId
+ * @param {string} jobType
+ * @param {number} round
+ * @param {string} userId
+ * @returns {Promise<object>} the step's SubmissionJob row
+ */
+async function requeueStep(submissionId, jobType, round, userId) {
+  const step = PIPELINE.find((s) => s.jobType === jobType);
+  if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
+
+  let job = await SubmissionJob.getLatest(submissionId, jobType, round);
+  if (!job) {
+    job = await SubmissionJob.create({ submissionId, jobType, status: 'waiting', round });
+  } else if (['queued', 'processing'].includes(job.status)) {
+    // Already on its way — re-queueing would duplicate the work it is doing.
+    return job;
+  } else {
+    job.status = 'waiting';
+    job.pgBossJobId = null;
+    job.result = null;
+    job.error = null;
+    await job.save();
+  }
+
+  const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
+  const jobsByType = new Map(allJobs.map((j) => [j.jobType, j]));
+  jobsByType.set(jobType, job);
+  const submission = await Submission.findByPk(submissionId, { attributes: ['id', 'status'] });
+
+  await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, 'manual');
+  return job;
+}
+
+/**
  * Whether a job type is currently blocked by its submission-state gate.
  * Used by the jobs API to explain WHY a job is `waiting` (the frontend shows
  * "waiting for KRT validation" instead of a generic dependency message).
@@ -611,6 +664,7 @@ function isGateBlocked(jobType, submission, jobsByType) {
 module.exports = {
   PIPELINE,
   runAllProcesses,
+  requeueStep,
   checkAndAdvance,
   reconcileSubmission,
   reconcileStuckJobs,

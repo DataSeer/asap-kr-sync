@@ -269,49 +269,29 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
 }
 
 /**
- * Queue PDF for analysis
+ * Re-run the PDF-analysis step for a submission.
+ *
+ * Delegates to the orchestrator so the step is re-run IN the pipeline: its own
+ * row is reused, and it only starts once every detector has finished and the
+ * gates pass. It used to insert a second pdf_analysis row set straight to
+ * `queued`, which ran the consolidation before any detector had produced
+ * anything and left the pipeline's real row stranded in `waiting` — see
+ * orchestrator.requeueStep for what that produced.
+ *
  * @param {string} submissionId
  * @param {string} userId
- * @returns {Promise<object>} Analysis record
+ * @param {number} round
+ * @returns {Promise<object>} the pdf_analysis SubmissionJob row
  */
 async function queueAnalysis(submissionId, userId, round = 1) {
-  // PDF Analysis is the consolidator — no downstream cascade today, but call
-  // for consistency / future extensibility (e.g., DAS suggestions).
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PDF_ANALYSIS, round);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.PDF_ANALYSIS, round, userId);
 
-  // Create SubmissionJob tracking record
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.PDF_ANALYSIS,
-    status: 'queued',
-    round
+  logger.info('PDF analysis re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status
   });
 
-  // Add job to the queue
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.PDF_ANALYSIS,
-    {
-      submissionId,
-      userId,
-      submissionJobId: submissionJob.id
-    },
-    {
-      // retryLimit and expireIn derived from JOB_CONFIG (PDF_ANALYSIS_API_TIMEOUT)
-    }
-  );
-
-  // Store pg-boss job ID
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('PDF analysis queued', {
-    submissionId,
-    submissionJobId: submissionJob.id,
-    jobId
-  });
-
-  return submissionJob;
+  return job;
 }
 
 /**
