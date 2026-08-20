@@ -110,10 +110,20 @@ async function extractDAS(req, res, next) {
     const submission = req.submission;
     const result = await pdfService.extractAndSaveDAS(submission.id);
 
+    // `result.extracted` does not exist — extractAndSaveDAS returns the helper
+    // shape { data, status, source, ... }. Reading a missing field meant the
+    // ternary always took the "not found" branch, so a successful re-run of DAS
+    // extraction reported failure, and the `das` the frontend documents was
+    // never in the body either.
+    const das = result.data?.meta?.das ?? null;
+    const extracted = result.status === 'done' && !!das;
+
     res.json({
-      message: result.extracted
+      message: extracted
         ? 'Availability Statement extracted successfully'
         : 'Availability Statement not found',
+      extracted,
+      das,
       ...result
     });
   } catch (error) {

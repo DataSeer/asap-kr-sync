@@ -160,3 +160,34 @@ test('an unstamped submission is judged by the default pipeline\'s prompts', () 
 test('a detector the pipeline has no strategy for is not available', () => {
   assert.equal(detectionPromptsExist('not_a_detector', submission({ pipelineId: 'seeded-v1' })), false);
 });
+
+test('a missing SIGNALS prompt makes the module unavailable too', () => {
+  // Datasets reads two prompts. Only the consolidation one used to be
+  // declared, so this returned "available" with the signals prompt missing —
+  // buildInput then threw ENOENT and the run fell through to demo data,
+  // serving demo rows for a real manuscript.
+  const signals = getStrategy('datasets.seeded').signalsPromptFiles[0];
+  const original = fs.existsSync;
+  fs.existsSync = (file) => (file === signals ? false : original(file));
+  try {
+    assert.equal(detectionPromptsExist('datasets', submission({ pipelineId: 'seeded-v1' })), false);
+  } finally {
+    fs.existsSync = original;
+  }
+});
+
+test('a strategy declaring no prompts at all is not "available"', () => {
+  // `[].every()` is true, so an empty list used to read as satisfied — the same
+  // masking shape as the missing signals prompt.
+  const strategy = getStrategy('datasets.seeded');
+  const promptFiles = strategy.promptFiles;
+  const signalsPromptFiles = strategy.signalsPromptFiles;
+  strategy.promptFiles = [];
+  strategy.signalsPromptFiles = [];
+  try {
+    assert.equal(detectionPromptsExist('datasets', submission({ pipelineId: 'seeded-v1' })), false);
+  } finally {
+    strategy.promptFiles = promptFiles;
+    strategy.signalsPromptFiles = signalsPromptFiles;
+  }
+});

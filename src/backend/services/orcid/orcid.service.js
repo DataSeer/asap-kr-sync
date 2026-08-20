@@ -68,11 +68,16 @@ async function processOrcidExtraction(submissionId, jobLogger = null, { isFinalA
 
   // Authors are stored on the Submission (not the SubmissionJob) — preserve
   // existing reads from submission.authors.
-  submission.authors = {
-    items: result.data.items || [],
-    meta: result.data.meta || {}
-  };
-  await submission.save();
+  // Only on success. `fail` resolves rather than throwing, and its data.items
+  // is [] — so a GROBID outage on the final attempt replaced a previously
+  // extracted author list with nothing.
+  if (result.status === 'done') {
+    submission.authors = {
+      items: result.data.items || [],
+      meta: result.data.meta || {}
+    };
+    await submission.save();
+  }
 
   return result;
 }

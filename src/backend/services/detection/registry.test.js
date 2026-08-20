@@ -27,6 +27,18 @@ test('every strategy prompt asks for an evidence field', () => {
   }
 });
 
+test('a signals prompt is declared, and exists', () => {
+  // Separate from promptFiles because it produces signals rather than resource
+  // records — but just as required, and it was previously declared nowhere at
+  // all, so `detectionPromptsExist` reported the module runnable without it.
+  for (const strategy of allStrategies()) {
+    for (const file of strategy.signalsPromptFiles || []) {
+      assert.ok(fs.existsSync(file), `${strategy.id}: ${path.basename(file)} is missing`);
+      assert.ok(fs.readFileSync(file, 'utf-8').trim().length > 0, `${strategy.id}: ${path.basename(file)} is empty`);
+    }
+  }
+});
+
 test('every strategy prompt file exists and is not empty', () => {
   for (const strategy of allStrategies()) {
     for (const file of strategy.promptFiles) {

@@ -34,7 +34,7 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
-const { resolveDetection } = require('../detection/resolve');
+const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
@@ -111,7 +111,12 @@ async function processMaterialsDetection(submissionId, jobLogger = null, { isFin
   if (!submission) throw new NotFoundError('Submission');
 
   const result = await runWithDemoFallback({
-    isExternalEnabled: materialsConfig.isConfigured() && hasPrompt(),
+    // Ask the strategy the SUBMISSION'S pipeline selects. This tested the
+    // BLIND prompt while the default pipeline is seeded: a missing blind
+    // file made a perfectly runnable seeded detection serve DEMO rows for a
+    // real manuscript, and a missing seeded file was reported available and
+    // then threw. Same fix datasets already had.
+    isExternalEnabled: materialsConfig.isConfigured() && detectionPromptsExist('materials', submission),
     demoEnabled: process.env.MATERIALS_DETECTION_DEMO_DATA_ENABLED !== 'false',
     runExternal: () => detectMaterialsForSubmission(submission, jobLogger),
     getDemoData: async () => {

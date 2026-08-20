@@ -75,8 +75,11 @@ function detectionPromptsExist(detector, submission) {
   const pipeline = getPipeline(submission?.pipelineId);
   const strategyId = pipeline.strategies[detector];
   if (!strategyId) return false;
-  const files = getStrategy(strategyId).promptFiles || [];
-  return files.every((file) => fs.existsSync(file));
+  const strategy = getStrategy(strategyId);
+  // Both lists: a missing signals prompt breaks the run just as surely as a
+  // missing consolidation prompt.
+  const files = [...(strategy.promptFiles || []), ...(strategy.signalsPromptFiles || [])];
+  return files.length > 0 && files.every((file) => fs.existsSync(file));
 }
 
 module.exports = { resolveDetection, detectionPromptsExist };

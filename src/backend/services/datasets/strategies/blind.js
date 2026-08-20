@@ -15,6 +15,13 @@ const SIGNALS_PROMPT = path.join(__dirname, '../../../data/prompts/blind/dataset
 module.exports = {
   id: 'datasets.blind',
   promptFiles: [PROMPT],
+  // Declared separately, and checked for existence alongside promptFiles.
+  // Omitting it entirely made detectionPromptsExist report the module
+  // available with this file missing — buildInput then threw ENOENT and
+  // the module served demo rows for a real manuscript. It is not in
+  // `promptFiles` because it produces SIGNALS, not resource records: its
+  // grounding is LangExtract's span alignment, not an evidence field.
+  signalsPromptFiles: [SIGNALS_PROMPT],
   detector: 'datasets',
   seedTitle: null,
   async shouldRun() { return { run: true }; },

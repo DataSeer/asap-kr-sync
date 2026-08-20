@@ -34,7 +34,7 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
-const { resolveDetection } = require('../detection/resolve');
+const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
 const runInputs = require('../queue/run-inputs.service');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
@@ -113,7 +113,12 @@ async function processProtocolsDetection(submissionId, jobLogger = null, { isFin
   if (!submission) throw new NotFoundError('Submission');
 
   const result = await runWithDemoFallback({
-    isExternalEnabled: protocolsConfig.isConfigured() && hasPrompt(),
+    // Ask the strategy the SUBMISSION'S pipeline selects. This tested the
+    // BLIND prompt while the default pipeline is seeded: a missing blind
+    // file made a perfectly runnable seeded detection serve DEMO rows for a
+    // real manuscript, and a missing seeded file was reported available and
+    // then threw. Same fix datasets already had.
+    isExternalEnabled: protocolsConfig.isConfigured() && detectionPromptsExist('protocols', submission),
     demoEnabled: process.env.PROTOCOLS_DETECTION_DEMO_DATA_ENABLED !== 'false',
     runExternal: () => detectProtocolsForSubmission(submission, jobLogger),
     getDemoData: async () => {
