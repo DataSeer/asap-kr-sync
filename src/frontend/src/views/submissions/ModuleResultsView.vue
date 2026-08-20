@@ -25,7 +25,7 @@ import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
-import { labelFor } from '@/components/modules/module-meta'
+import { labelFor, hasModulePage } from '@/components/modules/module-meta'
 import { buildKrtRows } from '@/components/modules/generated-krt'
 import {
   decisionLabel, decisionType, decisionMatchesSearch, buildDecisionRows, DECISION_ORDER
@@ -84,14 +84,6 @@ onMounted(async () => {
   }
 })
 
-/** Modules with a page. A tab that goes nowhere is worse than a greyed one. */
-const HAS_PAGE = new Set([
-  'krt_grounding',
-  'software_detection', 'datasets_detection', 'materials_detection',
-  'protocols_detection', 'identifier_detection',
-  'markdown_convert', 'orcid_extraction', 'das_extraction',
-  'pdf_analysis', 'suggestion_generation'
-])
 
 const label = computed(() => labelFor(jobType.value))
 
@@ -443,7 +435,7 @@ const tabConflicts = computed(() => {
     <nav v-if="steps.length" class="mrv-modules" aria-label="Pipeline steps">
       <template v-for="s in steps" :key="s.jobType">
         <RouterLink
-          v-if="HAS_PAGE.has(s.jobType)"
+          v-if="hasModulePage(s.jobType)"
           :to="{ name: 'submission-module', params: { id: submissionId, type: s.jobType } }"
           class="mrv-module"
           :class="{ 'mrv-module-active': s.jobType === jobType }"

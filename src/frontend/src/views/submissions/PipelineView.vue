@@ -18,7 +18,7 @@ import { RouterLink } from 'vue-router'
 import { useRoute } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import configService from '@/services/config.service'
-import { labelFor, purposeFor, stageLabel } from '@/components/modules/module-meta'
+import { labelFor, purposeFor, stageLabel, hasModulePage } from '@/components/modules/module-meta'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { setSubmissionTitle } from '@/router'
@@ -125,14 +125,6 @@ function outputOf(jobType) {
 
 const conflictsFor = (jobType) => (jobType === 'krt_grounding' ? (jobFor(jobType)?.result?.counts?.conflicts || 0) : 0)
 
-/** Only krt_grounding has a page so far; a link to an empty one is worse than none. */
-const HAS_PAGE = new Set([
-  'pdf_analysis', 'suggestion_generation',
-  'markdown_convert', 'orcid_extraction', 'das_extraction',
-  'krt_grounding',
-  'software_detection', 'datasets_detection', 'materials_detection',
-  'protocols_detection', 'identifier_detection'
-])
 
 /** Which steps consume each step's output — the reverse of dependsOn. */
 const consumersOf = computed(() => {
@@ -250,14 +242,14 @@ const activeStage = computed(() => {
 
             <div class="pv-cards">
               <component
-                :is="HAS_PAGE.has(node.jobType) ? 'RouterLink' : 'div'"
+                :is="hasModulePage(node.jobType) ? 'RouterLink' : 'div'"
                 v-for="node in group.nodes"
                 :key="node.jobType"
-                :to="HAS_PAGE.has(node.jobType)
+                :to="hasModulePage(node.jobType)
                   ? { name: 'submission-module', params: { id: submissionId, type: node.jobType } }
                   : undefined"
                 class="pv-card"
-                :class="{ 'pv-card-link': HAS_PAGE.has(node.jobType) }"
+                :class="{ 'pv-card-link': hasModulePage(node.jobType) }"
               >
                 <div class="pv-card-head">
                   <span class="pv-card-name">{{ labelFor(node.jobType) }}</span>
@@ -286,7 +278,7 @@ const activeStage = computed(() => {
                     :title="'Waits for: ' + node.gates.map(gateLabel).join(', ')"
                   >gated</span>
                   <span v-if="!node.autoAdvances" class="pv-gate" title="Can pause and wait for you before it runs.">may pause</span>
-                  <span v-if="HAS_PAGE.has(node.jobType)" class="pv-open">open ↗</span>
+                  <span v-if="hasModulePage(node.jobType)" class="pv-open">open ↗</span>
                 </div>
               </component>
             </div>

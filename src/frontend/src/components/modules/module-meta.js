@@ -31,6 +31,27 @@ export const MODULE_META = {
  */
 export const STAGE_LABELS = ['Ingest', 'Detect', 'Reconcile', 'Consolidate', 'Suggest']
 
+
+/**
+ * Every module, in the order the panel lays them out.
+ *
+ * Derived from MODULE_META rather than repeated: the panel, the pipeline page
+ * and the module page each kept their own copy of these eleven strings, and
+ * they had already drifted — the pipeline page's comment still said "only
+ * krt_grounding has a page so far" while listing all eleven.
+ */
+export const ALL_JOB_TYPES = Object.entries(MODULE_META).map(([type, m]) => ({ type, label: m.label }))
+
+/**
+ * Modules with a dedicated results page. Currently every module has one, but a
+ * new step appears in the server's graph before its page exists, and a tab or a
+ * tile linking to an empty page is worse than one that does not link at all —
+ * so this stays an explicit set rather than "all of them".
+ */
+export const MODULE_PAGE_TYPES = new Set(Object.keys(MODULE_META))
+
+export const hasModulePage = (jobType) => MODULE_PAGE_TYPES.has(jobType)
+
 export const labelFor = (jobType) => MODULE_META[jobType]?.label || jobType
 export const purposeFor = (jobType) => MODULE_META[jobType]?.purpose || ''
 export const stageLabel = (i) => STAGE_LABELS[i] || `Stage ${i + 1}`
