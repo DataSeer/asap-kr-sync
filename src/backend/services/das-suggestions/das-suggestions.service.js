@@ -24,6 +24,8 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const { sanitizeJsonEscapes, extractJsonBlock } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const runInputs = require('../queue/run-inputs.service');
+const { repoPath } = require('../detection/repo-path');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/das-suggestions.txt');
 
@@ -203,6 +205,9 @@ async function callGeminiForDas(dasText, signals) {
   const prompt = getPrompt();
   const payload = { data_availability_statement: dasText || '', krt_summary: signals };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
+  // The digest of what was actually sent, so the audit record can prove the
+  // prompt rebuilt from the frozen inputs is the one that ran.
+  const promptDigest = { sha256: runInputs.sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -215,7 +220,7 @@ async function callGeminiForDas(dasText, signals) {
       validate: (res) => parseFindings(res?.text || '').length > 0
     });
     const text = response.text || '';
-    return { findings: parseFindings(text), rawResponse: text };
+    return { findings: parseFindings(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for DAS suggestions', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
@@ -244,8 +249,26 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
   jobLogger?.log('das_suggestions_start', 'Checking DAS against the rulebook', {
     dasLength: dasText.length, krtRows: krtRows.length
   });
-  const { findings, rawResponse } = await callGeminiForDas(dasText, signals);
+  const { findings, rawResponse, promptDigest } = await callGeminiForDas(dasText, signals);
   await jobLogger?.saveRawResponse('das-suggestions', rawResponse || findings);
+
+  // Freeze what this run was given. Both of its inputs are mutable — the author
+  // edits their statement on the very step that triggers this check, and their
+  // KRT keeps changing — so a later reader has no way to tell what the model
+  // actually saw unless the run records it. Every other LM module writes one of
+  // these; this one was missed.
+  await runInputs.saveRunInputs(jobLogger, {
+    frozen: {
+      dataAvailabilityStatement: dasText,
+      krtSignals: signals
+    },
+    prompt: runInputs.promptRef(repoPath(PROMPT_FILE), promptDigest),
+    meta: {
+      model: dasSuggestionsConfig.model,
+      dasLength: dasText.length,
+      krtRowCount: krtRows.length
+    }
+  });
 
   const suggestions = buildSuggestions(findings, signals, dasText);
   const applicable = suggestions.filter(s => s.applies).length;
@@ -257,7 +280,17 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
     data: { suggestions, signals },
     status: 'done',
     source: 'external',
-    meta: { total: suggestions.length, applicable, totalMs: Date.now() - start, model: dasSuggestionsConfig.model }
+    // dasLength/krtRowCount are also in the frozen inputs record; repeated here
+    // because the Technical detail panel reads the job's own meta, and "what
+    // this run was given" belongs beside "what it produced".
+    meta: {
+      total: suggestions.length,
+      applicable,
+      totalMs: Date.now() - start,
+      model: dasSuggestionsConfig.model,
+      dasLength: dasText.length,
+      krtRowCount: krtRows.length
+    }
   };
 }
 

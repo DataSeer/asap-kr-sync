@@ -206,7 +206,11 @@ const activeStage = computed(() => {
 <template>
   <div class="pv">
     <div class="pv-head">
-      <RouterLink :to="{ name: 'submission-pdf', params: { id: submissionId } }" class="pv-back">
+      <!-- To the submission, not to a step. `submission-detail` redirects to
+           whichever step the submission is actually on, so this stays right as
+           the author moves through them — pinning it to the PDF step sent
+           someone on the Availability step backwards. -->
+      <RouterLink :to="{ name: 'submission-detail', params: { id: submissionId } }" class="pv-back">
         ← Back to the submission
       </RouterLink>
       <h1 class="pv-title">Processing pipeline</h1>

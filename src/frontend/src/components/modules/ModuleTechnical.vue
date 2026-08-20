@@ -91,7 +91,15 @@ const prompts = computed(() => {
 })
 
 const result = computed(() => props.job?.result || {})
-const meta = computed(() => result.value.data?.meta || {})
+/**
+ * What the run recorded about itself.
+ *
+ * Nearly every module stores this at `result.data.meta`. The DAS check stores
+ * it at `result.meta` — its persisted shape predates the others and is read
+ * that way by its own API endpoint — so both are accepted here rather than
+ * moving a stored contract that two other callers depend on.
+ */
+const meta = computed(() => result.value.data?.meta || result.value.meta || {})
 const counts = computed(() => result.value.counts || {})
 
 const ms = (v) => (typeof v === 'number' ? (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`) : null)
@@ -156,7 +164,12 @@ const READS = {
   identifier_detection: ['markdown'],
   krt_grounding: ['markdown', 'krt', 'candidates'],
   pdf_analysis: ['candidates'],
-  suggestion_generation: ['krt', 'generatedKrt']
+  suggestion_generation: ['krt', 'generatedKrt'],
+  // The statement is not a file — it is a field on the submission, written by
+  // DAS extraction and then editable by the author on the very step that runs
+  // this check. It is listed anyway, pointing at the step that produced it,
+  // because leaving it out would say this module reads only the KRT.
+  das_suggestions: ['das', 'krt']
 }
 
 /** The detectors whose items make up the candidate pool. */
@@ -173,6 +186,8 @@ const jobOf = (type) => props.jobs?.[type] || null
  * says what that run saw and not what the submission looks like today.
  */
 const INPUT_COUNTS = [
+  ['dasLength', 'Characters of Availability Statement'],
+  ['krtRowCount', 'KRT rows summarised for the check'],
   ['seedCount', 'Author rows used as seeds'],
   ['authorCount', 'Author KRT rows read'],
   ['candidateCount', 'Candidates considered'],
@@ -225,6 +240,16 @@ const inputs = computed(() => {
           note: `${j.result?.data?.items?.length ?? 0} items`
         })
       }
+    } else if (kind === 'das') {
+      const j = jobOf('das_extraction')
+      const detected = j?.result?.status?.detected
+      out.push({
+        label: 'Your Availability Statement',
+        route: { name: 'submission-module', params: { id: props.submissionId, type: 'das_extraction' } },
+        note: detected === false
+          ? 'not found in the manuscript — whatever you entered by hand'
+          : 'as extracted, plus any edit you made on the Availability step'
+      })
     } else if (kind === 'generatedKrt') {
       const j = jobOf('pdf_analysis')
       out.push({
@@ -345,8 +370,16 @@ const responseUrl = (name) =>
           <template v-for="([k, v]) in inputCounts" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
         </dl>
         <p class="mt-note">
-          These are the documents as they are stored now. Only KRT Grounding keeps a copy of its own
-          input; elsewhere an edit made after the run will show here even though the run never saw it.
+          <template v-if="inputArtefacts.length">
+            The frozen record above is what this run was actually given. The documents beside it are
+            shown as they are stored <em>now</em>, so an edit made afterwards appears there even though
+            the run never saw it.
+          </template>
+          <template v-else>
+            These are the documents as they are stored now — an edit made after the run will show here
+            even though the run never saw it. Modules that keep a frozen copy of their own input show
+            it above; this one does not, or you do not have access to it.
+          </template>
         </p>
       </div>
       <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
