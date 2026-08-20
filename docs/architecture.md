@@ -42,7 +42,7 @@ asap-kr-sync/
 │   │   │   ├── datasets/          # Datasets detection (langextract + Google Gemini)
 │   │   │   ├── identifier-detection/  # Curated-list identifier scanner (DOIs, RRIDs, accessions, catalogs)
 │   │   │   │                          # + list-free published-protocol venue sweep
-│   │   │   ├── krt/               # KRT parsing, validation, identifiers, author-KRT seeding (shared by software/protocols/materials)
+│   │   │   ├── krt/               # KRT parsing, validation, identifiers, author-KRT seeding (shared by protocols/materials/datasets)
 │   │   │   ├── krt-grounding/     # Author KRT ↔ manuscript reconciliation (deterministic + LM second look)
 │   │   │   ├── materials/         # Materials detection (Google Gemini, cue-driven)
 │   │   │   ├── orcid/             # ORCID extraction (GROBID, OpenAlex, ORCID API)
@@ -217,7 +217,6 @@ graph TD
     ID --> PA
     KG --> PA
     PA --> SG[Suggestion Generation]
-    ORCID --> SG
 
     style PDF fill:#3b82f6,color:#fff
     style DAS fill:#f59e0b,color:#fff

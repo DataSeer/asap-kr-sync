@@ -10,7 +10,7 @@ The frontend is a Vue 3 Single-Page Application using the Composition API, Pinia
 | Vite | ^8.0 | Build tool and dev server |
 | Pinia | ^2.1 | State management |
 | Vue Router | ^4.2 | Client-side routing |
-| Axios | ^1.15 | HTTP client (`withCredentials: true` for cookie auth) |
+| Axios | ^1.18 | HTTP client (`withCredentials: true` for cookie auth) |
 | Tailwind CSS | ^3.4 | Utility-first CSS framework |
 | Headless UI | ^1.7 | Accessible unstyled UI components |
 | Heroicons | ^2.1 | SVG icons |
@@ -73,7 +73,7 @@ All wrapped in `AppLayout` (header + sidebar).
 | `/submissions/:id/availability` | AvailabilityView | Step 4: Data Availability |
 | `/submissions/:id/report` | ReportView | Step 5: Report Generation |
 | `/submissions/:id/pipeline` | PipelineView | The run as a graph — every step, its stage, what it consumed |
-| `/submissions/:id/module/:type` | ModuleResultsView | One module's results, in full |
+| `/submissions/:id/pipeline/:type` | ModuleResultsView | One module's results, in full |
 | `/profile` | ProfileView | — |
 
 `das_suggestions` is a pipeline step gated to the Availability step. It has a
@@ -175,7 +175,7 @@ Manages authentication state and role-based permissions. Tokens are **not** in t
 
 **Key state:** `user`, `loading`, `error`, `viewAsRole` (admin role simulator).
 
-**Key computed:** `isAuthenticated`, `userRole`, `userTeams`, `isRealAdmin`, `effectiveRole` (respects `viewAsRole`), `isAuth0User`, `isAdmin`, `isStaff`, plus a family of capability flags that mirror the backend rules: `canCreateSubmission`, `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`, `canAccessSubmission(submission)`, `canManageUsers`, `canViewUsers`, `canManageTeams`, `canManageTeamEmails`, `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`, `canManageResourceTypes`, `canManageEnrichments`, `canManageValidationRules`, `canViewJobInternals`, `canManageJobs`.
+**Key computed:** `isAuthenticated`, `userRole`, `userTeams`, `isRealAdmin`, `effectiveRole` (respects `viewAsRole`), `isAuth0User`, `isAdmin`, `isStaff`, plus a family of capability flags that mirror the backend rules: `canCreateSubmission`, `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`, `canAccessSubmission(submission)`, `canManageUsers`, `canViewUsers`, `canManageTeams`, `canManageTeamEmails`, `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`, `canManageResourceTypes`, `canManageEnrichments`, `canManageValidationRules`, `canViewJobInternals`, `canRestartJobs`.
 
 **Key actions:** `login(email, password)`, `auth0PasswordLogin(email, password)`, `register(...)`, `logout()` (redirects to `auth0LogoutUrl` when present), `fetchCurrentUser()`, `refreshAccessToken()`, `setAuth(user) / clearAuth()`, `setViewAsRole(role) / clearViewAsRole()`, `initialize()`.
 
@@ -218,22 +218,15 @@ Toast notification system with auto-dismiss.
 
 Polls background job status with exponential backoff (3s → 30s max, 1.5× factor, 20 min timeout). Fires callbacks on status transitions: `onJobComplete`, `onJobFailed`, `onJobPendingInput`. See [Background Jobs](./background-jobs.md).
 
-### `useAsyncAction`
+### `useColumnResize`
 
-Wraps async operations with loading state and automatic notifications.
-
-```javascript
-const { loading, execute } = useAsyncAction()
-await execute(() => api.doSomething(), {
-  successMessage: 'Done!',
-  errorMessage: 'Failed'
-})
-```
+Drag-to-resize table columns, with the widths kept per table. Used by the module
+results tables and the KRT editor.
 
 ### `useJobPoller`
 
 Polls `/api/submissions/:id/jobs` while anything is running, backing off from
-2s towards 30s and stopping at 20 minutes or when nothing is left in flight.
+3s towards 30s and stopping at 20 minutes or when nothing is left in flight.
 Exposes the job list, per-type lookups, and `onJobComplete(type, fn)` hooks.
 
 ### `useColumnResize`
@@ -341,7 +334,7 @@ A handful of admin views (notably `UsersView.vue`) call the `api` instance direc
 
 ### Module Results (`components/modules/`)
 
-Every pipeline step has a page at `/submissions/:id/module/:type`; there is no
+Every pipeline step has a page at `/submissions/:id/pipeline/:type`; there is no
 longer a second copy of any results table inside a modal. The pages share:
 
 | Piece | What it is |
@@ -380,4 +373,3 @@ Tailwind CSS with custom configuration:
 
 - Custom primary color palette (blue-based, shades 50–950)
 - Custom component classes defined in `main.css` (`btn`, `input`, `card`, `badge`, etc.)
-- AG Grid uses the Alpine theme with custom color overrides

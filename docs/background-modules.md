@@ -259,7 +259,8 @@ Every stage, in order, with what it adds and where it can lose something.
  PDF ──► markdown_convert ──► markdown on S3 (every text detector reads THIS)
                                   │
       ┌───────────────────────────┴───────────────────────────┐
-      │  5 DETECTORS — all KRT-BLIND, all in parallel         │
+      │  5 DETECTORS — seeded under seeded-v1 (default),      │
+│  KRT-blind under blind-v1; all in parallel            │
       │                                                       │
       │  software    Softcite (PDF) + optional LM (markdown)  │
       │  datasets    LangExtract signals → Gemini consolidate  │
@@ -566,8 +567,8 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Config:** `DATASETS_DETECTION_ENABLED`, `DATASETS_DETECTION_GEMINI_API_KEY/_MODEL`, `DATASETS_DETECTION_API_TIMEOUT`,
   `DATASETS_DETECTION_DEMO_DATA_ENABLED`, and the LangExtract tunables `DATASETS_LANGEXTRACT_MAX_WORKERS /
   _MAX_CHAR_BUFFER / _EXTRACTION_PASSES / _BATCH_LENGTH / _TIMEOUT`, `PYTHON_BIN`. **Prompts:** pass 1
-  `data/prompts/datasets-signals-extraction.txt` + `datasets-signals-examples.json`; pass 2
-  `data/prompts/datasets-consolidation.txt`.
+  `data/prompts/{seeded,blind}/datasets-signals-extraction.txt` + `data/prompts/datasets-signals-examples.json`;
+  pass 2 `data/prompts/{seeded,blind}/datasets-consolidation.txt` — the pipeline picks the directory.
 - **Demo:** `getDemoDatasetMentions(manuscriptId)`.
 - **Key files:** `services/datasets/datasets.service.js`, `services/datasets/langextract-client.service.js`,
   `python/datasets/extract-signals.py`, `config/datasets-detection-api.js`.
@@ -584,7 +585,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   nothing to seed with, so the module always produces something. **Output:** `KrtEntry[]` (Antibody / Cell line / etc.).
 - **Config:** `MATERIALS_DETECTION_ENABLED`, `MATERIALS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `MATERIALS_DETECTION_API_TIMEOUT`, `MATERIALS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
-  `data/prompts/materials-detection.txt`.
+  `data/prompts/{seeded,blind}/materials-detection.txt` — the pipeline picks the directory.
 - **Demo:** `getDemoLabMaterialMentions(manuscriptId)`.
 - **Key files:** `services/materials/materials.service.js`, `config/materials-detection-api.js`.
 
@@ -601,15 +602,21 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Depends on:** `markdown_convert`, **gated on `krt_curated`** (see §1). **Output:** `KrtEntry[]` (Protocol).
 - **Config:** `PROTOCOLS_DETECTION_ENABLED`, `PROTOCOLS_DETECTION_GEMINI_API_KEY/_MODEL`,
   `PROTOCOLS_DETECTION_API_TIMEOUT`, `PROTOCOLS_DETECTION_DEMO_DATA_ENABLED`. **Prompt:**
-  `data/prompts/protocols-detection.txt`.
+  `data/prompts/{seeded,blind}/protocols-detection.txt` — the pipeline picks the directory.
 - **Demo:** `getDemoProtocolMentions(manuscriptId)`.
 - **Key files:** `services/protocols/protocols.service.js`, `config/protocols-detection-api.js`.
 
-> **`services/krt/author-krt-seeds.service.js` is no longer on the detection path.** Software, Protocols, Materials
-> and Datasets all used to call it to inject the author's rows into their prompts. None do now. The module is kept
-> because the A/B harness `scripts/dev/compare-datasets-prompts.js` still uses it to reproduce the seeded prompt and
-> measure it against the current one — it is eval scaffolding, not production code. Author rows now enter at
-> `krt_grounding` (§3.7b).
+> **`services/krt/author-krt-seeds.service.js` is production code, on the detection path.** An earlier revision of
+> this note claimed the opposite — that nothing called it any more and it survived only as eval scaffolding. That
+> was true for exactly as long as `blind-v1` was the only pipeline. Under the default `seeded-v1` it is loaded by
+> three strategies (`datasets/strategies/seeded.js`, `materials/strategies/seeded.js`,
+> `protocols/strategies/seeded.js`) plus `datasets.service.js`, and their prompts carry the author's rows.
+>
+> **Software is the one detector that no longer seeds** — it is Softcite plus an optional LM pass, neither of which
+> reads the table.
+>
+> Author rows are *also* reconciled at `krt_grounding` (§3.7b), and that is a different use: there they are a
+> query, never a seed, which is what keeps "did we find this row in the PDF?" answerable under either pipeline.
 
 ### 3.7 `identifier_detection` — Known-identifier scan *(local; enabled by default)*
 
@@ -768,7 +775,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **LM-primary with a rule-based fallback:** when `KRT_GENERATION_ENABLED` is off or the LM errors, the merged
   candidates (stage a) become the Generated KRT, so the pipeline **always** yields one.
 - **Depends on:** `das_extraction`, `software_detection`, `datasets_detection`, `materials_detection`,
-  `protocols_detection`, `identifier_detection`. **Gate:** auto-advances only if a DAS was detected (else
+  `protocols_detection`, `identifier_detection`, `krt_grounding` (which is how it inherits `krt_curated`). **Gate:** auto-advances only if a DAS was detected (else
   `pending_input`).
 - **How stage (a) works (`merge-detections.service.js`):** greedy, **alias-aware** merge keyed on (resourceType +
   newReuse) with identifier-token / opaque-id / normalized-name matching; a per-resource union of aliases enables

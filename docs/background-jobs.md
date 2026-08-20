@@ -47,7 +47,7 @@ Each queue derives its timeout from the corresponding API timeout environment va
 | Materials Detection | `MATERIALS_DETECTION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Protocols Detection | `PROTOCOLS_DETECTION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Identifier Detection | — (fixed) | 60s | 1 | 30s |
-| PDF Analysis | `KRT_GENERATION_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
+| PDF Analysis | `PDF_ANALYSIS_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Suggestion Generation | `KRT_COMPARISON_API_TIMEOUT` | 300s (5 min) | 2 | 60s |
 | Report Generation | — (fixed) | 300s (5 min) | 2 | 60s |
 
@@ -130,7 +130,6 @@ graph TD
     KG --> PA
 
     PA --> SG[Suggestion Generation]
-    ORCID --> SG
 
     DAS -.->|status.detected = false| PI{{pending_input}}
     PI -.->|User advances| PA
@@ -272,6 +271,7 @@ retrying would restart the very external work the user asked to stop.
 | `processing` | Worker is actively processing, **including between retries** | `complete` or `failed` |
 | `complete` | Finished successfully | (terminal) |
 | `failed` | Failed after all retries exhausted | (terminal) |
+| `cancelled` | The user cancelled the run, or a dependency was cancelled and this step can never run | (terminal) |
 
 ### Typical Lifecycle
 
@@ -375,12 +375,26 @@ Starts (or re-runs) all pipeline processes for a submission. Creates `Submission
 
 Manually advances a `pending_input` job to `queued`. Only works for jobs in `pending_input` status.
 
-### Re-running one step — there is exactly one way
+### Re-running one step — `requeueStep` is the target, not yet the rule
 
 `orchestrator.requeueStep(submissionId, jobType, round, userId)`. It **reuses
 the round's existing row** for that step and only enqueues when the step is
 actually runnable (dependencies terminal, gates satisfied); otherwise it leaves
 it `waiting` for the normal advancement to pick up.
+
+**Four of the twelve steps go through it today**: `pdf_analysis`,
+`markdown_convert`, `orcid_extraction` and `das_suggestions`. The rest — the
+five detectors, `krt_grounding` and `suggestion_generation` — still
+`cascadeRestart` and then INSERT a fresh `queued` row
+(`software.service.js`, `materials.service.js`, `protocols.service.js`,
+`datasets.service.js`, `identifier-detection.service.js`,
+`krt-grounding.service.js`, `kr-comparison.service.js`).
+
+That is a known gap, stated rather than implied: an earlier revision of this
+section claimed there was "exactly one way", which was wrong the day it was
+written. The four were converted because their failures had been observed; the
+other seven carry the same latent risk described below and have not been
+converted yet.
 
 Never insert a second `SubmissionJob` row for a type the pipeline already
 created. `getForSubmission` keeps only the newest row per type, so a rival row
@@ -458,7 +472,7 @@ All files for a submission are organized by manuscript ID and round:
 
 - **Job popup**: "View logs" link opens a modal with the structured log timeline
 - **Show more modal**: Logs tab with timestamps, steps, messages, and expandable data
-- **Raw responses**: Download links visible to admin/ds_annotator roles
+- **Raw responses**: download links visible to everyone except `author` (PM, ds_annotator, admin)
 
 ## Frontend Polling
 

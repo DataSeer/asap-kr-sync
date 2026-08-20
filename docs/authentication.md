@@ -218,7 +218,9 @@ Rate limit configuration is in `conf/rate-limits.json`.
 | `lmApiLimiter` | Starting analysis work — burst | 10 requests | 1 min / user |
 | `lmApiDailyLimiter` | Starting analysis work — **the policy** | per role, below | 24 h / user |
 
-Authenticated users bypass `apiLimiter`. Auth endpoints are always rate-limited.
+`apiLimiter` applies to **everyone**, keyed by IP: it is mounted on `/api` before any
+router-level `authenticate`, so `req.user` is never set when it runs. Auth endpoints
+are always rate-limited.
 
 ### The daily analysis budget
 
@@ -241,7 +243,7 @@ bold to press it.
 | `admin` | unlimited |
 
 **One request is one run.** Starting the whole pipeline and re-running a single
-module both cost 1 — the first queues eleven jobs from one request, so counting
+module both cost 1 — the first queues twelve jobs from one request, so counting
 requests is generous to the common case and simple to explain. A limit a user
 cannot predict is a limit they experience as a fault.
 

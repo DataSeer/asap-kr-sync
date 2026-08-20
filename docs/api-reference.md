@@ -628,7 +628,7 @@ All job endpoints support an optional `?round=N` query parameter. When omitted, 
 
 ### `GET /api/submissions/:id/jobs?round=N`
 Get all background job statuses for a submission.
-- **Returns**: `{ round, jobs: [...] }` — each job includes `logs`, `rawResponses`, `result`, `config`
+- **Returns**: `{ round, jobs: [...] }` — each job includes `logs`, `files`, `result`, `config`
 - A `waiting` job that is held by a submission-state gate (datasets/materials/protocols before KRT validation)
   carries `waitingReason: 'krt_validation'`, so the UI can show *"Waiting for the Key Resources Table to be
   validated."* These advance automatically once the KRT is validated — no `advance` call is needed (that is only

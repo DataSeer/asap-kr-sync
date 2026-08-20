@@ -332,7 +332,7 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 **Job controls:**
 - Failed jobs show an error message and a "Restart" button
 - `pending_input` jobs show an "Advance" button
-- Admin/ds_annotator roles see additional details: timestamps, retry counts, timeout configuration
+- Everyone except authors sees additional details: timestamps, retry counts, timeout configuration
 
 ### Proceeding to Step 3
 

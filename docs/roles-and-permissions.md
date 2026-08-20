@@ -59,7 +59,7 @@ Team membership can be auto-assigned from an admin-managed email→team roster
 | — capped at, per day | 10 runs | 50 runs | unlimited | unlimited |
 | View job summary status (panel) | ✓ | ✓ | ✓ | ✓ |
 | View job internals (logs, raw responses, timestamps, queue config) | — | ✓ | ✓ | ✓ |
-| Cross-submission queue admin (the admin Jobs page) | — | — | ✓ | ✓ |
+| Cross-submission queue admin (the admin Jobs page) | — | — | — | ✓ |
 | Start a job parked awaiting your own input (`/jobs/:type/advance`) | own | teammates' | all | all |
 | View users (scoped) | — | team | all | all |
 | Create non-admin users | — | — | ✓ | ✓ |
@@ -119,8 +119,11 @@ Team membership can be auto-assigned from an admin-managed email→team roster
   flags that mirror the backend rules. UI components consume these instead of
   hardcoding role strings.
   - Submission: `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`.
-  - Jobs: `canViewJobInternals`, `canManageJobs` (the latter now only gates the
-    frontend's restart controls — it has no backend counterpart).
+  - Jobs: `canViewJobInternals`, `canRestartJobs` (the latter is true for any
+    signed-in user — what separates the roles is the daily LM budget, not a flag).
+  - (`canManageJobs` is gone: it gated the restart button while the server
+    accepted the request from any owner, so the panel told authors to press a
+    button they could not see.)
   - Users: `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`.
   - Teams/projects: `canManageTeams`, `canManageTeamEmails` (admin/ds/pm). Owner
     reassignment lives in `EditMetadataModal.vue`, gated on `isStaff`.

@@ -109,14 +109,23 @@ PDF Upload
                                detected, otherwise waits for user input)
 ```
 
-Detection is **KRT-blind**: no detector reads the author's table, so every
-detector starts as soon as the markdown exists and results arrive without the
-pipeline stalling on a KRT that may never come. The author's table enters the
-pipeline one step later, at **KRT Grounding**, as a query rather than a seed —
-which is what makes "did we actually find this row in the PDF?" answerable. That
-step waits for the KRT to be validated (submission status past `step_krt`), and
-PDF Analysis inherits the gate through it. See
-[Background Jobs](./docs/background-jobs.md) for the full gating rules.
+**Two detection pipelines**, chosen per submission. `seeded-v1` is the default:
+the datasets, materials and protocols prompts carry the author's rows as seeds.
+`blind-v1` is admin-only and gives the detectors nothing but the manuscript —
+it exists so detection can be measured without the author's table leaking into
+the answer.
+
+**Every detector waits for the table to be validated** (`krt_curated`, i.e.
+submission status past `step_krt`), because under the default pipeline the
+prompts are seeded from it, and starting earlier would seed from a table the
+author is still editing.
+
+Either way the author's rows are reconciled against the manuscript afterwards,
+at **KRT Grounding**, as a query rather than a seed — which is what makes "did
+we actually find this row in the PDF?" answerable, and it is deliberately the
+only place that question is answered. See
+[Background Jobs](./docs/background-jobs.md) for the full gating rules and
+[Background Modules](./docs/background-modules.md) for the pipelines.
 
 PDF Analysis is an in-app step (no external API) that merges the
 items produced by every detection into the Generated KRT — feeding
@@ -146,7 +155,7 @@ asap-kr-sync/
 │   └── frontend/
 │       └── src/
 │           ├── components/  Vue components (layout, krt, submission, common)
-│           ├── composables/ Reusable logic (useJobPoller, useAsyncAction, etc.)
+│           ├── composables/ Reusable logic (useJobPoller, useColumnResize)
 │           ├── router/      Vue Router with auth guards
 │           ├── services/    API client services
 │           ├── stores/      Pinia state management
