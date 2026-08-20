@@ -76,6 +76,14 @@ All wrapped in `AppLayout` (header + sidebar).
 | `/submissions/:id/module/:type` | ModuleResultsView | One module's results, in full |
 | `/profile` | ProfileView | — |
 
+`das_suggestions` has a page and a tile like any other module, but nothing
+schedules it — the user starts it from the Availability step. It is excluded
+from the pipeline's progress tally and from `isAnyRunning`, because a queued DAS
+check counted there would hold the KRT and PDF steps' "all processes finished"
+gate shut. `useJobPoller` keeps it in a separate `standaloneJobs` map for the
+pages that need to display it (`getAnyJob`), and out of `jobs` for everything
+that gates on it.
+
 Both pipeline routes set `meta.remountOnRouteChange`. `AppLayout` keys its
 `<RouterView>` on the full path for those routes, because the same component
 instance is reused when only a route PARAM changes — so `onMounted` does not
@@ -279,7 +287,7 @@ longer a second copy of any results table inside a modal. The pages share:
 
 | Piece | What it is |
 |-------|-----------|
-| `module-meta.js` | The eleven modules — label, one-line purpose, stage names. `ALL_JOB_TYPES`, `MODULE_PAGE_TYPES` and `hasModulePage()` all derive from it, so the list exists once. |
+| `module-meta.js` | Every module — label, one-line purpose, stage names, and `standalone` for the ones the pipeline does not schedule. `MODULE_PAGE_TYPES` and `hasModulePage()` cover all of them (having a page is unrelated to how a module starts); `ALL_JOB_TYPES` covers only the scheduled ones. `JobStatusPanel` keeps its own ordered tile list — its three-row grouping is deliberate and differs from the order here. |
 | `module-explainers.js` | The longer "what this step does / how to read it" text, plus the doc anchor each links to. |
 | `ModuleExplainer.vue` | Renders that text above the results. |
 | `ModuleTechnical.vue` | The Technical detail block: configuration, statistics, module inputs and module outputs, on a six-column grid. |
@@ -288,6 +296,7 @@ longer a second copy of any results table inside a modal. The pages share:
 | `GeneratedKrtTable.vue` + `generated-krt.js` | The consolidated KRT. The row model flattens each merged item into its contributors and marks group boundaries so a merge reads as one block. |
 | `GroundingTable.vue` | Per-author-row verdicts: confirmed / incomplete / not detected, with what matched and where. |
 | `SuggestionsTable.vue` + `suggestion-decisions.js` | The full decision log, author row against proposed row. |
+| `DasSuggestionsTable.vue` + `das-suggestions.js` | The Availability Statement check, rule by rule — including the rules that PASSED, so a clean statement is distinguishable from an unchecked one. Rules needing action expand to the explanation and, where the rulebook has one, the wording to paste. |
 | `AuthorsTable.vue` | ORCID extraction, with the ladder that found each id (GROBID, OpenAlex, ORCID API). |
 | `MarkdownViewer.vue` + `markdown-render.js` | The converted manuscript, raw or rendered. The renderer escapes first and allowlists `http(s)` links only — its output goes to `v-html`, and its input is a conversion of an uploaded file. |
 

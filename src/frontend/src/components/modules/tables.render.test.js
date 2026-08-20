@@ -22,6 +22,8 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import GroundingTable from './GroundingTable.vue'
 import DetectionsTable from './DetectionsTable.vue'
+import DasSuggestionsTable from './DasSuggestionsTable.vue'
+import { buildDasRows } from './das-suggestions'
 
 setActivePinia(createPinia())
 
@@ -162,5 +164,70 @@ describe('DetectionsTable', () => {
   it('renders an item missing every optional field', () => {
     const wrapper = mountDetections({ items: [{ canonical_name: 'Bare' }] })
     expect(wrapper.text()).toContain('Bare')
+  })
+})
+
+describe('DasSuggestionsTable', () => {
+  const rule = (over = {}) => ({
+    ruleId: 'no_new_dataset',
+    severity: 'warning',
+    title: 'No new dataset in the Key Resources Table',
+    message: 'This table does not include any new data.',
+    recommendedText: 'No new primary data were collected in this study.',
+    applies: true,
+    reason: 'The table lists no new Dataset rows.',
+    notApplicableReason: null,
+    ...over
+  })
+
+  const mountDas = (suggestions) => mount(DasSuggestionsTable, {
+    props: { rows: buildDasRows(suggestions), search: '' },
+    global: { stubs: { RouterLink: true } }
+  })
+
+  it('shows a rule that needs action with its explanation', () => {
+    const wrapper = mountDas([rule()])
+    expect(wrapper.text()).toContain('Action needed')
+    expect(wrapper.text()).toContain('No new dataset in the Key Resources Table')
+    expect(wrapper.text()).toContain('The table lists no new Dataset rows.')
+    expect(wrapper.text()).toContain('This table does not include any new data.')
+  })
+
+  it('offers the suggested wording verbatim, in a block to copy', () => {
+    // It is text to paste into a statement, not prose about the statement —
+    // rendered preformatted so its placeholders and line breaks survive.
+    const wrapper = mountDas([rule()])
+    expect(wrapper.text()).toContain('Suggested wording')
+    const pre = wrapper.find('pre')
+    expect(pre.exists()).toBe(true)
+    expect(pre.text()).toBe('No new primary data were collected in this study.')
+  })
+
+  it('shows a passed check too, without an explanation block', () => {
+    // A rule that did not fire is a check that passed; hiding it makes a clean
+    // statement and an unchecked one look identical.
+    const wrapper = mountDas([rule({
+      applies: false, reason: null, notApplicableReason: 'The statement already refers to the data'
+    })])
+    expect(wrapper.text()).toContain('Passed')
+    expect(wrapper.text()).toContain('The statement already refers to the data')
+    expect(wrapper.find('pre').exists()).toBe(false)
+  })
+
+  it('does not offer wording for a rule that has none', () => {
+    const wrapper = mountDas([rule({ recommendedText: null })])
+    expect(wrapper.text()).not.toContain('Suggested wording')
+    expect(wrapper.find('pre').exists()).toBe(false)
+  })
+
+  it('says so when there is nothing to show', () => {
+    const wrapper = mountDas([])
+    expect(wrapper.text().trim()).not.toBe('')
+    expect(wrapper.text().toLowerCase()).toMatch(/no checks/)
+  })
+
+  it('renders a rule missing every optional field', () => {
+    const wrapper = mountDas([{ ruleId: 'bare', applies: false }])
+    expect(wrapper.text()).toContain('bare')
   })
 })

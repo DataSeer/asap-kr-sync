@@ -379,6 +379,38 @@ export const MODULE_EXPLAINERS = {
           + 'dropped before you see it, rather than shown with a caveat.'
       }
     ]
+  },
+
+  das_suggestions: {
+    title: 'DAS Suggestions',
+    doc: '311-das_suggestions--availability-statement-check-das-suggestions',
+    summary: 'Checks your Data/Code Availability Statement against the ASAP rulebook, using what '
+      + 'your Key Resources Table says. It proposes wording; it never edits your statement.',
+    points: [
+      {
+        q: 'Why this one is not in the pipeline',
+        a: 'Nothing schedules it. It runs when you ask for it from the Availability Statement '
+          + 'step, because it only makes sense once your table is final — a check against a table '
+          + 'you are still editing would be answering a question that has changed by the time you '
+          + 'read it. A submission that never runs it is complete, not unfinished.'
+      },
+      {
+        q: 'What the model actually decides',
+        a: 'Only whether each rule applies to your submission, and why. The rules themselves — '
+          + 'their wording, their severity and the text they recommend — are fixed on the server, '
+          + 'so the advice cannot drift from ASAP guidance run to run.'
+      },
+      {
+        q: 'Why passed checks are shown too',
+        a: 'A rule that did not fire is a check that passed, and it is listed for that reason: '
+          + 'otherwise a clean statement and a statement nobody checked look identical.'
+      },
+      {
+        q: 'The suggested wording',
+        a: 'Where the rulebook has a sentence for a situation, it is offered verbatim to paste '
+          + 'into your statement — with the placeholders left in for you to fill.'
+      }
+    ]
   }
 }
 

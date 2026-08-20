@@ -19,7 +19,14 @@ export const MODULE_META = {
   identifier_detection: { label: 'Identifiers Detection', purpose: 'Scans for known identifiers — RRIDs, DOIs, accessions.' },
   krt_grounding: { label: 'KRT Grounding', purpose: 'Checks each row of your KRT against the manuscript. Never edits a row.' },
   pdf_analysis: { label: 'PDF Analysis', purpose: 'Merges every detection into one Generated KRT.' },
-  suggestion_generation: { label: 'AI Suggestions', purpose: 'Compares your KRT with the generated one and proposes changes.' }
+  suggestion_generation: { label: 'AI Suggestions', purpose: 'Compares your KRT with the generated one and proposes changes.' },
+  // Not part of the auto pipeline — you start it from the Availability step,
+  // once your table is final. It still has a page like any other module.
+  das_suggestions: {
+    label: 'DAS Suggestions',
+    purpose: 'Checks your Availability Statement against the ASAP rulebook, using your KRT.',
+    standalone: true
+  }
 }
 
 /**
@@ -33,20 +40,25 @@ export const STAGE_LABELS = ['Ingest', 'Detect', 'Reconcile', 'Consolidate', 'Su
 
 
 /**
- * Every module, in the order the panel lays them out.
+ * The modules the pipeline runs by itself, in declaration order.
  *
- * Derived from MODULE_META rather than repeated: the panel, the pipeline page
- * and the module page each kept their own copy of these eleven strings, and
- * they had already drifted — the pipeline page's comment still said "only
- * krt_grounding has a page so far" while listing all eleven.
+ * Excludes the standalone ones: a job nothing schedules does not belong in a
+ * list used to describe what the pipeline is doing on its own.
+ *
+ * (JobStatusPanel keeps its own ordered copy of the tiles. Its order is
+ * deliberate — three rows grouped by what runs together — and differs from the
+ * order here, so deriving it would rearrange the panel.)
  */
-export const ALL_JOB_TYPES = Object.entries(MODULE_META).map(([type, m]) => ({ type, label: m.label }))
+export const ALL_JOB_TYPES = Object.entries(MODULE_META)
+  .filter(([, m]) => !m.standalone)
+  .map(([type, m]) => ({ type, label: m.label }))
 
 /**
- * Modules with a dedicated results page. Currently every module has one, but a
- * new step appears in the server's graph before its page exists, and a tab or a
- * tile linking to an empty page is worse than one that does not link at all —
- * so this stays an explicit set rather than "all of them".
+ * Modules with a dedicated results page. Currently every module has one — the
+ * standalone ones included, since having a page is unrelated to how a module is
+ * started. A new step appears in the server's graph before its page exists,
+ * though, and a tab or a tile linking to an empty page is worse than one that
+ * does not link at all, so this stays an explicit set rather than "all of them".
  */
 export const MODULE_PAGE_TYPES = new Set(Object.keys(MODULE_META))
 

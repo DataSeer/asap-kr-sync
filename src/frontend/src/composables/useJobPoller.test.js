@@ -318,10 +318,10 @@ describe('reading the jobs back', () => {
 })
 
 describe('the standalone DAS check', () => {
-  it('is excluded from the pipeline poller', async () => {
-    // `das_suggestions` belongs to the /availability step and has its own
-    // loader. Counted here, a queued DAS check keeps "all processes finished"
-    // false and blocks the Continue button on the KRT and PDF steps.
+  it('is kept out of the pipeline map and the running flag', async () => {
+    // `das_suggestions` belongs to the /availability step. Counted here, a
+    // queued DAS check keeps "all processes finished" false and blocks the
+    // Continue button on the KRT and PDF steps.
     getJobs.mockResolvedValue(reply(
       job('markdown_convert', 'complete'),
       job('das_suggestions', 'processing')
@@ -330,7 +330,51 @@ describe('the standalone DAS check', () => {
     await settle()
 
     expect(api.getJob('das_suggestions')).toBe(null)
+    expect(api.jobs.value.das_suggestions).toBeUndefined()
     expect(api.isAnyRunning.value).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('is still available to the pages that describe the whole run', async () => {
+    // Kept aside rather than dropped: the pipeline page shows a tile for it and
+    // its module page renders its result.
+    getJobs.mockResolvedValue(reply(
+      job('markdown_convert', 'complete'),
+      job('das_suggestions', 'complete')
+    ))
+    const { api, wrapper } = mountPoller()
+    await settle()
+
+    expect(api.standaloneJobs.value.das_suggestions?.status).toBe('complete')
+    expect(api.getAnyJob('das_suggestions')?.status).toBe('complete')
+    wrapper.unmount()
+  })
+
+  it('getAnyJob answers for pipeline jobs too, and null for neither', async () => {
+    getJobs.mockResolvedValue(reply(job('markdown_convert', 'complete')))
+    const { api, wrapper } = mountPoller()
+    await settle()
+
+    expect(api.getAnyJob('markdown_convert')?.status).toBe('complete')
+    expect(api.getAnyJob('das_suggestions')).toBe(null)
+    expect(api.getAnyJob('nothing_like_this')).toBe(null)
+    wrapper.unmount()
+  })
+
+  it('a running DAS check does not restart polling on a finished pipeline', async () => {
+    // The gate's whole point: once the scheduled work is done the page stops
+    // asking, even though a standalone job is still in flight.
+    getJobs.mockResolvedValue(reply(
+      job('markdown_convert', 'complete'),
+      job('das_suggestions', 'processing')
+    ))
+    const { wrapper } = mountPoller()
+    await settle()
+    const afterMount = getJobs.mock.calls.length
+
+    await vi.advanceTimersByTimeAsync(120_000)
+
+    expect(getJobs).toHaveBeenCalledTimes(afterMount)
     wrapper.unmount()
   })
 })

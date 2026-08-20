@@ -25,7 +25,7 @@ import { setSubmissionTitle } from '@/router'
 
 const route = useRoute()
 const submissionId = computed(() => route.params.id)
-const { jobs } = useJobPoller(submissionId)
+const { jobs, getAnyJob } = useJobPoller(submissionId)
 
 
 
@@ -74,12 +74,28 @@ const GATE_LABELS = {
 }
 const gateLabel = (name) => GATE_LABELS[name] || name
 
-const jobFor = (jobType) => (jobs.value || {})[jobType] || null
+/**
+ * The standalone jobs are kept out of the poller's pipeline map so they cannot
+ * hold the KRT/PDF gate shut — but this page describes the whole run, so it
+ * asks for either kind.
+ */
+const jobFor = (jobType) => getAnyJob(jobType)
+
+/** Jobs the pipeline does not schedule — the user starts them. */
+const standaloneTypes = computed(
+  () => new Set(graph.value.nodes.filter((n) => n.standalone).map((n) => n.jobType))
+)
+const isStandalone = (jobType) => standaloneTypes.value.has(jobType)
 
 /** Status as one word plus a colour, from the job if it has run. */
 function statusOf(jobType) {
   const job = jobFor(jobType)
-  if (!job || !job.status) return { text: 'not started', cls: 'st-idle' }
+  if (!job || !job.status) {
+    // A standalone job nobody has started is the normal state, not a stall.
+    return isStandalone(jobType)
+      ? { text: 'not run yet', cls: 'st-idle' }
+      : { text: 'not started', cls: 'st-idle' }
+  }
   if (job.status === 'complete' && job.outcomeState === 'fail') return { text: 'failed', cls: 'st-fail' }
   const map = {
     complete: { text: 'done', cls: 'st-done' },
@@ -111,11 +127,23 @@ function outputOf(jobType) {
       if (c.conflicts > 0) parts.push(`${c.conflicts} conflict${c.conflicts === 1 ? '' : 's'}`)
       return parts.join(' · ')
     }
-    case 'pdf_analysis': return `${c.total || c.unique || 0} rows in the Generated KRT`
+    // The consolidator records `resources` (plus multiSource/contributors);
+    // reading total/unique gave every submission "0 rows in the Generated KRT"
+    // while its own page showed hundreds. total/unique are kept as a fallback
+    // for older results.
+    case 'pdf_analysis': return `${c.resources ?? c.total ?? c.unique ?? 0} rows in the Generated KRT`
     case 'suggestion_generation': return `${c.total || c.unique || 0} suggestions`
     case 'markdown_convert': return r.data?.markdownLength ? `${Math.round(r.data.markdownLength / 1024)} KB of text` : null
     case 'orcid_extraction': return `${c.authors || 0} authors, ${c.orcids || 0} ORCIDs`
     case 'das_extraction': return r.status?.detected ? 'statement found' : 'not found'
+    case 'das_suggestions': {
+      const applicable = c.unique || 0
+      const total = c.total || 0
+      if (!total) return 'no checks recorded'
+      return applicable
+        ? `${applicable} of ${total} checks need action`
+        : `all ${total} checks passed`
+    }
     default: {
       const n = c.unique ?? c.total
       return typeof n === 'number' ? `${n} found` : null
@@ -149,7 +177,11 @@ function groupsForStage(nodes) {
   const by = new Map()
   for (const n of nodes) {
     const consumers = [...(consumersOf.value[n.jobType] || [])].sort()
-    const key = consumers.join('|')
+    // A standalone job gets its own group even when it shares a stage and a
+    // (empty) consumer list with a scheduled one. The group caption says "N
+    // steps, in parallel", which would be a claim that the pipeline runs this
+    // one alongside the other — it does not run it at all.
+    const key = n.standalone ? `standalone:${n.jobType}` : consumers.join('|')
     if (!by.has(key)) by.set(key, { key, consumers, nodes: [] })
     by.get(key).nodes.push(n)
   }
@@ -159,7 +191,10 @@ function groupsForStage(nodes) {
 
 /** Where the pipeline currently is, in one line. */
 const state = computed(() => {
-  const nodes = graph.value.nodes
+  // Standalone jobs are excluded from the count on purpose: "9 of 12 done"
+  // would never reach 12 on a submission whose author has not asked for the DAS
+  // check, which reads as an unfinished pipeline when nothing is outstanding.
+  const nodes = graph.value.nodes.filter((n) => !n.standalone)
   const tally = { done: 0, running: 0, waiting: 0, failed: 0, pending: 0, idle: 0 }
   for (const n of nodes) {
     const cls = statusOf(n.jobType).cls
@@ -176,7 +211,8 @@ const state = computed(() => {
 /** The first stage that has not finished — where the work actually is now. */
 const activeStage = computed(() => {
   for (const stage of stages.value) {
-    if (stage.nodes.some((n) => statusOf(n.jobType).cls !== 'st-done')) return stage.index
+    const scheduled = stage.nodes.filter((n) => !n.standalone)
+    if (scheduled.some((n) => statusOf(n.jobType).cls !== 'st-done')) return stage.index
   }
   return -1
 })
@@ -261,6 +297,12 @@ const activeStage = computed(() => {
                 <dl class="pv-io">
                   <dt>in</dt>
                   <dd v-if="node.dependsOn.length">{{ node.dependsOn.map(labelFor).join(' · ') }}</dd>
+                  <!-- A standalone job has no dependencies because nothing
+                       schedules it — saying "the submission itself" would imply
+                       the pipeline feeds it. -->
+                  <dd v-else-if="node.standalone" class="pv-muted">
+                    your Key Resources Table and Availability Statement
+                  </dd>
                   <dd v-else class="pv-muted">the submission itself</dd>
                   <template v-if="outputOf(node.jobType)">
                     <dt>out</dt>
@@ -278,6 +320,11 @@ const activeStage = computed(() => {
                     :title="'Waits for: ' + node.gates.map(gateLabel).join(', ')"
                   >gated</span>
                   <span v-if="!node.autoAdvances" class="pv-gate" title="Can pause and wait for you before it runs.">may pause</span>
+                  <span
+                    v-if="node.standalone"
+                    class="pv-manual"
+                    title="The pipeline never starts this one. Run it from the Availability Statement step, once your table is final."
+                  >you start this</span>
                   <span v-if="hasModulePage(node.jobType)" class="pv-open">open ↗</span>
                 </div>
               </component>
@@ -363,6 +410,16 @@ const activeStage = computed(() => {
 .pv-conflicts {
   padding: 0 0.3rem; border-radius: 0.25rem; font-size: 0.66rem; font-weight: 600;
   background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
+}
+.pv-manual {
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: #eef2ff;
+  color: #4338ca;
+  border: 1px solid #c7d2fe;
+  cursor: help;
 }
 .pv-gate {
   padding: 0 0.3rem; border-radius: 0.25rem; font-size: 0.66rem;

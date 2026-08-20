@@ -20,16 +20,20 @@ import DetectionsTable from '@/components/modules/DetectionsTable.vue'
 import AuthorsTable from '@/components/modules/AuthorsTable.vue'
 import GeneratedKrtTable from '@/components/modules/GeneratedKrtTable.vue'
 import SuggestionsTable from '@/components/modules/SuggestionsTable.vue'
+import DasSuggestionsTable from '@/components/modules/DasSuggestionsTable.vue'
 import MarkdownViewer from '@/components/modules/MarkdownViewer.vue'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
-import { labelFor, hasModulePage } from '@/components/modules/module-meta'
+import { labelFor, hasModulePage, MODULE_META } from '@/components/modules/module-meta'
 import { buildKrtRows } from '@/components/modules/generated-krt'
 import {
   decisionLabel, decisionType, decisionMatchesSearch, buildDecisionRows, DECISION_ORDER
 } from '@/components/modules/suggestion-decisions'
+import {
+  buildDasRows, countByStatus, dasMatchesSearch, STATUS_ORDER
+} from '@/components/modules/das-suggestions'
 import configService from '@/services/config.service'
 import orcidService from '@/services/orcid.service'
 import markdownService from '@/services/markdown.service'
@@ -44,10 +48,15 @@ const jobType = computed(() => route.params.type)
 const resourceTypesStore = useResourceTypesStore()
 const submissionStore = useSubmissionStore()
 
-const { jobs } = useJobPoller(submissionId)
+const { jobs, getAnyJob } = useJobPoller(submissionId)
 
 
-const job = computed(() => (jobs.value || {})[jobType.value] || null)
+/**
+ * `getAnyJob` rather than the pipeline map: the DAS check is a standalone job,
+ * deliberately kept out of that map so it cannot hold the KRT/PDF steps' gate
+ * shut. It still has a page, and the page still needs its result.
+ */
+const job = computed(() => getAnyJob(jobType.value))
 const explainer = computed(() => explainerFor(jobType.value))
 
 /**
@@ -88,6 +97,21 @@ onMounted(async () => {
 const label = computed(() => labelFor(jobType.value))
 
 /**
+ * What "no result" means for THIS module.
+ *
+ * For a scheduled step, no result means it has not run yet and something is
+ * presumably still coming. For a standalone one, nothing is coming until the
+ * user asks — so saying "not produced a result yet" would leave them waiting
+ * for a job nobody has started.
+ */
+const emptyMessage = computed(() => (
+  MODULE_META[jobType.value]?.standalone
+    ? 'This check has not been run for this submission yet. It is started from the '
+      + 'Availability Statement step, once your Key Resources Table is final.'
+    : 'This module has not produced a result for this submission yet.'
+))
+
+/**
  * The module leads the tab title. These pages are opened several at a time —
  * that is the point of them being pages — so a title that named only the
  * submission would give every tab the same label.
@@ -111,6 +135,30 @@ const policy = computed(() => job.value?.result?.data?.meta?.grounding || null)
 
 const search = ref('')
 const tab = ref('all')
+
+// ── the Availability Statement check ───────────────────────────────────
+const dasSuggestions = computed(() => job.value?.result?.data?.suggestions || [])
+const dasCounts = computed(() => countByStatus(dasSuggestions.value))
+/** Empty set = no filter, matching the AI Suggestions decision chips. */
+const dasFilter = ref(new Set())
+const dasStatusOptions = computed(() =>
+  STATUS_ORDER
+    .map((label) => ({ label, count: dasCounts.value[label] || 0 }))
+    .filter((o) => o.count > 0)
+)
+function toggleDasStatus(label) {
+  const next = new Set(dasFilter.value)
+  if (next.has(label)) next.delete(label)
+  else next.add(label)
+  dasFilter.value = next
+}
+const visibleDasRows = computed(() => {
+  const filtered = dasSuggestions.value.filter((s) => {
+    if (dasFilter.value.size && !dasFilter.value.has(s?.applies ? 'Action needed' : 'Passed')) return false
+    return dasMatchesSearch(s, search.value)
+  })
+  return buildDasRows(filtered)
+})
 
 // ── the ingest steps ───────────────────────────────────────────────────
 /**
@@ -456,7 +504,7 @@ const tabConflicts = computed(() => {
       :doc="explainer.doc"
     />
 
-    <p v-if="!job" class="mrv-empty">This module has not produced a result for this submission yet.</p>
+    <p v-if="!job" class="mrv-empty">{{ emptyMessage }}</p>
 
     <template v-else-if="jobType === 'krt_grounding' || isDetection">
       <!-- Filters and search on one line: they do the same job, and splitting
@@ -590,6 +638,33 @@ const tabConflicts = computed(() => {
       <p v-else class="mrv-empty">
         No Data Availability Statement was located in the converted manuscript.
       </p>
+      <ModuleTechnical
+        :job="job" :submission-id="submissionId" :job-type="jobType"
+        :jobs="jobs || {}" :files="latestFiles"
+      />
+    </template>
+
+    <template v-else-if="jobType === 'das_suggestions'">
+      <div class="mrv-toolbar">
+        <div class="mrv-chips">
+          <button
+            v-for="opt in dasStatusOptions"
+            :key="opt.label"
+            type="button"
+            class="mrv-chip"
+            :class="{ 'mrv-chip-off': dasFilter.size && !dasFilter.has(opt.label) }"
+            :title="dasFilter.has(opt.label)
+              ? 'Click to stop filtering on ' + opt.label
+              : 'Click to show only ' + opt.label + ' checks (combine by clicking several)'"
+            @click="toggleDasStatus(opt.label)"
+          >
+            {{ opt.label }}
+            <span class="mrv-chip-count">{{ opt.count }}</span>
+          </button>
+        </div>
+        <SearchInput v-model="search" placeholder="Search checks…" class="mrv-search" />
+        </div>
+      <DasSuggestionsTable :rows="visibleDasRows" :search="search" />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
         :jobs="jobs || {}" :files="latestFiles"

@@ -18,19 +18,32 @@ import {
   hasModulePage, labelFor, purposeFor, stageLabel
 } from './module-meta'
 
-/** The pipeline as the server defines it. Kept literal on purpose: if a step is
- *  added server-side, this must be updated deliberately rather than tracking it
- *  automatically and asserting nothing. */
-const EXPECTED_MODULES = [
+/** The steps the pipeline schedules and runs by itself. Kept literal on
+ *  purpose: if a step is added server-side, this must be updated deliberately
+ *  rather than tracking it automatically and asserting nothing. */
+const PIPELINE_MODULES = [
   'markdown_convert', 'orcid_extraction', 'das_extraction',
   'software_detection', 'datasets_detection', 'materials_detection',
   'protocols_detection', 'identifier_detection',
   'krt_grounding', 'pdf_analysis', 'suggestion_generation'
 ]
 
+/** Modules nothing schedules — the user starts them. They have pages like any
+ *  other module, but they are not part of what the pipeline is doing. */
+const STANDALONE_MODULES = ['das_suggestions']
+
+const EXPECTED_MODULES = [...PIPELINE_MODULES, ...STANDALONE_MODULES]
+
 describe('the module list', () => {
-  it('covers every pipeline step, and nothing else', () => {
+  it('covers every module — scheduled and standalone', () => {
     expect(Object.keys(MODULE_META).sort()).toEqual([...EXPECTED_MODULES].sort())
+  })
+
+  it('marks the standalone ones, and only those', () => {
+    // The flag is what keeps a job nobody schedules out of the lists that
+    // describe what the pipeline is doing on its own.
+    const flagged = Object.entries(MODULE_META).filter(([, m]) => m.standalone).map(([k]) => k)
+    expect(flagged.sort()).toEqual([...STANDALONE_MODULES].sort())
   })
 
   it('gives every module a label and a purpose a reader can use', () => {
@@ -48,8 +61,17 @@ describe('the module list', () => {
 })
 
 describe('the derived lists', () => {
-  it('ALL_JOB_TYPES carries every module, in the declared order', () => {
-    expect(ALL_JOB_TYPES.map((j) => j.type)).toEqual(Object.keys(MODULE_META))
+  it('ALL_JOB_TYPES carries the SCHEDULED modules, in declared order', () => {
+    expect(ALL_JOB_TYPES.map((j) => j.type)).toEqual(PIPELINE_MODULES)
+  })
+
+  it('ALL_JOB_TYPES excludes the standalone ones', () => {
+    // A job nothing schedules must not appear in a list used to say what the
+    // pipeline is running — it would never complete on a submission whose
+    // author never asked for it, and read as an unfinished run.
+    for (const jobType of STANDALONE_MODULES) {
+      expect(ALL_JOB_TYPES.map((j) => j.type)).not.toContain(jobType)
+    }
   })
 
   it('every entry pairs a type with its label', () => {
@@ -58,14 +80,14 @@ describe('the derived lists', () => {
     }
   })
 
-  it('MODULE_PAGE_TYPES is exactly the module list', () => {
-    expect([...MODULE_PAGE_TYPES].sort()).toEqual(Object.keys(MODULE_META).sort())
+  it('MODULE_PAGE_TYPES covers every module, standalone included', () => {
+    // Having a page is unrelated to how a module is started.
+    expect([...MODULE_PAGE_TYPES].sort()).toEqual([...EXPECTED_MODULES].sort())
   })
 
   it('the lists cannot drift apart, because they share a source', () => {
-    // The property that replaced three hand-maintained copies.
-    expect(ALL_JOB_TYPES.length).toBe(MODULE_PAGE_TYPES.size)
-    expect(ALL_JOB_TYPES.length).toBe(EXPECTED_MODULES.length)
+    expect(MODULE_PAGE_TYPES.size).toBe(EXPECTED_MODULES.length)
+    expect(ALL_JOB_TYPES.length).toBe(MODULE_PAGE_TYPES.size - STANDALONE_MODULES.length)
   })
 })
 
@@ -76,11 +98,17 @@ describe('hasModulePage', () => {
     }
   })
 
+  it('is true for a standalone module too — a page is a page', () => {
+    for (const jobType of STANDALONE_MODULES) {
+      expect(hasModulePage(jobType), jobType).toBe(true)
+    }
+  })
+
   it('is false for a step with no page', () => {
     // A new server-side step appears in the graph before its page exists, and a
     // tile linking to an empty page is worse than one that does not link.
     expect(hasModulePage('a_new_step')).toBe(false)
-    expect(hasModulePage('das_suggestions')).toBe(false)
+    expect(hasModulePage('report_generation')).toBe(false)
   })
 
   it('is false rather than throwing on nothing', () => {

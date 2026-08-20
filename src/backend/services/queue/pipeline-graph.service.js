@@ -13,6 +13,29 @@
  */
 
 const { PIPELINE } = require('./orchestrator.service');
+const { JOB_TYPES } = require('../../config/constants');
+
+/**
+ * Jobs that are NOT part of the auto pipeline, but are part of the picture.
+ *
+ * The DAS check is deliberately outside the executing table: it runs once the
+ * user has finished their review, from the Availability step, so that a queued
+ * check cannot sit in `waiting` and hold the earlier steps' "all processes
+ * finished" gate shut. See the note beside PIPELINE in orchestrator.service.js.
+ *
+ * It is still a module a curator runs and wants to read the output of, so it
+ * belongs in the graph that DESCRIBES the run — just marked for what it is, and
+ * with no dependencies, since nothing schedules it. Execution reads PIPELINE and
+ * never this, so listing it here cannot make it auto-run.
+ */
+const STANDALONE_JOBS = [
+  {
+    jobType: JOB_TYPES.DAS_SUGGESTIONS,
+    // Where the user starts it from, so the card can say so instead of
+    // reporting a step that is "not started" as though something were wrong.
+    startedFrom: 'availability'
+  }
+];
 
 /**
  * Stage index for each job: the LONGEST path from a root.
@@ -70,7 +93,22 @@ function buildPipelineGraph() {
     stage: stages.get(step.jobType) ?? 0
   })).sort((a, b) => a.stage - b.stage || a.jobType.localeCompare(b.jobType));
 
-  return { nodes, stageCount: nodes.length ? Math.max(...nodes.map((n) => n.stage)) + 1 : 0 };
+  const stageCount = nodes.length ? Math.max(...nodes.map((n) => n.stage)) + 1 : 0;
+
+  // Standalone jobs sit in the last stage — they are the final thing that
+  // happens to a submission — and carry `standalone: true` so the client can
+  // render "you start this one" rather than a status that looks stalled.
+  const standalone = STANDALONE_JOBS.map((job) => ({
+    jobType: job.jobType,
+    dependsOn: [],
+    gates: [],
+    autoAdvances: true,
+    standalone: true,
+    startedFrom: job.startedFrom,
+    stage: Math.max(stageCount - 1, 0)
+  }));
+
+  return { nodes: [...nodes, ...standalone], stageCount };
 }
 
 module.exports = { buildPipelineGraph, computeStages };

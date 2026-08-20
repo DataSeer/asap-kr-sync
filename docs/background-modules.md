@@ -32,7 +32,7 @@ step rather than the auto pipeline; see §3.11 and [submission-workflow.md](./su
 | `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
 | `das_suggestions` | DAS vs the ASAP rulebook (per-rule verdict) | **LM (Gemini)** — LM-only, **legacy-rules fallback** | — *(standalone; started from `/availability`)* | the `/availability` suggestions list |
 
-Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)). `das_suggestions` is **not** shown — it is not in the auto pipeline (see §3.11):
+Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)). `das_suggestions` is **not** shown here — it is not in the auto pipeline (see §3.11). It *is* shown on the app's own pipeline page, in the Suggest stage, marked "you start this": the page describes what a curator can look at, and the DAS check has a module page like any other. That is a description, not a schedule — the served graph carries it as a `standalone: true` node built beside the executing table, never inside it, so nothing can auto-run it:
 
 ```mermaid
 flowchart LR
