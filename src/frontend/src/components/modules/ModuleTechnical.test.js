@@ -17,9 +17,10 @@ import ModuleTechnical from './ModuleTechnical.vue'
 import { MODULE_META } from './module-meta'
 
 vi.mock('@/services/file.service', () => ({ default: { download: vi.fn() } }))
-vi.mock('@/services/config.service', () => ({
-  default: { getSourceInfo: vi.fn().mockResolvedValue({ repoUrl: 'https://example.test/repo', branch: 'main' }) }
+vi.mock('@/services/job.service', () => ({
+  default: { getJobPrompts: vi.fn() }
 }))
+import jobService from '@/services/job.service'
 
 const stub = { render: () => h('div') }
 const router = createRouter({
@@ -131,5 +132,77 @@ describe('every module says what it reads', () => {
 
       expect(wrapper.text(), `${jobType} names none of its inputs`).toContain('Module inputs')
     }
+  })
+})
+
+// ── The prompt a run used ───────────────────────────────────────────────────
+//
+// This used to be a GitHub link, built from the recorded path and the branch
+// the deployment tracks. It was quietly wrong: the running app is not always at
+// the head of its branch, and prompt files get edited, renamed and deleted — so
+// a reader could be shown a prompt that was not the one that ran, with nothing
+// to indicate the difference. The run freezes its own copy; the panel shows
+// that copy and nothing else.
+
+describe('the prompt shown is the run\'s own copy', () => {
+  const withPrompts = (prompts) => {
+    jobService.getJobPrompts.mockResolvedValue({ prompts })
+  }
+
+  it('never links to GitHub', async () => {
+    withPrompts([{ key: 'prompt', file: 'src/backend/data/prompts/das-suggestions.txt', text: 'PROMPT BODY', bytes: 11 }])
+    const wrapper = await mountOpen({ jobType: 'das_suggestions', job: dasJob() })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(wrapper.html()).not.toContain('github')
+    expect(wrapper.findAll('a').every((a) => !(a.attributes('href') || '').includes('/blob/'))).toBe(true)
+  })
+
+  it('shows the stored text when the prompt is expanded', async () => {
+    withPrompts([{ key: 'prompt', file: 'src/backend/data/prompts/das-suggestions.txt', text: 'THE EXACT PROMPT THAT RAN', bytes: 25 }])
+    const wrapper = await mountOpen({ jobType: 'das_suggestions', job: dasJob() })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(wrapper.text()).not.toContain('THE EXACT PROMPT THAT RAN')
+    await wrapper.findAll('button.mt-linkish').find((b) => b.text().includes('das-suggestions.txt')).trigger('click')
+
+    expect(wrapper.text()).toContain('THE EXACT PROMPT THAT RAN')
+  })
+
+  it('shows an attachment the prompt cannot work without', async () => {
+    // LangExtract's few-shot examples are handed to the extractor as a separate
+    // argument and never enter the prompt text, so showing the template alone
+    // would show only part of what the run was given.
+    withPrompts([{
+      key: 'signalsPrompt',
+      file: 'src/backend/data/prompts/blind/datasets-signals-extraction.txt',
+      text: 'SIGNALS PROMPT',
+      bytes: 14,
+      attachments: [{ file: 'src/backend/data/prompts/datasets-signals-examples.json', text: '[{"text":"EXAMPLE ROW"}]', bytes: 24 }]
+    }])
+    const wrapper = await mountOpen({ jobType: 'datasets_detection', job: dasJob() })
+    await new Promise((r) => setTimeout(r, 0))
+
+    await wrapper.findAll('button.mt-linkish').find((b) => b.text().includes('datasets-signals-extraction.txt')).trigger('click')
+
+    expect(wrapper.text()).toContain('SIGNALS PROMPT')
+    expect(wrapper.text()).toContain('EXAMPLE ROW')
+    expect(wrapper.text()).toContain('datasets-signals-examples.json')
+  })
+
+  it('says so when a run recorded no prompt, rather than showing nothing', async () => {
+    withPrompts([])
+    const wrapper = await mountOpen({ jobType: 'das_suggestions', job: dasJob() })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(wrapper.text()).toContain('recorded no prompt')
+  })
+
+  it('reports a failure to read them instead of an empty list', async () => {
+    jobService.getJobPrompts.mockRejectedValue(new Error('403'))
+    const wrapper = await mountOpen({ jobType: 'das_suggestions', job: dasJob() })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(wrapper.text()).toContain('could not be read')
   })
 })

@@ -502,6 +502,14 @@ router.get('/:id/jobs/:jobType/responses/:responseName',
   jobsController.getJobResponse
 );
 
+// GET /api/submissions/:id/jobs/:jobType/prompts - The prompt(s) this run used,
+// read from its own frozen inputs. Same audience as the rest of the internals.
+router.get('/:id/jobs/:jobType/prompts',
+  canAccessSubmission,
+  canViewJobInternals,
+  jobsController.getJobPrompts
+);
+
 // ===== Change History =====
 
 // GET /api/submissions/:id/changes - Get change log

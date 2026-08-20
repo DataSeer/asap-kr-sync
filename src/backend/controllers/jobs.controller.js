@@ -273,10 +273,76 @@ async function getJobResponse(req, res, next) {
   }
 }
 
+/**
+ * The prompt(s) this run actually used, read back from its frozen inputs.
+ * GET /api/submissions/:id/jobs/:jobType/prompts?round=N
+ *
+ * Served from the run's own stored copy, never from the file on disk and never
+ * as a link to GitHub. A deployment is not always at the head of its branch,
+ * and prompt files get edited, renamed and deleted — so a link showed a reader
+ * a prompt that may not be the one that ran, silently and with no way to tell.
+ * The run froze its copy; this hands that copy back.
+ *
+ * Not folded into GET /jobs: that payload is polled every few seconds, and a
+ * prompt template per module would add tens of kilobytes to every poll for
+ * something read only when a panel is opened.
+ */
+async function getJobPrompts(req, res, next) {
+  try {
+    const submission = req.submission;
+    const { jobType } = req.params;
+    const round = resolveRound(req);
+
+    const job = await SubmissionJob.getLatest(submission.id, jobType, round);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const s3Key = job.result?.files?.inputs;
+    if (typeof s3Key !== 'string' || !s3Key) {
+      // A run that stored no inputs artefact. Not an error — a skipped or
+      // fallback run has none — so the caller gets an empty list and can say
+      // "this run recorded no prompt" rather than showing a spinner for ever.
+      return res.json({ prompts: [], round: job.round, reason: 'no_inputs_artefact' });
+    }
+
+    let inputs;
+    try {
+      inputs = JSON.parse((await s3Service.downloadFile(s3Key)).toString('utf-8'));
+    } catch (error) {
+      logger.warn('Could not read a run\'s frozen inputs', { jobType, s3Key, error: error.message });
+      return res.json({ prompts: [], round: job.round, reason: 'inputs_unreadable' });
+    }
+
+    // Every prompt a run recorded, whatever the module called it. Datasets
+    // records two (detection and signal extraction), so this reads the shape
+    // rather than a fixed list of names.
+    const prompts = Object.entries(inputs)
+      .filter(([, v]) => v && typeof v === 'object' && typeof v.promptFile === 'string')
+      .map(([key, v]) => ({
+        key,
+        file: v.promptFile,
+        text: v.templateText ?? null,
+        sha256: v.templateSha256 ?? null,
+        bytes: v.templateBytes ?? null,
+        // Files the prompt cannot work without — LangExtract's few-shot
+        // examples JSON. It is passed to the extractor as a separate argument
+        // and never enters the prompt text, so showing the template alone
+        // would show only part of what the run was given.
+        attachments: Array.isArray(v.attachments) ? v.attachments : []
+      }));
+
+    res.json({ prompts, round: job.round });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   getJobs,
   runProcesses,
   advanceJob,
   cancelProcessing,
-  getJobResponse
+  getJobResponse,
+  getJobPrompts
 };

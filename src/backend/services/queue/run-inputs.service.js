@@ -15,12 +15,16 @@
  *     than copied. `File` rows are immutable and versioned already, so a
  *     reference plus a digest proves which bytes were read without storing a
  *     second copy of the manuscript for every detector on every run.
- *   - The prompt — the template's path and digest, plus the digest of the
- *     ASSEMBLED prompt actually sent. Everything needed to rebuild that prompt
- *     is in this file, so the digest is what turns a reconstruction into proof:
- *     rebuild it, hash it, compare. Storing the assembled text would mean
- *     another manuscript-sized blob per detector per run for something
- *     derivable.
+ *   - The prompt — copied VERBATIM, plus its digest and the digest of the
+ *     assembled prompt actually sent. The template used to be stored by digest
+ *     alone, on the reasoning that it lives in git and can be looked up. That
+ *     reasoning does not survive contact with a deployment: the running app is
+ *     not always at the head of the branch, prompt files get edited, renamed
+ *     and deleted, and a link to GitHub therefore showed a reader a prompt that
+ *     may not be the one that ran — silently, and with no way to tell. A
+ *     template is a few kilobytes; the manuscript-sized thing is the ASSEMBLED
+ *     prompt, and that one is still kept by digest only, which is enough to
+ *     prove a reconstruction from the rest of this file is what was sent.
  *
  * Written through the job logger, so it lands beside the run's other artefacts
  * under that run's own key.
@@ -67,8 +71,14 @@ function fileRef(file, content = null) {
  * @param {string|{sha256: string, bytes: number}} [assembled] the full prompt as
  *   sent to the model, or its digest when the caller hashed it in place rather
  *   than carrying a manuscript-sized string back up the stack
+ * @param {string[]} [attachments] repo-relative files the prompt cannot work
+ *   without — LangExtract's few-shot examples JSON is one. Recorded as part of
+ *   the prompt rather than beside it, because that is what they are: editing
+ *   the examples changes the output exactly as editing the prompt does, and a
+ *   record that kept one and not the other would say the run was reproducible
+ *   when it was not.
  */
-function promptRef(repoRelative, assembled = null) {
+function promptRef(repoRelative, assembled = null, attachments = []) {
   let templateSha = null;
   let templateBytes = null;
   let resolvedTemplate = '';
@@ -83,6 +93,10 @@ function promptRef(repoRelative, assembled = null) {
   }
   return {
     promptFile: repoRelative,
+    // The prompt itself, as the module resolved it. This is what the UI shows,
+    // so what a reader sees is the run's own copy rather than whatever the file
+    // says today.
+    templateText: resolvedTemplate || null,
     templateSha256: templateSha,
     templateBytes,
     // The text as the module USES it. Every prompt loader trims, so a rebuilder
@@ -93,8 +107,35 @@ function promptRef(repoRelative, assembled = null) {
     // The proof: rebuild the prompt from the rest of this file, hash it, and
     // compare. Equal means the reconstruction is the prompt that was sent.
     assembledSha256: typeof assembled === 'string' ? sha256(assembled) : (assembled?.sha256 || null),
-    assembledBytes: typeof assembled === 'string' ? Buffer.byteLength(assembled) : (assembled?.bytes || null)
+    assembledBytes: typeof assembled === 'string' ? Buffer.byteLength(assembled) : (assembled?.bytes || null),
+    attachments: (attachments || []).filter(Boolean).map(attachmentRef)
   };
+}
+
+/**
+ * A file the prompt is given alongside itself, copied verbatim.
+ *
+ * Same treatment as the template and for the same reason: it lives in the repo,
+ * it can be edited, and a link to where it lives today does not describe what
+ * this run was given.
+ *
+ * @param {string} repoRelative
+ * @returns {{file: string, text: string|null, sha256: string|null, bytes: number|null}}
+ */
+function attachmentRef(repoRelative) {
+  try {
+    const buf = fs.readFileSync(absolutePath(repoRelative));
+    return {
+      file: repoRelative,
+      text: buf.toString('utf-8'),
+      sha256: sha256(buf),
+      bytes: buf.length
+    };
+  } catch {
+    // Same fail-soft rule as the template: a file that cannot be read is
+    // recorded as unreadable rather than failing a run that already succeeded.
+    return { file: repoRelative, text: null, sha256: null, bytes: null };
+  }
 }
 
 /**
@@ -125,10 +166,11 @@ async function saveRunInputs(jobLogger, parts = {}) {
     // How to read this file, for whoever opens it without the code to hand.
     _note: 'Frozen inputs for this run. Documents are references + digests '
       + '(their stored copies are immutable); everything under `frozen` is a '
-      + 'verbatim copy because it can change afterwards. The prompt is '
-      + 'identified by digest — rebuild it from these inputs and compare.',
+      + 'verbatim copy because it can change afterwards. Each prompt template '
+      + 'is copied in full under `templateText`; the assembled prompt is kept '
+      + 'by digest only — rebuild it from these inputs and compare.',
     ...parts
   });
 }
 
-module.exports = { sha256, fileRef, promptRef, upstreamRefs, saveRunInputs };
+module.exports = { sha256, fileRef, promptRef, attachmentRef, upstreamRefs, saveRunInputs };

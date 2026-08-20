@@ -250,7 +250,16 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
       extractedRows
     },
     prompt: runInputs.promptRef(resolved.input.meta?.promptFile || null, promptDigest),
-    signalsPrompt: runInputs.promptRef(resolved.input.meta?.signalsPromptFile || null),
+    // The few-shot examples are recorded as part of the signals prompt, not
+    // beside it. LangExtract takes them as a separate argument and converts
+    // them into structured ExampleData — they never enter the prompt text, so
+    // the saved template alone would NOT reproduce this run. Editing the
+    // examples changes the signals exactly as editing the prompt does.
+    signalsPrompt: runInputs.promptRef(
+      resolved.input.meta?.signalsPromptFile || null,
+      null,
+      [resolved.input.meta?.signalsExamplesFile].filter(Boolean)
+    ),
     meta: {
       pipeline: resolved.pipeline.id,
       strategy: resolved.strategy.id,

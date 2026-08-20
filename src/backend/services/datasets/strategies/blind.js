@@ -11,6 +11,10 @@ const { repoPath } = require('../../detection/repo-path');
 
 const PROMPT = path.join(__dirname, '../../../data/prompts/blind/datasets-consolidation.txt');
 const SIGNALS_PROMPT = path.join(__dirname, '../../../data/prompts/blind/datasets-signals-extraction.txt');
+// The few-shot examples LangExtract is given. As much an input as the
+// prompt is — edit it and the signals change — so it is declared and
+// recorded like one.
+const SIGNALS_EXAMPLES = path.join(__dirname, '../../../data/prompts/datasets-signals-examples.json');
 
 module.exports = {
   id: 'datasets.blind',
@@ -30,7 +34,12 @@ module.exports = {
       prompt: fs.readFileSync(PROMPT, 'utf-8'),
       signalsPrompt: fs.readFileSync(SIGNALS_PROMPT, 'utf-8'),
       seeds: [],
-      meta: { seedCount: 0, promptFile: repoPath(PROMPT), signalsPromptFile: repoPath(SIGNALS_PROMPT) }
+      meta: {
+        seedCount: 0,
+        promptFile: repoPath(PROMPT),
+        signalsPromptFile: repoPath(SIGNALS_PROMPT),
+        signalsExamplesFile: repoPath(SIGNALS_EXAMPLES)
+      }
     };
   }
 };

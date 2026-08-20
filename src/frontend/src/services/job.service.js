@@ -70,5 +70,23 @@ export default {
     const params = round ? { round } : {}
     const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/responses/${responseName}`, { params })
     return response.data
+  },
+
+  /**
+   * The prompt(s) a run used, read back from its own frozen inputs.
+   *
+   * Not from the file on disk, and not a link to GitHub: a deployment is not
+   * always at the head of its branch, and prompt files get edited and renamed,
+   * so a link showed a reader a prompt that may not be the one that ran.
+   *
+   * @param {string} submissionId
+   * @param {string} jobType
+   * @param {number} [round]
+   * @returns {Promise<{prompts: Array<{key, file, text, sha256, bytes, attachments}>, reason?: string}>}
+   */
+  async getJobPrompts(submissionId, jobType, round = null) {
+    const params = round ? { round } : {}
+    const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/prompts`, { params })
+    return response.data
   }
 }

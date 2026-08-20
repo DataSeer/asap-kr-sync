@@ -645,6 +645,19 @@ Get a presigned S3 download URL for a job's raw API response file.
 
 ## Configuration (Public)
 
+### `GET /api/submissions/:id/jobs/:jobType/prompts`
+The prompt(s) a run used, read back from its own frozen inputs. **Staff only**
+(same audience as the rest of the job internals).
+- **Returns**: `{ prompts: [{ key, file, text, sha256, bytes, attachments: [{ file, text, sha256, bytes }] }] }`
+- Served from the run's **stored copy** — never from the file on disk, and never
+  as a link to GitHub: a deployment is not always at the head of its branch, so
+  a link can show a prompt that is not the one that ran.
+- Not folded into `GET /jobs`: that payload is polled every few seconds, and a
+  template per module would add tens of kilobytes to every poll for something
+  read only when the Technical detail panel is opened.
+- A run with no stored inputs returns `{ prompts: [], reason: 'no_inputs_artefact' }`
+  rather than a 404 — a skipped or fallback run legitimately has none.
+
 ### `GET /api/config/krt-template`
 Get the KRT template URL. Returns `{ url }`.
 

@@ -53,8 +53,34 @@ test('the prompt is provable: template digest + assembled digest', () => {
   assert.equal(ref.promptFile, rel);
   assert.match(ref.templateSha256, /^[0-9a-f]{64}$/, 'the template on disk is hashed');
   assert.equal(ref.assembledSha256, sha256('ASSEMBLED PROMPT TEXT'));
-  // Rebuild → hash → compare is the whole point; storing the text is not needed.
+  // The ASSEMBLED prompt is the manuscript-sized one, and stays a digest:
+  // rebuild it from the rest of the record, hash it, compare.
   assert.ok(!('assembled' in ref));
+});
+
+test('the prompt TEMPLATE is copied in full, not just hashed', () => {
+  // Storing only the digest meant the UI had to link to GitHub, and the running
+  // app is not always at the head of the branch — so a reader was shown a
+  // prompt that may not be the one that ran, with no way to tell. A template is
+  // a few kilobytes; the run keeps its own copy.
+  const rel = 'src/backend/data/prompts/seeded/materials-detection.txt';
+  const ref = promptRef(rel);
+
+  assert.equal(typeof ref.templateText, 'string');
+  assert.ok(ref.templateText.length > 100, 'the whole template, not a preview');
+  assert.equal(sha256(ref.templateText), ref.templateResolvedSha256,
+    'the stored copy must be exactly the text the digest was taken over');
+});
+
+test('the stored copy survives the file changing afterwards', () => {
+  // The property that makes it worth storing: the run\'s copy is the run\'s,
+  // and editing the prompt tomorrow cannot rewrite what a past run shows.
+  const rel = 'src/backend/data/prompts/seeded/materials-detection.txt';
+  const ref = promptRef(rel);
+  const snapshot = ref.templateText;
+
+  assert.equal(promptRef(rel).templateText, snapshot);
+  assert.notEqual(snapshot, null);
 });
 
 test('a precomputed digest is accepted, so the prompt need not travel', () => {
@@ -67,6 +93,7 @@ test('a precomputed digest is accepted, so the prompt need not travel', () => {
 test('a missing prompt file degrades to null rather than throwing', () => {
   const ref = promptRef('does/not/exist.txt');
   assert.equal(ref.templateSha256, null);
+  assert.equal(ref.templateText, null, 'no text is not the empty string — the UI must be able to tell');
   assert.equal(promptRef(null).promptFile, null);
 });
 

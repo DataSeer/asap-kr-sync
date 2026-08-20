@@ -10,10 +10,10 @@
  * Everything is read from the stored result. Nothing is recomputed, so what is
  * shown is what the run actually recorded.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth.store'
-import configService from '@/services/config.service'
 import fileService from '@/services/file.service'
+import jobService from '@/services/job.service'
 import { labelFor } from '@/components/modules/module-meta'
 import { RouterLink } from 'vue-router'
 
@@ -46,23 +46,6 @@ const canViewInternals = computed(() => authStore.canViewJobInternals)
 const open = ref(false)
 
 /**
- * Where the code lives, so a result can be read against the prompt that
- * produced it. Fetched rather than assumed: which branch a deployment runs is a
- * property of the deployment.
- */
-const source = ref(null)
-onMounted(async () => {
-  try { source.value = await configService.getSource() } catch { /* links simply omitted */ }
-})
-
-/**
- * The prompts this run used, linked on GitHub.
- *
- * Read from the run's own meta, not from a table of which module uses which
- * file — materials alone picks between two prompts depending on whether the
- * KRT had anything to seed with, so a static map would be wrong half the time.
- */
-/**
  * What the prompt DOES, per module. The file name alone does not say whether it
  * detects, consolidates or compares, and "Detection prompt" on the
  * consolidation step would be wrong.
@@ -71,24 +54,46 @@ const PROMPT_LABELS = {
   das_extraction: 'Statement extraction prompt',
   krt_grounding: 'Second-look prompt',
   pdf_analysis: 'Consolidation prompt',
-  suggestion_generation: 'Comparison prompt'
+  suggestion_generation: 'Comparison prompt',
+  signalsPrompt: 'Signal extraction prompt'
 }
 
-const prompts = computed(() => {
-  if (!source.value) return []
-  const m = meta.value
-  return [
-    [PROMPT_LABELS[props.jobType] || 'Detection prompt', m.promptFile],
-    ['Signal extraction prompt', m.signalsPromptFile]
-  ]
-    .filter(([, file]) => file)
-    .map(([label, file]) => ({
-      label,
-      file,
-      name: file.split('/').pop(),
-      url: `${source.value.repoUrl}/blob/${source.value.branch}/${file}`
+/**
+ * The prompts this run used — the run's OWN copies.
+ *
+ * There used to be a GitHub link here, built from the recorded path and the
+ * branch the deployment tracks. It was quietly wrong: the running app is not
+ * always at the head of its branch, and prompt files get edited, renamed and
+ * deleted, so a reader could be shown a prompt that was not the one that ran
+ * with nothing to indicate the difference. A run freezes its prompt; this shows
+ * that copy and nothing else.
+ *
+ * Fetched on first open rather than with the job: the jobs payload is polled
+ * every few seconds and a template per module would be tens of kilobytes on
+ * every poll, for something read only when this panel is expanded.
+ */
+const prompts = ref([])
+const promptsState = ref('idle') // idle | loading | ready | error
+const openPrompt = ref(null)
+
+async function loadPrompts() {
+  if (promptsState.value !== 'idle') return
+  promptsState.value = 'loading'
+  try {
+    const data = await jobService.getJobPrompts(props.submissionId, props.jobType, props.job?.round)
+    prompts.value = (data.prompts || []).map((p) => ({
+      ...p,
+      label: PROMPT_LABELS[p.key] || PROMPT_LABELS[props.jobType] || 'Detection prompt',
+      name: (p.file || '').split('/').pop()
     }))
-})
+    promptsState.value = 'ready'
+  } catch {
+    promptsState.value = 'error'
+  }
+}
+
+// Only when the panel is actually opened.
+watch(open, (isOpen) => { if (isOpen) loadPrompts() })
 
 const result = computed(() => props.job?.result || {})
 /**
@@ -351,12 +356,40 @@ const responseUrl = (name) =>
             <span v-if="i.note" class="mt-files-note">{{ i.note }}</span>
           </li>
         </ul>
-        <!-- The prompt is an input too, linked to the file it came from on the
-             branch this deployment runs. -->
+        <!-- The prompt is an input too, and the copy shown is the one this run
+             froze — not the file as it stands today, and not a link to a branch
+             the deployment may not be running. -->
+        <p v-if="promptsState === 'loading'" class="mt-files-note">Loading the prompts this run used…</p>
+        <p v-else-if="promptsState === 'error'" class="mt-files-note">
+          The prompts this run used could not be read.
+        </p>
+        <p v-else-if="promptsState === 'ready' && !prompts.length" class="mt-files-note">
+          This run recorded no prompt.
+        </p>
         <ul v-if="prompts.length" class="mt-files">
           <li v-for="p in prompts" :key="p.file">
-            <a :href="p.url" target="_blank" rel="noopener" :title="p.file">{{ p.name }} ↗</a>
+            <button
+              type="button"
+              class="mt-linkish"
+              :title="p.file"
+              @click="openPrompt = openPrompt === p.file ? null : p.file"
+            >
+              {{ p.name }} {{ openPrompt === p.file ? '▾' : '▸' }}
+            </button>
             <span class="mt-files-note">{{ p.label }}</span>
+            <div v-if="openPrompt === p.file" class="mt-prompt">
+              <p class="mt-prompt-path">{{ p.file }}<span v-if="p.bytes"> · {{ p.bytes }} bytes</span></p>
+              <pre v-if="p.text" class="mt-prompt-text">{{ p.text }}</pre>
+              <p v-else class="mt-files-note">This run did not store the prompt text.</p>
+              <!-- Files the prompt cannot work without. LangExtract's few-shot
+                   examples are handed to the extractor separately and never
+                   enter the prompt text, so the template alone would show only
+                   part of what the run was given. -->
+              <div v-for="a in p.attachments || []" :key="a.file" class="mt-prompt-attachment">
+                <p class="mt-prompt-path">{{ a.file }}<span v-if="a.bytes"> · {{ a.bytes }} bytes</span></p>
+                <pre v-if="a.text" class="mt-prompt-text">{{ a.text }}</pre>
+              </div>
+            </div>
           </li>
         </ul>
         <ul v-if="inputArtefacts.length" class="mt-files">
@@ -459,5 +492,24 @@ const responseUrl = (name) =>
 }
 .mt-linkish:hover { text-decoration: underline; }
 .mt-files-note { color: #9ca3af; margin-left: 0.4rem; font-size: 0.7rem; }
+
+/* The run's own copy of a prompt, read in place. Scrolls inside its own box:
+   a 6 KB template must not push the rest of the panel off screen. */
+.mt-prompt { margin: 0.4rem 0 0.6rem; }
+.mt-prompt-path { color: #9ca3af; font-size: 0.7rem; margin-bottom: 0.2rem; word-break: break-all; }
+.mt-prompt-text {
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  padding: 0.6rem;
+  border-radius: 0.35rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  color: #374151;
+}
+.mt-prompt-attachment { margin-top: 0.5rem; }
 .mt-note { font-size: 0.7rem; color: #9ca3af; margin: 0.4rem 0 0; line-height: 1.4; }
 </style>

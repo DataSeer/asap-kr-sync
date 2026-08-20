@@ -397,14 +397,29 @@ explainable. The rule is **freeze what can change, reference what cannot**:
 | author rows, seeds, candidate pool, Generated KRT, grounding outcomes | copied verbatim under `frozen` | they are edited, or replaced by any re-run, underneath a stored result |
 | the markdown and the PDF | `fileId` + `version` + **SHA-256** under `documents` | `File` rows are immutable and versioned; a copy per detector per run would duplicate the manuscript for no added proof |
 | upstream detections | contributing **job ids** under `upstream` | stable references now that artefact keys are per run |
-| the prompt | template path + digest, **plus the digest of the assembled prompt as sent** | everything needed to rebuild it is in the same file, so the digest turns a reconstruction into proof |
+| the prompt template, and any file it cannot work without | **copied verbatim** under `templateText` / `attachments[].text`, with digests | it lives in the repo, and the repo moves: the running app is not always at the head of its branch, and prompt files get edited, renamed and deleted |
+| the **assembled** prompt as sent | digest only | it embeds the manuscript — everything needed to rebuild it is in the same file, so the digest turns a reconstruction into proof |
 
 **Artefact keys carry the job row id**: `…/round-N/jobs/<jobType>/<jobId>/<name>.json`. Without it a re-run
 overwrote the previous run's files while `runAllProcesses` created a fresh job row — the older row survived
 pointing at keys whose contents had been replaced, showing the newer run's data under the older run's timestamps.
 
-The prompt is stored as a digest rather than as text, which is only defensible while it can actually be rebuilt.
-`scripts/verify-run-audit.js` does exactly that — it rebuilds each prompt from `inputs.json` alone, through the
+**The template is copied, the assembled prompt is not.** The template used to be a digest too, on the reasoning
+that it lives in git and can be looked up — and the UI duly linked to GitHub. That reasoning does not survive
+contact with a deployment: dev is not always running the latest commit, so a reader could be shown a prompt that
+was *not* the one that ran, silently and with no way to tell. A template is a few kilobytes; the run keeps its
+own copy and the UI shows that. The GitHub link for prompts is gone. (The link from a module page to
+`docs/background-modules.md` stays — documentation is reference material, not a record of what ran.)
+
+**`attachments` is for a file the prompt cannot work without.** LangExtract's few-shot examples
+(`data/prompts/datasets-signals-examples.json`) are the case that exists: they are passed to the extractor as a
+separate argument and converted into structured `ExampleData`, so they never enter the prompt text — the template
+alone would not reproduce the run. Editing the examples changes the signals exactly as editing the prompt does. A
+record that kept one and not the other would claim a run was reproducible when it was not. Anything else a prompt
+is handed separately belongs here for the same reason.
+
+The **assembled** prompt is stored as a digest rather than as text, which is only defensible while it can
+actually be rebuilt. `scripts/verify-run-audit.js` does exactly that — it rebuilds each prompt from `inputs.json` alone, through the
 same assembly helpers the pipeline uses, and compares:
 
 ```bash
