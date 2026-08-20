@@ -5,7 +5,11 @@
 
 const { User, UserTeam } = require('../models');
 const { ValidationError } = require('../utils/errors');
+const authService = require('../services/auth/auth.service');
 const logger = require('../utils/logger');
+
+/** The cookie the refresh token travels in. Mirrors auth.controller. */
+const REFRESH_COOKIE = 'asap_kr_refresh';
 
 /**
  * Get current user's profile
@@ -68,6 +72,21 @@ async function updateProfile(req, res, next) {
     }
 
     await user.save();
+
+    // Changing a password must end the OTHER sessions, or it does not do what
+    // the person believes it does: a stolen session survived the change for the
+    // rest of the 7-day refresh window — which is the whole reason someone
+    // changes a password in a hurry.
+    //
+    // The session doing the changing is spared. Signing users out of the
+    // browser they are typing in would be a bug wearing security's clothes, and
+    // it teaches people not to change their password.
+    if (newPassword) {
+      const revoked = await authService.revokeAllForUser(user.id, 'password_changed', {
+        exceptRawToken: req.cookies?.[REFRESH_COOKIE] || null
+      });
+      logger.info('Password changed — other sessions signed out', { userId: user.id, revoked });
+    }
 
     logger.info('User updated their profile', { userId: user.id });
 

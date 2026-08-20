@@ -12,6 +12,7 @@
 
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
+const { Op } = require('sequelize');
 const { sequelize, User, UserTeam, RefreshToken } = require('../../models');
 const jwtService = require('./jwt.service');
 const auth0Service = require('./auth0.service');
@@ -192,9 +193,13 @@ async function refreshTokens(rawToken, ctx = {}) {
     // - revokedReason === 'account_deleted': the account was anonymised. A
     //   replay is a tab that was open at the time — benign, and the user it
     //   belonged to no longer exists to be compromised.
-    if (record.revokedReason === 'logout' ||
-        record.revokedReason === 'reuse_detected' ||
-        record.revokedReason === 'account_deleted') {
+    //
+    // - revokedReason === 'password_changed': the owner changed their password
+    //   and this session was signed out on purpose. A replay is the other
+    //   device finding out. Benign — and treating it as a compromise would
+    //   punish exactly the action we want people to take.
+    if (['logout', 'reuse_detected', 'account_deleted', 'password_changed']
+      .includes(record.revokedReason)) {
       logger.info('Refresh rejected: token already revoked', {
         userId: record.userId,
         reason: record.revokedReason
@@ -299,11 +304,42 @@ async function revokeRefreshToken(rawToken) {
   });
 }
 
+/**
+ * Revoke every live refresh token for a user, optionally sparing one.
+ *
+ * Changing a password has to end the other sessions or the change does not do
+ * what the user believes it does: a stolen session survived it for the rest of
+ * the 7-day refresh window, which is the whole reason people change a password
+ * in a hurry.
+ *
+ * `exceptRawToken` spares the session doing the changing. Signing users out of
+ * the browser they are typing in would be a bug wearing security's clothes, and
+ * it teaches people not to change their password.
+ *
+ * @param {string} userId
+ * @param {string} reason - a `revokedReason` the refresh handler understands
+ * @param {{exceptRawToken?: string}} [opts]
+ * @returns {Promise<number>} how many were revoked
+ */
+async function revokeAllForUser(userId, reason, { exceptRawToken = null } = {}) {
+  const where = { userId, revokedAt: null };
+  if (exceptRawToken) {
+    where.tokenHash = { [Op.ne]: hashToken(exceptRawToken) };
+  }
+  const [count] = await RefreshToken.update(
+    { revokedAt: new Date(), revokedReason: reason },
+    { where }
+  );
+  logger.info('Refresh tokens revoked for user', { userId, reason, revokedCount: count });
+  return count;
+}
+
 module.exports = {
   register,
   login,
   refreshTokens,
   revokeRefreshToken,
+  revokeAllForUser,
   issueSession,
   hashToken
 };

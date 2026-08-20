@@ -8,6 +8,7 @@ const { User, UserTeam, RefreshToken, sequelize } = require('../models');
 const { NotFoundError, ConflictError, AuthorizationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
 const teamEmailService = require('../services/teams/team-email.service');
+const authService = require('../services/auth/auth.service');
 const { ROLES } = require('../config/constants');
 const logger = require('../utils/logger');
 
@@ -246,6 +247,17 @@ async function update(req, res, next) {
         }
       }
     });
+
+    // An admin resetting someone's password ends that person's sessions — ALL
+    // of them, with no exception: the admin is not the one holding them, and
+    // the usual reason for an admin reset is that the account may be
+    // compromised. Leaving a live session behind would defeat the reset.
+    if (password) {
+      const revoked = await authService.revokeAllForUser(user.id, 'password_changed');
+      logger.info('Admin reset a password — sessions signed out', {
+        userId: user.id, resetBy: req.userId, revoked
+      });
+    }
 
     logger.info('User updated by admin', { userId: user.id, updatedBy: req.userId });
 
