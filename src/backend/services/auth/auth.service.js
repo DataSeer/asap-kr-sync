@@ -109,8 +109,12 @@ async function register(userData, ctx = {}) {
  * @returns {Promise<{user: object, tokens: object}>}
  */
 async function login(email, password, ctx = {}) {
+  // `deleted: false` is defence in depth — anonymising replaces the email with
+  // a random address, so a deleted account is already unreachable by the one
+  // key this query has. It is stated anyway so the rule holds if that ever
+  // changes.
   const user = await User.findOne({
-    where: { email: email.toLowerCase() },
+    where: { email: email.toLowerCase(), deleted: false },
     include: [{
       model: UserTeam,
       as: 'userTeams',
@@ -184,7 +188,13 @@ async function refreshTokens(rawToken, ctx = {}) {
     //   client) is replaying a token that was rotated out. This is the
     //   genuine compromise signal — wipe every still-live token for this
     //   user and force a full re-login.
-    if (record.revokedReason === 'logout' || record.revokedReason === 'reuse_detected') {
+    //
+    // - revokedReason === 'account_deleted': the account was anonymised. A
+    //   replay is a tab that was open at the time — benign, and the user it
+    //   belonged to no longer exists to be compromised.
+    if (record.revokedReason === 'logout' ||
+        record.revokedReason === 'reuse_detected' ||
+        record.revokedReason === 'account_deleted') {
       logger.info('Refresh rejected: token already revoked', {
         userId: record.userId,
         reason: record.revokedReason
@@ -212,7 +222,10 @@ async function refreshTokens(rawToken, ctx = {}) {
   }
 
   const user = await User.findByPk(record.userId);
-  if (!user) {
+  if (!user || user.deleted) {
+    // Deleting an account revokes its live tokens, so this is belt and braces:
+    // it also closes the window on a token issued between the revoke sweep and
+    // the commit.
     throw new AuthenticationError('User not found');
   }
 

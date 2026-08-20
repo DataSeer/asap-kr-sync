@@ -15,8 +15,11 @@ const logger = require('../utils/logger');
  * @returns {Promise<object>} User data with teams array
  */
 async function fetchUserWithTeams(query) {
+  // Every authenticated request resolves its user through here — local JWT and
+  // Auth0 alike — which makes it the one place that has to refuse a deleted
+  // account.
   const user = await User.findOne({
-    where: query,
+    where: { ...query, deleted: false },
     attributes: ['id', 'email', 'name', 'role', 'auth0Sub'],
     include: [{
       model: UserTeam,

@@ -2,8 +2,9 @@
  * Users Controller
  */
 
+const crypto = require('crypto');
 const { Op } = require('sequelize');
-const { User, UserTeam, sequelize } = require('../models');
+const { User, UserTeam, RefreshToken, sequelize } = require('../models');
 const { NotFoundError, ConflictError, AuthorizationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
 const teamEmailService = require('../services/teams/team-email.service');
@@ -68,8 +69,11 @@ async function list(req, res, next) {
       }
     }
 
+    // Anonymised accounts are tombstones kept for referential integrity — they
+    // hold no identity to manage, so they are not listed. `deleted` cannot
+    // collide with anything whereClause sets above (`id`).
     const { count, rows } = await User.findAndCountAll({
-      where: whereClause,
+      where: { ...whereClause, deleted: false },
       // `auth0Sub` is needed so toJSON() can compute the `isAuth0User` flag.
       // The toJSON method strips the raw value before serialization — only
       // the boolean leaves the server.
@@ -107,7 +111,8 @@ async function list(req, res, next) {
  */
 async function getById(req, res, next) {
   try {
-    const user = await User.findByPk(req.params.id, {
+    const user = await User.findOne({
+      where: { id: req.params.id, deleted: false },
       attributes: ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt', 'auth0Sub'],
       include: [{
         model: UserTeam,
@@ -204,7 +209,9 @@ async function create(req, res, next) {
  */
 async function update(req, res, next) {
   try {
-    const user = await User.findByPk(req.params.id);
+    // An anonymised account has no identity left to edit, and re-granting it a
+    // role or a password would resurrect it — 404, as for any other unknown id.
+    const user = await User.findOne({ where: { id: req.params.id, deleted: false } });
     if (!user) {
       throw new NotFoundError('User');
     }
@@ -257,7 +264,31 @@ async function update(req, res, next) {
 }
 
 /**
- * Delete user
+ * Delete a user — by anonymising the account, never by removing the row.
+ *
+ * `DELETE FROM users` cascades. `submissions.user_id` is ON DELETE CASCADE, so
+ * deleting a departing colleague destroyed every manuscript they had submitted;
+ * `change_logs.user_id` is too, so it also erased every edit they had ever made
+ * to OTHER people's submissions, leaving those curators with gaps in a history
+ * that is meant to be a complete record. The S3 folder and any queued jobs were
+ * left behind pointing at an id that no longer resolved.
+ *
+ * So the row stays and the identity goes:
+ *
+ *   - the email is replaced by an unguessable, non-routable address. It has to
+ *     stay unique (the column is), and it must not be reversible — an
+ *     `sha256(email)` would let anyone holding the address confirm the account
+ *     existed, so it is random, not derived.
+ *   - the password hash and the Auth0 link are erased, which is what actually
+ *     ends the ability to sign in. `deleted` alone would be a flag to forget to
+ *     check somewhere.
+ *   - the name becomes a tombstone, so history reads "Deleted user" rather than
+ *     blank.
+ *   - team memberships go, so the account stops conferring visibility of the
+ *     lab's submissions to anything that resolves teams by user id.
+ *   - live refresh tokens are revoked, so an open session dies at its next
+ *     15-minute refresh instead of surviving for the rest of the 7-day window.
+ *
  * DELETE /api/users/:id
  */
 async function deleteUser(req, res, next) {
@@ -272,9 +303,28 @@ async function deleteUser(req, res, next) {
       return res.status(400).json({ error: 'Cannot delete yourself' });
     }
 
-    await user.destroy();
+    if (user.deleted) {
+      throw new ConflictError('User is already deleted');
+    }
 
-    logger.info('User deleted by admin', { deletedUserId: user.id, deletedBy: req.userId });
+    await sequelize.transaction(async (transaction) => {
+      user.email = `deleted-${crypto.randomBytes(16).toString('hex')}@deleted.invalid`;
+      user.name = 'Deleted user';
+      user.passwordHash = null;
+      user.auth0Sub = null;
+      user.deleted = true;
+      user.deletedAt = new Date();
+      await user.save({ transaction });
+
+      await UserTeam.destroy({ where: { userId: user.id }, transaction });
+
+      await RefreshToken.update(
+        { revokedAt: new Date(), revokedReason: 'account_deleted' },
+        { where: { userId: user.id, revokedAt: null }, transaction }
+      );
+    });
+
+    logger.info('User anonymised by admin', { deletedUserId: user.id, deletedBy: req.userId });
 
     res.json({ message: 'User deleted successfully' });
   } catch (error) {

@@ -73,7 +73,16 @@ Create a user. **admin, ds_annotator only.** Non-admins cannot create admin-role
 Update a user. **admin, ds_annotator only.** Body accepts any of `name, role, password, teams[]` (at least one required). Non-admins cannot edit existing admin users or promote anyone to admin. Replaces the full team list when `teams` is provided.
 
 ### `DELETE /api/users/:id`
-Delete a user. **admin only.** Self-deletion is blocked (400).
+Delete a user. **admin only.** Self-deletion is blocked (400); an
+already-deleted user is a 409.
+
+**This anonymises rather than removes.** The row survives so that the user's
+submissions and their edits to other people's submissions survive with it
+(both FKs cascade). The identity does not: the email is replaced with a random
+`@deleted.invalid` address, the name becomes `Deleted user`, the password hash
+and Auth0 link are nulled, team memberships are dropped and live refresh tokens
+are revoked, all in one transaction. The account is then absent from
+`GET /api/users`, and `GET`/`PATCH /api/users/:id` return 404 for it.
 
 ---
 

@@ -121,7 +121,16 @@ async function handleSaveUser() {
 }
 
 async function handleDeleteUser(user) {
-  if (!confirm(`Are you sure you want to delete ${user.name}?`)) {
+  // Say what actually happens: the account is closed and its identity erased,
+  // but the person's submissions and their edits to other people's submissions
+  // stay where they are. An admin reading "delete" would reasonably expect the
+  // opposite, in either direction.
+  if (!confirm(
+    `Delete ${user.name}?\n\n` +
+    'Their account will be closed and their name and email address erased. ' +
+    'Their submissions and their edits to other submissions are kept, ' +
+    'attributed to "Deleted user".\n\nThis cannot be undone.'
+  )) {
     return
   }
 

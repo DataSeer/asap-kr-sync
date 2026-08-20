@@ -235,6 +235,38 @@ test('optionalAuth continues anonymously on a BAD token, rather than trusting it
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Anonymised accounts
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a deleted account cannot be resolved from a still-valid token', async (t) => {
+  // Deleting a user anonymises the row rather than removing it, so the row is
+  // still findable by id. Every authenticated request resolves its user
+  // through this one query, which makes it the place the exclusion has to
+  // live — a filter applied only in the users list would not stop a session
+  // that was open when the account was closed.
+  const seen = [];
+  t.mock.method(User, 'findOne', async (options) => { seen.push(options.where); return null; });
+  t.mock.method(auth0Service, 'isEnabled', () => false);
+
+  const { err } = await run(authenticate, req(sign({ userId: USER_ID, type: 'access' })));
+
+  assert.ok(err, 'an anonymised account must not authenticate');
+  assert.equal(seen[0].deleted, false, 'the lookup must exclude deleted accounts');
+});
+
+test('the Auth0 lookup excludes deleted accounts too', async (t) => {
+  const seen = [];
+  t.mock.method(auth0Service, 'isEnabled', () => true);
+  t.mock.method(auth0Service, 'verifyAccessToken', async () => ({ sub: 'auth0|abc' }));
+  t.mock.method(User, 'findOne', async (options) => { seen.push(options.where); return null; });
+
+  await run(authenticate, req('an-auth0-token'));
+
+  assert.ok(seen.length, 'the Auth0 path must reach the user lookup');
+  assert.ok(seen.every(w => w.deleted === false), 'every branch goes through the same guard');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The Auth0 fallback
 // ─────────────────────────────────────────────────────────────────────────────
 
