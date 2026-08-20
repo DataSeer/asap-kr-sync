@@ -12,6 +12,52 @@ const assert = require('node:assert/strict');
 const { parseSecondLookResponse, recount, presenceForRows } = require('./krt-grounding.service');
 const { buildEvidenceIndex } = require('../pdf-analysis/evidence.service');
 
+// ── A truncated second look ────────────────────────────────────────────────
+//
+// Found by running a real 335-row manuscript: 107 rows went to the second look,
+// two batches hit the model's token cap, and both were discarded WHOLE — one
+// had cut mid-quote on its fifth entry, so four complete locations went with
+// it. Every other LM module salvages a truncated response; this is the module
+// where discarding one directly produces a wrong answer, because a row the
+// model DID locate then stays `not_detected` — which the interface reports as
+// "the manuscript does not mention this".
+
+test('a batch cut mid-quote keeps the locations that completed', () => {
+  const truncated = '{"found":[{"index":4,"quote":"Peptides were desalted using Sep-Pak tC18 Plates (Cat. No.: 186002319)."},'
+    + '{"index":5,"quote":"The following reagents were used: Nunclon Delta (Thermo';
+
+  const out = parseSecondLookResponse(truncated);
+
+  assert.equal(out.length, 1, 'the completed entry survives');
+  assert.equal(out[0].index, 4);
+  assert.match(out[0].quote, /186002319/);
+});
+
+test('the half-written entry is dropped, not repaired', () => {
+  // A quote cut in half is not a quote. It would fail the manuscript
+  // re-verification anyway, but it must never reach it — a "location" invented
+  // by truncation is exactly the kind of thing that erodes trust.
+  const truncated = '{"found":[{"index":0,"quote":"complete sentence here."},{"index":1,"quote":"cut off mid';
+
+  const out = parseSecondLookResponse(truncated);
+
+  assert.deepEqual(out.map((h) => h.index), [0]);
+});
+
+test('a truncated batch with nothing complete yields nothing', () => {
+  assert.deepEqual(parseSecondLookResponse('{"found":[{"index":0,"quote":"cut immediately'), []);
+});
+
+test('salvage reads `found` by name, not whatever array is present', () => {
+  // The response envelope could grow a second list. Reading "the first array"
+  // would then quietly take the wrong one.
+  const truncated = '{"rejected":[{"index":9,"quote":"not a location"}],"found":[{"index":2,"quote":"a real quote."},{"index":3,"quote":"cut';
+
+  const out = parseSecondLookResponse(truncated);
+
+  assert.deepEqual(out.map((h) => h.index), [2], 'only entries from `found`');
+});
+
 test('parseSecondLookResponse reads the documented shape', () => {
   const out = parseSecondLookResponse('{"found":[{"index":0,"quote":"anti-TH antibody"}]}');
   assert.deepEqual(out, [{ index: 0, quote: 'anti-TH antibody' }]);

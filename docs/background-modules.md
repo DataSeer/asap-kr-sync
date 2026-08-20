@@ -708,7 +708,15 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   to check" is not "checked and not found".
 - **The second look** takes the rows nothing matched and asks the LM to find each one in the manuscript, returning
   an exact quote. **Every returned quote is re-verified against the markdown here**, so a confident-sounding
-  hallucination changes nothing: an unverifiable quote leaves the row `not_detected`. This is the *right* use of
+  hallucination changes nothing: an unverifiable quote leaves the row `not_detected`.
+- **A truncated batch is salvaged, not discarded.** It sends one prompt per batch of not-yet-located rows, and a
+  batch that hits the token cap used to be thrown away whole. Measured on a 335-row table: 107 rows went to the
+  second look, two batches were cut mid-quote, and both were dropped entire — one had completed four locations
+  before the cut. This is the module where losing entries produces a *wrong answer* rather than a thin one: a row
+  the model did locate stays `not_detected`, which the interface reports as "the manuscript does not mention
+  this". The salvage reads `found` **by name**, the half-written entry is dropped rather than repaired, and every
+  surviving quote still goes through the same manuscript re-verification — a partial response cannot lower the bar
+  for what counts as located. This is the *right* use of
   the author's table — as a search query, never as a seed.
 - **Depends on:** every detector, **gated on `krt_curated`**. **Output:** consumed by `suggestion_generation`.
 - **Fail-soft:** not wrapped in `runWithDemoFallback` — there is no external service to fall back *from*. The

@@ -47,7 +47,7 @@ const { matchAuthorRows } = require('./match-author-rows.service');
 const { getPipeline } = require('../../config/pipelines');
 const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
   findAllOccurrences, findNormalisedOccurrences, identifierParts } = require('../pdf-analysis/evidence.service');
-const { sanitizeJsonEscapes, extractJsonBlock } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, extractJsonBlock, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
 const { repoPath } = require('../detection/repo-path');
@@ -570,19 +570,49 @@ async function askSecondLook(batch, markdownText) {
  */
 function parseSecondLookResponse(text) {
   if (!text) return [];
+  const block = extractJsonBlock(text);
   try {
-    const parsed = JSON.parse(sanitizeJsonEscapes(extractJsonBlock(text)));
+    const parsed = JSON.parse(sanitizeJsonEscapes(block));
     const found = Array.isArray(parsed) ? parsed : parsed.found;
     if (!Array.isArray(found)) return [];
-    return found
-      .filter((hit) => hit && Number.isInteger(hit.index) && typeof hit.quote === 'string' && hit.quote.trim())
-      .map((hit) => ({ index: hit.index, quote: hit.quote }));
+    return usableHits(found);
   } catch (error) {
+    // A truncated batch used to be discarded whole. Every other LM module
+    // salvages — and this is the module where throwing entries away directly
+    // produces a wrong answer: a row the model DID locate stays `not_detected`,
+    // which the interface reports as "the manuscript does not mention this".
+    //
+    // Observed on a 335-row table: 107 rows went to the second look, two
+    // batches hit the token cap, and both were dropped entire — one had cut
+    // mid-quote on entry 5, so four complete locations went with it.
+    //
+    // Salvage reads `found` BY NAME. The entry cut in half is discarded by
+    // JSON.parse inside the salvage, and every quote that survives is still
+    // re-verified against the manuscript afterwards, so a partial response
+    // cannot lower the bar for what counts as located.
+    const salvaged = usableHits(salvageTruncatedObjects(block, 'found'));
+    if (salvaged.length > 0) {
+      logger.warn('KRT grounding second-look response was truncated — salvaged the completed locations', {
+        error: error.message, salvaged: salvaged.length
+      });
+      return salvaged;
+    }
     logger.error('Failed to parse KRT grounding second-look response', {
       error: error.message, preview: String(text).slice(0, 200)
     });
     return [];
   }
+}
+
+/**
+ * The entries that carry both halves of a location: which row, and the quote.
+ * @param {object[]} hits
+ * @returns {{index: number, quote: string}[]}
+ */
+function usableHits(hits) {
+  return (hits || [])
+    .filter((hit) => hit && Number.isInteger(hit.index) && typeof hit.quote === 'string' && hit.quote.trim())
+    .map((hit) => ({ index: hit.index, quote: hit.quote }));
 }
 
 /**
