@@ -89,3 +89,7 @@ src/backend/data/demo-findings/*
 # Python bytecode from the langextract bridge
 __pycache__/
 *.pyc
+
+# Local working files, not part of the app
+.claudeignore
+AUDIT.md
