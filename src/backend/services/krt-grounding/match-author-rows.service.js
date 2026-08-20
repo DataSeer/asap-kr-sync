@@ -518,11 +518,15 @@ function valuesConflict(field, authorValue, manuscriptValue) {
     return !(ra.includes(rb) || rb.includes(ra));
   }
 
-  // newReuse is a closed vocabulary, so any difference is real.
-  if (field === 'newReuse') return true;
-
-  // SOURCE is free text (vendor names, repositories) and varies legitimately;
-  // only flag when neither side contains the other, already checked above.
+  // Only COMPARABLE_FIELDS ever reach here — `newReuse` had a branch of its own
+  // ("a closed vocabulary, so any difference is real"), left behind when it was
+  // dropped from comparison. It was unreachable, but it read as a live rule and
+  // a test asserted it, so anyone adding a field to COMPARABLE_FIELDS would have
+  // found a landmine that looked deliberate. The rule now lives in one place:
+  // the COMPARABLE_FIELDS list.
+  //
+  // Anything still here differs beyond formatting and completeness, both
+  // already checked above.
   return true;
 }
 

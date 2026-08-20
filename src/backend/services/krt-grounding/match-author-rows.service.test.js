@@ -376,9 +376,34 @@ test('an identifier type present on only one side is not a conflict', () => {
   assert.equal(valuesConflict('identifier', 'RRID: AB_1', '10.5281/zenodo.1'), false);
 });
 
-test('newReuse is a closed vocabulary, so any difference is real', () => {
-  assert.equal(valuesConflict('newReuse', 'new', 'reuse'), true);
-  assert.equal(valuesConflict('newReuse', 'reuse', 'reuse'), false);
+test('new/reuse can never reach the conflict check at all', () => {
+  // It is not comparable — no detector reads new-versus-reuse from the
+  // manuscript — so the guard is the COMPARABLE_FIELDS list, not a special case
+  // inside valuesConflict. Asserting the old special case kept a dead branch
+  // looking live: the next person to add a comparable field would have
+  // inherited a rule nothing applied.
+  const { outcomes } = matchAuthorRows(
+    [authorRow({ identifier: 'RRID:AB_1', newReuse: 'reuse' })],
+    [candidate({ identifier: 'RRID:AB_1', newReuse: 'new' })]
+  );
+  assert.deepEqual(outcomes[0].conflicts, [], 'the manuscript never says new-versus-reuse');
+});
+
+test('new/reuse is not offered as a fill either, even for an empty cell', () => {
+  // The other half of the same rule, and the one that is easy to lose: every
+  // detector hard-codes a new/reuse default, so a "found value" for it is our
+  // own default handed back. Filling an empty cell from it would invent data
+  // and dress it in grounding provenance.
+  const { outcomes } = matchAuthorRows(
+    [authorRow({ identifier: 'RRID:AB_1', newReuse: '', source: '' })],
+    [candidate({ identifier: 'RRID:AB_1', newReuse: 'new', source: 'Abcam' })]
+  );
+
+  assert.ok(!outcomes[0].missingFields.includes('newReuse'), 'new/reuse must never be proposed');
+  assert.equal(outcomes[0].foundValues.newReuse, undefined, 'and no value for it may be carried');
+  // Source is the contrast: proposing a vendor for an empty cell IS useful, and
+  // is not an accusation. Only contradicting the author about it was wrong.
+  assert.ok(outcomes[0].missingFields.includes('source'), 'source is still offered');
 });
 
 test('an empty side is never a conflict', () => {
