@@ -134,7 +134,7 @@ describe('GroundingTable', () => {
 
     // The explanation is rendered in the cell, not hidden in a tooltip — a
     // curator should not have to hover to learn which identifier is missing.
-    expect(wrapper.text()).toContain('Not found in the manuscript: Cat#657012')
+    expect(wrapper.text()).toContain('Not found as written: Cat#657012')
   })
 
   it('stays a plain Yes when every identifier is corroborated', () => {

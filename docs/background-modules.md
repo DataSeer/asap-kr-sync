@@ -703,7 +703,12 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   order the author wrote them, each with `value` (the author's own text, e.g. `Cat#657012`) and `needle` (what was
   searched, `657012`) — a verdict a curator cannot match to the cell in front of them is not a verdict.
   `identifiersNotFound` is the actionable subset, and the editor's FOUND column reads **"Yes - partial ids"** with
-  the uncorroborated ones named. Collapsing the cell into one boolean answered a question nobody asked ("is ANY of
+  the uncorroborated ones named — as *"not found **as written**"*, because the search is for the author's exact
+  string and the same accession can appear in another notation: a paper printing `RRID:Addgene_242904` does not
+  contain `Addgene #242904` though it plainly cites the resource. So it reports a **mismatch between spellings**,
+  which is true either way, rather than claiming the manuscript never mentions the thing. Normalising accessions
+  across notations — which the deterministic matcher already does via `extractIdentifierTokens` — would remove
+  those false gaps and is **deliberately deferred**. Collapsing the cell into one boolean answered a question nobody asked ("is ANY of
   this in the paper?") and hid the half a curator can act on. An **empty** cell yields no verdicts at all — "nothing
   to check" is not "checked and not found".
 - **The second look** takes the rows nothing matched and asks the LM to find each one in the manuscript, returning

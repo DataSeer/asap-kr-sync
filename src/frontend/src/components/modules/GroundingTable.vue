@@ -105,9 +105,18 @@ function foundVerdict(o) {
   // the manuscript can corroborate one without the other. Saying "identifier
   // found" over a cell where one of two was never located is true and useless:
   // the uncorroborated one is the actionable half, so it is named.
+  //
+  // "as written" is doing real work. The search is for the author's exact
+  // string, and the same accession can appear in another notation — a paper
+  // printing `RRID:Addgene_242904` does not contain the string
+  // `Addgene #242904`, though it plainly cites the resource. So this reports a
+  // MISMATCH between the two spellings, which is true either way, rather than
+  // claiming the manuscript never mentions it. Normalising accessions across
+  // notations (as the deterministic matcher already does) would remove those
+  // false gaps and is deliberately left for later.
   const missing = p.identifiersNotFound || []
   const partOfIds = missing.length > 0 && p.viaIdentifier
-    ? ` Not found in the manuscript: ${missing.join(', ')}.`
+    ? ` Not found as written: ${missing.join(', ')}.`
     : ''
 
   if (p.viaName && p.viaIdentifier) {
