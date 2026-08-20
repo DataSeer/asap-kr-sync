@@ -197,10 +197,14 @@ function generateCSV(data, submissionId) {
   const guarded = data.map((row) => Object.fromEntries(
     Object.entries(row).map(([k, v]) => [k, neutralizeFormula(v)])
   ));
-  const csv = Papa.unparse(guarded, {
-    columns: KRT_COLUMNS,
-    header: true
-  });
+  // `Papa.unparse([])` returns an EMPTY STRING — not a header row — so a KRT
+  // with no rows downloaded as a zero-byte file. That is not a KRT: the header
+  // is what makes an empty table re-uploadable (column validation runs on the
+  // headers, and the app's own tooling treats a header-only CSV as the valid
+  // empty KRT). The `fields` form emits the header with no data rows.
+  const csv = guarded.length
+    ? Papa.unparse(guarded, { columns: KRT_COLUMNS, header: true })
+    : Papa.unparse({ fields: KRT_COLUMNS, data: [] });
 
   return {
     buffer: Buffer.from(csv, 'utf-8'),
