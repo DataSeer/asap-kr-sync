@@ -191,6 +191,33 @@ what ships in the image.
 | `scripts/dev/*.js` | **Localhost only.** Feature development and quality evaluation: the gold linkage, the scoring harness, the A/B prompt arms, the benchmark and the dev-vs-branch comparisons. Excluded from the image via `.dockerignore` — they never run against a deployed instance. |
 | `scripts/lib/*.js` | Shared helpers for both. |
 
+### Taking a copy of the data
+
+```bash
+node scripts/dump-data.js --out /path/to/dump          # database/ and s3/
+node scripts/dump-data.js --out /path/to/dump --dry-run
+```
+
+Two folders and a manifest:
+
+```
+<out>/database/<table>.json   every row of every table, column names intact
+<out>/s3/<key…>               every stored object, path mirroring its key
+<out>/DUMP.json               row counts, object count, total bytes, timestamp
+```
+
+It is **read-only** — it never deletes and never writes to the database or S3 —
+and it is deliberately **not** a restorable backup: no ordering, no foreign-key
+handling, no import path. It exists so submissions can be kept and processed
+elsewhere before they are removed.
+
+One implementation note worth keeping: the table list is read from
+`information_schema` with `table_name::text`. Those columns are Postgres's
+`name` type, and this driver returns such rows as **arrays** rather than
+objects, so without the cast the script asks for a relation called "undefined".
+Selects against the app's own tables are unaffected, which is why the dump keeps
+its column names.
+
 The split is enforced by `.dockerignore`, not by convention: a script that needs
 to run on a host belongs in `scripts/`, and putting it in `dev/` means it will
 not be there.

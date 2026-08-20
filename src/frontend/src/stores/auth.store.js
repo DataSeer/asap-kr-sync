@@ -56,9 +56,6 @@ export const useAuthStore = defineStore('auth', () => {
   const canViewJobInternals = computed(() =>
     !!effectiveRole.value && effectiveRole.value !== 'author'
   )
-  // Manual job lifecycle actions (advance, restart, retry): staff only.
-  const canManageJobs = computed(() => isStaff.value)
-
   /**
    * Re-running a module: anyone signed in who can reach the submission.
    *
@@ -279,7 +276,6 @@ export const useAuthStore = defineStore('auth', () => {
     canDeleteSubmission,
     canHideSubmission,
     canViewJobInternals,
-    canManageJobs,
     canRestartJobs,
     canEditAnyUser,
     canEditAdminUsers,
