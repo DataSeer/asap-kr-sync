@@ -3,7 +3,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Team, UserTeam, TeamEmail, Submission, User } = require('../models');
+const { Team, UserTeam, TeamEmail, User } = require('../models');
 const { NotFoundError, ConflictError, ValidationError, AuthorizationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
 const teamEmailService = require('../services/teams/team-email.service');
@@ -182,16 +182,19 @@ async function deleteTeam(req, res, next) {
       });
     }
 
-    // ds_annotator cannot delete a team that still has submissions attached;
-    // admins can force-delete.
-    if (req.user.role !== ROLES.ADMIN) {
-      const submissionCount = await Submission.count({ where: { team: team.code } });
-      if (submissionCount > 0) {
-        return res.status(400).json({
-          error: `Cannot delete team with ${submissionCount} attached submission(s). Reassign them first or ask an admin.`
-        });
-      }
-    }
+    // There was a second guard here — "ds_annotator cannot delete a team that
+    // still has submissions attached" — counting `submissions.team`. That column
+    // does not exist: a submission carries a `project` (the 2-letter grant code)
+    // and an owner, and team visibility is derived from the OWNER's teams. The
+    // query therefore threw, so a ds_annotator deleting any team got a 500
+    // rather than either the refusal or the deletion. Admins never saw it —
+    // they skipped the branch.
+    //
+    // Rewriting it against the real model makes it vacuous: submissions are
+    // attached to a team only through their owner's membership, and the check
+    // above has already established that the team has no members. So the
+    // membership check IS the attached-submissions check, and this is one
+    // guard, not two.
 
     await team.destroy();
 

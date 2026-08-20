@@ -109,7 +109,9 @@ Create a team.
 Update a team. **Body**: any of `{ code, name, active }` (at least one).
 
 ### `DELETE /api/teams/:id`
-Delete a team.
+Delete a team. Refused with a 400 while the team still has members — that is the
+only thing attaching anything to a team, since a submission carries a *project*
+and an owner, and team visibility is derived from the owner's memberships.
 
 ### `GET /api/teams/export`
 Download all teams as CSV (`code,name,active`), re-importable via import.
