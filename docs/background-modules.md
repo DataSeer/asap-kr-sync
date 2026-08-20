@@ -31,7 +31,7 @@ extraction finishes; see §3.11 and [submission-workflow.md](./submission-workfl
 | `orcid_extraction` | Authors + ORCIDs | GROBID → OpenAlex → ORCID API | — | `submission.authors` (not the KRT) |
 | `pdf_analysis` | The consolidated Generated KRT | Rule-based merge → **LM (Gemini)** consolidation, rule-based fallback | all detectors above | Suggestion Generation |
 | `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
-| `das_suggestions` | DAS vs the ASAP rulebook (per-rule verdict) | **LM (Gemini)** — LM-only, **legacy-rules fallback** | — *(standalone; started from `/availability`)* | the `/availability` suggestions list |
+| `das_suggestions` | DAS vs the ASAP rulebook (per-rule verdict) | **LM (Gemini)** — LM-only, **legacy-rules fallback** | `das_extraction` *(gated to the Availability step)* | the `/availability` suggestions list, and its own module page |
 
 Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)). `das_suggestions` is omitted from the diagram below for readability — it hangs off `das_extraction` and is gated to the Availability step (see §3.11). On the app's own pipeline page it is drawn in the **Suggest** stage rather than beside its dependency, via the step's `displayStage`: it depends on something early but runs last, and a reader following the page top to bottom should find it where it actually runs.
 
@@ -790,9 +790,19 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Engine:** **Google Gemini** — LM-only, **with a legacy-rules fallback.** When `DAS_SUGGESTIONS_ENABLED` is off
   / no key (or the LM fails), the `/availability` view falls back to the same rules computed **in-browser**, and
   **Continue is not blocked**.
-- **Not in the auto pipeline (standalone).** Started by the `/availability` step once the user has finished review
-  (so the DAS is extracted and the KRT is final), and **re-run when the DAS is edited**. While it runs, the step
-  shows a **loader** and the **Continue button is blocked** until the job reaches a terminal state.
+- **A pipeline step, gated to the Availability step.** It depends on `das_extraction` for the statement, and the
+  `availability_ready` gate holds it there rather than letting it run when extraction finishes. The gate has two
+  conditions — the submission has reached `step_as`, **and** it carries a real statement (extraction is fail-soft
+  and writes `NO_DAS_SENTINEL` when it found none, so "there is a row" is not "there is a statement"). It reads the
+  submission's *current* statement rather than the extraction result, so an author who types one by hand releases
+  it; the extraction result would say "not found" for ever. It is also **re-run when the DAS is edited** — that is
+  a frontend behaviour, not a pipeline condition. While it runs, `/availability` shows a **loader** and blocks
+  **Continue** until the job is terminal.
+- **Why the gate is not just a dependency.** A `waiting` job counts as outstanding work, so before this gate
+  existed the check was kept out of the pipeline entirely: waiting from PDF upload onward, it held the KRT and PDF
+  steps' "all processes finished" gate shut for the whole session. The jobs API now reports
+  `waitingReason: 'availability_step'` and the client excludes a step parked behind a stage the user has not
+  reached (`isFutureStepJob`). Widening that exemption brings the old bug back, as what looks like a UI glitch.
 - **Inputs:** the current DAS text (`submission.dataAvailabilityStatement`) + deterministic **KRT signals** computed
   from `KRTData` (`has_new_dataset`, `has_new_code`, `has_dataset/code/protocol/lab-material resources`). The LM
   judges the DAS text; the KRT booleans are handed to it as ground truth. Because a check like `no_new_code` fires
@@ -800,16 +810,23 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   are `reuse` will correctly trigger the no-new-code checks regardless of the DAS wording.
 - **Persistence:** the per-rule verdicts are persisted on the job result (`result.data.suggestions`) — each with a
   `reason` kept for **every** rule (applicable or not, so the UI's "More details" disclosure can explain both
-  flagged and passed checks) — alongside the KRT `signals` used (`result.data.signals`). Read via
-  `GET /api/submissions/:id/das-suggestions`; re-run via `POST /api/submissions/:id/das-suggestions/regenerate`.
-  Pre-existing jobs (run before `signals` was persisted) return `signals: null` until the check is re-run.
+  flagged and passed checks) — alongside the KRT `signals` used (`result.data.signals`) and `result.data.meta`
+  (see the [result-shape contract](./background-jobs.md#result-summaries); this module stored its meta beside
+  `data` for one commit and the only symptom was a blank Statistics column on its own page). It also writes the
+  frozen `inputs` artefact every module writes: the statement as sent, the KRT signals, and the prompt by template
+  + assembled digest. Read via `GET /api/submissions/:id/das-suggestions`; re-run via
+  `POST /api/submissions/:id/das-suggestions/regenerate`, which returns one of **three** outcomes — queued, or
+  `pending` (gated, will run at the Availability step), or not queued because there is no statement. Those must
+  stay distinguishable: a bare job id could not, and the API told authors with a good statement that they had not
+  written one.
 - **UI (`/availability`):** each LM-checked suggestion has a **"More details"** toggle showing the model's
   per-rule reasoning (green-accented for passed checks), plus a section-level **"What the check saw"** panel
   listing the KRT `signals` the model was given.
 - **Config:** `DAS_SUGGESTIONS_ENABLED`, `DAS_SUGGESTIONS_GEMINI_API_KEY/_MODEL`, `DAS_SUGGESTIONS_API_TIMEOUT`.
   **Prompt:** `data/prompts/das-suggestions.txt`.
 - **Key files:** `services/das-suggestions/das-suggestions.service.js`, `config/das-suggestions-api.js`,
-  `controllers/das-suggestions.controller.js`, frontend `views/submissions/AvailabilityView.vue`.
+  `controllers/das-suggestions.controller.js`, frontend `views/submissions/AvailabilityView.vue` and the module
+  page's `components/modules/DasSuggestionsTable.vue` + `das-suggestions.js`.
 
 **The rulebook — all DAS Suggestions (9 checks).** Presentation (severity / title / message / recommended text) is
 fixed in `DAS_RULES` (`das-suggestions.service.js`); the LM only decides `applies` + a reason. A rule "applies" when

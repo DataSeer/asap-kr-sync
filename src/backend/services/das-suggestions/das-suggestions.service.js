@@ -237,7 +237,12 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
 
   if (!dasSuggestionsConfig.isConfigured() || !hasPrompt()) {
     jobLogger?.log('das_suggestions_skipped', 'DAS suggestions LM not configured — frontend falls back to legacy rules');
-    return { data: { suggestions: [] }, status: 'done', source: null, meta: { skipped: true, reason: 'lm_not_configured', totalMs: Date.now() - start } };
+    return {
+      data: { suggestions: [] },
+      status: 'done',
+      source: null,
+      meta: { skipped: true, reason: 'lm_not_configured', totalMs: Date.now() - start }
+    };
   }
 
   const submission = await Submission.findByPk(submissionId);
@@ -276,13 +281,17 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
     total: suggestions.length, applicable
   });
 
+  // The helper-return convention: `meta` at the top of the returned object —
+  // the worker reads `result.meta.totalMs` from it — and nested into `data` at
+  // persistence, which is where every module stores it and where the UI reads
+  // it. See processDasSuggestions below.
+  //
+  // dasLength/krtRowCount are also in the frozen inputs record; repeated here
+  // because "what this run was given" belongs beside "what it produced".
   return {
     data: { suggestions, signals },
     status: 'done',
     source: 'external',
-    // dasLength/krtRowCount are also in the frozen inputs record; repeated here
-    // because the Technical detail panel reads the job's own meta, and "what
-    // this run was given" belongs beside "what it produced".
     meta: {
       total: suggestions.length,
       applicable,
@@ -305,7 +314,12 @@ async function processDasSuggestions(submissionId, jobLogger = null /*, opts */)
 
   const job = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_SUGGESTIONS, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: result.data, meta: result.meta };
+    // meta goes INSIDE data, which is where every other module puts it and
+    // where the UI reads it from. It used to be persisted beside it, and the
+    // one reader that walks every module — the Technical detail panel — found
+    // nothing: this module's statistics and input counts were blank while the
+    // others' were fine.
+    job.result = { ...(job.result || {}), data: { ...result.data, meta: result.meta } };
     job.changed('result', true);
     await job.save();
   }
@@ -384,7 +398,7 @@ async function getPersistedDasSuggestions(submissionId, round) {
     status: job?.status || 'none',
     suggestions: job?.result?.data?.suggestions || [],
     signals: job?.result?.data?.signals || null,
-    meta: job?.result?.meta || null
+    meta: job?.result?.data?.meta || null
   };
 }
 

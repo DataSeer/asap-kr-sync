@@ -54,7 +54,7 @@ Each suggestion carries the real contributing detection module(s) (software/data
 
 ## Google Gemini API (DAS Suggestions)
 
-Powers the standalone `das_suggestions` background job. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
+Powers the `das_suggestions` background job — a pipeline step gated to the Availability step. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
 
 | Property | Value |
 |----------|-------|
@@ -65,7 +65,7 @@ Powers the standalone `das_suggestions` background job. A Gemini call checks the
 | **Model** | `gemini-2.5-flash` (configurable via `DAS_SUGGESTIONS_GEMINI_MODEL`) |
 | **Auth** | API key (`DAS_SUGGESTIONS_GEMINI_API_KEY`) |
 | **Timeout** | 2 minutes (`DAS_SUGGESTIONS_API_TIMEOUT`) |
-| **Depends on** | Nothing in the pipeline — standalone; started from `/availability` (DAS already extracted, KRT final) |
+| **Depends on** | `das_extraction` for the statement, then held by the `availability_ready` gate until the submission reaches `step_as` **and** carries a real statement |
 | **Disable** | `DAS_SUGGESTIONS_ENABLED=false` (frontend falls back to legacy in-browser rules) |
 
 The verdicts are **persisted** on the job result and read via `GET /api/submissions/:id/das-suggestions`. Re-run via `POST /api/submissions/:id/das-suggestions/regenerate` (on first arrival at `/availability` and whenever the DAS text is edited).

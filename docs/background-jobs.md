@@ -263,7 +263,31 @@ Data passed to workers when a job starts:
 
 ## Result Summaries
 
-Each job stores a structured result blob on completion. Every entry has the same outer envelope (`status`, `service`, `counts`, `timing`, `data`, `files`) — the table below lists the **distinguishing** keys per job type. The `service` block is `{ config: {state, enabled, demoEnabled}, outcome: {state, source, failReason?, externalError?} }` for every job. The `files` map carries S3 keys for raw API responses captured by the job logger.
+Each job stores a structured result blob on completion. Every entry has the same outer envelope (`status`, `service`, `counts`, `timing`, `data`, `files`) — the table below lists the **distinguishing** keys per job type.
+
+### The shape is a contract, not a convention
+
+Code that reads results generally does **not** know which module it has: the
+Technical detail panel, the pipeline cards and the jobs API all walk every job
+type through the same accessors. So two rules hold for every module, and a new
+module has to follow them:
+
+1. **What a run recorded about itself goes in `result.data.meta`.** Not beside
+   `data`, not at the top level. Services that persist their own result write
+   `job.result = { ...(job.result || {}), data: { ...result.data, meta: result.meta } }`
+   — the helper returns `meta` at the top of its return value (the worker reads
+   `result.meta.totalMs` from it for the timing block) and it is nested on the
+   way into storage.
+2. **Every module freezes what it was given**, via
+   `runInputs.saveRunInputs(...)`, stored as the `inputs` artefact in
+   `result.files`. That is what makes a run auditable after the documents behind
+   it have changed — and the UI states it as a fact, so a module that stops
+   doing it makes the UI lie.
+
+Both are enforced by `services/queue/result-shape.test.js`, because both fail
+**silently**: the DAS check stored its meta beside `data` for one commit, and
+the only symptom was an empty Statistics column on its own page while every
+other module looked fine. Nothing threw, nothing logged, and the tests passed. The `service` block is `{ config: {state, enabled, demoEnabled}, outcome: {state, source, failReason?, externalError?} }` for every job. The `files` map carries S3 keys for raw API responses captured by the job logger.
 
 | Job Type | Distinguishing keys |
 |----------|---------------------|
@@ -277,6 +301,7 @@ Each job stores a structured result blob on completion. Every entry has the same
 | Identifier Detection | `counts`; `timing: {totalMs, indexMs, scanMs}`; `data: {items, meta: {byRelevance: {HIGH, MEDIUM, LOW}, byCategory: {software, materials, datasets, protocols}}}`; `files['detection-results', 'identifier-scan']` |
 | PDF Analysis | `counts: {resources, contributors, multiSource}`; `data: {items}` (the Generated KRT); `files['generated-krt']` |
 | Suggestion Generation | `counts` per decision (`add`/`skip`/`update`/`remove`); `data: {suggestions}` — the **persisted** AI Suggestions list (not recomputed on read), each carrying its decision, reason, and contributing detection module(s) |
+| DAS Suggestions | `counts: {total, unique}` (unique = rules needing action); `data: {suggestions, signals, meta: {model, dasLength, krtRowCount, total, applicable, totalMs}}`; `files['inputs', 'das-suggestions']` |
 | Report Generation | `data: {reportId, fileUrl}` |
 
 ## API Endpoints

@@ -94,12 +94,11 @@ const result = computed(() => props.job?.result || {})
 /**
  * What the run recorded about itself.
  *
- * Nearly every module stores this at `result.data.meta`. The DAS check stores
- * it at `result.meta` — its persisted shape predates the others and is read
- * that way by its own API endpoint — so both are accepted here rather than
- * moving a stored contract that two other callers depend on.
+ * One path, because every module stores it in one place: `result.data.meta`.
+ * The DAS check briefly did not, and this reader grew a fallback to cope —
+ * which would have let the next module drift too. The module was fixed instead.
  */
-const meta = computed(() => result.value.data?.meta || result.value.meta || {})
+const meta = computed(() => result.value.data?.meta || {})
 const counts = computed(() => result.value.counts || {})
 
 const ms = (v) => (typeof v === 'number' ? (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`) : null)
@@ -370,16 +369,10 @@ const responseUrl = (name) =>
           <template v-for="([k, v]) in inputCounts" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
         </dl>
         <p class="mt-note">
-          <template v-if="inputArtefacts.length">
-            The frozen record above is what this run was actually given. The documents beside it are
-            shown as they are stored <em>now</em>, so an edit made afterwards appears there even though
-            the run never saw it.
-          </template>
-          <template v-else>
-            These are the documents as they are stored now — an edit made after the run will show here
-            even though the run never saw it. Modules that keep a frozen copy of their own input show
-            it above; this one does not, or you do not have access to it.
-          </template>
+          Every module freezes what it was given, and that record is the
+          <code>inputs</code> file above. The documents beside it are shown as they are stored
+          <em>now</em>, so an edit made after the run appears there even though the run never saw it —
+          when the two disagree, the frozen record is what happened.
         </p>
       </div>
       <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">

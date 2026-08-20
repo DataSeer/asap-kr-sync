@@ -46,9 +46,12 @@ const dasJob = (over = {}) => ({
   type: 'das_suggestions',
   status: 'complete',
   result: {
-    data: { suggestions: [] },
-    // This module stores its meta at result.meta, unlike the others.
-    meta: { model: 'gemini-2.5-flash', dasLength: 437, krtRowCount: 38, total: 9, applicable: 5 },
+    // `data.meta`, like every module. This one used to store it beside `data`,
+    // and its statistics and input counts rendered blank as a result.
+    data: {
+      suggestions: [],
+      meta: { model: 'gemini-2.5-flash', dasLength: 437, krtRowCount: 38, total: 9, applicable: 5 }
+    },
     files: { inputs: 'key/inputs.json', 'das-suggestions': 'key/das.json' },
     ...over
   }
@@ -78,18 +81,24 @@ describe('the DAS check names what it reads', () => {
     expect(wrapper.text()).toContain('38')
   })
 
-  it('reads meta from result.meta as well as result.data.meta', async () => {
-    // The DAS module's stored shape differs from every other module's. Reading
-    // only one of them left its statistics and input counts blank.
-    const viaData = await mountOpen({
+  it('reads meta from the one place every module stores it', async () => {
+    // There is a single path on purpose. A reader tolerant of two shapes lets
+    // the next module drift, and the drift is invisible — a blank column, not
+    // an error.
+    const wrapper = await mountOpen({
       jobType: 'pdf_analysis',
       job: { type: 'pdf_analysis', status: 'complete', result: { data: { meta: { seedCount: 7 } } } }
     })
-    expect(viaData.text()).toContain('Author rows used as seeds')
-    expect(viaData.text()).toContain('7')
+    expect(wrapper.text()).toContain('Author rows used as seeds')
+    expect(wrapper.text()).toContain('7')
+  })
 
-    const viaTop = await mountOpen({ jobType: 'das_suggestions', job: dasJob() })
-    expect(viaTop.text()).toContain('437')
+  it('ignores a meta stored in the wrong place, rather than papering over it', async () => {
+    const wrong = await mountOpen({
+      jobType: 'das_suggestions',
+      job: { type: 'das_suggestions', status: 'complete', result: { meta: { dasLength: 437 } } }
+    })
+    expect(wrong.text()).not.toContain('437')
   })
 
   it('says the statement was entered by hand when extraction found none', async () => {

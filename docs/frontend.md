@@ -309,7 +309,7 @@ longer a second copy of any results table inside a modal. The pages share:
 | `module-meta.js` | Every module — label, one-line purpose, stage names. `ALL_JOB_TYPES`, `MODULE_PAGE_TYPES` and `hasModulePage()` all derive from it. `JobStatusPanel` keeps its own ordered tile list: its three-row grouping is deliberate and differs from the order here, and it omits the DAS check because the panel appears on steps where that one does not run. |
 | `module-explainers.js` | The longer "what this step does / how to read it" text, plus the doc anchor each links to. |
 | `ModuleExplainer.vue` | Renders that text above the results. |
-| `ModuleTechnical.vue` | The Technical detail block: configuration, statistics, module inputs and module outputs, on a six-column grid. |
+| `ModuleTechnical.vue` | The Technical detail block: configuration, statistics, module inputs and module outputs, on a six-column grid. Reads `result.data.meta` — one path, because every module stores it there ([the contract](./background-jobs.md#result-summaries)); a reader tolerant of two shapes lets the next module drift, and the drift shows up as a blank column rather than an error. `READS` names what each module consumes, so a module missing from it renders an empty inputs column. |
 | `SubmissionFileLinks.vue` | The PDF and KRT links in the top-right of every module page. |
 | `DetectionsTable.vue` | The five detectors' output: one row per detection, evidence quoted with its section, enrichment-filled cells marked. |
 | `GeneratedKrtTable.vue` + `generated-krt.js` | The consolidated KRT. The row model flattens each merged item into its contributors and marks group boundaries so a merge reads as one block. |

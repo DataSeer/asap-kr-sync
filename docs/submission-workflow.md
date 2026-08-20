@@ -446,7 +446,8 @@ that source, so a reviewer can isolate (for example) only the AI-driven changes.
 
 ### Availability Statement Recommendations (DAS Suggestions)
 
-The DAS is checked against the **ASAP rulebook** by the standalone **`das_suggestions`** background job — a Google
+The DAS is checked against the **ASAP rulebook** by the **`das_suggestions`** background job — a pipeline step
+gated to this step (see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) — a Google
 Gemini call that judges the statement **semantically** (not by literal keyword matching). It runs on first arrival
 at this step (once review is done, so the DAS is extracted and the KRT is final) and re-runs whenever the DAS is
 edited. While it runs, the panel shows a **loader** and **Continue is blocked**. When the LM is disabled or fails,
