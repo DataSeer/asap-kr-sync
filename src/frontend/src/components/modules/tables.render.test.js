@@ -17,7 +17,7 @@
  * So these mount the real components and assert on the output.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import GroundingTable from './GroundingTable.vue'
@@ -25,7 +25,8 @@ import DetectionsTable from './DetectionsTable.vue'
 import DasSuggestionsTable from './DasSuggestionsTable.vue'
 import { buildDasRows } from './das-suggestions'
 
-setActivePinia(createPinia())
+// Fresh per test: a module-scope Pinia leaks between test files.
+beforeEach(() => setActivePinia(createPinia()))
 
 const outcome = (over = {}) => ({
   resourceType: 'Dataset',

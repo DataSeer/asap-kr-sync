@@ -32,15 +32,31 @@ async function getDasSuggestions(req, res, next) {
  */
 async function regenerate(req, res, next) {
   try {
-    const jobId = await dasSuggestionsService.queueDasSuggestions(req.params.id, resolveRound(req));
-    // No DAS to check → nothing queued (e.g. DAS extraction was cancelled).
-    if (!jobId) {
+    const result = await dasSuggestionsService.queueDasSuggestions(req.params.id, resolveRound(req));
+
+    // Nothing to check — the author never provided a statement, or extraction
+    // was cancelled.
+    if (result.reason === 'no_statement') {
       return res.status(200).json({
         queued: false,
         reason: 'No Data Availability Statement provided — nothing to check.'
       });
     }
-    res.status(202).json({ queued: true, jobId });
+
+    // Accepted, but the step is gated to the Availability step. Reported as its
+    // own case: saying "not queued" here reads as a refusal, and saying
+    // "queued" would have the client poll for a job that is not going to start
+    // until the submission moves.
+    if (result.reason === 'gated') {
+      return res.status(202).json({
+        queued: false,
+        pending: true,
+        status: result.status,
+        reason: 'The check runs when you reach the Availability Statement step.'
+      });
+    }
+
+    res.status(202).json({ queued: true, jobId: result.jobId });
   } catch (error) {
     next(error);
   }

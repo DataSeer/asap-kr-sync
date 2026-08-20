@@ -154,7 +154,16 @@ function startPolling() {
 
 async function regenerateDasSuggestions() {
   try {
-    await dasSuggestionsService.regenerate(route.params.id)
+    const result = await dasSuggestionsService.regenerate(route.params.id)
+
+    // Three answers, not two. The check is a pipeline step gated to this step,
+    // so it can be accepted-but-waiting — and polling for a job that is not
+    // going to start would leave a loader spinning for ever.
+    if (result?.queued === false) {
+      dasJobStatus.value = result.pending ? 'waiting' : 'none'
+      return
+    }
+
     dasJobStatus.value = 'queued'
     lmSuggestions.value = []
     startPolling()

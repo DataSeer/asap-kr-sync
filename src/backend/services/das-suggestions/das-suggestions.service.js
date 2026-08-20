@@ -280,10 +280,20 @@ async function processDasSuggestions(submissionId, jobLogger = null /*, opts */)
 }
 
 /**
- * Queue (or re-queue) DAS suggestions as a standalone background job. Each call
- * creates a fresh SubmissionJob row; `getLatest` always returns the newest, so
- * a re-run (e.g. after a DAS edit) supersedes the previous result. Not part of
- * the auto pipeline, so there's no downstream to cascade-restart.
+ * Ask for the DAS check to run.
+ *
+ * A pipeline step now, so this goes through the orchestrator: the round's row is
+ * reused rather than duplicated, and the gate decides whether it starts now or
+ * waits for the Availability step.
+ *
+ * Three outcomes, and they must stay distinguishable — a bare job id could not
+ * tell "there is nothing to check" apart from "accepted, waiting for the right
+ * step", and the caller reported the second as the first.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @returns {Promise<{queued: boolean, reason: 'no_statement'|'gated'|null,
+ *   status?: string, jobId?: string|null, submissionJobId?: string}>}
  */
 async function queueDasSuggestions(submissionId, round = 1) {
   const { SubmissionJob, Submission } = require('../../models');
@@ -302,7 +312,7 @@ async function queueDasSuggestions(submissionId, round = 1) {
   // exactly the case this guard exists to skip, one wasted LM call per run.
   if (!das || das === NO_DAS_SENTINEL) {
     logger.info('DAS suggestions skipped — no DAS provided', { submissionId, round, das: das || '(empty)' });
-    return null;
+    return { queued: false, reason: 'no_statement' };
   }
 
   // Through the orchestrator, not around it: this is a pipeline step now, so
@@ -318,7 +328,19 @@ async function queueDasSuggestions(submissionId, round = 1) {
   logger.info('DAS suggestions re-queued', {
     submissionId, submissionJobId: job.id, status: job.status
   });
-  return job.pgBossJobId || null;
+
+  // The step is gated to the Availability step, so asking for it earlier leaves
+  // it `waiting` — accepted, and it will run when the submission gets there.
+  // Reported distinctly from "there is nothing to check": a bare job id made
+  // those two indistinguishable, and the caller told an author with a perfectly
+  // good statement that they had not provided one.
+  return {
+    queued: job.status === 'queued',
+    reason: job.status === 'waiting' ? 'gated' : null,
+    status: job.status,
+    jobId: job.pgBossJobId || null,
+    submissionJobId: job.id
+  };
 }
 
 /** Read the persisted DAS suggestions + job status for a submission/round. */

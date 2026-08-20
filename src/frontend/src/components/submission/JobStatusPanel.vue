@@ -14,6 +14,7 @@ import configService from '@/services/config.service'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isCancelledJob } from '@/composables/useJobPoller'
+import { isFutureStepJob } from '@/composables'
 
 const emit = defineEmits(['edit-das'])
 const route = useRoute()
@@ -343,9 +344,23 @@ function pipelineRemainingMs(jobMap, which) {
 }
 
 const etaJobMap = computed(() => {
-  // Use the raw jobs map (not the post-filter jobList) so the ETA still
-  // covers disabled modules' upstream blocking. Same data shape.
-  return jobs.value || {}
+  // The raw jobs map (not the post-filter jobList) so the ETA still covers
+  // disabled modules' upstream blocking — minus anything parked behind a step
+  // the submission has not reached.
+  //
+  // Without that subtraction the panel contradicted itself: the DAS check waits
+  // for the Availability step, so on the PDF step it sits `waiting` for ever.
+  // The tiles said "11/11 done" while this map — which the tiles do not draw —
+  // still held a twelfth job, so the header offered "15s to 3 min remaining"
+  // for work that was finished, kept the "you can keep editing" hint up, and
+  // left Cancel processing on screen.
+  //
+  // Every ETA computed below reads this one map, so excluding it here is the
+  // whole fix.
+  const map = jobs.value || {}
+  return Object.fromEntries(
+    Object.entries(map).filter(([, job]) => !isFutureStepJob(job))
+  )
 })
 const remainingTypicalMs = computed(() => pipelineRemainingMs(etaJobMap.value, 'typical'))
 const remainingMaxMs = computed(() => pipelineRemainingMs(etaJobMap.value, 'max'))
