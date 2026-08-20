@@ -579,7 +579,11 @@ it: a cross-origin fetch of a presigned URL depends on the bucket's CORS policy,
 hostage to. The presigned download still exists via `GET /api/submissions/:id/files/:fileId/download`.
 
 ### `POST /api/submissions/:id/markdown/convert`
-Re-trigger PDF → Markdown conversion. Cascade-restarts Datasets / Protocols / Identifier Detection / PDF Analysis.
+Re-trigger PDF → Markdown conversion. Cascade-restarts every step that reads the
+manuscript, then re-queues conversion through the orchestrator.
+- **Returns**: `{ message, status }` — `status` is the step's job status. A
+  re-run asked for while a conversion is already in flight is a no-op, and the
+  message says so instead of reporting a queued run that will never start.
 
 ---
 
@@ -590,7 +594,9 @@ Get extracted authors with ORCIDs.
 - **Returns**: `{ authors: [...], meta }`
 
 ### `POST /api/submissions/:id/authors/extract`
-Trigger ORCID extraction (re-run).
+Trigger ORCID extraction (re-run). Same contract as the conversion re-run above:
+goes through the orchestrator, reuses the round's row, and returns
+`{ message, status }`.
 
 ---
 

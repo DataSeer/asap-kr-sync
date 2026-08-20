@@ -394,6 +394,53 @@ test('a dependency that has genuinely failed does release its dependents', async
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// requeueStep — one way to re-run a step, for every step
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a re-run reuses the round\'s own row instead of inserting a rival', async (t) => {
+  // Inserting was the shape of the bug that shipped a Generated KRT with zero
+  // detections: getForSubmission keeps only the NEWEST row per type, so a
+  // second row hides the pipeline's own and the advancement that should have
+  // followed lands on the wrong one.
+  const rows = pipelineRows({
+    [JOB_TYPES.MARKDOWN_CONVERT]: { status: 'complete', result: { data: { markdownLength: 5000 } } }
+  });
+  mockDb(t, rows);
+  const before = rows.get(JOB_TYPES.MARKDOWN_CONVERT);
+
+  const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-1');
+
+  assert.equal(job, before, 'the same row, re-used');
+  assert.equal(job.status, 'queued');
+  assert.equal(job.result, null, 'the previous run\'s result must not survive into the new one');
+});
+
+test('a re-run asked for while the step is in flight does not start a second one', async (t) => {
+  for (const status of ['queued', 'processing']) {
+    const rows = pipelineRows({ [JOB_TYPES.MARKDOWN_CONVERT]: { status } });
+    mockDb(t, rows);
+    enqueued = [];
+
+    const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-1');
+
+    assert.equal(job.status, status, `a ${status} step must be left alone`);
+    assert.equal(enqueued.length, 0, 'nothing may be enqueued beside a run already going');
+  }
+});
+
+test('a re-run clears the previous failure rather than showing it beside a queued job', async (t) => {
+  const rows = pipelineRows({
+    [JOB_TYPES.ORCID_EXTRACTION]: { status: 'failed', errorMessage: 'GROBID timed out' }
+  });
+  mockDb(t, rows);
+
+  const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.ORCID_EXTRACTION, 1, 'user-1');
+
+  assert.equal(job.errorMessage, null);
+  assert.equal(job.status, 'queued');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // advanceJob — the manual "I have entered it, start now" path
 // ─────────────────────────────────────────────────────────────────────────────
 

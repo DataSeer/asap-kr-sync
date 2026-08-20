@@ -13,7 +13,6 @@ const pdfMarkdownClient = require('./pdf-markdown-client.service');
 const markdownFilter = require('./markdown-filter.service');
 const markdownConfig = require('../../config/pdf-markdown-api');
 const demoDataService = require('../demo-data.service');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { generateS3Key } = require('../../utils/helpers');
@@ -21,27 +20,33 @@ const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
 const runInputs = require('../queue/run-inputs.service');
 
-async function queueMarkdownConvert(submissionId, round = 1) {
+/**
+ * Re-run the conversion, in the pipeline.
+ *
+ * Downstream is reset first — every detector reads this output, so they all
+ * have to run again — and then the step is re-queued through the orchestrator
+ * rather than by inserting a second row. Inserting was the shape of the bug
+ * that shipped a Generated KRT with zero detections: `getForSubmission` keeps
+ * only the newest row per type, so a rival row hides the pipeline's own and the
+ * advancement that should have followed goes to the wrong row. It also
+ * disagreed with `requeueStep` about in-flight work — a re-run while a
+ * conversion was already running started a second one against the same file.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<object>} the markdown_convert SubmissionJob row
+ */
+async function queueMarkdownConvert(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
   await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round);
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.MARKDOWN_CONVERT,
-    status: 'queued',
-    round
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round, userId);
+
+  logger.info('Markdown conversion re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.MARKDOWN_CONVERT,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Markdown conversion queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return job;
 }
 
 async function processMarkdownConvert(submissionId, jobLogger = null, { isFinalAttempt = true } = {}) {

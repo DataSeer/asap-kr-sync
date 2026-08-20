@@ -9,14 +9,13 @@
  * No demo data exists for ORCID extraction yet; getDemoData returns null.
  */
 
-const { Submission, File, SubmissionJob } = require('../../models');
+const { Submission, File } = require('../../models');
 const s3Service = require('../storage/s3.service');
 const grobidClient = require('./grobid-client.service');
 const openalexClient = require('./openalex-client.service');
 const orcidApiClient = require('./orcid-api-client.service');
 const grobidConfig = require('../../config/grobid-api');
 const orcidApiConfig = require('../../config/orcid-api');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
@@ -240,27 +239,30 @@ async function extractAuthorsForSubmission(submission, jobLogger) {
   };
 }
 
-async function queueOrcidExtraction(submissionId, round = 1) {
+/**
+ * Re-run author extraction, in the pipeline.
+ *
+ * Goes through `requeueStep` — the round's own row is reused instead of a
+ * second one being inserted beside it. See `queueMarkdownConvert` for why that
+ * distinction is not cosmetic; nothing depends on ORCID output today, but the
+ * two paths disagreeing about in-flight and cancelled work is exactly how the
+ * pipeline drifts.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<object>} the orcid_extraction SubmissionJob row
+ */
+async function queueOrcidExtraction(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
   await orchestrator.cascadeRestart(submissionId, JOB_TYPES.ORCID_EXTRACTION, round);
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.ORCID_EXTRACTION,
-    status: 'queued',
-    round
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.ORCID_EXTRACTION, round, userId);
+
+  logger.info('ORCID extraction re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.ORCID_EXTRACTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('ORCID extraction queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return job;
 }
 
 async function getAuthors(submissionId) {

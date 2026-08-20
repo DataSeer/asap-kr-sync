@@ -345,6 +345,29 @@ Starts (or re-runs) all pipeline processes for a submission. Creates `Submission
 
 Manually advances a `pending_input` job to `queued`. Only works for jobs in `pending_input` status.
 
+### Re-running one step — there is exactly one way
+
+`orchestrator.requeueStep(submissionId, jobType, round, userId)`. It **reuses
+the round's existing row** for that step and only enqueues when the step is
+actually runnable (dependencies terminal, gates satisfied); otherwise it leaves
+it `waiting` for the normal advancement to pick up.
+
+Never insert a second `SubmissionJob` row for a type the pipeline already
+created. `getForSubmission` keeps only the newest row per type, so a rival row
+**hides** the pipeline's own: the advancement that should have followed lands on
+the wrong row, and the real one sits in `waiting` for ever while the run reports
+complete. That is what shipped a Generated KRT containing 98 author rows and
+zero detections while datasets detection alone had found 96 items.
+
+`markdown_convert` and `orcid_extraction` kept their own insert-a-row restarts
+after `pdf_analysis` was converted, and disagreed with `requeueStep` about
+in-flight work — a re-run requested while a conversion was running started a
+second one against the same file. Both now go through `requeueStep` (after
+`cascadeRestart`, which resets everything downstream of the step being re-run).
+A re-run asked for while the step is in flight is deliberately a no-op, and the
+endpoints say so rather than reporting "queued". Pinned by
+`orchestrator.service.test.js`.
+
 ## Job Logging & Raw Response Caching
 
 Each background job uses a **JobLogger** that captures structured logs and raw API responses:

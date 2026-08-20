@@ -30,15 +30,18 @@ async function triggerExtraction(req, res, next) {
   try {
     const submission = req.submission;
 
-    await orcidService.queueOrcidExtraction(
+    const job = await orcidService.queueOrcidExtraction(
       submission.id,
-      submission.currentRound
+      submission.currentRound,
+      req.userId
     );
 
-    logger.info('ORCID extraction queued', { submissionId: submission.id });
+    logger.info('ORCID extraction queued', { submissionId: submission.id, status: job.status });
 
+    const alreadyRunning = ['queued', 'processing'].includes(job.status);
     res.json({
-      message: 'ORCID extraction queued'
+      message: alreadyRunning ? 'Author extraction is already running' : 'ORCID extraction queued',
+      status: job.status
     });
   } catch (error) {
     next(error);
