@@ -58,7 +58,8 @@ Team membership can be auto-assigned from an admin-managed email→team roster
 | Trigger AI analysis | own | teammates' | all | all |
 | View job summary status (panel) | ✓ | ✓ | ✓ | ✓ |
 | View job internals (logs, raw responses, timestamps, queue config) | — | ✓ | ✓ | ✓ |
-| Restart / advance / retry jobs | — | — | ✓ | ✓ |
+| Restart / retry jobs (cross-submission queue admin) | — | — | ✓ | ✓ |
+| Start a job parked awaiting your own input (`/jobs/:type/advance`) | own | teammates' | all | all |
 | View users (scoped) | — | team | all | all |
 | Create non-admin users | — | — | ✓ | ✓ |
 | Edit non-admin users | — | — | ✓ | ✓ |
@@ -87,7 +88,14 @@ Team membership can be auto-assigned from an admin-managed email→team roster
   - `requireRole(...roles)`, `requireAdmin`, `canCreateSubmission`.
 - **Feature-specific gates** — `src/backend/middleware/feature-access.middleware.js`
   - `canViewJobInternals` — blocks authors from `/jobs/:jobType/responses/...`.
-  - `canManageJobs` — restricts `/jobs/:jobType/advance` to staff.
+  - (`canManageJobs` was removed. It guarded `/jobs/:jobType/advance` only, and
+    that route is not job management: the orchestrator refuses any status but
+    `pending_input`, so it can only start a job the pipeline parked awaiting the
+    user's own input. Restricting it to staff stalled any submission whose
+    Availability Statement had to be typed in by hand — the page told the author
+    to enter it and press the button, and the button returned 403. Genuine
+    staff-only job actions live behind `requireRole(ADMIN)` in
+    `job-admin.routes.js`.)
 - **Controller-level guards**
   - `src/backend/controllers/users.controller.js` — `assertCanTouchAdminRole` blocks ds_annotator from creating, editing, or promoting admin users.
   - `src/backend/controllers/teams.controller.js` — `deleteTeam` refuses team deletion when submissions are attached unless the actor is admin.
@@ -100,7 +108,8 @@ Team membership can be auto-assigned from an admin-managed email→team roster
   flags that mirror the backend rules. UI components consume these instead of
   hardcoding role strings.
   - Submission: `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`.
-  - Jobs: `canViewJobInternals`, `canManageJobs`.
+  - Jobs: `canViewJobInternals`, `canManageJobs` (the latter now only gates the
+    frontend's restart controls — it has no backend counterpart).
   - Users: `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`.
   - Teams/projects: `canManageTeams`, `canManageTeamEmails` (admin/ds/pm). Owner
     reassignment lives in `EditMetadataModal.vue`, gated on `isStaff`.

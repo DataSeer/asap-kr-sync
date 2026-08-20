@@ -336,7 +336,13 @@ Get the current PDF Analysis (Generated-KRT builder) job status.
 Get the unified suggestions list once PDF Analysis is complete.
 
 ### `POST /api/submissions/:id/pdf/analyze`
-Re-trigger PDF Analysis (the Generated-KRT builder: rule-based merge → LM consolidation). Rate-limited via `lmApiLimiter` (10 / min / user).
+Re-run the PDF Analysis step (the Generated-KRT builder: rule-based merge → LM
+consolidation). Rate-limited via `lmApiLimiter` (10 / min / user).
+
+Re-runs it **in the pipeline**: the round's existing `pdf_analysis` row is
+reused, and it only starts once every detector has finished and the gates pass —
+otherwise it stays `waiting` for the orchestrator to advance. It does not create
+a second job row, and it cannot jump ahead of the detectors it consolidates.
 
 ### `POST /api/submissions/:id/pdf/extract-das`
 Re-trigger DAS extraction from the latest PDF.

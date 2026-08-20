@@ -26,11 +26,14 @@ The KRT table editor (`KRTEditor.vue`) is a custom component — not AG Grid. Fo
 src/frontend/src/
 ├── assets/             Static assets and global styles
 │   └── styles/
-│       └── main.css    Tailwind directives + custom component classes
+│       ├── main.css    Tailwind directives + custom component classes
+│       ├── badges.css  The `rbadge-*` result-table palette (one place)
+│       └── module-tables.css  The `.mtable` / `.mt-row-*` block row layout
 ├── components/
 │   ├── common/         Generic UI (NotificationContainer)
 │   ├── krt/            KRT editor (KRTEditor, KRTCellEditModal)
 │   ├── layout/         App shell (AppLayout, AppHeader, AppSidebar)
+│   ├── modules/        Module results pages: tables, viewers, shared row models
 │   └── submission/     Submission workflow components
 ├── composables/        Reusable stateful logic
 ├── router/             Route definitions and guards
@@ -69,7 +72,15 @@ All wrapped in `AppLayout` (header + sidebar).
 | `/submissions/:id/review` | ReviewView | Step 3: Review Suggestions |
 | `/submissions/:id/availability` | AvailabilityView | Step 4: Data Availability |
 | `/submissions/:id/report` | ReportView | Step 5: Report Generation |
+| `/submissions/:id/pipeline` | PipelineView | The run as a graph — every step, its stage, what it consumed |
+| `/submissions/:id/module/:type` | ModuleResultsView | One module's results, in full |
 | `/profile` | ProfileView | — |
+
+Both pipeline routes set `meta.remountOnRouteChange`. `AppLayout` keys its
+`<RouterView>` on the full path for those routes, because the same component
+instance is reused when only a route PARAM changes — so `onMounted` does not
+re-fire and moving from one module (or submission) to another would leave the
+previous one's data on screen under the new URL.
 
 ### Admin Routes (role-restricted)
 
@@ -166,17 +177,17 @@ await execute(() => api.doSomething(), {
 })
 ```
 
-### `useModal`
+### `useJobPoller`
 
-Manages modal open/close state with optional data payload and `onOpen`/`onClose` callbacks.
+Polls `/api/submissions/:id/jobs` while anything is running, backing off from
+2s towards 30s and stopping at 20 minutes or when nothing is left in flight.
+Exposes the job list, per-type lookups, and `onJobComplete(type, fn)` hooks.
 
-### `useConfirmation`
+### `useColumnResize`
 
-Browser `window.confirm()` wrapper with `confirm(message, action)` and `confirmDelete(itemName, action)` helpers.
-
-### `useToggleSelection`
-
-Multi-select state for checkboxes and bulk operations: `toggle()`, `isSelected()`, `clear()`, `set()`.
+Drag-to-resize table columns, persisted per table key in localStorage. Window
+listeners are released on scope dispose, so a component unmounting mid-drag
+does not leak them.
 
 ## Service Layer
 
@@ -251,13 +262,40 @@ A handful of admin views (notably `UsersView.vue`) call the `api` instance direc
 - **StepIndicator** — visual 5-step progress indicator
 - **StepHelpPanel** — contextual help text for each workflow step
 - **SubmissionHeader** — submission metadata display with edit/action buttons
-- **JobStatusPanel** — background job status cards with "show more" detail modals. The detail tables (detected
-  mentions, authors, Generated KRT, AI Suggestions) share a fixed-height scrolling wrapper with sticky headers, a
-  text search (matches are highlighted in-cell via the `HighlightText` component), a resource-type or KRT-tab-group
-  filter, and — on AI Suggestions — Add/Update/Remove/Skip decision chips. Gated jobs render *"Waiting for the Key
-  Resources Table to be validated"* from the API's `waitingReason`.
+- **JobStatusPanel** — one tile per pipeline step, with its configuration (On / Demo / Off), status and result
+  summary. A tile whose job is **complete is a link** to that module's page, so ctrl-click and middle-click open it
+  in a tab like any other link. A tile whose job is not complete opens a small modal carrying what such a job
+  actually has: status, notice bar, process logs, raw responses and any error. Gated jobs render *"Waiting for the
+  Key Resources Table to be validated"* from the API's `waitingReason`, in place of the remaining-time estimate.
+- **BackgroundProcesses** — the panel's wrapper: overall progress, the "view pipeline" link, and the message shown
+  when every runnable module has finished and the rest are held at a gate.
 - **EditMetadataModal** — edit submission title and DAS
 - **NewRoundModal** — start a new submission round (revision)
+
+### Module Results (`components/modules/`)
+
+Every pipeline step has a page at `/submissions/:id/module/:type`; there is no
+longer a second copy of any results table inside a modal. The pages share:
+
+| Piece | What it is |
+|-------|-----------|
+| `module-meta.js` | The eleven modules — label, one-line purpose, stage names. `ALL_JOB_TYPES`, `MODULE_PAGE_TYPES` and `hasModulePage()` all derive from it, so the list exists once. |
+| `module-explainers.js` | The longer "what this step does / how to read it" text, plus the doc anchor each links to. |
+| `ModuleExplainer.vue` | Renders that text above the results. |
+| `ModuleTechnical.vue` | The Technical detail block: configuration, statistics, module inputs and module outputs, on a six-column grid. |
+| `SubmissionFileLinks.vue` | The PDF and KRT links in the top-right of every module page. |
+| `DetectionsTable.vue` | The five detectors' output: one row per detection, evidence quoted with its section, enrichment-filled cells marked. |
+| `GeneratedKrtTable.vue` + `generated-krt.js` | The consolidated KRT. The row model flattens each merged item into its contributors and marks group boundaries so a merge reads as one block. |
+| `GroundingTable.vue` | Per-author-row verdicts: confirmed / incomplete / not detected, with what matched and where. |
+| `SuggestionsTable.vue` + `suggestion-decisions.js` | The full decision log, author row against proposed row. |
+| `AuthorsTable.vue` | ORCID extraction, with the ladder that found each id (GROBID, OpenAlex, ORCID API). |
+| `MarkdownViewer.vue` + `markdown-render.js` | The converted manuscript, raw or rendered. The renderer escapes first and allowlists `http(s)` links only — its output goes to `v-html`, and its input is a conversion of an uploaded file. |
+
+Two shared stylesheets keep these consistent, and are the place to change any
+of it: `assets/styles/badges.css` (the `rbadge-*` palette — category colours
+taken from `/admin/krt-editor/resource-types`, amber and red reserved for
+status) and `assets/styles/module-tables.css` (`.mtable` plus the `.mt-row-*`
+classes that draw an item as a block, whether it occupies one row or two).
 
 ## Build Configuration
 
