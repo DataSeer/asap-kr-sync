@@ -145,6 +145,32 @@ module.exports = (sequelize) => {
   };
 
   /**
+   * Record an error on an attempt that pg-boss is going to retry.
+   *
+   * `failed` is a TERMINAL state to everything that reads these rows, and using
+   * it for a retryable error strands the pipeline. The orchestrator treats a
+   * dependency as done when it is `complete` **or** `failed`, so a sweep landing
+   * in the retry backoff window read the dependency as finished, evaluated the
+   * dependent's gate against a result that was not there yet, and parked it in
+   * `pending_input`. Nothing revisits `pending_input`: when the retry then
+   * succeeded, the advance found the dependent no longer `waiting` and did
+   * nothing. Only a manual advance recovered it. (Observed as PDF Analysis stuck
+   * behind a DAS extraction that had in fact succeeded on its second attempt.)
+   *
+   * So the row stays `processing` — which is true, the job is still in flight —
+   * and carries the last error for the UI to show alongside its attempt counter.
+   *
+   * @param {string} errorMessage
+   */
+  SubmissionJob.prototype.markRetrying = async function(errorMessage) {
+    if (this.status === 'cancelled') return this;
+    this.status = 'processing';
+    this.errorMessage = errorMessage;
+    this.completedAt = null;
+    return this.save();
+  };
+
+  /**
    * Mark a job as cancelled by the user (terminal). Only applied to jobs that
    * had NOT started — a job already 'processing' is left to finish and record
    * its real done/failed status (see the cancel controller).

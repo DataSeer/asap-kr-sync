@@ -109,6 +109,13 @@ const GATES = {
     // No conversion job in this map (e.g. a partial view): do not claim to
     // know. The dependency check already keeps the step waiting.
     if (!job) return true;
+    // A conversion that FAILED is the same situation as one that produced
+    // nothing, and it was slipping through: the gate only ever inspected
+    // `complete` rows, while the dependency check counts `failed` as terminal.
+    // So a failed conversion released every detector to read a manuscript that
+    // does not exist — the exact outcome this gate was added to prevent, by the
+    // one route that skipped it.
+    if (['failed', 'cancelled'].includes(job.status)) return false;
     if (job.status !== 'complete') return true;
     return (job.result?.data?.markdownLength || 0) > 0;
   }

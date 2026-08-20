@@ -163,7 +163,11 @@ around the KRT step.
 **Nothing reads the manuscript when there is no manuscript.** A second gate,
 `markdown_ready`, holds every markdown-dependent step — DAS extraction, the five
 detectors and KRT Grounding — while `markdown_convert` has completed with
-`markdownLength: 0`. Conversion is fail-soft, so a converter error or an empty
+`markdownLength: 0`, **or has failed or been cancelled**. The failed case used
+to slip through: the gate only inspected `complete` rows, while the dependency
+check counts `failed` as terminal, so an outright converter failure released
+every detector to read a manuscript that does not exist — by the one route that
+skipped the gate meant to prevent exactly that. Conversion is fail-soft, so a converter error or an empty
 response still completes the job; before this gate existed, every downstream
 module ran against an empty document and reported zero findings, which reads as
 *"your manuscript mentions none of this"* rather than *"we never read your
@@ -215,6 +219,15 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 
 - Jobs with no dependencies and no gate start immediately with status `queued`
 - Jobs with dependencies start as `waiting` until all dependencies reach a terminal state (`complete` or `failed`)
+- **`failed` means pg-boss has given up, not "this attempt errored".** A worker
+  whose attempt fails with retries left calls `markRetrying`, which keeps the row
+  `processing` and records the error for display. Writing `failed` there strands
+  the pipeline: the orchestrator treats a `failed` dependency as done, so a
+  reconciler sweep landing in the retry backoff evaluated the dependent's gate
+  against a result that was not there yet and parked it in `pending_input` —
+  which nothing revisits, so the successful retry could not release it. Only a
+  manual advance recovered it. Pinned by `models/SubmissionJob.test.js` and
+  `orchestrator.service.test.js`.
 - After any job completes or fails, the orchestrator checks dependent jobs
 - **Conditional (job-result) gate** — if a job-result gate fails (e.g., DAS not extracted), the dependent job moves to `pending_input` and waits for the user to click **Advance**
 - **Submission-state gate** — a job whose `gate` (e.g. `krt_curated`) is not yet satisfied stays in `waiting` (never `pending_input`). It needs no manual action: the status-change handler re-drives the pipeline on every submission transition, and the periodic reconciler re-checks gated jobs each sweep, so the job advances on its own once the gate opens
@@ -226,7 +239,7 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 | `waiting` | Waiting for dependencies to complete, or for a submission-state gate (e.g. `krt_curated`) to open | `queued` or `pending_input` |
 | `pending_input` | Waiting for user action (a job-result gate condition failed, e.g. DAS not detected) | `queued` (manual advance) |
 | `queued` | Added to pg-boss queue, waiting for worker | `processing` |
-| `processing` | Worker is actively processing | `complete` or `failed` |
+| `processing` | Worker is actively processing, **including between retries** | `complete` or `failed` |
 | `complete` | Finished successfully | (terminal) |
 | `failed` | Failed after all retries exhausted | (terminal) |
 

@@ -350,6 +350,49 @@ test('the reconciler changes nothing when the pipeline is already correct', asyn
   assert.equal(enqueued.length, 0);
 });
 
+test('a dependency being retried is not treated as finished', async (t) => {
+  // The bug this pins: workers wrote `failed` on non-final attempts too, and
+  // `failed` is terminal to the orchestrator. A sweep landing inside the retry
+  // backoff read DAS extraction as finished, evaluated PDF Analysis's gate
+  // against a result that was not there yet, and parked it in `pending_input` —
+  // which nothing revisits. When the retry then succeeded, the advance found
+  // PDF Analysis no longer `waiting` and did nothing. Only a manual advance
+  // recovered it.
+  //
+  // A retrying job now stays `processing`, so the dependents stay `waiting`.
+  const rows = pipelineRows();
+  // Everything PDF Analysis needs is done — except DAS extraction, which is
+  // between attempts and has no result yet.
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'processing';
+  rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
+  rows.get(JOB_TYPES.DAS_EXTRACTION).errorMessage = 'Gemini 503 — retrying';
+  mockDb(t, rows);
+
+  await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting',
+    'PDF Analysis must wait for the retry, not be parked awaiting input');
+});
+
+test('a dependency that has genuinely failed does release its dependents', async (t) => {
+  // The other half of the rule: once pg-boss has given up, `failed` IS terminal
+  // and the pipeline must move rather than wait for ever. DAS extraction is the
+  // case that matters — it fails, PDF Analysis's gate finds no statement, and
+  // the step parks in `pending_input` asking the user to type one. That is the
+  // designed path, and it is only reachable because the failure is terminal.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'failed';
+  rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
+  mockDb(t, rows);
+
+  await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'pending_input',
+    'a terminal failure must not leave the dependent waiting for ever');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // advanceJob — the manual "I have entered it, start now" path
 // ─────────────────────────────────────────────────────────────────────────────

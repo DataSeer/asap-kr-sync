@@ -66,6 +66,29 @@ test('the missing text is reported before the KRT step, not after', () => {
   );
 });
 
+test('a FAILED conversion blocks the detectors, exactly like an empty one', () => {
+  // The route that skipped the gate. It only ever inspected `complete` rows,
+  // while the dependency check counts `failed` as terminal — so a conversion
+  // that errored outright released every detector to read a manuscript that
+  // does not exist, which is the outcome this gate was added to prevent.
+  const failed = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'failed', result: null };
+  for (const jobType of [...DETECTORS, JOB_TYPES.DAS_EXTRACTION, JOB_TYPES.KRT_GROUNDING]) {
+    assert.equal(
+      orchestrator.isGateBlocked(jobType, { status: 'step_pdf' }, jobs(failed)),
+      'markdown_ready',
+      `${jobType} must not run when the conversion failed`
+    );
+  }
+});
+
+test('a cancelled conversion blocks them too', () => {
+  const cancelled = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'cancelled', result: null };
+  assert.equal(
+    orchestrator.isGateBlocked(JOB_TYPES.MATERIALS_DETECTION, { status: 'step_pdf' }, jobs(cancelled)),
+    'markdown_ready'
+  );
+});
+
 test('conversion still running is not "no text" — the dependency check holds the step', () => {
   const running = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'processing', result: null };
   assert.equal(
