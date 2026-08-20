@@ -23,7 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const XLSX = require('xlsx');
+const { readWorkbook, newWorkbook, writeWorkbook, sheetToObjects, addObjectSheet } = require('./lib/sheets');
 
 // ===================== CONFIG =====================
 
@@ -180,7 +180,7 @@ function sortHits(hits) {
 
 // ===================== MAIN =====================
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const inputPath = args[0];
   if (!inputPath) {
@@ -194,14 +194,14 @@ function main() {
 
   const outputPath = args[1] || inputPath.replace(/\.xlsx$/i, '_matched.xlsx');
 
-  const wb = XLSX.readFile(inputPath);
-  if (!wb.Sheets['real'] || !wb.Sheets['demo']) {
+  const wb = await readWorkbook(inputPath);
+  if (!wb.getWorksheet('real') || !wb.getWorksheet('demo')) {
     console.error('Input must have both `real` and `demo` sheets.');
     process.exit(1);
   }
 
-  const realRows = XLSX.utils.sheet_to_json(wb.Sheets['real'], { defval: '' });
-  const demoRows = XLSX.utils.sheet_to_json(wb.Sheets['demo'], { defval: '' });
+  const realRows = sheetToObjects(wb.getWorksheet('real'), { defval: '' });
+  const demoRows = sheetToObjects(wb.getWorksheet('demo'), { defval: '' });
 
   // Pre-compute name info for every demo row
   const demoInfos = demoRows.map(r => ({
@@ -260,47 +260,36 @@ function main() {
     };
   });
 
-  // Rebuild workbook: keep Summary + demo, rewrite real
-  const outWb = XLSX.utils.book_new();
-
-  for (const sheetName of wb.SheetNames) {
-    if (sheetName === 'real') continue;
-    XLSX.utils.book_append_sheet(outWb, wb.Sheets[sheetName], sheetName);
-  }
+  // Rebuild the workbook sheet by sheet, IN THE INPUT'S ORDER — `real` is
+  // rewritten in place, everything else is copied through. Rebuilding in the
+  // original order is simpler than appending and then splicing the sheet back
+  // to where it was, which is what this did before.
+  const outWb = newWorkbook();
 
   const realHeaderOrder = [
     'Manuscript ID', 'Kind', 'Resource Name', 'Resource Type',
     'Source', 'Identifier', 'New/Reuse', 'Relevance',
     'Match', 'Match Count', 'Matches'
   ];
-  const realSheet = XLSX.utils.json_to_sheet(augmented, { header: realHeaderOrder });
-  realSheet['!cols'] = [
-    { wch: 28 }, { wch: 12 }, { wch: 40 }, { wch: 16 },
-    { wch: 30 }, { wch: 40 }, { wch: 10 }, { wch: 10 },
-    { wch: 14 }, { wch: 12 }, { wch: 80 }
-  ];
 
-  // Enable wrap-text on the Matches column so multi-line cells render well.
-  // XLSX cell style property is !s / .s, but sheet-level hints live in !cols.
-  // Best-effort: set wrapText per cell in the Matches column.
-  const range = XLSX.utils.decode_range(realSheet['!ref']);
-  const matchesColIdx = realHeaderOrder.indexOf('Matches');
-  for (let r = range.s.r + 1; r <= range.e.r; r++) {
-    const addr = XLSX.utils.encode_cell({ r, c: matchesColIdx });
-    const cell = realSheet[addr];
-    if (cell) {
-      cell.s = cell.s || {};
-      cell.s.alignment = { wrapText: true, vertical: 'top' };
+  for (const sheet of wb.worksheets) {
+    if (sheet.name === 'real') {
+      addObjectSheet(outWb, 'real', augmented, {
+        header: realHeaderOrder,
+        widths: [28, 12, 40, 16, 30, 40, 10, 10, 14, 12, 80],
+        // Multi-line match lists are unreadable on one line.
+        wrapColumns: ['Matches']
+      });
+      continue;
     }
+    // Copied via its values, so the column widths have to be carried over
+    // explicitly — they are not part of the row data.
+    addObjectSheet(outWb, sheet.name, sheetToObjects(sheet, { defval: '' }), {
+      widths: sheet.columns?.map((c) => c.width)
+    });
   }
 
-  // Re-insert the real sheet in its original position (after Summary, before demo)
-  const targetIdx = wb.SheetNames.indexOf('real');
-  const sheetNamesOut = outWb.SheetNames.slice();
-  outWb.SheetNames.splice(Math.min(targetIdx, sheetNamesOut.length), 0, 'real');
-  outWb.Sheets['real'] = realSheet;
-
-  XLSX.writeFile(outWb, outputPath);
+  await writeWorkbook(outWb, outputPath);
 
   // Summary
   console.log('=== Match Benchmark Protocols ===');
@@ -316,4 +305,7 @@ function main() {
   console.log(`Demo rows searched:          ${demoRows.length}`);
 }
 
-main();
+main().catch(err => {
+  console.error('Fatal error:', err.message);
+  process.exit(1);
+});

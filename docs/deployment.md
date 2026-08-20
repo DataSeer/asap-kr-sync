@@ -180,5 +180,5 @@ what ships in the image.
 | | |
 |---|---|
 | `brace-expansion@1.1.15` (high, DoS) | Reached only as `exceljs → archiver → glob@7 → minimatch@3`. Not fixable by an override on npm 11 — every selector form (`@1`, `@1.x`, `@<2`, `@<=1.1.17`, the requested-range `@^1.1.7`, and a nested override under `minimatch@3`) leaves the resolution at 1.1.15, and `npm audit fix` reports "up to date". It is a denial-of-service in brace expansion over glob patterns the **application** constructs, never a user, so it is not reachable. It clears when `exceljs` moves off `archiver@5`. |
-| `xlsx@0.18.5` (high, prototype pollution + ReDoS) | **No fix exists on npm** — SheetJS moved distribution off the registry. It is a devDependency used by `scripts/` only and does not run in the app: the runtime writes spreadsheets with `exceljs`. Porting the three scripts would remove it entirely. |
+| ~~`xlsx@0.18.5`~~ | **Removed.** It had no fix on npm at all — SheetJS moved distribution off the registry, so `npm audit fix` could never resolve it. The three scripts that used it were ported to `exceljs`, which the runtime already used, and the dependency is gone. `exceljs` is now the only spreadsheet library in the tree. |
 | `js-yaml`, `shell-quote` | Dev tree only (tooling), not in the image. |

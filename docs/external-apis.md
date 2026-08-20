@@ -368,12 +368,12 @@ env vars). Excel is the only active export format — see the next section.
 
 ## Excel Report Generation
 
-Active report format using the `xlsx` (SheetJS) library.
+Active report format, written with **exceljs**.
 
 | Property | Value |
 |----------|-------|
 | **Exporter** | `src/backend/services/reports/ExcelExporter.js` |
-| **Library** | `xlsx` (SheetJS) |
+| **Library** | `exceljs` — the app's only spreadsheet library |
 
 **Sheets generated:**
 1. **Summary** — manuscript metadata, resource/change counts

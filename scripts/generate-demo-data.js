@@ -25,7 +25,7 @@
  *   - src/backend/data/demo-findings/
  */
 
-const XLSX = require('xlsx');
+const { readWorkbook, sheetToRows } = require('./lib/sheets');
 const fs = require('fs');
 const path = require('path');
 
@@ -47,7 +47,10 @@ if (args.includes('--refresh-all')) {
     process.exit(1);
   });
 } else {
-  runStaticMode();
+  runStaticMode().catch(err => {
+    console.error('Fatal error:', err.message);
+    process.exit(1);
+  });
 }
 
 // ===================== STATIC MODE =====================
@@ -70,7 +73,7 @@ function hasExistingDemoJson(manuscriptId) {
   return fs.existsSync(jsonPath);
 }
 
-function runStaticMode() {
+async function runStaticMode() {
   if (args.length < 2) printUsage();
 
   const manuscriptId = args[0];
@@ -93,7 +96,7 @@ function runStaticMode() {
 
   console.log(`Generating demo data for ${manuscriptId}...`);
 
-  const ds1Wb = XLSX.readFile(ds1Path);
+  const ds1Wb = await readWorkbook(ds1Path);
 
   const datasetItems = parseDatasets(ds1Wb);
   const softwareItems = parseSoftware(ds1Wb);
@@ -114,7 +117,7 @@ function runStaticMode() {
 /**
  * Parse a DS1 tab: find header row (row with '#' in col A), then extract data rows.
  * Returns an array of objects keyed by header column names.
- * @param {Array} sheetData - 2D array from XLSX
+ * @param {Array} sheetData - 2D array from the sheet
  * @returns {Array<{ headerRow: number, section: string, data: Object }>}
  */
 function parseDS1Sections(sheetData) {
@@ -233,8 +236,8 @@ function makeDemoItem(canonicalName, resourceType, source, identifier, newReuse)
 
 // ---- DATASETS ----
 function parseDatasets(wb) {
-  if (!wb.SheetNames.includes('Datasets')) return [];
-  const sheetData = XLSX.utils.sheet_to_json(wb.Sheets['Datasets'], { header: 1, defval: '' });
+  if (!wb.getWorksheet('Datasets')) return [];
+  const sheetData = sheetToRows(wb.getWorksheet('Datasets'), { defval: '' });
   const sections = parseDS1Sections(sheetData);
   const items = [];
 
@@ -258,8 +261,8 @@ function parseDatasets(wb) {
 
 // ---- CODE AND SOFTWARE ----
 function parseSoftware(wb) {
-  if (!wb.SheetNames.includes('Code and Software')) return [];
-  const sheetData = XLSX.utils.sheet_to_json(wb.Sheets['Code and Software'], { header: 1, defval: '' });
+  if (!wb.getWorksheet('Code and Software')) return [];
+  const sheetData = sheetToRows(wb.getWorksheet('Code and Software'), { defval: '' });
   const sections = parseDS1Sections(sheetData);
   const items = [];
 
@@ -304,8 +307,8 @@ function parseSoftware(wb) {
 
 // ---- PROTOCOLS ----
 function parseProtocols(wb) {
-  if (!wb.SheetNames.includes('Protocols')) return [];
-  const sheetData = XLSX.utils.sheet_to_json(wb.Sheets['Protocols'], { header: 1, defval: '' });
+  if (!wb.getWorksheet('Protocols')) return [];
+  const sheetData = sheetToRows(wb.getWorksheet('Protocols'), { defval: '' });
   const sections = parseDS1Sections(sheetData);
   const items = [];
 
@@ -328,8 +331,8 @@ function parseProtocols(wb) {
 
 // ---- LAB MATERIALS ----
 function parseMaterials(wb) {
-  if (!wb.SheetNames.includes('Lab Materials')) return [];
-  const sheetData = XLSX.utils.sheet_to_json(wb.Sheets['Lab Materials'], { header: 1, defval: '' });
+  if (!wb.getWorksheet('Lab Materials')) return [];
+  const sheetData = sheetToRows(wb.getWorksheet('Lab Materials'), { defval: '' });
   const sections = parseDS1Sections(sheetData);
   const items = [];
 
@@ -636,7 +639,7 @@ async function runRefreshAll() {
           : buildDemoJson(manuscriptId, '', 'N/A', [], [], [], []);
       } else {
         console.log(`  Parsing DS1 report: ${ds1File}`);
-        const ds1Wb = XLSX.readFile(ds1Path);
+        const ds1Wb = await readWorkbook(ds1Path);
 
         const datasetItems = parseDatasets(ds1Wb);
         const softwareItems = parseSoftware(ds1Wb);

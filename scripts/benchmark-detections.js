@@ -46,7 +46,7 @@ const path = require('path');
 
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
-const XLSX = require('xlsx');
+const { newWorkbook, addObjectSheet, writeWorkbook } = require('./lib/sheets');
 
 // Paths
 const DEMO_FINDINGS_DIR = path.join(__dirname, '../src/backend/data/demo-findings');
@@ -436,7 +436,7 @@ async function processManuscript(ms, serviceStatus) {
 // ===================== XLSX GENERATION =====================
 
 function buildWorkbook(results) {
-  const wb = XLSX.utils.book_new();
+  const wb = newWorkbook();
 
   // --- Summary tab ---
   const summaryData = results.map(r => {
@@ -474,15 +474,9 @@ function buildWorkbook(results) {
     };
   });
 
-  const summarySheet = XLSX.utils.json_to_sheet(summaryData);
-  summarySheet['!cols'] = [
-    { wch: 28 }, { wch: 12 }, { wch: 14 }, { wch: 14 },
-    { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 },
-    { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 },
-    { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 14 },
-    { wch: 12 }, { wch: 40 }
-  ];
-  XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
+  addObjectSheet(wb, 'Summary', summaryData, {
+    widths: [28, 12, 14, 14, 16, 16, 16, 16, 16, 16, 16, 16, 14, 14, 16, 14, 12, 40]
+  });
 
   // --- Real & Demo tabs (legacy row shape) ---
   const allReal = [];
@@ -491,15 +485,9 @@ function buildWorkbook(results) {
     for (const row of r.realResources) allReal.push({ 'Manuscript ID': r.manuscriptId, ...row });
     for (const row of r.demoResources) allDemo.push({ 'Manuscript ID': r.manuscriptId, ...row });
   }
-  const legacyCols = [
-    { wch: 28 }, { wch: 12 }, { wch: 40 }, { wch: 16 }, { wch: 30 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 16 }
-  ];
-  const realSheet = XLSX.utils.json_to_sheet(allReal);
-  realSheet['!cols'] = legacyCols;
-  XLSX.utils.book_append_sheet(wb, realSheet, 'real');
-  const demoSheet = XLSX.utils.json_to_sheet(allDemo);
-  demoSheet['!cols'] = legacyCols;
-  XLSX.utils.book_append_sheet(wb, demoSheet, 'demo');
+  const legacyWidths = [28, 12, 40, 16, 30, 40, 10, 10, 16];
+  addObjectSheet(wb, 'real', allReal, { widths: legacyWidths });
+  addObjectSheet(wb, 'demo', allDemo, { widths: legacyWidths });
 
   // --- krt-entries tab (canonical KrtEntry shape) ---
   // One row per canonical item per manuscript. This is the post-dedup view
@@ -510,13 +498,9 @@ function buildWorkbook(results) {
       allKrt.push(toKrtEntryRow(item, r.manuscriptId));
     }
   }
-  const krtSheet = XLSX.utils.json_to_sheet(allKrt);
-  krtSheet['!cols'] = [
-    { wch: 28 }, { wch: 18 }, { wch: 14 }, { wch: 40 },
-    { wch: 40 }, { wch: 30 }, { wch: 10 }, { wch: 11 },
-    { wch: 10 }, { wch: 12 }, { wch: 11 }, { wch: 60 }
-  ];
-  XLSX.utils.book_append_sheet(wb, krtSheet, 'krt-entries');
+  addObjectSheet(wb, 'krt-entries', allKrt, {
+    widths: [28, 18, 14, 40, 40, 30, 10, 11, 10, 12, 11, 60]
+  });
 
   return wb;
 }
@@ -559,8 +543,7 @@ async function main() {
   const wb = buildWorkbook(results);
   const today = new Date().toISOString().split('T')[0];
   const outputPath = OUTPUT_PATH || path.join(__dirname, `benchmark-results-${today}.xlsx`);
-  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  fs.writeFileSync(outputPath, buffer);
+  await writeWorkbook(wb, outputPath);
 
   console.log(`\n=== Done ===`);
   console.log(`Processed: ${results.length} manuscript(s)`);
