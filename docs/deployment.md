@@ -160,3 +160,25 @@ The production server serves both the API and the built frontend:
 ## Static Configuration
 
 `conf/rate-limits.json` defines rate-limit rules loaded at startup. See [Authentication](./authentication.md) for details.
+
+## Dependencies and `npm audit`
+
+Third-party pins live in **one place**: the root `package.json`. Transitive
+versions are steered by `overrides`, and the version each one points at is held
+by a matching entry in the root `devDependencies` (`"protobufjs":
+"$protobufjs"` means "whatever the root devDependency says"). Bumping the
+devDependency is therefore how you move a transitive package — editing the
+override alone does nothing, and a stale devDependency silently makes an
+override that reads as deliberate hold a vulnerable version. That is exactly
+what had happened to `protobufjs`.
+
+Run `npm audit --omit=dev` before a release: the dev tree matters far less than
+what ships in the image.
+
+**Known residue**, so it is not rediscovered as new:
+
+| | |
+|---|---|
+| `brace-expansion@1.1.15` (high, DoS) | Reached only as `exceljs → archiver → glob@7 → minimatch@3`. Not fixable by an override on npm 11 — every selector form (`@1`, `@1.x`, `@<2`, `@<=1.1.17`, the requested-range `@^1.1.7`, and a nested override under `minimatch@3`) leaves the resolution at 1.1.15, and `npm audit fix` reports "up to date". It is a denial-of-service in brace expansion over glob patterns the **application** constructs, never a user, so it is not reachable. It clears when `exceljs` moves off `archiver@5`. |
+| `xlsx@0.18.5` (high, prototype pollution + ReDoS) | **No fix exists on npm** — SheetJS moved distribution off the registry. It is a devDependency used by `scripts/` only and does not run in the app: the runtime writes spreadsheets with `exceljs`. Porting the three scripts would remove it entirely. |
+| `js-yaml`, `shell-quote` | Dev tree only (tooling), not in the image. |
