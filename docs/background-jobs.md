@@ -63,19 +63,33 @@ maxTotalSeconds = expireInSeconds × (retryLimit + 1) + retryDelay × retryLimit
 
 ### Worker Concurrency
 
+How many jobs of that type run **at the same time**, across all submissions. A
+job for one submission never runs beside another job of the same type for the
+*same* submission — the orchestrator queues one row per step per round — so this
+is throughput across the queue, not parallelism within a pipeline.
+
 | Job Type | Concurrency |
 |----------|-------------|
-| PDF Analysis | 1 |
-| Suggestion Generation | 1 |
+| Markdown Convert | 2 |
 | DAS Extraction | 2 |
 | Software Detection | 1 |
-| ORCID Extraction | 2 |
-| Markdown Convert | 2 |
 | Datasets Detection | 1 |
-| Materials Detection | 1 |
+| Materials Detection | 2 |
 | Protocols Detection | 1 |
-| Identifier Detection | 1 |
+| Identifier Detection | 2 |
+| KRT Grounding | 2 |
+| ORCID Extraction | 2 |
+| PDF Analysis | 1 |
+| Suggestion Generation | 1 |
+| DAS Suggestions | 1 |
 | Report Generation | 2 |
+
+`concurrency` is this codebase's name for a **pair** of pg-boss settings, and it
+has to set both: `teamSize` (how many jobs are fetched) and `teamConcurrency`
+(how many of them run at once). `teamConcurrency` was pinned at 1, so every
+worker above declaring 2 fetched two jobs and then ran them one after the other
+— a setting that read as if it did something and did nothing. Translated in one
+place, `buildWorkerOptions`, and pinned by `worker-options.test.js`.
 
 ## Pipeline
 

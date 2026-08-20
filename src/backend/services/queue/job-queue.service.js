@@ -254,6 +254,37 @@ async function addJob(queueName, data, options = {}) {
 }
 
 /**
+ * Translate this codebase's worker options into pg-boss's.
+ *
+ * `concurrency` has to set BOTH of pg-boss's numbers. `teamSize` is how many
+ * jobs are fetched; `teamConcurrency` is how many of them run at once. With
+ * teamConcurrency pinned at 1, every worker declaring `{ concurrency: 2 }`
+ * fetched two jobs and then worked through them one at a time — the setting
+ * read as if it did something and did nothing.
+ *
+ * `concurrency` is our name for the pair, not a pg-boss option, so it is not
+ * passed through. An explicit `teamConcurrency` still wins: fetch a batch, run
+ * fewer of them is a legitimate combination.
+ *
+ * `includeMetadata` is required for `job.retrycount` to be populated on the job
+ * object the handler receives. Without it pg-boss only sends
+ * { id, name, data }, so retry counters always read 0 — which makes the UI's
+ * "Attempt N/3" indicator stick at 1/3 across retries.
+ *
+ * @param {{concurrency?: number, teamConcurrency?: number}} options
+ * @returns {object} pg-boss work() options
+ */
+function buildWorkerOptions(options = {}) {
+  const { concurrency, ...passThrough } = options;
+  return {
+    teamSize: concurrency || 1,
+    teamConcurrency: options.teamConcurrency || concurrency || 1,
+    includeMetadata: true,
+    ...passThrough
+  };
+}
+
+/**
  * Register a job handler for a queue
  * @param {string} queueName - Queue name from QUEUES
  * @param {function} handler - Async function to process jobs
@@ -262,16 +293,7 @@ async function addJob(queueName, data, options = {}) {
 async function registerHandler(queueName, handler, options = {}) {
   const instance = getInstance();
 
-  // includeMetadata is required for `job.retrycount` to be populated on the
-  // job object the handler receives. Without it pg-boss only sends
-  // { id, name, data }, so retry counters always read 0 — which makes the
-  // UI's "Attempt N/3" indicator stuck at 1/3 across retries.
-  const workerOptions = {
-    teamSize: options.concurrency || 1,
-    teamConcurrency: options.teamConcurrency || 1,
-    includeMetadata: true,
-    ...options
-  };
+  const workerOptions = buildWorkerOptions(options);
 
   await instance.work(queueName, workerOptions, async (job) => {
     logger.info('Processing job', {
@@ -420,6 +442,7 @@ module.exports = {
   getInstance,
   addJob,
   registerHandler,
+  buildWorkerOptions,
   getJobStatus,
   cancelJob,
   getQueueStats,
