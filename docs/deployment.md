@@ -4,20 +4,32 @@
 
 ### Multi-Stage Build
 
-The `Dockerfile` uses a two-stage build:
+The `Dockerfile` uses a **three-stage** build, all on `node:20-slim`:
 
-**Stage 1 — Frontend build:**
-- Base: `node:20-alpine`
-- Installs frontend dependencies and runs `npm run build`
-- Produces static assets in `dist/`
+**Stage 1 (`deps`)** — installs the workspace dependencies with `npm ci`.
 
-**Stage 2 — Production runtime:**
-- Base: `node:20-alpine`
-- Installs `postgresql-client` (for migrations in entrypoint)
-- Installs backend dependencies with native build tools (`python3`, `make`, `g++`), then removes build tools
-- Copies built frontend from Stage 1
-- Copies backend source, config, migrations, seeders, and scripts
-- Sets `NODE_ENV=production`, exposes port `3000`
+**Stage 2 (`build`)** — builds the frontend into `dist/`.
+
+**Stage 3 (runtime)** — copies the installed tree and the built assets, adds
+the backend source, config, migrations, seeders and scripts, creates a system
+`app` user and runs as it (`USER app`), and exposes port `3000`.
+
+> **`NODE_ENV` is NOT set in the image.** One image serves both the dev and prod
+> systemd units, so the environment comes from the unit's `--env-file` on the
+> host. That matters more than it looks: `src/backend/server.js` only enforces
+> its production guards (a `JWT_SECRET` of at least 32 characters, an `https`
+> `FRONTEND_URL`) when `NODE_ENV=production`, and `error.middleware.js` only
+> collapses unknown errors to "Internal server error" in that mode — otherwise
+> the raw message reaches the client. `utils/logger.js` likewise adds its file
+> transports only in production. If the host env file is missing the line, all
+> three degrade silently.
+>
+> One deliberate mitigation: the `Secure` cookie flag does not depend on it —
+> `auth.controller.js` also accepts an `https` `FRONTEND_URL`.
+
+**Note on devDependencies:** the runtime stage installs the full tree, not
+`--omit=dev`, because the same image must be able to run `npm run dev` for the
+dev unit. The build toolchain is therefore present in the production image.
 
 **Entrypoint** (`deploy/docker-entrypoint.sh`):
 1. Waits for PostgreSQL to be ready (polls `pg_isready` every 2 seconds)

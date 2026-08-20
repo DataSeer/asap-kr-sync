@@ -7,7 +7,12 @@
  * Four-step pipeline:
  *   1. detectProtocols(md)                 → raw Gemini items (prompt-shape)
  *   2. buildKrtItemsProtocols(raw)         → canonical KrtEntry[]
- *   3. attachEvidence(items, index)        → grounded; ungrounded rows discarded
+ *   3. attachEvidence(items, index)      → every row TAGGED verified /
+ *                                          embellished / unsupported. Nothing
+ *                                          is dropped here: the `drop` option
+ *                                          is not implemented, and
+ *                                          mergeDetections is what filters, at
+ *                                          the cross-detector stage.
  *   4. dedupeKrtItems(items, 'protocols')  → one entry per logical resource
  *
  * Detection is KRT-blind: the author's own rows are NOT fed to the model. They
