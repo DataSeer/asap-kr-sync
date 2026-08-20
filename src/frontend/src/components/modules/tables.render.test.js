@@ -107,6 +107,57 @@ describe('GroundingTable', () => {
     expect(withoutPolicy.text()).not.toContain('source: Zenodo')
   })
 
+  // ── Per-identifier verdicts ────────────────────────────────────────────
+  //
+  // An IDENTIFIER cell can hold a catalogue number AND an RRID. The manuscript
+  // routinely corroborates one and never prints the other, and "identifier
+  // found" over that cell is true but useless — the uncorroborated one is what
+  // a curator can act on.
+
+  const withPresence = (presence, over = {}) => outcome({
+    presence: { found: true, viaName: true, viaIdentifier: true, occurrences: 2, ...presence },
+    ...over
+  })
+
+  it('flags a cell whose identifiers are only partly corroborated', () => {
+    const wrapper = mountGrounding({
+      outcomes: [withPresence({ identifiersNotFound: ['Cat#657012'] })]
+    })
+
+    expect(wrapper.text()).toContain('Yes - partial ids')
+  })
+
+  it('names the identifier the manuscript does not corroborate', () => {
+    const wrapper = mountGrounding({
+      outcomes: [withPresence({ identifiersNotFound: ['Cat#657012'] })]
+    })
+
+    // The explanation is rendered in the cell, not hidden in a tooltip — a
+    // curator should not have to hover to learn which identifier is missing.
+    expect(wrapper.text()).toContain('Not found in the manuscript: Cat#657012')
+  })
+
+  it('stays a plain Yes when every identifier is corroborated', () => {
+    const wrapper = mountGrounding({
+      outcomes: [withPresence({ identifiersNotFound: [] })]
+    })
+
+    expect(wrapper.text()).not.toContain('partial ids')
+  })
+
+  it('a conflict still outranks a partly-corroborated cell', () => {
+    // One of the two sources being wrong is the more serious reading, and it
+    // must not be softened into "partial".
+    const wrapper = mountGrounding({
+      outcomes: [withPresence({ identifiersNotFound: ['Cat#657012'] }, {
+        conflicts: [{ field: 'identifier', authorValue: 'a', manuscriptValue: 'b' }]
+      })]
+    })
+
+    expect(wrapper.text()).toContain('Incoherence')
+    expect(wrapper.text()).not.toContain('partial ids')
+  })
+
   it('treats anything other than an explicit true as "do not surface"', () => {
     for (const policy of [{}, { surfaceValues: false }, { surfaceValues: 'yes' }]) {
       const wrapper = mountGrounding({ policy, outcomes: [outcome({ foundValues: { source: 'Zenodo' } })] })

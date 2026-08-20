@@ -46,7 +46,7 @@ const { NotFoundError } = require('../../utils/errors');
 const { matchAuthorRows } = require('./match-author-rows.service');
 const { getPipeline } = require('../../config/pipelines');
 const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
-  findNormalisedOccurrences, identifierNeedles } = require('../pdf-analysis/evidence.service');
+  findAllOccurrences, findNormalisedOccurrences, identifierParts } = require('../pdf-analysis/evidence.service');
 const { sanitizeJsonEscapes, extractJsonBlock } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
@@ -165,29 +165,51 @@ function presenceForRows(index, authorRows) {
   for (const row of authorRows || []) {
     const mentions = collectMentions(index, { resourceName: row.resourceName, identifier: row.identifier }, null);
 
+    // ── Every identifier in the cell, judged on its own ──────────────────────
+    //
+    // An IDENTIFIER cell routinely holds several: a catalogue number AND an
+    // RRID, an RRID AND a DOI. They are separate claims about where the
+    // resource can be found, and the manuscript can support one without
+    // supporting the other — a paper that cites `RRID:AB_2201407` usually never
+    // prints the vendor's catalogue number.
+    //
+    // Collapsing them into one boolean answered a question nobody asked ("is
+    // ANY of this in the paper?") and hid the actionable half: which of the
+    // author's identifiers the manuscript does not corroborate. So each part
+    // carries its own verdict, and the roll-up is derived from them.
+    //
+    // `value` is the author's own text for that part ("Cat#657012"), `needle`
+    // what was actually searched for ("657012"). A verdict a curator cannot
+    // match to the cell in front of them is not a verdict.
+    const identifiers = identifierParts(row.identifier).map(({ raw, needle }) => {
+      const exact = findAllOccurrences(index, needle, MAX_NORMALISED);
+      if (exact.length) {
+        return { value: raw, needle, found: true, normalised: false, occurrences: exact.length };
+      }
+      // Separators ignored — the conversion breaks identifiers around
+      // punctuation ("N0502-At488-L" → "N0502 -At488 -L"). Still an exact match
+      // of a normalised form, not a similarity score, so it cannot drift.
+      const loose = findNormalisedOccurrences(index, needle, MAX_NORMALISED);
+      return {
+        value: raw, needle,
+        found: loose.length > 0, normalised: loose.length > 0, occurrences: loose.length
+      };
+    });
+
     // Reported separately, not collapsed into one "via". The editor
     // distinguishes "name AND identifier both found" from either alone, and a
     // single winner-takes-all field cannot express that.
-    let viaIdentifier = mentions.some((m) => m.via === 'identifier');
+    const viaIdentifier = identifiers.some((i) => i.found);
     let viaName = mentions.some((m) => m.via === 'name');
 
-    // Second pass, separators ignored, for whichever field the exact search
-    // missed. Converted manuscripts break words around punctuation — the KRT
-    // says "anti-TagFP", the markdown says "anti -TagFP"; the KRT says
-    // "N0502-At488-L", the markdown says "N0502 -At488 -L". Still an exact
-    // match of a normalised form, not a similarity score, so it cannot drift.
-    let normalised = false;
-    if (!viaIdentifier) {
-      // Every part of the cell. Searching only the first made a row's "found in
-      // the manuscript" verdict depend on the order the author typed it.
-      for (const needle of identifierNeedles(row.identifier)) {
-        const hits = findNormalisedOccurrences(index, needle, MAX_NORMALISED);
-        if (!hits.length) continue;
-        viaIdentifier = true;
-        normalised = true;
-        mentions.push(...hits.map((h) => ({ ...h, via: 'identifier' })));
-      }
+    // Mentions for whichever identifier only the normalised pass could find —
+    // the exact ones are already in `mentions` via collectMentions.
+    let normalised = identifiers.some((i) => i.found && i.normalised);
+    for (const id of identifiers.filter((i) => i.found && i.normalised)) {
+      mentions.push(...findNormalisedOccurrences(index, id.needle, MAX_NORMALISED)
+        .map((h) => ({ ...h, via: 'identifier' })));
     }
+
     if (!viaName) {
       const hits = findNormalisedOccurrences(index, row.resourceName, MAX_NORMALISED);
       if (hits.length) {
@@ -202,6 +224,13 @@ function presenceForRows(index, authorRows) {
       found,
       viaIdentifier,
       viaName,
+      // One entry per identifier in the cell, in the order the author wrote
+      // them. Empty when the cell is empty — which is not the same as "none
+      // were found", and the reader must be able to tell those apart.
+      identifiers,
+      // The actionable subset, named so a caller does not have to filter: the
+      // author's identifiers the manuscript does not corroborate.
+      identifiersNotFound: identifiers.filter((i) => !i.found).map((i) => i.value),
       // At least one field matched only after punctuation was normalised. The
       // match is exact, so this stays a green verdict — but the reader is told,
       // because "the paper writes it differently" is worth knowing.

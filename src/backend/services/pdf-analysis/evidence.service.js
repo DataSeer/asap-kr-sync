@@ -746,11 +746,27 @@ function needleFromPart(part) {
  * @returns {string[]} unique, non-empty needles, in cell order
  */
 function identifierNeedles(identifier) {
+  return identifierParts(identifier).map((p) => p.needle);
+}
+
+/**
+ * The same split, keeping what the AUTHOR wrote beside what we search for.
+ *
+ * `needleFromPart` strips the label — "Cat#657012" becomes "657012" — which is
+ * right for searching and wrong for telling someone what was searched. A
+ * per-identifier verdict has to name the identifier in the author's own terms,
+ * or a curator cannot match the verdict to the cell they are looking at.
+ *
+ * @param {string} identifier
+ * @returns {{raw: string, needle: string}[]} unique by needle, in cell order
+ */
+function identifierParts(identifier) {
   const parts = String(identifier || '').split(/[;,]/);
   const out = [];
   for (const part of parts) {
     const needle = needleFromPart(part);
-    if (needle && !out.includes(needle)) out.push(needle);
+    if (!needle || out.some((p) => p.needle === needle)) continue;
+    out.push({ raw: part.trim() || needle, needle });
   }
   return out;
 }
@@ -809,6 +825,7 @@ module.exports = {
   collectMentions,
   identifierNeedle,
   identifierNeedles,
+  identifierParts,
   isCitationSection,
   extractContext,
   sentenceBoundsAround,

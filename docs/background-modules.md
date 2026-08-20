@@ -666,6 +666,31 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   `https://`, `doi.org`, `#` and citation tails as real differences, so `#9091S; (RRID:AB_2687579)` vs
   `9091S; RRID:AB_2687579` was reported as a conflict. 13 of 45 corpus conflicts were this. Boilerplate is now
   stripped before comparing, and the case that justified the residual still fires.
+- **What the module may say about each field, and why.** It checks the KRT against the PDF, so it may only
+  contradict the author about things the manuscript actually states:
+
+  | field | filled when empty | may raise an Incoherence |
+  |---|---|---|
+  | `identifier` | yes | **yes** — extracted verbatim from the text, and comparable |
+  | `source` | yes | **no** |
+  | `newReuse` | **no** | **no** |
+
+  `newReuse` is absent from both columns: **no detector reads new-versus-reuse from the manuscript**, every one
+  hard-codes a default, so a "found value" was our own default handed back — filling an empty cell from it invents
+  data wearing grounding provenance. `source` is fillable but never contradictable: for a dataset it is the
+  repository, for a material the supplier, inferred from where a thing lives rather than asserted by the paper, so
+  a difference is not evidence the author is wrong. Offering a repository for an empty cell is useful; telling a
+  curator their supplier contradicts the paper is not. Both halves of both rules are pinned in
+  `match-author-rows.service.test.js` — the fill half is the one that was silently unprotected.
+- **Every identifier in a cell is judged on its own.** An IDENTIFIER cell routinely holds several — a catalogue
+  number *and* an RRID, an RRID *and* a DOI — and they are separate claims: a paper citing `RRID:AB_2201407`
+  almost never prints the vendor's catalogue number. `presence.identifiers` carries one verdict per part, in the
+  order the author wrote them, each with `value` (the author's own text, e.g. `Cat#657012`) and `needle` (what was
+  searched, `657012`) — a verdict a curator cannot match to the cell in front of them is not a verdict.
+  `identifiersNotFound` is the actionable subset, and the editor's FOUND column reads **"Yes - partial ids"** with
+  the uncorroborated ones named. Collapsing the cell into one boolean answered a question nobody asked ("is ANY of
+  this in the paper?") and hid the half a curator can act on. An **empty** cell yields no verdicts at all — "nothing
+  to check" is not "checked and not found".
 - **The second look** takes the rows nothing matched and asks the LM to find each one in the manuscript, returning
   an exact quote. **Every returned quote is re-verified against the markdown here**, so a confident-sounding
   hallucination changes nothing: an unverifiable quote leaves the row `not_detected`. This is the *right* use of

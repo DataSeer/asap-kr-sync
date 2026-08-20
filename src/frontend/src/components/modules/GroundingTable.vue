@@ -101,11 +101,28 @@ function foundVerdict(o) {
   // reader is simply told, because that difference is worth knowing.
   const via = p.normalised ? ' The manuscript writes it with different spacing or hyphenation.' : ''
 
+  // An IDENTIFIER cell can hold several — a catalogue number AND an RRID — and
+  // the manuscript can corroborate one without the other. Saying "identifier
+  // found" over a cell where one of two was never located is true and useless:
+  // the uncorroborated one is the actionable half, so it is named.
+  const missing = p.identifiersNotFound || []
+  const partOfIds = missing.length > 0 && p.viaIdentifier
+    ? ` Not found in the manuscript: ${missing.join(', ')}.`
+    : ''
+
   if (p.viaName && p.viaIdentifier) {
-    return { label: 'Yes', cls: 'grounding-ok', title: `Name and identifier both found in the manuscript (${occurrences} occurrence(s)).${via}` }
+    return {
+      label: partOfIds ? 'Yes - partial ids' : 'Yes',
+      cls: partOfIds ? 'grounding-check' : 'grounding-ok',
+      title: `Name and identifier both found in the manuscript (${occurrences} occurrence(s)).${via}${partOfIds}`
+    }
   }
   if (p.viaIdentifier) {
-    return { label: 'Yes - id', cls: 'grounding-ok', title: `The identifier was found in the manuscript; the name as written was not.${via}` }
+    return {
+      label: partOfIds ? 'Yes - partial ids' : 'Yes - id',
+      cls: partOfIds ? 'grounding-check' : 'grounding-ok',
+      title: `The identifier was found in the manuscript; the name as written was not.${via}${partOfIds}`
+    }
   }
   if (p.viaName) {
     return { label: 'Yes - name', cls: 'grounding-ok', title: `The name was found in the manuscript; the identifier was not.${via}` }

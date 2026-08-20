@@ -137,6 +137,94 @@ test('presence: an identifier the converter escaped is still found', () => {
   assert.equal(p.via, 'identifier');
 });
 
+// ── Each identifier in the cell, judged on its own ──────────────────────────
+//
+// An IDENTIFIER cell routinely holds several — a catalogue number AND an RRID,
+// an RRID AND a DOI. They are separate claims, and the manuscript can support
+// one without supporting the other: a paper citing an RRID almost never prints
+// the vendor's catalogue number. One boolean for the whole cell answered a
+// question nobody asked and hid the actionable half.
+
+const TWO_IDS = 'Sections were stained with an anti-parkin antibody (RRID:AB_2201407) overnight.';
+
+test('presence: each identifier gets its own verdict', () => {
+  const index = buildEvidenceIndex(TWO_IDS);
+  const p = presenceForRows(index, [
+    { id: 'r1', resourceName: 'Anti-parkin', identifier: 'Cat#657012; RRID:AB_2201407' }
+  ]).get('r1');
+
+  assert.equal(p.identifiers.length, 2, 'two identifiers, two verdicts');
+  assert.deepEqual(p.identifiers.map((i) => i.found), [false, true]);
+  assert.deepEqual(p.identifiersNotFound, ['Cat#657012'],
+    'the catalogue number is the one the manuscript does not corroborate');
+  assert.equal(p.viaIdentifier, true, 'the row is still located — one of its identifiers is there');
+});
+
+test('presence: a verdict names the identifier the way the AUTHOR wrote it', () => {
+  // The search needle is the bare token ("657012"); the author wrote
+  // "Cat#657012". A verdict a curator cannot match to the cell in front of them
+  // is not a verdict.
+  const index = buildEvidenceIndex(TWO_IDS);
+  const p = presenceForRows(index, [
+    { id: 'r1', resourceName: 'Anti-parkin', identifier: 'Cat#657012; RRID:AB_2201407' }
+  ]).get('r1');
+
+  assert.equal(p.identifiers[0].value, 'Cat#657012', 'the author\'s text (not found)');
+  assert.equal(p.identifiers[0].needle, '657012', 'and what was actually searched');
+  // The found branch must carry it too — it is the one a curator reads most.
+  assert.equal(p.identifiers[1].value, 'RRID:AB_2201407', 'the author\'s text (found)');
+  assert.equal(p.identifiers[1].needle, 'AB_2201407');
+});
+
+test('presence: the per-identifier verdicts do not depend on the order typed', () => {
+  const index = buildEvidenceIndex(TWO_IDS);
+  const rows = [
+    { id: 'a', resourceName: 'Anti-parkin', identifier: 'Cat#657012; RRID:AB_2201407' },
+    { id: 'b', resourceName: 'Anti-parkin', identifier: 'RRID:AB_2201407; Cat#657012' }
+  ];
+  const out = presenceForRows(index, rows);
+
+  const verdict = (id) => Object.fromEntries(out.get(id).identifiers.map((i) => [i.value, i.found]));
+  assert.deepEqual(verdict('a'), verdict('b'));
+  assert.deepEqual(out.get('a').identifiersNotFound, out.get('b').identifiersNotFound);
+});
+
+test('presence: an identifier found only after normalisation says so', () => {
+  // The conversion breaks identifiers around punctuation.
+  const index = buildEvidenceIndex('The conjugate N0502 -At488 -L was applied.');
+  const p = presenceForRows(index, [
+    { id: 'r1', resourceName: 'Conjugate', identifier: 'N0502-At488-L' }
+  ]).get('r1');
+
+  assert.equal(p.identifiers[0].found, true);
+  assert.equal(p.identifiers[0].normalised, true, 'an exact match of a normalised form, and the reader is told');
+});
+
+test('presence: an empty identifier cell is no verdicts, not a failed one', () => {
+  // "Nothing to check" and "checked and not found" are different answers, and
+  // the editor must not draw the first as the second.
+  const index = buildEvidenceIndex(TWO_IDS);
+  const p = presenceForRows(index, [
+    { id: 'r1', resourceName: 'Anti-parkin', identifier: '' }
+  ]).get('r1');
+
+  assert.deepEqual(p.identifiers, []);
+  assert.deepEqual(p.identifiersNotFound, []);
+  assert.equal(p.viaIdentifier, false);
+});
+
+test('presence: every identifier can be corroborated', () => {
+  const index = buildEvidenceIndex(
+    'Plasmid pAAV-hSyn (Addgene #50465) was used; see also 10.5281/zenodo.123.'
+  );
+  const p = presenceForRows(index, [
+    { id: 'r1', resourceName: 'pAAV-hSyn', identifier: 'Addgene #50465, 10.5281/zenodo.123' }
+  ]).get('r1');
+
+  assert.deepEqual(p.identifiers.map((i) => i.found), [true, true]);
+  assert.deepEqual(p.identifiersNotFound, []);
+});
+
 test('presence: rows are keyed by id, and an empty set is not an error', () => {
   const index = buildEvidenceIndex(MANUSCRIPT);
   assert.equal(presenceForRows(index, []).size, 0);
