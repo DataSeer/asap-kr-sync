@@ -653,6 +653,47 @@ paths); 2 and 3 are additive reads.
 
 ---
 
+## 13a. Found while building phase 3: the pipeline can read two different tables
+
+Recording what a run was contemporaneous with exposed a question one level down —
+not what the pages *display*, but what the pipeline *reads*.
+
+**Every step resolves its own input independently.** Nine services do the same
+thing: `File.findOne({ type }, order: [['version', 'DESC']])`. There is no
+pipeline-level notion of "the inputs this round is being processed from".
+
+**The PDF is mostly safe.** Uploading or replacing one calls
+`runAllProcesses`, which restarts the whole round, so every step converges on
+the new file. The residue is a race: a step already `processing` when the
+replacement lands finishes against the old PDF, and its result is written to a
+row that has just been reset.
+
+**The KRT is not safe at all.** Nothing restarts on a KRT change — not
+re-uploading the file, not editing a cell. And two different things read it
+independently:
+
+- `author-krt-seeds.service` seeds the detectors from `krt_data` when each
+  detector runs;
+- `pdf-analysis.service` reads `krt_data` again when it consolidates.
+
+An author editing their table between those — which the workflow actively
+invites, since the editor is a click away — gets an analysis whose detections
+were seeded from one table and whose consolidation reconciled against another.
+Nothing detects it, and nothing tells them.
+
+**Proposed:** freeze the round's inputs when the pipeline starts, not per step.
+`runAllProcesses` records the PDF's file id and a snapshot of the KRT rows;
+every step reads that set. A KRT is 89 rows on average and 335 at the largest
+seen, so the snapshot is tens of kilobytes — the same reference-not-copy logic
+as §6.4 does not apply here, because `krt_data` rows are the live editing
+surface and have no immutable version to point at.
+
+Then say so: when the current table or PDF differs from the frozen set, the
+submission shows *"this analysis used an earlier version of your data"*.
+
+Not built. It changes what the pipeline reads, across roughly nine services,
+which is a bigger decision than a display fix.
+
 ## 14. Open questions
 
 1. **Retention.** None proposed. If it is ever wanted, the payload/record split
