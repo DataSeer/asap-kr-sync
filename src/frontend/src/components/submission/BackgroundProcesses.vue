@@ -23,14 +23,12 @@ import { useJobPoller } from '@/composables'
 import { useNotificationStore } from '@/stores/notification.store'
 import configService from '@/services/config.service'
 import jobService from '@/services/job.service'
-import { RESTART_ACTIONS } from '@/utils/restart-actions'
 import JobStatusPanel from './JobStatusPanel.vue'
 
 const props = defineProps({
   submissionId: { type: String, required: true }
 })
 
-const emit = defineEmits(['edit-das'])
 
 const notificationStore = useNotificationStore()
 
@@ -85,29 +83,6 @@ function reveal() {
   expandJobsSignal.value++
 }
 
-// ── Restart-job dispatcher ───────────────────────────────────────────
-// Wired into JobStatusPanel via inject('restartJob').
-//
-// The server decides what actually happened: a re-run asked for while the step
-// is already in flight is deliberately a no-op, and it answers "… is already
-// running" rather than "… queued". This used to announce its own cheerful
-// "re-started" either way, so a user who clicked twice was told a second run
-// had started and then waited for a result that was never coming. Show what
-// the server said; fall back to our own wording only if it said nothing.
-
-provide('restartJob', async (jobType) => {
-  const action = RESTART_ACTIONS[jobType]
-  if (!action) return
-  const [trigger, label] = action
-  try {
-    const result = await trigger(props.submissionId)
-    notificationStore.info(result?.message || `${label} re-started`)
-    await refresh()
-  } catch (err) {
-    notificationStore.error(err.response?.data?.error || `Failed to restart ${jobType}`)
-  }
-})
-
 // Imperative access for parents — refresh after upload, reveal, register
 // callbacks for in-flight transitions.
 defineExpose({
@@ -123,5 +98,5 @@ defineExpose({
 </script>
 
 <template>
-  <JobStatusPanel @edit-das="emit('edit-das')" />
+  <JobStatusPanel />
 </template>

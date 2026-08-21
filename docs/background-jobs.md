@@ -343,11 +343,24 @@ graph, so it is readable and testable on its own; `RestartFromHereDialog.vue`
 renders it. Never a native `confirm()`: this app has none, and a native dialog
 cannot show a list.
 
-**The button also appears on a module's own results page.** That is where
-someone reads a result and decides it needs running again, and until now there
-was nowhere to say so — the processes panel navigates to the module page for a
-completed step rather than offering its restart, so a finished step could not be
-re-run from the interface at all.
+**The button appears in three places**, all driving the same dialog: a module's
+own results page (where someone reads a result and decides it needs running
+again), every card on the pipeline page (the map is where you see a failed step
+in context), and — no longer — the processes panel, whose modal is gone.
+
+On the pipeline page the card is itself a link, so the button's click is both
+stopped AND prevented: without both, restarting a step also navigates away from
+the page you wanted to watch it from.
+
+**The processes panel has no modal any more.** A tile used to lead to one of two
+places: the module page if the step was `complete`, a modal otherwise. So the
+same click showed one thing for a finished module and another for a failed one —
+and the modal was the older, thinner view: no run history, no frozen inputs, no
+restart that says what it takes with it. A module is worth the same page whatever
+state it is in, and "it failed" is exactly when you want the record. Every tile
+now links to the module page, in any state. (That removed ~780 lines from
+`JobStatusPanel.vue`, including a per-job table renderer the module pages had
+already replaced.)
 
 ### The Availability Statement, and who vouches for it
 

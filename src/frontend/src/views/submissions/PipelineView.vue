@@ -25,9 +25,16 @@ import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { setSubmissionTitle } from '@/router'
+import { useAuthStore } from '@/stores/auth.store'
+import { useNotificationStore } from '@/stores/notification.store'
+import { restartPlan } from '@/utils/restart-plan'
+import { RESTART_ACTIONS, canRestartType } from '@/utils/restart-actions'
+import RestartFromHereDialog from '@/components/submission/RestartFromHereDialog.vue'
 
 const route = useRoute()
 const submissionId = computed(() => route.params.id)
+const authStore = useAuthStore()
+const notificationStore = useNotificationStore()
 const { jobs, inputs } = useJobPoller(submissionId)
 
 
@@ -86,6 +93,42 @@ const GATE_LABELS = {
 const gateLabel = (name) => GATE_LABELS[name] || name
 
 const jobFor = (jobType) => (jobs.value || {})[jobType] || null
+
+// ── Restart from here ───────────────────────────────────────────────────────
+// This page is the map of the pipeline, so it is where someone looking at a
+// step that failed — or that ran before they replaced the manuscript — decides
+// to run it again. Sending them into the module page first to find the button
+// made the map a read-only thing.
+//
+// The dialog is the same one the module page uses: it names the steps whose
+// results a restart replaces, what it keeps, and which documents come along.
+const pendingRestart = ref(null)
+const restarting = ref(false)
+
+const canRestart = computed(() => authStore.canRestartJobs)
+
+function askToRestart(jobType) {
+  if (!canRestartType(jobType)) return
+  pendingRestart.value = restartPlan(graph.value.nodes, jobType, labelFor)
+}
+
+async function confirmRestart() {
+  const type = pendingRestart.value?.jobType
+  if (!type) return
+  const [trigger, actionLabel] = RESTART_ACTIONS[type]
+  restarting.value = true
+  try {
+    const result = await trigger(submissionId.value)
+    // What the SERVER said: a restart asked for while the step is already
+    // running is deliberately a no-op, and it answers "… is already running".
+    notificationStore.info(result?.message || `${actionLabel} re-started`)
+    pendingRestart.value = null
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || `Could not restart ${actionLabel}`)
+  } finally {
+    restarting.value = false
+  }
+}
 
 // ── What this round was processed from ──────────────────────────────────────
 // Every step in a round reads one PDF, one converted manuscript and one KRT:
@@ -405,6 +448,19 @@ const activeStage = computed(() => {
                   >gated</span>
                   <span v-if="!node.autoAdvances" class="pv-gate" v-tooltip="'Can pause and wait for you before it runs.'">may pause</span>
                   <span v-if="hasModulePage(node.jobType)" class="pv-open">open ↗</span>
+                  <!-- Inside a card that is itself a link, so the click must be
+                       stopped AND prevented: without both, restarting a step
+                       also navigates away from the page you wanted to watch it
+                       from. -->
+                  <button
+                    v-if="canRestart && canRestartType(node.jobType)"
+                    type="button"
+                    class="pv-restart"
+                    v-tooltip="'Run this step again — and everything that depends on it'"
+                    @click.stop.prevent="askToRestart(node.jobType)"
+                  >
+                    ⟳ Restart from here
+                  </button>
                 </div>
               </component>
             </div>
@@ -415,6 +471,13 @@ const activeStage = computed(() => {
       </li>
     </ol>
   </div>
+
+    <RestartFromHereDialog
+      :plan="pendingRestart"
+      :busy="restarting"
+      @confirm="confirmRestart"
+      @cancel="pendingRestart = null"
+    />
 </template>
 
 <style scoped>
@@ -550,4 +613,19 @@ const activeStage = computed(() => {
 .pv-stale-body { min-width: 0; }
 .pv-stale-title { font-weight: 600; color: #78350f; font-size: 0.9rem; }
 .pv-stale-sub { margin-top: 0.15rem; font-size: 0.82rem; color: #92400e; }
+
+/* Restart, on the card it restarts. Quiet until hovered — the page is a map
+   first, and an action on every tile competes with reading it. */
+.pv-restart {
+  margin-left: auto;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: #fff;
+  color: #6b7280;
+  font-size: 0.62rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pv-restart:hover { border-color: #93c5fd; color: #1d4ed8; background: #eff6ff; }
 </style>

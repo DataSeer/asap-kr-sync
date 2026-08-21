@@ -37,9 +37,6 @@ const isAdmin = computed(() => authStore.effectiveRole === 'admin')
 const krtEditorRef = ref(null)
 const submissionHeaderRef = ref(null)
 const bgProcessesRef = ref(null)
-function handleEditDas() {
-  submissionHeaderRef.value?.openEditModal?.()
-}
 const replacingPdf = ref(false)
 const showReplacePdfModal = ref(false)
 const replacePdfInput = ref(null)
@@ -1248,7 +1245,6 @@ function scrollToFindingRow(finding) {
       <BackgroundProcesses
         ref="bgProcessesRef"
         :submission-id="route.params.id"
-        @edit-das="handleEditDas"
       />
 
       <!-- AI Suggestions Section - Carousel Navigation -->

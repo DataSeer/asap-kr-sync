@@ -193,9 +193,8 @@ function openFilesModal() {
   showFilesModal.value = true
 }
 
-// Exposed so parent views (e.g. PDFView) can trigger the metadata/DAS editor
-// from outside this component — for example when the JobStatusPanel emits
-// `edit-das` from its modal.
+// Exposed so parent views can trigger the metadata/DAS editor from outside this
+// component.
 defineExpose({ openEditModal })
 
 async function handleFileDownload(file) {
