@@ -1,6 +1,12 @@
 # Design proposal — Run history: every processing run kept, and readable
 
-**Status:** PROPOSED · **Created:** 2026-08-21
+**Status:** PHASE 1 IMPLEMENTED on `feat/run-history` · **Created:** 2026-08-21
+· **Updated:** 2026-08-22
+
+> Phase 1 is built: the schema and backfill, the run lifecycle, file provenance,
+> and the run number with the METADATA column (§13). Phases 2 (reading a past
+> run) and 3 (freezing the remaining live reads) are not started, and §6's
+> conversion list still describes what the pages do today.
 **Scope:** `submission_jobs` gains a history sidecar; the pipeline and module pages
 become records of a *run* rather than views of the submission.
 **Prerequisite:** none — additive to `feat/krt-detection-two-modes` as merged.

@@ -315,6 +315,52 @@ retrying would restart the very external work the user asked to stop.
 - **Conditional (job-result) gate** — if a job-result gate fails (e.g., DAS not extracted), the dependent job moves to `pending_input` and waits for the user to click **Advance**
 - **Submission-state gate** — a job whose `gate` (e.g. `krt_curated`) is not yet satisfied stays in `waiting` (never `pending_input`). It needs no manual action: the status-change handler re-drives the pipeline on every submission transition, and the periodic reconciler re-checks gated jobs each sweep, so the job advances on its own once the gate opens
 
+### Every run is recorded
+
+`submission_jobs` describes the CURRENT run. `submission_job_runs` is the
+history beside it — see `docs/design-run-history.md`, and
+`services/queue/run-history.service.js`.
+
+**A run begins at ENQUEUE**, not when data is produced: `runAllProcesses`,
+`tryAdvanceStep`'s atomic claim (which covers `checkAndAdvance`, `requeueStep`
+and the reconciler) and `advanceJob`. That is the moment somebody — or the
+pipeline — asked for it, and it is why **a disabled module, a failed run and a
+cancelled run all get records**. The orchestrator does not check whether a
+module is enabled; it enqueues every step, the Off path resolves to
+`config.state: 'off'` with `source: null`, and the run is recorded with an empty
+payload. That frozen config is what makes the empty result readable as "switched
+off" rather than "found nothing".
+
+**A pg-boss retry is not a new run.** Retries are attempts *within* a run and
+update `retry_count`; `markRetrying` touches the open run rather than opening
+another. Counting them would make "run 7" mean the service was flaky rather than
+that somebody asked seven times.
+
+Runs are closed from the `mark*` methods, which every worker path already
+funnels through — so a step cannot finish without its run being closed.
+
+**Two rules the service holds to, both mutation-tested:**
+
+1. **It never breaks a run.** Every history write is wrapped: a failure logs and
+   carries on. A missing history row is recoverable and visible; a pipeline step
+   that stops because its logbook threw is neither. History is an audit sidecar,
+   not a dependency of the work it describes.
+2. **`run_number` is allocated inside the INSERT**
+   (`COALESCE(MAX(run_number),0)+1`), so two callers cannot read the same
+   maximum, with `UNIQUE (submission_job_id, run_number)` as the backstop — a
+   bug surfaces as an error rather than as two runs numbered 3.
+
+A consequence worth expecting: **re-running one step opens a run on everything
+it cascades into.** Re-running `identifier_detection` re-enqueues
+`krt_grounding`, `pdf_analysis` and `suggestion_generation`, so all four advance
+to the next run number together.
+
+Because the writes are guarded, a broken one is SILENT. That is deliberate for
+production and a trap for development: `run_count` was added to the database and
+not to the model, Sequelize dropped the unknown field, and two runs existed
+while the job row still said one. `services/queue/run-history.test.js` therefore
+includes a parity test over every column this feature added.
+
 ### A run can be partly complete
 
 `outcome.state` is `done` | **`partial`** | `fail`.

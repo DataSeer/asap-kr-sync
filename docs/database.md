@@ -199,13 +199,39 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 | `round` | INTEGER | Default 1 |
 | `logs` | JSONB | Structured log entries from job execution (`[]` default) |
 | `triggered_by_user_id` | UUID (FK, nullable) | Who asked for this step to run — **not** the submission's owner. `ON DELETE SET NULL`, though accounts are anonymised rather than deleted so it should never fire. NULL means the row predates the column or no user was involved. |
+| `run_count` | INTEGER | How many times this step has run in this round. Denormalised from `submission_job_runs` so the panel can say "run 3" without an aggregate on a table polled every few seconds. |
 | `started_at` / `completed_at` | TIMESTAMPTZ | |
+
+#### `submission_job_runs`
+
+The history beside `submission_jobs`. **One row per run**, where the job row is
+only ever the *current* run — reused on every re-run, which is the rival-row fix
+and must not change.
+
+History must never be written as extra `submission_jobs` rows:
+`getForSubmission` keeps the newest row per job type, so a second row hides the
+pipeline's own and the advancement that should follow lands on the wrong one.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | |
+| `submission_job_id` | UUID (FK) | Cascades. `UNIQUE (submission_job_id, run_number)` |
+| `submission_id`, `job_type`, `round` | | Denormalised, so history is queryable without a join |
+| `run_number` | INTEGER | 1-based per (submission, job_type, round); allocated in the INSERT |
+| `status` | ENUM | This run's terminal status — its own enum type, distinct from `submission_jobs.status` |
+| `outcome_state` / `outcome_source` / `fail_reason` / `external_error` | | The service snapshot, flattened so it can be filtered on. `outcome_state` includes `partial` |
+| `triggered_by_user_id` | UUID (FK, nullable) | Who asked. `ON DELETE SET NULL` |
+| `trigger_kind` | VARCHAR(16) | `manual` \| `pipeline` \| `reconciler` |
+| `started_at` / `completed_at` / `duration_ms` | | `duration_ms` is stored rather than derived, so a later purge of timestamps cannot take it too |
+| `retry_count` | INTEGER | pg-boss attempts **within** this run — a retry is not a new run |
+| `counts` / `result` / `logs` / `inputs` | JSONB | The payload. **Nullable on purpose**: the record above is small and kept forever, the payload can be pruned without losing the history |
+| `s3_prefix` | TEXT | Where this run's artefacts live |
 
 ### Supporting Tables
 
 | Table | Purpose |
 |-------|---------|
-| `change_logs` | Audit trail for all KRT changes (action, source, metadata) |
+| `change_logs` | Audit trail for all KRT changes (action, source, metadata). `file_id` ties an upload entry to the exact file version it describes — before it, the narrative and the file could only be matched by timestamp |
 | `reports` | Generated reports (`type` ENUM `excel`/`pdf`, `file_url`, `metadata` JSONB, `round`) |
 | `user_hidden_submissions` | Per-user submission visibility preferences |
 | `resource_types` | Configurable resource type catalog (name, description, active, sort_order, `type` ∈ `dataset/software/protocol/lab_material`) |
