@@ -274,6 +274,7 @@ const jobList = computed(() => {
       // advanced the step itself. This view-model is built field by field, so
       // anything not named here never reaches the modal.
       triggeredBy: job?.triggeredBy || null,
+      runNumber: job?.runNumber ?? null,
       retryCount: job?.retryCount || 0,
       startedAt: job?.startedAt || null,
       completedAt: job?.completedAt || null,
@@ -1371,6 +1372,14 @@ async function downloadMarkdownFile(fileId) {
           >
             {{ getResultBadgeText(job) }}
           </span>
+          <!-- Only from run 2 onward: "run 1" on a step that has run once is
+               noise on every tile of a healthy pipeline. The number appears
+               exactly when it starts carrying information. -->
+          <span
+            v-if="job.runNumber > 1"
+            class="job-run-badge"
+            v-tooltip="`This step has been run ${job.runNumber} times in this round. The results shown are the latest run.`"
+          >run {{ job.runNumber }}</span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
 
           <!-- A KRT/manuscript disagreement is a defect, not a statistic, so it
@@ -1573,6 +1582,16 @@ async function downloadMarkdownFile(fileId) {
 </template>
 
 <style scoped>
+.job-run-badge {
+  flex: none;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
 .job-modal-trigger {
   margin: 0.5rem 0 0;
   font-size: 0.8125rem;

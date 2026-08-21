@@ -14,6 +14,8 @@ import { computed, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth.store'
 import fileService from '@/services/file.service'
 import jobService from '@/services/job.service'
+import { describeJobStatus } from '@/utils/job-status'
+import { formatDateTime } from '@/utils/format-date'
 import { labelFor } from '@/components/modules/module-meta'
 import { RouterLink } from 'vue-router'
 
@@ -180,20 +182,53 @@ const timings = computed(() => [
 ].filter(([, v]) => v))
 
 /**
- * Who asked for this run.
+ * Who ran this, when, and under what configuration.
  *
- * Shown here rather than only in the job popup, because that popup never opens
- * for a finished step — a completed tile is a link to this page — and a
- * finished run is exactly the one whose origin you want to check.
+ * First column, before the counts: a reader who meets the numbers first has
+ * already assumed they are the current, complete answer. This says which run
+ * produced them and whether the module was even switched on.
  *
- * Empty when the orchestrator advanced the step itself, which is the normal
- * case: naming the round's starter for a step nobody asked for by hand would
- * read as a claim about a decision they did not make.
+ * Everything here is the RUN's own record — the frozen config, not the current
+ * one. A module disabled during this run and enabled since must still read as
+ * disabled here, or the record claims it looked at the manuscript when it never
+ * ran.
  */
-const provenance = computed(() => {
-  const by = props.job?.triggeredBy
-  if (!by) return []
-  return [['Requested by', by.name || 'a user who has since been removed']]
+const CONFIG_STATE_LABEL = { on: 'on', demo: 'demo data', off: 'off' }
+const TRIGGER_LABEL = {
+  manual: 'manual re-run',
+  pipeline: 'started by the pipeline',
+  reconciler: 'recovered by the reconciler'
+}
+
+const metadata = computed(() => {
+  const job = props.job || {}
+  const svc = job.result?.service || {}
+  const by = job.triggeredBy
+  const rows = []
+
+  if (job.runNumber) {
+    const round = job.round ?? 1
+    rows.push(['Run', job.runCount > 1
+      ? `${job.runNumber} of ${job.runCount} (round ${round})`
+      : `${job.runNumber} (round ${round})`])
+  }
+  rows.push(['Status', describeJobStatus(job).label])
+  if (by) {
+    rows.push(['Requested by', by.name || 'a user who has since been removed'])
+  } else if (job.status) {
+    // Not "unknown" — nobody asked, the pipeline advanced it.
+    rows.push(['Requested by', 'the pipeline'])
+  }
+  if (job.triggerKind && TRIGGER_LABEL[job.triggerKind]) {
+    rows.push(['How', TRIGGER_LABEL[job.triggerKind]])
+  }
+  if (job.startedAt) rows.push(['Started', formatDateTime(job.startedAt)])
+  if (job.completedAt) rows.push(['Finished', formatDateTime(job.completedAt)])
+  if (job.retryCount > 0) rows.push(['Attempts', String(job.retryCount + 1)])
+  if (svc.config?.state) {
+    rows.push(['Configuration', CONFIG_STATE_LABEL[svc.config.state] || svc.config.state])
+  }
+  return rows
 })
 
 // ── what went in ───────────────────────────────────────────────────────
@@ -384,18 +419,21 @@ const responseUrl = (name) =>
         re-run the step once the service is back.
         <span v-if="degraded.error" class="mt-degraded-error">{{ degraded.error }}</span>
       </div>
+      <div v-if="metadata.length" class="mt-block mt-narrow">
+        <h3>Metadata</h3>
+        <dl><template v-for="([k, v]) in metadata" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
+      </div>
       <div v-if="config.length" class="mt-block mt-narrow">
         <h3>Configuration</h3>
         <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
       </div>
-      <div v-if="stats.length || timings.length || provenance.length" class="mt-block mt-narrow">
+      <div v-if="stats.length || timings.length" class="mt-block mt-narrow">
         <h3>Statistics</h3>
         <!-- Durations sit with the counts: both are "what this run did", and a
              column of its own for two numbers was a column too many. -->
         <dl>
           <template v-for="([k, v]) in stats" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
           <template v-for="([k, v]) in timings" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
-          <template v-for="([k, v]) in provenance" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
         </dl>
       </div>
       <div

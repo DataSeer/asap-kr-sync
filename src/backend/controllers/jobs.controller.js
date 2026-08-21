@@ -110,6 +110,12 @@ async function getJobs(req, res, next) {
           triggeredBy: job.triggeredByUserId
             ? { id: job.triggeredByUserId, name: triggerById.get(job.triggeredByUserId) || null }
             : null,
+          // How many times this step has run in this round, and therefore which
+          // run the numbers beside it belong to. Denormalised onto the job row,
+          // so the panel costs no extra query — this endpoint is polled every
+          // few seconds by every open tab.
+          runCount: job.runCount ?? 1,
+          runNumber: job.runCount ?? 1,
           retryCount: job.retryCount || 0,
           round: job.round,
           startedAt: job.startedAt,
