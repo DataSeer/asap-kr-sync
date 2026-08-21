@@ -1,0 +1,139 @@
+<script setup>
+/**
+ * "Restart from here" — what it takes with it, before it takes it.
+ *
+ * The button used to say "Restart" and do more than that: restarting a step
+ * also resets everything downstream, because those results were built from what
+ * this step produced. A click on Markdown Convert threw away eight modules'
+ * work, and nothing on screen said so.
+ *
+ * It also decides what the pipeline re-reads. An input is re-taken only when
+ * every step that reads it is being re-run — so restarting the conversion picks
+ * up a manuscript replaced since the round began, and restarting one detector
+ * deliberately does not. Someone restarting a single module to pick up their new
+ * PDF should find that out here rather than after the run.
+ *
+ * Never a native confirm(): this app has none, and a native dialog cannot show
+ * a list.
+ */
+defineProps({
+  /** The plan from `restartPlan()`, or null when nothing is pending. */
+  plan: { type: Object, default: null },
+  /** True while the restart request is in flight. */
+  busy: { type: Boolean, default: false }
+})
+
+defineEmits(['confirm', 'cancel'])
+</script>
+
+<template>
+  <Transition name="fade">
+    <div v-if="plan" class="restart-overlay" @click.self="$emit('cancel')">
+      <div class="restart-dialog" role="dialog" aria-modal="true" aria-labelledby="restart-title">
+        <h3 id="restart-title" class="restart-title">
+          Restart from {{ plan.stepName }}?
+        </h3>
+
+        <p v-if="!plan.alsoReruns.length" class="restart-line">
+          This runs <strong>{{ plan.stepName }}</strong> again. Nothing else is affected.
+        </p>
+        <template v-else>
+          <p class="restart-line">
+            This runs <strong>{{ plan.stepName }}</strong> again, and
+            <strong>{{ plan.alsoReruns.length }}</strong>
+            {{ plan.alsoReruns.length === 1 ? 'step that depends on it' : 'steps that depend on it' }}.
+            Their current results are replaced:
+          </p>
+          <ul class="restart-list">
+            <li v-for="name in plan.alsoReruns" :key="name">{{ name }}</li>
+          </ul>
+        </template>
+
+        <p class="restart-line restart-muted">
+          Everything else is kept, including its results.
+        </p>
+
+        <p v-if="plan.refreshedInputs.length" class="restart-line">
+          Re-read from your current files:
+          <strong>{{ plan.refreshedInputs.join(', ') }}</strong>.
+        </p>
+        <p v-if="plan.keptInputs.length" class="restart-line restart-muted">
+          Still using the version this round started from:
+          {{ plan.keptInputs.join(', ') }} — the steps that are not re-running were built from it.
+        </p>
+
+        <p v-if="plan.jobType === 'das_extraction'" class="restart-warn">
+          Your Availability Statement will be cleared and read again from the manuscript.
+          Anything typed there by hand is lost.
+        </p>
+
+        <div class="restart-actions">
+          <button type="button" class="restart-cancel" :disabled="busy" @click="$emit('cancel')">
+            Cancel
+          </button>
+          <button type="button" class="restart-go" :disabled="busy" @click="$emit('confirm')">
+            {{ busy ? 'Starting…' : 'Restart from here' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </Transition>
+</template>
+
+<style scoped>
+.restart-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(17, 24, 39, 0.45);
+}
+.restart-dialog {
+  width: 100%;
+  max-width: 30rem;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 1.25rem;
+  border-radius: 0.75rem;
+  background: #fff;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+}
+.restart-title { font-size: 1.05rem; font-weight: 600; color: #111827; margin-bottom: 0.6rem; }
+.restart-line { font-size: 0.875rem; color: #374151; margin-bottom: 0.5rem; }
+.restart-muted { color: #6b7280; }
+.restart-list {
+  margin: 0 0 0.6rem 0.25rem;
+  padding-left: 1rem;
+  list-style: disc;
+  font-size: 0.85rem;
+  color: #374151;
+}
+.restart-warn {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.375rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  font-size: 0.83rem;
+  color: #991b1b;
+}
+.restart-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+.restart-cancel {
+  padding: 0.45rem 0.9rem; border-radius: 0.375rem;
+  border: 1px solid #d1d5db; background: #fff; color: #374151;
+  font-size: 0.875rem; font-weight: 500;
+}
+.restart-cancel:hover:not(:disabled) { background: #f9fafb; }
+.restart-go {
+  padding: 0.45rem 0.9rem; border-radius: 0.375rem;
+  background: #2563eb; color: #fff; font-size: 0.875rem; font-weight: 600;
+}
+.restart-go:hover:not(:disabled) { background: #1d4ed8; }
+.restart-cancel:disabled, .restart-go:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.fade-enter-active, .fade-leave-active { transition: opacity 0.15s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+</style>

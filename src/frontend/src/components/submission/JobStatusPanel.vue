@@ -11,6 +11,9 @@ import { RouterLink, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.store'
 import jobService from '@/services/job.service'
 import configService from '@/services/config.service'
+import { restartPlan } from '@/utils/restart-plan'
+import RestartFromHereDialog from './RestartFromHereDialog.vue'
+import { MODULE_META } from '@/components/modules/module-meta'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isCancelledJob } from '@/composables/useJobPoller'
@@ -156,10 +159,17 @@ const jobSummary = computed(() => {
  * poll tick.
  */
 const pipelineDeps = ref({})
+/**
+ * The graph itself, kept whole because "Restart from here" needs more than the
+ * dependency map: which steps a restart carries with it, and which documents it
+ * will re-read.
+ */
+const pipelineNodes = ref([])
 
 onMounted(async () => {
   try {
     const { nodes } = await configService.getPipeline()
+    pipelineNodes.value = nodes
     pipelineDeps.value = Object.fromEntries(nodes.map((n) => [n.jobType, n.dependsOn]))
   } catch {
     // Non-fatal: the panel still lists jobs and their statuses.
@@ -1041,11 +1051,37 @@ function canRestart(job) {
      job.status === 'pending_input' || job.status === 'cancelled')
 }
 
-async function handleRestart(type) {
+/**
+ * "Restart" did more than it said. Restarting a step also resets everything
+ * downstream of it — those results were built from what this step produced — so
+ * a click on Markdown Convert threw away eight modules' work with nothing on
+ * screen to say so.
+ *
+ * Null when no restart is pending; otherwise the plan being confirmed.
+ */
+const pendingRestart = ref(null)
+
+const jobLabel = (type) =>
+  ALL_JOB_TYPES.find((j) => j.type === type)?.label
+  || MODULE_META[type]?.label
+  || type
+
+function askToRestart(type) {
   if (!restartJobFn || restartingJobs.value.has(type)) return
-  // Close the modal immediately so the user sees the panel update without
-  // having to dismiss it manually. The restart call still runs in the
-  // background and the panel polls for the new status.
+  pendingRestart.value = restartPlan(pipelineNodes.value, type, jobLabel)
+}
+
+function cancelRestart() {
+  pendingRestart.value = null
+}
+
+async function confirmRestart() {
+  const type = pendingRestart.value?.jobType
+  pendingRestart.value = null
+  if (!type) return
+  // Close the panel modal too so the user sees the list update without having
+  // to dismiss it manually. The restart runs in the background and the panel
+  // polls for the new status.
   closeModal()
   restartingJobs.value.add(type)
   try {
@@ -1551,7 +1587,7 @@ async function downloadMarkdownFile(fileId) {
                 v-if="restartJobFn && canRestartJobs && canRestart(activeJob)"
                 class="job-restart-btn"
                 :disabled="restartingJobs.has(activeJob.type)"
-                @click="handleRestart(activeJob.type)"
+                @click="askToRestart(activeJob.type)"
               >
                 <svg
                   v-if="activeJob.status === 'pending_input'"
@@ -1571,7 +1607,7 @@ async function downloadMarkdownFile(fileId) {
                 >
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                {{ restartingJobs.has(activeJob.type) ? 'Starting...' : (activeJob.status === 'pending_input' ? 'Start' : 'Restart') }}
+                {{ restartingJobs.has(activeJob.type) ? 'Starting...' : (activeJob.status === 'pending_input' ? 'Start' : 'Restart from here') }}
               </button>
             </div>
           </div>
@@ -1579,6 +1615,12 @@ async function downloadMarkdownFile(fileId) {
       </div>
     </Transition>
   </Teleport>
+
+  <RestartFromHereDialog
+    :plan="pendingRestart"
+    @confirm="confirmRestart"
+    @cancel="cancelRestart"
+  />
 </template>
 
 <style scoped>
@@ -2343,5 +2385,4 @@ async function downloadMarkdownFile(fileId) {
 .engine-lm { background: #ede9fe; color: #6d28d9; }
 
 .grounding-fill-empty { color: #9ca3af; font-style: italic; cursor: help; }
-
 </style>

@@ -316,6 +316,39 @@ For the KRT this compares row COUNTS, which cannot see an edited cell. That is
 the honest limit of it: `stale` means "rows were added or removed", never
 "nothing has changed". Both counts are reported so a reader can judge.
 
+### "Restart from here"
+
+The button used to say **Restart** and do more than that. Restarting a step also
+resets everything downstream of it — those results were built from what this
+step produced — so a click on Markdown Convert threw away eight modules' work
+with nothing on screen to say so.
+
+It now asks first, and the dialog says three things:
+
+1. **which steps re-run** — this one and every step that depends on it,
+   transitively, each named;
+2. **that everything else is kept**, results included;
+3. **which documents come along.** An input is re-taken only when every step
+   that reads it is being re-run, so "restart the conversion" picks up a
+   manuscript replaced since the round began and "restart one detector"
+   deliberately does not. Someone restarting a single module to pick up their
+   new PDF finds that out here rather than after the run.
+
+Restarting **DAS Extraction** additionally warns that the working Availability
+Statement will be cleared and read again from the manuscript — anything typed
+by hand is lost. That is the point of the restart, and it is not recoverable.
+
+The rule lives in `utils/restart-plan.js` as pure functions over the pipeline
+graph, so it is readable and testable on its own; `RestartFromHereDialog.vue`
+renders it. Never a native `confirm()`: this app has none, and a native dialog
+cannot show a list.
+
+**The button also appears on a module's own results page.** That is where
+someone reads a result and decides it needs running again, and until now there
+was nowhere to say so — the processes panel navigates to the module page for a
+completed step rather than offering its restart, so a finished step could not be
+re-run from the interface at all.
+
 ### The Availability Statement, and who vouches for it
 
 The Availability check reports on a paragraph that was pulled out of the

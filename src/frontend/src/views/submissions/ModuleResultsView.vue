@@ -19,6 +19,9 @@ import { formatDateTime } from '@/utils/format-date'
 import jobService from '@/services/job.service'
 import { useAuthStore } from '@/stores/auth.store'
 import { useNotificationStore } from '@/stores/notification.store'
+import { restartPlan } from '@/utils/restart-plan'
+import { RESTART_ACTIONS, canRestartType } from '@/utils/restart-actions'
+import RestartFromHereDialog from '@/components/submission/RestartFromHereDialog.vue'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import DetectionsTable from '@/components/modules/DetectionsTable.vue'
@@ -56,7 +59,7 @@ const submissionStore = useSubmissionStore()
 const authStore = useAuthStore()
 const notificationStore = useNotificationStore()
 
-const { jobs } = useJobPoller(submissionId)
+const { jobs, refresh: refreshJobs } = useJobPoller(submissionId)
 
 /**
  * What state this module's run is in, in a sentence.
@@ -219,6 +222,48 @@ onMounted(async () => {
 
 
 const label = computed(() => labelFor(jobType.value))
+
+// ── Restart from here ───────────────────────────────────────────────────────
+// This page is where someone reads a result and decides it needs running again,
+// and until now there was nowhere to say so: the processes panel navigates HERE
+// for a completed module rather than offering its restart, so a finished step
+// could not be re-run from the interface at all.
+//
+// It is always a restart from a point, never just "this one": the steps
+// downstream were built from this step's output, so they go too. The dialog
+// says which, and which documents come along.
+const pendingRestart = ref(null)
+const restarting = ref(false)
+
+const canRestart = computed(() =>
+  authStore.canRestartJobs && canRestartType(jobType.value) && !viewingPastRun.value
+)
+
+function askToRestart() {
+  pendingRestart.value = restartPlan(steps.value, jobType.value, labelFor)
+}
+
+async function confirmRestart() {
+  const type = pendingRestart.value?.jobType
+  if (!type) return
+  const [trigger, actionLabel] = RESTART_ACTIONS[type]
+  restarting.value = true
+  try {
+    const result = await trigger(submissionId.value)
+    // What the SERVER said: a restart asked for while the step is already
+    // running is deliberately a no-op, and it answers "… is already running".
+    // Announcing our own cheerful "re-started" either way told a user who
+    // clicked twice that a second run had begun, and they waited for a result
+    // that was never coming.
+    notificationStore.info(result?.message || `${actionLabel} re-started`)
+    pendingRestart.value = null
+    await refreshJobs()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || `Could not restart ${actionLabel}`)
+  } finally {
+    restarting.value = false
+  }
+}
 
 /**
  * What "no result" means for THIS module.
@@ -636,6 +681,18 @@ const tabConflicts = computed(() => {
         </select>
       </label>
 
+      <button
+        v-if="canRestart"
+        type="button"
+        class="mrv-restart"
+        @click="askToRestart"
+      >
+        <svg class="mrv-restart-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        Restart from here
+      </button>
+
       <!-- The two documents every result on this page is a claim about. -->
       <SubmissionFileLinks
         class="mrv-files-links"
@@ -891,6 +948,13 @@ const tabConflicts = computed(() => {
       A dedicated view for this module is not built yet — open it from the processes panel for now.
     </p>
   </div>
+
+    <RestartFromHereDialog
+      :plan="pendingRestart"
+      :busy="restarting"
+      @confirm="confirmRestart"
+      @cancel="pendingRestart = null"
+    />
 </template>
 
 <style scoped>
@@ -1098,4 +1162,20 @@ const tabConflicts = computed(() => {
   font-size: 0.82rem; line-height: 1.55; color: #111827;
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: min(60vh, 40rem); overflow: auto;
 }
+
+/* Restart, beside the title — this page is where the decision is made. */
+.mrv-restart {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  background: #fff;
+  color: #374151;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.mrv-restart:hover { background: #f9fafb; border-color: #9ca3af; }
+.mrv-restart-icon { width: 0.9rem; height: 0.9rem; }
 </style>
