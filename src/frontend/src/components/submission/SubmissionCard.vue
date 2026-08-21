@@ -120,7 +120,7 @@ function handleMetadataSaved() {
           <button
             v-if="canEdit"
             class="p-1 text-gray-400 hover:text-primary-600 transition-colors"
-            title="Edit metadata"
+            v-tooltip="'Edit metadata'"
             @click="handleEdit"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -132,7 +132,7 @@ function handleMetadataSaved() {
           <button
             v-if="isHidden"
             class="p-1 text-gray-400 hover:text-primary-600 transition-colors"
-            title="Unhide submission"
+            v-tooltip="'Unhide submission'"
             @click="handleUnhide"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -143,7 +143,7 @@ function handleMetadataSaved() {
           <button
             v-else
             class="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-            title="Hide submission"
+            v-tooltip="'Hide submission'"
             @click="handleHide"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -155,7 +155,7 @@ function handleMetadataSaved() {
           <button
             v-if="canDelete"
             class="p-1 text-gray-400 hover:text-red-600 transition-colors"
-            title="Delete submission"
+            v-tooltip="'Delete submission'"
             @click="handleDelete"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

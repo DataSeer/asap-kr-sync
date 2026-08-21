@@ -267,7 +267,7 @@ function formatAge(iso) {
           :key="group.reason"
           class="btn-secondary !py-1 !px-3 !text-xs"
           :disabled="working"
-          :title="meta.staleReasons?.[group.reason]"
+          v-tooltip="meta.staleReasons?.[group.reason]"
           @click="askCleanup(group)"
         >{{ group.label }} ({{ group.count }})</button>
       </div>
@@ -343,13 +343,13 @@ function formatAge(iso) {
                 type="checkbox"
                 :checked="selected.has(job.id)"
                 :disabled="!job.deletable"
-                :title="job.deletable ? '' : 'A worker is running this job'"
+                v-tooltip="job.deletable ? '' : 'A worker is running this job'"
                 @change="toggleOne(job)"
               />
             </td>
             <td class="px-4 py-3 text-sm">
               <div class="font-medium text-gray-900">{{ job.manuscriptId || '—' }}</div>
-              <div class="text-xs text-gray-500 truncate max-w-xs" :title="job.submissionTitle || job.submissionId">
+              <div class="text-xs text-gray-500 truncate max-w-xs" v-tooltip="job.submissionTitle || job.submissionId">
                 {{ job.submissionExists ? (job.submissionTitle || job.submissionId) : 'Submission deleted' }}
               </div>
             </td>
@@ -366,10 +366,10 @@ function formatAge(iso) {
               <span
                 v-if="job.staleReason"
                 class="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 cursor-help"
-                :title="job.staleDescription"
+                v-tooltip="job.staleDescription"
               >{{ STALE_LABELS[job.staleReason] || job.staleReason }}</span>
               <span v-else class="text-xs text-gray-400">—</span>
-              <div v-if="job.errorMessage" class="text-xs text-red-600 truncate max-w-xs mt-1" :title="job.errorMessage">
+              <div v-if="job.errorMessage" class="text-xs text-red-600 truncate max-w-xs mt-1" v-tooltip="job.errorMessage">
                 {{ job.errorMessage }}
               </div>
             </td>
@@ -383,7 +383,7 @@ function formatAge(iso) {
               <button
                 class="text-sm text-red-600 hover:text-red-800 disabled:text-gray-300"
                 :disabled="working || !job.deletable"
-                :title="job.deletable ? 'Delete this job' : 'A worker is running this job'"
+                v-tooltip="job.deletable ? 'Delete this job' : 'A worker is running this job'"
                 @click="askDeleteOne(job)"
               >Delete</button>
             </td>

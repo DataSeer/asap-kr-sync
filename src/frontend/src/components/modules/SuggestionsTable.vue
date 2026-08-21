@@ -95,7 +95,7 @@ const isEmpty = computed(() => props.rows.length === 0)
               {{ c.label }}
               <span
                 class="mtable-col-resize"
-                title="Drag to resize"
+                v-tooltip="'Drag to resize'"
                 @mousedown.stop.prevent="colResize.startResize('suggestions', c.key, c.width, $event)"
               ></span>
             </th>
@@ -152,7 +152,7 @@ const isEmpty = computed(() => props.rows.length === 0)
                   :key="src"
                   class="rbadge"
                   :class="sourceBadge(src)"
-                  :title="sourceTitle(src)"
+                  v-tooltip="sourceTitle(src)"
                 >{{ sourceLabel(src) }}</span>
                 <span v-if="!detectedBy(r.decision).length">—</span>
               </template>

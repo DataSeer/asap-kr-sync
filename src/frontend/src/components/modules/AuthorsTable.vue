@@ -58,7 +58,7 @@ const COLS = [
             :style="colResize.headStyle('authors', c.key, c.width)"
           >
             {{ c.label }}
-            <span class="mtable-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('authors', c.key, c.width, $event)"></span>
+            <span class="mtable-col-resize" v-tooltip="'Drag to resize'" @mousedown.stop.prevent="colResize.startResize('authors', c.key, c.width, $event)"></span>
           </th>
         </tr>
       </thead>

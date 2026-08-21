@@ -1285,7 +1285,7 @@ function scrollToFindingRow(finding) {
               :disabled="regenerating || hasCancelledJobs"
               class="btn-secondary text-xs inline-flex items-center"
               :class="{ 'opacity-50 cursor-not-allowed': regenerating || hasCancelledJobs }"
-              :title="hasCancelledJobs
+              v-tooltip="hasCancelledJobs
                 ? 'Processing was cancelled — use \'Re-run all\' to restart before regenerating suggestions'
                 : 'Regenerate AI suggestions by re-comparing your KRT with the generated KRT (does not re-run detection)'"
               @click="regenerateSuggestions"
@@ -1303,7 +1303,7 @@ function scrollToFindingRow(finding) {
               :disabled="analyzing"
               class="btn-secondary text-xs inline-flex items-center"
               :class="{ 'opacity-50 cursor-not-allowed': analyzing }"
-              title="Re-run all background processes (PDF analysis, DAS extraction, software detection)"
+              v-tooltip="'Re-run all background processes (PDF analysis, DAS extraction, software detection)'"
               @click="handleRerunAnalysis"
             >
               <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1432,17 +1432,17 @@ function scrollToFindingRow(finding) {
                   v-if="cellState(currentSuggestion, 'resourceType').editable && cellState(currentSuggestion, 'resourceType').mode === 'add'"
                   v-model="suggestionOverrides[currentSuggestion.id].resourceType"
                   class="suggestion-input"
-                  title="Resource Type"
+                  v-tooltip="'Resource Type'"
                 >
                   <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
                 </select>
                 <div v-else-if="cellState(currentSuggestion, 'resourceType').mode === 'edit_target' && cellState(currentSuggestion, 'resourceType').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'resourceType').oldValue || ''">{{ cellState(currentSuggestion, 'resourceType').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'resourceType').oldValue || ''">{{ cellState(currentSuggestion, 'resourceType').oldValue || '(empty)' }}</span>
                   <select v-model="suggestionOverrides[currentSuggestion.id]" class="suggestion-input">
                     <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
                   </select>
                 </div>
-                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'resourceType').value || ''">
+                <span v-else class="suggestion-cell-text" v-tooltip="cellState(currentSuggestion, 'resourceType').value || ''">
                   {{ cellState(currentSuggestion, 'resourceType').value || '—' }}
                 </span>
               </div>
@@ -1455,13 +1455,13 @@ function scrollToFindingRow(finding) {
                   v-model="suggestionOverrides[currentSuggestion.id].resourceName"
                   type="text"
                   class="suggestion-input"
-                  title="Resource Name"
+                  v-tooltip="'Resource Name'"
                 />
                 <div v-else-if="cellState(currentSuggestion, 'resourceName').mode === 'edit_target' && cellState(currentSuggestion, 'resourceName').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'resourceName').oldValue || ''">{{ cellState(currentSuggestion, 'resourceName').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'resourceName').oldValue || ''">{{ cellState(currentSuggestion, 'resourceName').oldValue || '(empty)' }}</span>
                   <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
                 </div>
-                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'resourceName').value || ''">
+                <span v-else class="suggestion-cell-text" v-tooltip="cellState(currentSuggestion, 'resourceName').value || ''">
                   {{ cellState(currentSuggestion, 'resourceName').value || '—' }}
                 </span>
               </div>
@@ -1474,13 +1474,13 @@ function scrollToFindingRow(finding) {
                   v-model="suggestionOverrides[currentSuggestion.id].source"
                   type="text"
                   class="suggestion-input"
-                  title="Source"
+                  v-tooltip="'Source'"
                 />
                 <div v-else-if="cellState(currentSuggestion, 'source').mode === 'edit_target' && cellState(currentSuggestion, 'source').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'source').oldValue || ''">{{ cellState(currentSuggestion, 'source').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'source').oldValue || ''">{{ cellState(currentSuggestion, 'source').oldValue || '(empty)' }}</span>
                   <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
                 </div>
-                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'source').value || ''">
+                <span v-else class="suggestion-cell-text" v-tooltip="cellState(currentSuggestion, 'source').value || ''">
                   {{ cellState(currentSuggestion, 'source').value || '—' }}
                 </span>
               </div>
@@ -1493,13 +1493,13 @@ function scrollToFindingRow(finding) {
                   v-model="suggestionOverrides[currentSuggestion.id].identifier"
                   type="text"
                   class="suggestion-input"
-                  title="Identifier"
+                  v-tooltip="'Identifier'"
                 />
                 <div v-else-if="cellState(currentSuggestion, 'identifier').mode === 'edit_target' && cellState(currentSuggestion, 'identifier').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'identifier').oldValue || ''">{{ cellState(currentSuggestion, 'identifier').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'identifier').oldValue || ''">{{ cellState(currentSuggestion, 'identifier').oldValue || '(empty)' }}</span>
                   <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
                 </div>
-                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'identifier').value || ''">
+                <span v-else class="suggestion-cell-text" v-tooltip="cellState(currentSuggestion, 'identifier').value || ''">
                   {{ cellState(currentSuggestion, 'identifier').value || '—' }}
                 </span>
               </div>
@@ -1511,7 +1511,7 @@ function scrollToFindingRow(finding) {
                   v-if="cellState(currentSuggestion, 'newReuse').editable && cellState(currentSuggestion, 'newReuse').mode === 'add'"
                   v-model="suggestionOverrides[currentSuggestion.id].newReuse"
                   class="suggestion-input"
-                  title="New/Reuse"
+                  v-tooltip="'New/Reuse'"
                 >
                   <option value="">—</option>
                   <option value="new">new</option>
@@ -1538,13 +1538,13 @@ function scrollToFindingRow(finding) {
                   v-model="suggestionOverrides[currentSuggestion.id].additionalInformation"
                   type="text"
                   class="suggestion-input"
-                  title="Additional Information"
+                  v-tooltip="'Additional Information'"
                 />
                 <div v-else-if="cellState(currentSuggestion, 'additionalInformation').mode === 'edit_target' && cellState(currentSuggestion, 'additionalInformation').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'additionalInformation').oldValue || ''">{{ cellState(currentSuggestion, 'additionalInformation').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'additionalInformation').oldValue || ''">{{ cellState(currentSuggestion, 'additionalInformation').oldValue || '(empty)' }}</span>
                   <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
                 </div>
-                <span v-else class="suggestion-cell-text suggestion-cell-text-wrap" :title="cellState(currentSuggestion, 'additionalInformation').value || ''">
+                <span v-else class="suggestion-cell-text suggestion-cell-text-wrap" v-tooltip="cellState(currentSuggestion, 'additionalInformation').value || ''">
                   {{ cellState(currentSuggestion, 'additionalInformation').value || '—' }}
                 </span>
               </div>
@@ -1574,7 +1574,7 @@ function scrollToFindingRow(finding) {
           <div class="suggestion-actions">
             <button
               class="suggestion-view-btn"
-              title="View in KRT Editor"
+              v-tooltip="'View in KRT Editor'"
               @click="scrollToFindingRow(currentSuggestion)"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1621,7 +1621,7 @@ function scrollToFindingRow(finding) {
                 'bg-gray-300': index !== currentSuggestionIndex && finding.status === 'rejected',
                 'bg-blue-300 hover:bg-blue-400': index !== currentSuggestionIndex && finding.status === 'pending'
               }"
-              :title="`Suggestion ${index + 1}: ${finding.status}`"
+              v-tooltip="`Suggestion ${index + 1}: ${finding.status}`"
               @click="goToSuggestion(index)"
             />
           </div>

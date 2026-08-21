@@ -188,7 +188,7 @@ function getMergedFromContext(originalItem) {
             :style="colResize.headStyle('mentions', c.key, c.width)"
           >
             {{ c.label }}
-            <span class="mtable-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('mentions', c.key, c.width, $event)"></span>
+            <span class="mtable-col-resize" v-tooltip="'Drag to resize'" @mousedown.stop.prevent="colResize.startResize('mentions', c.key, c.width, $event)"></span>
           </th>
         </tr>
       </thead>
@@ -206,7 +206,7 @@ function getMergedFromContext(originalItem) {
               <span
                 v-if="item.detectorMeta?.fromAuthorKrt"
                 class="rbadge rbadge-own"
-                :title="item.evidence?.verification?.status === 'verified'
+                v-tooltip="item.evidence?.verification?.status === 'verified'
                   ? 'In the author KRT, and the model located it in the manuscript.'
                   : 'In the author KRT. The model returned it, but did not locate it in the manuscript.'"
               >KRT</span>
@@ -219,12 +219,12 @@ function getMergedFromContext(originalItem) {
                 :key="engine"
                 class="rbadge"
                 :class="engine === 'lm' ? 'rbadge-derived' : 'rbadge-own'"
-                :title="ENGINE_TITLES[engine]"
+                v-tooltip="ENGINE_TITLES[engine]"
               >{{ ENGINE_LABELS[engine] }}</span>
               <span
                 v-if="getEnrichmentMeta(item)?.matched"
                 class="rbadge rbadge-neutral dt-badge-icon"
-                :title="enrichmentBadgeTitle(item)"
+                v-tooltip="enrichmentBadgeTitle(item)"
               >
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
@@ -235,16 +235,16 @@ function getMergedFromContext(originalItem) {
                 v-if="getMergedFromCount(item) > 1"
                 type="button"
                 class="rbadge rbadge-neutral dt-badge-button"
-                :title="`Merged from ${getMergedFromCount(item)} pre-dedup mentions — click to expand`"
+                v-tooltip="`Merged from ${getMergedFromCount(item)} pre-dedup mentions — click to expand`"
                 @click="toggleMergedRow(i)"
               >
                 merged ×{{ getMergedFromCount(item) }}
                 <span class="merged-from-chevron" :class="{ open: expandedMergedRows.has(i) }">▾</span>
               </button>
             </td>
-            <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'source') }" :title="isFieldFromEnrichment(item, 'source') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.source || item.suggestedURL || item.url" :query="search" /></td>
-            <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'identifier') }" :title="isFieldFromEnrichment(item, 'identifier') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.identifier || item.RRID || item.suggestedRRID" :query="search" /></td>
-            <td :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'newReuse') }" :title="isFieldFromEnrichment(item, 'newReuse') ? 'Filled in from the enrichment list' : null">
+            <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'source') }" v-tooltip="isFieldFromEnrichment(item, 'source') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.source || item.suggestedURL || item.url" :query="search" /></td>
+            <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'identifier') }" v-tooltip="isFieldFromEnrichment(item, 'identifier') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.identifier || item.RRID || item.suggestedRRID" :query="search" /></td>
+            <td :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'newReuse') }" v-tooltip="isFieldFromEnrichment(item, 'newReuse') ? 'Filled in from the enrichment list' : null">
               <span v-if="item.newReuse">{{ item.newReuse }}</span>
               <span v-else>—</span>
             </td>
@@ -255,7 +255,7 @@ function getMergedFromContext(originalItem) {
               <!-- A sentence rather than a bare path: the column held things
                    like "Methods > Immunostaining" with no indication of what
                    that was, or where it came from. -->
-              <span v-if="item.evidence?.section" class="evidence-section-cell" :title="item.evidence.section">
+              <span v-if="item.evidence?.section" class="evidence-section-cell" v-tooltip="item.evidence.section">
                 Found in the <strong>{{ item.evidence.section }}</strong> section of the manuscript
               </span>
               <!-- Context counts as located too: an "embellished" row has no
@@ -269,7 +269,7 @@ function getMergedFromContext(originalItem) {
               <span
                 v-if="item.evidence?.match === 'partial'"
                 class="rbadge rbadge-warning"
-                title="Only the leading part of the quote was located in the manuscript"
+                v-tooltip="'Only the leading part of the quote was located in the manuscript'"
               >partial</span>
               <!-- The model's quote is not in the manuscript, but
                                the resource is. The paragraph below shows where
@@ -278,7 +278,7 @@ function getMergedFromContext(originalItem) {
               <span
                 v-else-if="item.evidence?.verification?.status === 'embellished'"
                 class="rbadge rbadge-warning"
-                title="The resource is in the manuscript, but the sentence the model quoted is not verbatim. The paragraph below is where the resource actually appears."
+                v-tooltip="'The resource is in the manuscript, but the sentence the model quoted is not verbatim. The paragraph below is where the resource actually appears.'"
               >not verbatim</span>
             </td>
             <td v-if="showAdditionalInfo" class="text-xs text-gray-500"><HighlightText :text="item.additionalInformation || item.additional_information" :query="search" /></td>

@@ -642,7 +642,7 @@ function scrollToFirstWarning() {
           target="_blank"
           rel="noopener noreferrer"
           class="btn-secondary text-sm inline-flex items-center"
-          title="Open Key Resources Table Template in Google Sheets"
+          v-tooltip="'Open Key Resources Table Template in Google Sheets'"
         >
           <svg class="w-4 h-4 mr-1" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1.99 6H13V7h4.01v2zm0 4H13v-2h4.01v2zm0 4H13v-2h4.01v2zM7 7h4v2H7V7zm0 4h4v2H7v-2zm0 4h4v2H7v-2z" />
@@ -655,7 +655,7 @@ function scrollToFirstWarning() {
         <button
           :disabled="uploadingPdf"
           class="btn-secondary text-sm inline-flex items-center"
-          title="Upload a new manuscript PDF; the analysis pipeline restarts automatically"
+          v-tooltip="'Upload a new manuscript PDF; the analysis pipeline restarts automatically'"
           @click="triggerPdfUpload"
         >
           <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -701,7 +701,7 @@ function scrollToFirstWarning() {
              table (which already highlights every flagged cell) more room. -->
         <button
           class="text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1"
-          :title="showQuickFixes ? 'Hide quick fixes to enlarge the table' : 'Show quick fixes'"
+          v-tooltip="showQuickFixes ? 'Hide quick fixes to enlarge the table' : 'Show quick fixes'"
           @click="showQuickFixes = !showQuickFixes"
         >
           <svg class="w-4 h-4 transition-transform" :class="{ '-rotate-90': !showQuickFixes }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -741,7 +741,7 @@ function scrollToFirstWarning() {
             <!-- View in KRT button -->
             <button
               class="p-1.5 text-gray-500 hover:text-primary-600 hover:bg-gray-100 rounded-md transition-colors"
-              title="View in KRT Editor"
+              v-tooltip="'View in KRT Editor'"
               @click="scrollToFixRow(currentFix)"
             >
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -784,7 +784,7 @@ function scrollToFirstWarning() {
             <!-- View in KRT button -->
             <button
               class="p-1.5 text-gray-500 hover:text-primary-600 hover:bg-gray-100 rounded-md transition-colors"
-              title="View in KRT Editor"
+              v-tooltip="'View in KRT Editor'"
               @click="scrollToFixRow(currentFix)"
             >
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -824,7 +824,7 @@ function scrollToFirstWarning() {
             :key="index"
             class="w-2 h-2 rounded-full transition-colors"
             :class="index === currentFixIndex ? 'bg-primary-600' : 'bg-gray-300 hover:bg-gray-400'"
-            :title="`Fix ${index + 1}`"
+            v-tooltip="`Fix ${index + 1}`"
             @click="goToFix(index)"
           />
         </div>

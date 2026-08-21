@@ -562,7 +562,7 @@ async function handleBack() {
           <div class="view-mode-switch">
             <button
               :class="['view-mode-btn', viewMode === 'list' ? 'view-mode-active' : '']"
-              title="List view"
+              v-tooltip="'List view'"
               @click="viewMode = 'list'"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -572,7 +572,7 @@ async function handleBack() {
             </button>
             <button
               :class="['view-mode-btn', viewMode === 'carousel' ? 'view-mode-active' : '']"
-              title="Single view"
+              v-tooltip="'Single view'"
               @click="viewMode = 'carousel'"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -686,7 +686,7 @@ async function handleBack() {
               <span class="recommended-value">{{ suggestion.recommendedText }}</span>
               <button
                 class="copy-btn"
-                title="Copy to clipboard"
+                v-tooltip="'Copy to clipboard'"
                 @click="copyText(suggestion.recommendedText)"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -734,7 +734,7 @@ async function handleBack() {
               <span class="recommended-value">{{ currentSuggestion.recommendedText }}</span>
               <button
                 class="copy-btn"
-                title="Copy to clipboard"
+                v-tooltip="'Copy to clipboard'"
                 @click="copyText(currentSuggestion.recommendedText)"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -778,7 +778,7 @@ async function handleBack() {
                 'carousel-dot-applicable': index !== currentSuggestionIndex && suggestion.applies,
                 'carousel-dot-na': index !== currentSuggestionIndex && !suggestion.applies
               }"
-              :title="`${suggestion.title} (${suggestion.applies ? suggestion.severity : 'N/A'})`"
+              v-tooltip="`${suggestion.title} (${suggestion.applies ? suggestion.severity : 'N/A'})`"
               @click="goToSuggestion(index)"
             />
           </div>

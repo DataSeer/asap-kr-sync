@@ -317,9 +317,9 @@ const activeStage = computed(() => {
                   <span
                     v-if="node.gates?.length"
                     class="pv-gate"
-                    :title="'Waits for: ' + node.gates.map(gateLabel).join(', ')"
+                    v-tooltip="'Waits for: ' + node.gates.map(gateLabel).join(', ')"
                   >gated</span>
-                  <span v-if="!node.autoAdvances" class="pv-gate" title="Can pause and wait for you before it runs.">may pause</span>
+                  <span v-if="!node.autoAdvances" class="pv-gate" v-tooltip="'Can pause and wait for you before it runs.'">may pause</span>
                   <span v-if="hasModulePage(node.jobType)" class="pv-open">open ↗</span>
                 </div>
               </component>

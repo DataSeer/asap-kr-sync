@@ -158,6 +158,22 @@ const timings = computed(() => [
  * case: naming the round's starter for a step nobody asked for by hand would
  * read as a claim about a decision they did not make.
  */
+/**
+ * The run produced a real result with one of its engines missing.
+ *
+ * Stated at the TOP of the panel rather than as another row in Statistics: the
+ * counts below are correct but are a floor, not a total, and a reader who
+ * meets the number first has already drawn the wrong conclusion.
+ */
+const degraded = computed(() => {
+  const outcome = props.job?.result?.service?.outcome
+  if (!outcome || outcome.state !== 'partial') return null
+  return {
+    engine: String(outcome.failReason || '').replace(/_failed$/, '') || 'one engine',
+    error: outcome.externalError || null
+  }
+})
+
 const provenance = computed(() => {
   const by = props.job?.triggeredBy
   if (!by) return []
@@ -345,6 +361,13 @@ const responseUrl = (name) =>
     </button>
 
     <div v-if="open" class="mt-body">
+      <div v-if="degraded" class="mt-degraded">
+        <strong>Partly complete.</strong>
+        The <code>{{ degraded.engine }}</code> engine failed on this run, so the counts below
+        come from the remaining one. They are real, but this manuscript was not fully read —
+        re-run the step once the service is back.
+        <span v-if="degraded.error" class="mt-degraded-error">{{ degraded.error }}</span>
+      </div>
       <div v-if="config.length" class="mt-block mt-narrow">
         <h3>Configuration</h3>
         <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
@@ -389,7 +412,7 @@ const responseUrl = (name) =>
             <button
               type="button"
               class="mt-linkish"
-              :title="p.file"
+              v-tooltip="p.file"
               @click="openPrompt = openPrompt === p.file ? null : p.file"
             >
               {{ p.name }} {{ openPrompt === p.file ? '▾' : '▸' }}
@@ -448,6 +471,32 @@ const responseUrl = (name) =>
 </template>
 
 <style scoped>
+.mt-degraded {
+  margin-bottom: 0.875rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  grid-column: 1 / -1;
+}
+
+.mt-degraded code {
+  background: rgba(146, 64, 14, 0.1);
+  padding: 0 0.25rem;
+  border-radius: 0.1875rem;
+}
+
+.mt-degraded-error {
+  display: block;
+  margin-top: 0.25rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+
 .mt-panel { border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fff; margin-top: 1.5rem; }
 .mt-toggle {
   display: flex; align-items: center; gap: 0.5rem; width: 100%;

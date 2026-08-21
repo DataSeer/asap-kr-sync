@@ -247,7 +247,7 @@ async function handleCreateUser() {
                 <span
                   v-if="user.isAuth0User"
                   class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700"
-                  title="Authenticated via ASAP Hub (Auth0) — password is managed by the identity provider"
+                  v-tooltip="'Authenticated via ASAP Hub (Auth0) — password is managed by the identity provider'"
                 >
                   ASAP Hub
                 </span>

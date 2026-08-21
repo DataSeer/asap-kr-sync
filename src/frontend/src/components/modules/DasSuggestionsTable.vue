@@ -50,7 +50,7 @@ const spanCount = COLS.length
               {{ c.label }}
               <span
                 class="mtable-col-resize"
-                title="Drag to resize"
+                v-tooltip="'Drag to resize'"
                 @mousedown.stop.prevent="colResize.startResize('das', c.key, c.width, $event)"
               ></span>
             </th>

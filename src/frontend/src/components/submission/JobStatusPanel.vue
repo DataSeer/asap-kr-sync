@@ -285,7 +285,7 @@ const jobList = computed(() => {
       liveDemoEnabled: svcInfo?.hasDemoData ?? false,
       // Persisted execution snapshot (config + outcome)
       configState: svc?.config?.state ?? null,     // 'on' | 'demo' | 'off' | null
-      outcomeState: svc?.outcome?.state ?? null,   // 'done' | 'fail' | null
+      outcomeState: svc?.outcome?.state ?? null,   // 'done' | 'partial' | 'fail' | null
       outcomeSource: svc?.outcome?.source ?? null, // 'external' | 'demo' | null
       outcomeFailReason: svc?.outcome?.failReason ?? null,
       outcomeExternalError: svc?.outcome?.externalError ?? null,
@@ -520,7 +520,7 @@ function isSlowJob(job) {
  * CSS class for the line-2 outcome badge.
  *
  * In-progress statuses keep their existing colors (running, waiting, etc.).
- * Completed jobs read from `outcomeState` ('done' or 'fail').
+ * Completed jobs read from `outcomeState` ('done', 'partial' or 'fail').
  * markFailed jobs (true unexpected errors, distinct from a workflow Fail
  * outcome) keep the red 'failed' styling.
  */
@@ -538,6 +538,10 @@ function getResultBadgeClass(job) {
   if (job.status === 'complete') {
     if (job.outcomeState === 'done') return { 'job-status-complete': true }
     if (job.outcomeState === 'fail') return { 'job-status-failed': true }
+    // Amber, not green: the step produced a real result but one of the engines
+    // behind it failed, so the table is genuine AND short. Green here is the
+    // "nine green ticks over a statement nobody read" mistake in miniature.
+    if (job.outcomeState === 'partial') return { 'job-status-partial': true }
     // No outcome on a completed row should not happen post-migration, but
     // fall through to neutral if it does.
     return { 'job-status-idle': true }
@@ -548,9 +552,9 @@ function getResultBadgeClass(job) {
 }
 
 /**
- * Text for the line-2 outcome badge. Two terminal labels — Done or Fail —
- * plus the existing in-progress labels. Configuration ('On'/'Demo'/'Off') is
- * shown by the line-1 pill, never here.
+ * Text for the line-2 outcome badge. Three terminal labels — Done, Partial or
+ * Fail — plus the existing in-progress labels. Configuration ('On'/'Demo'/'Off')
+ * is shown by the line-1 pill, never here.
  */
 function getResultBadgeText(job) {
   if (!job.status) return 'Not started'
@@ -566,6 +570,7 @@ function getResultBadgeText(job) {
   if (job.status === 'complete') {
     if (job.outcomeState === 'done') return 'Done'
     if (job.outcomeState === 'fail') return 'Fail'
+    if (job.outcomeState === 'partial') return 'Partial'
     return 'Done'
   }
 
@@ -608,6 +613,13 @@ function getResultSummary(job) {
 
   // Workflow-level Fail: show the reason rather than data counts.
   if (job.outcomeState === 'fail') return formatFailReason(job.outcomeFailReason)
+
+  // Partial: the counts ARE real, so they still lead — but they are a floor,
+  // not a total, and the summary has to say which engine went missing or the
+  // number reads as the whole answer.
+  if (job.outcomeState === 'partial') {
+    return `${getDataSummary(job, r)} — ${formatFailReason(job.outcomeFailReason)}`
+  }
 
   // Off + Done: process is intentionally disabled and nothing was attempted.
   // Showing a "0 mentions" data summary here would imply the process ran and
@@ -657,7 +669,11 @@ function getDataSummary(job, r) {
       // Two engines are unioned here, so say what each contributed — otherwise
       // "5 unique mentions" hides whether the LM pass ran at all.
       let engines = ''
-      if (meta.lmEnabled === false) {
+      if (meta.softciteFailed) {
+        // NOT "Softcite 0" — that reads as "Softcite looked and found none",
+        // which is the opposite of what happened.
+        engines = ' · LM pass only (Softcite failed)'
+      } else if (meta.lmEnabled === false) {
         engines = ' · Softcite only (LM pass off)'
       } else if (meta.lmSkippedReason) {
         engines = ` · Softcite only (LM ${meta.lmSkippedReason.replace(/_/g, ' ')})`
@@ -739,9 +755,27 @@ function formatFailReason(reason) {
   const map = {
     external_failed_no_demo_data: 'External service failed and no demo data is available for this manuscript',
     external_failed_demo_disabled: 'External service failed; demo fallback is disabled',
-    process_off_no_demo_data: 'Process is disabled; no demo data is available for this manuscript'
+    process_off_no_demo_data: 'Process is disabled; no demo data is available for this manuscript',
+    // Partial outcomes. `<engine>_failed` is written by demo-fallback from the
+    // `meta.degraded.engine` the service declares, so a new engine gets a
+    // readable line here rather than the generic fallback below.
+    softcite_failed: 'Softcite was unavailable — these rows come from the LM pass alone'
   }
   return map[reason] || 'Process did not produce a result'
+}
+
+/**
+ * The full explanation of a partial run, for the popup and the module page.
+ *
+ * Names the engine that failed AND what it means for the rows on screen. A
+ * user seeing a short software table needs both halves: without the first it
+ * is a mystery, without the second it looks like a complete answer.
+ */
+function partialDetail(job) {
+  if (job.outcomeState !== 'partial') return null
+  const headline = formatFailReason(job.outcomeFailReason)
+  const error = job.outcomeExternalError
+  return error ? `${headline}.\n\nThe service reported: ${error}` : `${headline}.`
 }
 
 /**
@@ -1067,6 +1101,7 @@ function getStatusLabel(job) {
   if (!job.status) return 'Not started'
   if (job.status === 'complete') {
     if (job.outcomeState === 'fail') return 'Fail'
+    if (job.outcomeState === 'partial') return 'Partial'
     return 'Done'
   }
   const labels = {
@@ -1083,7 +1118,9 @@ function getStatusBadgeClass(job) {
   if (!job.status) return 'job-status-idle'
   if (isCancelledJob(job)) return 'job-status-cancelled'
   if (job.status === 'complete') {
-    return job.outcomeState === 'fail' ? 'job-status-failed' : 'job-status-complete'
+    if (job.outcomeState === 'fail') return 'job-status-failed'
+    if (job.outcomeState === 'partial') return 'job-status-partial'
+    return 'job-status-complete'
   }
   const classes = {
     waiting: 'job-status-waiting',
@@ -1189,7 +1226,7 @@ async function downloadMarkdownFile(fileId) {
         <RouterLink
           :to="{ name: 'submission-pipeline', params: { id: submissionId } }"
           class="job-status-eta-label job-status-eta-label-link"
-          title="See the whole pipeline: every step, what it waits for, and what it produced"
+          v-tooltip="'See the whole pipeline: every step, what it waits for, and what it produced'"
           @click.stop
         >
           Background processes ↗
@@ -1256,7 +1293,7 @@ async function downloadMarkdownFile(fileId) {
           type="button"
           class="job-status-cancel-btn"
           :disabled="cancelling"
-          title="Stop all running background processes for this document"
+          v-tooltip="'Stop all running background processes for this document'"
           @click="handleCancelProcessing"
         >
           {{ cancelling ? 'Cancelling…' : 'Cancel processing' }}
@@ -1281,12 +1318,12 @@ async function downloadMarkdownFile(fileId) {
         @click="hasModulePage(job) ? undefined : openJobModal(job)"
       >
         <!-- Line 1: Configuration pill (On / Demo / Off) -->
-        <div class="job-config-line" :title="getLiveConfigTitle(job)">
+        <div class="job-config-line" v-tooltip="getLiveConfigTitle(job)">
           <span :class="getConfigPillClass(job)">{{ getConfigPillText(job) }}</span>
           <span class="job-label">{{ job.label }}</span>
         </div>
         <!-- Line 2: Job result -->
-        <div class="job-result-line" :title="getResultTitle(job)">
+        <div class="job-result-line" v-tooltip="getResultTitle(job)">
           <!-- User input icon for pending_input -->
           <svg
             v-if="job.status === 'pending_input'"
@@ -1347,9 +1384,13 @@ async function downloadMarkdownFile(fileId) {
           >
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 12h14" />
           </svg>
+          <!-- The Partial badge carries its own explanation: the badge says
+               something went wrong, and hovering says what. Anywhere else the
+               user would have to guess why the table is short. -->
           <span
             class="job-status-badge"
             :class="getResultBadgeClass(job)"
+            v-tooltip="partialDetail(job)"
           >
             {{ getResultBadgeText(job) }}
           </span>
@@ -1361,7 +1402,7 @@ async function downloadMarkdownFile(fileId) {
           <span
             v-if="conflictCount(job) > 0"
             class="job-summary-badge job-conflict-badge"
-            :title="conflictCount(job) + ' KRT row(s) hold a value the manuscript contradicts. One of the two is wrong — open the module to see which values differ.'"
+            v-tooltip="conflictCount(job) + ' KRT row(s) hold a value the manuscript contradicts. One of the two is wrong — open the module to see which values differ.'"
           >{{ conflictCount(job) }} conflict{{ conflictCount(job) === 1 ? '' : 's' }}</span>
         </div>
       </component>
@@ -1402,6 +1443,14 @@ async function downloadMarkdownFile(fileId) {
             </div>
             <div v-else-if="activeJob.outcomeState === 'fail'" class="job-modal-notice job-modal-notice-off">
               {{ formatFailReason(activeJob.outcomeFailReason) }}
+              <span v-if="activeJob.outcomeExternalError" class="job-modal-notice-detail">{{ activeJob.outcomeExternalError }}</span>
+            </div>
+            <!-- Amber, and it leads with what the numbers below actually mean:
+                 they are real, and they are a floor rather than a total. -->
+            <div v-else-if="activeJob.outcomeState === 'partial'" class="job-modal-notice job-modal-notice-partial">
+              <strong>Partly complete.</strong>
+              {{ formatFailReason(activeJob.outcomeFailReason) }}. The results below are
+              genuine but incomplete — re-run this step once the service is back to fill the gap.
               <span v-if="activeJob.outcomeExternalError" class="job-modal-notice-detail">{{ activeJob.outcomeExternalError }}</span>
             </div>
 
@@ -1862,6 +1911,14 @@ async function downloadMarkdownFile(fileId) {
   color: #b91c1c;
 }
 
+/* Amber — the run produced real rows but an engine behind it failed. Deliberately
+   not green (a short table would look complete) and not red (the rows it did
+   find are good). Same amber the app uses for "needs your attention". */
+.job-status-partial {
+  background: #fef3c7;
+  color: #92400e;
+}
+
 .job-status-idle {
   background: #f3f4f6;
   color: #6b7280;
@@ -2158,6 +2215,12 @@ async function downloadMarkdownFile(fileId) {
 .job-modal-notice-off {
   background: #f9fafb;
   color: #6b7280;
+}
+
+.job-modal-notice-partial {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
 }
 
 .job-modal-notice-detail {

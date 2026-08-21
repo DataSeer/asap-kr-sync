@@ -208,7 +208,7 @@ function downloadJson() {
               {{ c.label }}
               <span
                 class="mtable-col-resize"
-                title="Drag to resize"
+                v-tooltip="'Drag to resize'"
                 @mousedown.stop.prevent="colResize.startResize('pdfAnalysis', c.key, c.width, $event)"
               ></span>
             </th>
@@ -234,7 +234,7 @@ function downloadJson() {
                 <div
                   v-if="row.groupSize > 1"
                   class="gk-merge-label"
-                  :title="'Merged into one KRT row: ' + (row.finalName || '') + ' (dedup key: ' + (row.dedupKey || '?') + ')'"
+                  v-tooltip="'Merged into one KRT row: ' + (row.finalName || '') + ' (dedup key: ' + (row.dedupKey || '?') + ')'"
                 >
                   {{ row.groupSize }} detections → 1 row
                 </div>
@@ -246,14 +246,14 @@ function downloadJson() {
                 v-if="row.isResult"
                 class="rbadge"
                 :class="typeBadge(row.resourceType)"
-                :title="`The row that went into the Generated KRT, as ${row.resourceType || 'an untyped resource'}. `
+                v-tooltip="`The row that went into the Generated KRT, as ${row.resourceType || 'an untyped resource'}. `
                   + 'The lines below are the detections it was built from — where they disagree, this is what was kept.'"
               >merged</span>
               <span
                 v-else-if="row.source"
                 class="rbadge"
                 :class="sourceBadge(row.source)"
-                :title="sourceTitle(row.source)"
+                v-tooltip="sourceTitle(row.source)"
               >{{ sourceLabel(row.source) }}</span>
               <span v-else>—</span>
             </td>
@@ -304,7 +304,7 @@ function downloadJson() {
                 {{ c.label }}
                 <span
                   class="mtable-col-resize"
-                  title="Drag to resize"
+                  v-tooltip="'Drag to resize'"
                   @mousedown.stop.prevent="colResize.startResize('dropped', c.key, c.width, $event)"
                 ></span>
               </th>
@@ -323,7 +323,7 @@ function downloadJson() {
                   :key="s"
                   class="rbadge"
                   :class="sourceBadge(s)"
-                  :title="sourceTitle(s)"
+                  v-tooltip="sourceTitle(s)"
                 >{{ sourceLabel(s) }}</span>
                 <span v-if="!d.sources || !d.sources.length">—</span>
               </td>

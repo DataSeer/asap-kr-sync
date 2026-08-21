@@ -640,7 +640,7 @@ const activeFilterCount = computed(() => {
         <button
           class="p-1.5 transition-colors"
           :class="viewMode === 'card' ? 'bg-primary-100 text-primary-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'"
-          title="Card view"
+          v-tooltip="'Card view'"
           @click="setViewMode('card')"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -650,7 +650,7 @@ const activeFilterCount = computed(() => {
         <button
           class="p-1.5 transition-colors"
           :class="viewMode === 'table' ? 'bg-primary-100 text-primary-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'"
-          title="Table view"
+          v-tooltip="'Table view'"
           @click="setViewMode('table')"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -860,7 +860,7 @@ const activeFilterCount = computed(() => {
                 <td class="px-4 py-3">
                   <button
                     class="text-sm font-medium text-primary-700 hover:text-primary-900 hover:underline text-left max-w-xs truncate block"
-                    :title="sub.title"
+                    v-tooltip="sub.title"
                     @click="handleViewSubmission(sub)"
                   >
                     {{ sub.title }}
@@ -891,7 +891,7 @@ const activeFilterCount = computed(() => {
                     <button
                       v-if="selectedVisibility === 'hidden'"
                       class="p-1 text-gray-400 hover:text-green-600 transition-colors"
-                      title="Unhide"
+                      v-tooltip="'Unhide'"
                       @click="handleUnhideSubmission(sub)"
                     >
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -902,7 +902,7 @@ const activeFilterCount = computed(() => {
                     <button
                       v-else
                       class="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-                      title="Hide"
+                      v-tooltip="'Hide'"
                       @click="handleHideSubmission(sub)"
                     >
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -912,7 +912,7 @@ const activeFilterCount = computed(() => {
                     <button
                       v-if="canDelete"
                       class="p-1 text-gray-400 hover:text-red-600 transition-colors"
-                      title="Delete"
+                      v-tooltip="'Delete'"
                       @click="handleDeleteSubmission(sub)"
                     >
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

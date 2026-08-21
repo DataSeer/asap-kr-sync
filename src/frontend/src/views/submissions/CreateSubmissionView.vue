@@ -339,7 +339,7 @@ async function proceedWithSubmit(krtFileToSend) {
         <button
           type="button"
           class="btn-secondary text-sm"
-          title="Load demo metadata and files (PDF, Key Resources Table if available) in one click"
+          v-tooltip="'Load demo metadata and files (PDF, Key Resources Table if available) in one click'"
           @click="showDemoSelector = !showDemoSelector"
         >
           Use Demo Data
@@ -376,7 +376,7 @@ async function proceedWithSubmit(krtFileToSend) {
                 <span
                   v-if="doc.krt"
                   class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium flex-shrink-0"
-                  :title="'Includes a Key Resources Table file: ' + doc.krt"
+                  v-tooltip="'Includes a Key Resources Table file: ' + doc.krt"
                 >Key Resources Table</span>
               </div>
               <div class="text-sm text-gray-700 mt-1 line-clamp-2">{{ doc.title }}</div>
@@ -432,7 +432,7 @@ async function proceedWithSubmit(krtFileToSend) {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ krtFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (krtFile.size / 1024).toFixed(1) }} KB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearKrtFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearKrtFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -464,7 +464,7 @@ async function proceedWithSubmit(krtFileToSend) {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ pdfFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (pdfFile.size / 1024 / 1024).toFixed(1) }} MB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearPdfFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearPdfFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -493,7 +493,7 @@ async function proceedWithSubmit(krtFileToSend) {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ supplementalFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (supplementalFile.size / 1024 / 1024).toFixed(1) }} MB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearSupplementalFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearSupplementalFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>

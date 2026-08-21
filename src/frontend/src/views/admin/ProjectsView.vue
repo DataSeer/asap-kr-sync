@@ -215,7 +215,7 @@ async function handleDelete(project) {
               <div class="font-mono font-medium text-gray-900">{{ project.code }}</div>
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-gray-700">{{ project.piName || '-' }}</td>
-            <td class="px-6 py-4 text-gray-500 max-w-md truncate" :title="project.title">{{ project.title || '-' }}</td>
+            <td class="px-6 py-4 text-gray-500 max-w-md truncate" v-tooltip="project.title">{{ project.title || '-' }}</td>
             <td class="px-6 py-4 whitespace-nowrap">
               <span :class="project.active ? 'badge-success' : 'badge-gray'">
                 {{ project.active ? 'Active' : 'Inactive' }}

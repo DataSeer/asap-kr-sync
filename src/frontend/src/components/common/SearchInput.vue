@@ -43,7 +43,7 @@ defineEmits(['update:modelValue'])
       v-if="modelValue"
       type="button"
       class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
-      title="Clear"
+      v-tooltip="'Clear'"
       @click="$emit('update:modelValue', '')"
     >
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -484,7 +484,7 @@ const tabConflicts = computed(() => {
         >
           {{ labelFor(s.jobType) }}
         </RouterLink>
-        <span v-else class="mrv-module mrv-module-off" title="This step does not have a page yet — open it from the processes panel.">
+        <span v-else class="mrv-module mrv-module-off" v-tooltip="'This step does not have a page yet — open it from the processes panel.'">
           {{ labelFor(s.jobType) }}
         </span>
       </template>
@@ -512,7 +512,7 @@ const tabConflicts = computed(() => {
             class="mrv-tab"
             :class="{ 'mrv-tab-active': tab === t.key, 'mrv-tab-empty': !tabEnabled(t.key) }"
             :disabled="!tabEnabled(t.key)"
-            :title="tabEnabled(t.key) ? undefined : 'This module produces no resources of this kind'"
+            v-tooltip="tabEnabled(t.key) ? undefined : 'This module produces no resources of this kind'"
             @click="tab = t.key"
           >
             {{ t.label }}
@@ -562,7 +562,7 @@ const tabConflicts = computed(() => {
           class="mrv-chip"
           :class="['mrv-chip-' + opt.label.toLowerCase(),
                    { 'mrv-chip-off': decisionFilter.size && !decisionFilter.has(opt.label) }]"
-          :title="decisionFilter.has(opt.label)
+          v-tooltip="decisionFilter.has(opt.label)
             ? 'Click to stop filtering on ' + opt.label
             : 'Click to show only ' + opt.label + ' decisions (combine by clicking several)'"
           @click="toggleDecision(opt.label)"
@@ -647,7 +647,7 @@ const tabConflicts = computed(() => {
             type="button"
             class="mrv-chip"
             :class="{ 'mrv-chip-off': dasFilter.size && !dasFilter.has(opt.label) }"
-            :title="dasFilter.has(opt.label)
+            v-tooltip="dasFilter.has(opt.label)
               ? 'Click to stop filtering on ' + opt.label
               : 'Click to show only ' + opt.label + ' checks (combine by clicking several)'"
             @click="toggleDasStatus(opt.label)"

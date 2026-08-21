@@ -79,7 +79,7 @@ const canExpand = computed(() => {
 
 <template>
   <div v-if="hasAnything" class="evidence-context">
-    <div v-if="showSection && evidence?.section" class="evidence-section" :title="evidence.section">
+    <div v-if="showSection && evidence?.section" class="evidence-section" v-tooltip="evidence.section">
       {{ evidence.section }}
     </div>
 
@@ -96,7 +96,7 @@ const canExpand = computed(() => {
       >
         {{ expanded ? 'Show less' : 'Show full paragraph' }}
       </button>
-      <span v-if="expanded && evidence?.truncated" class="evidence-truncated" title="The paragraph was longer than the stored limit">
+      <span v-if="expanded && evidence?.truncated" class="evidence-truncated" v-tooltip="'The paragraph was longer than the stored limit'">
         paragraph shortened
       </span>
     </div>

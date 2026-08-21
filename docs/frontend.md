@@ -367,6 +367,44 @@ Vite config (`vite.config.js`):
 - **Source maps:** enabled in dev/staging, disabled in production
 - **Environment:** exposes `__APP_VERSION__` from package.json
 
+## Tooltips — `v-tooltip`, never `title`
+
+The browser's native `title` is not used anywhere in this app. It cannot be
+styled, appears after a delay the app does not control, never fires on keyboard
+focus, and looks like a different application sitting on top of this one.
+
+```vue
+<button v-tooltip="'Delete this row'">…</button>
+<span v-tooltip="row.longValue">…</span>          <!-- falsy → no tooltip -->
+<span v-tooltip.right="'Details'">…</span>        <!-- top (default) | right | bottom | left -->
+```
+
+`src/directives/tooltip.js`, registered globally in `main.js`.
+
+**A directive rather than a component** because it replaced ~200 `title=`
+attributes across 30 files: a wrapper component would have meant restructuring
+markup at every site, while this is a near 1:1 swap that leaves the DOM alone.
+
+**One node on `document.body`, not one per target.** Most of these tooltips sit
+inside tables and panels with `overflow: auto`, which clips an in-flow
+absolutely-positioned tooltip — the KRT editor's own cell tooltip carries
+hand-written above/below variants for exactly that reason. A body-level layer
+has no such problem anywhere, settles the `z-index` question once, and does not
+pay for 200 hidden nodes and 200 idle listeners on every render.
+
+It also hides on scroll, resize, click and Escape: a tooltip anchored to
+something that has scrolled away is worse than the native one it replaced.
+
+`title` remains legitimate in exactly two places, both excluded from the sweep
+and from the guard:
+  - a component that declares `title` as a **prop** (`LoadError`,
+    `ModuleExplainer`) — and props like `step-title`;
+  - the SVG `<title>` **element**, which is an accessible name, not a tooltip.
+
+`src/directives/no-native-tooltips.test.js` reads every `.vue` template and
+fails if a native `title` attribute reappears. 192 were removed in one commit,
+and that is undone one attribute at a time.
+
 ## Styling
 
 Tailwind CSS with custom configuration:

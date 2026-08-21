@@ -42,7 +42,7 @@ async function open(type) {
       v-if="files?.krt"
       type="button"
       class="sfl-link sfl-krt"
-      title="Open the author's KRT file"
+      v-tooltip="'Open the author\'s KRT file'"
       @click="open('krt')"
     >
       <svg class="sfl-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -50,13 +50,13 @@ async function open(type) {
       </svg>
       KRT
     </button>
-    <span v-else class="sfl-link sfl-off" title="No KRT file was uploaded">KRT</span>
+    <span v-else class="sfl-link sfl-off" v-tooltip="'No KRT file was uploaded'">KRT</span>
 
     <button
       v-if="files?.pdf"
       type="button"
       class="sfl-link sfl-pdf"
-      title="Open the manuscript PDF"
+      v-tooltip="'Open the manuscript PDF'"
       @click="open('pdf')"
     >
       <svg class="sfl-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -64,7 +64,7 @@ async function open(type) {
       </svg>
       PDF
     </button>
-    <span v-else class="sfl-link sfl-off" title="No PDF file was uploaded">PDF</span>
+    <span v-else class="sfl-link sfl-off" v-tooltip="'No PDF file was uploaded'">PDF</span>
   </div>
 </template>
 

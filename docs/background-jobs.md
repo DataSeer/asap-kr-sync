@@ -315,6 +315,30 @@ retrying would restart the very external work the user asked to stop.
 - **Conditional (job-result) gate** — if a job-result gate fails (e.g., DAS not extracted), the dependent job moves to `pending_input` and waits for the user to click **Advance**
 - **Submission-state gate** — a job whose `gate` (e.g. `krt_curated`) is not yet satisfied stays in `waiting` (never `pending_input`). It needs no manual action: the status-change handler re-drives the pipeline on every submission transition, and the periodic reconciler re-checks gated jobs each sweep, so the job advances on its own once the gate opens
 
+### A run can be partly complete
+
+`outcome.state` is `done` | **`partial`** | `fail`.
+
+Some steps run more than one engine and union the results — software detection
+runs Softcite (a NER service on the PDF) *and* an LM pass (over the markdown),
+because Softcite reads tool NAMES in prose and structurally cannot see an
+`RRID:SCR_…`, a GitHub URL or a parenthetical package. When one engine dies the
+other still has a real answer.
+
+Reporting that as `done` puts a green tick over a half-read manuscript;
+reporting it as `fail` throws away rows that were correctly found. So a process
+declares its own degradation by setting `meta.degraded = { engine, error }` on
+what it returns, and `demo-fallback`'s `done()` turns that into `partial` with
+`failReason: '<engine>_failed'`. The UI renders it amber, labelled **Partial**,
+with the reason in a tooltip, in the job modal, and at the top of the module
+page's Technical detail.
+
+**Both engines failing is still a failure.** If Softcite is down and the LM pass
+produced nothing — disabled, no markdown, or errored too — the error is
+re-thrown and the run is a plain `fail`. An empty result reported as success
+reads as "this manuscript mentions no software", which is a claim nothing made.
+Pinned by `services/software/software-degradation.test.js`.
+
 ## Job Statuses
 
 | Status | Meaning | Transitions To |

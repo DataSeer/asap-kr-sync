@@ -227,7 +227,7 @@ defineExpose({ foundVerdict })
             {{ c.label }}
             <span
               class="mtable-col-resize"
-              title="Drag to resize"
+              v-tooltip="'Drag to resize'"
               @mousedown.stop.prevent="colResize.startResize('grounding', c.key, c.width, $event)"
             ></span>
           </th>
@@ -259,7 +259,7 @@ defineExpose({ foundVerdict })
               <template v-if="showValues">
                 <div
                   v-for="(f, fi) in groundingFills(o)" :key="'f' + fi" class="grounding-fill"
-                  title="Your row leaves this empty; the manuscript supplies it."
+                  v-tooltip="'Your row leaves this empty; the manuscript supplies it.'"
                 >
                   {{ f }}
                 </div>

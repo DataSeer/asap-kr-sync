@@ -11,8 +11,17 @@
  *     code promised in a data-availability statement. Measured against the DS
  *     reports, 253 of 291 missed software rows carried such an identifier.
  *
- * The LM pass is additive and fail-soft: disabled, un-converted markdown, or an
- * LM error all degrade to Softcite-only rather than failing the module.
+ * Either engine may fail without taking the module with it:
+ *   - LM disabled, markdown not converted, or an LM error → Softcite-only.
+ *   - Softcite errors after its retries                   → LM-only.
+ * Both directions record why, and the run reports itself `partial` rather than
+ * `done` so a thinner table is never mistaken for a complete one.
+ *
+ * BOTH failing is still a failure. If Softcite is down and the LM pass produced
+ * nothing — because it is disabled, or has no markdown, or errored too — the
+ * Softcite error is re-thrown. An empty result reported as success is the one
+ * outcome worse than an error: it reads as "this manuscript mentions no
+ * software".
  *
  * Pipeline:
  *   1. detectSoftware(pdfBuffer, fileName) → raw Softcite mentions
@@ -132,12 +141,29 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
   const pdfBuffer = await s3Service.downloadFile(pdfFile.s3Key);
 
   // ── Step 1: detect (Softcite)
-  jobLogger?.log('softcite_start', 'Sending PDF to Softcite API');
-  const { resources: rawMentions, softciteMs } = await detectSoftware(pdfBuffer, pdfFile.fileName);
-  jobLogger?.log('softcite_done', 'Softcite detection complete', {
-    rawMentionCount: rawMentions.length, durationMs: softciteMs
-  });
-  await jobLogger?.saveRawResponse('softcite-response', rawMentions);
+  //
+  // Fail-soft, mirroring the LM pass below. The client has already exhausted
+  // its own retries by the time an error surfaces here, so there is nothing
+  // left to wait for — the choice is between the LM pass's answer and no
+  // answer at all. Seen live: a "Softcite error: Service error" on
+  // TV1-000430-007 produced zero software rows for a manuscript the LM pass
+  // would have found 21 identifiers in.
+  let rawMentions = [];
+  let softciteMs = 0;
+  let softciteError = null;
+  try {
+    jobLogger?.log('softcite_start', 'Sending PDF to Softcite API');
+    const softcite = await detectSoftware(pdfBuffer, pdfFile.fileName);
+    rawMentions = softcite.resources;
+    softciteMs = softcite.softciteMs;
+    jobLogger?.log('softcite_done', 'Softcite detection complete', {
+      rawMentionCount: rawMentions.length, durationMs: softciteMs
+    });
+    await jobLogger?.saveRawResponse('softcite-response', rawMentions);
+  } catch (err) {
+    softciteError = err;
+    jobLogger?.log('softcite_failed', `Softcite failed — continuing on the LM pass alone: ${err.message}`);
+  }
 
   // ── Step 1b: detect (LM pass over the markdown, unioned with Softcite)
   //
@@ -146,6 +172,15 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
   // The LM pass covers them. It is additive: on failure, or when the markdown
   // is not ready, Softcite's result stands on its own.
   const lm = await runLmPass(submissionId, round, jobLogger);
+
+  // Nothing read the manuscript. Re-throwing hands this back to
+  // runWithDemoFallback, which records a real failure — the alternative is an
+  // empty table presented as an answer.
+  if (softciteError && !lm.items.length) {
+    jobLogger?.log('softcite_failed_no_lm',
+      'Softcite failed and the LM pass produced nothing — no engine read this manuscript');
+    throw softciteError;
+  }
 
   // ── Step 2: buildKrtItems + policy (B1 default reuse, B3 drop instrument
   //    software, B4 language → "<Lang> code" NEW). The policy is applied to
@@ -171,6 +206,14 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
       // mentions and 3 dropped LM rows reported "-3 from Softcite".
       softciteCount: countFromSoftcite(items),
       lmCount: lm.items.length,
+      // Read by demo-fallback's `done()`, which turns it into outcome
+      // 'partial'. Shaped as { engine, error } so any module that unions two
+      // engines reports a degradation the same way.
+      degraded: softciteError
+        ? { engine: 'softcite', error: softciteError.message }
+        : undefined,
+      softciteFailed: !!softciteError,
+      softciteError: softciteError ? softciteError.message : null,
       lmEnabled: lm.enabled,
       lmSkippedReason: lm.skippedReason,
       // Only when the pass ran: a prompt link on a run that never called the
@@ -491,6 +534,9 @@ module.exports = {
   getSoftwareMentions,
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectSoftware,
+  // Exported for the degradation tests: which engines ran, and what happens
+  // when one or both of them do not.
+  detectSoftwareForSubmission,
   buildKrtItemsSoftware,
   applySoftwarePolicy,
   isInstrumentSoftware,

@@ -90,3 +90,38 @@ body {
   --ag-row-hover-color: #f3f4f6;
   --ag-selected-row-background-color: #dbeafe;
 }
+
+/* ── v-tooltip ──────────────────────────────────────────────────────────────
+   The app's own tooltip, replacing the browser's native `title`. One node,
+   appended to <body> by the directive, so it is never clipped by the
+   `overflow: auto` tables and panels most of these sit inside.
+
+   Styled to match the KRT editor's cell tooltip, which is the pattern users
+   already know here. */
+.app-tooltip {
+  position: fixed;
+  z-index: 200;             /* above modals (100) and sticky headers */
+  max-width: 320px;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.5rem;
+  background: #1f2937;
+  color: #fff;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.25);
+  white-space: pre-line;    /* a tooltip may carry a second line */
+  pointer-events: none;     /* never eat a click meant for what is underneath */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+}
+
+.app-tooltip[data-show='true'] {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Respect a user who has asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .app-tooltip { transition: none; }
+}

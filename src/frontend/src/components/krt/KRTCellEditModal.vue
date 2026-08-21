@@ -275,7 +275,7 @@ function confirmReject() {
                 type="button"
                 class="id-help-toggle"
                 :aria-expanded="showIdHelp"
-                title="Which identifiers does the app recognize?"
+                v-tooltip="'Which identifiers does the app recognize?'"
                 @click="showIdHelp = !showIdHelp"
               >?</button>
             </div>
