@@ -15,6 +15,17 @@
 
 'use strict';
 
+// `jwt.service` throws at module load when JWT_SECRET is unset, and this file
+// reaches it through auth.service. Set before the requires below, because a
+// CommonJS require runs its module body immediately.
+//
+// It passed locally without this and failed in CI: `config/database.js` calls
+// `dotenv.config()`, so requiring the models quietly loads the developer's
+// .env into the process first. A CI runner has no .env, so nothing set the
+// secret. A test that passes only because of an untracked file on one machine
+// is not a passing test — so the value it needs is declared here.
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-not-used-for-signing-anything-real';
+
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
