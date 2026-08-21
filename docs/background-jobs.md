@@ -258,6 +258,23 @@ retrying would restart the very external work the user asked to stop.
   manual advance recovered it. Pinned by `models/SubmissionJob.test.js` and
   `orchestrator.service.test.js`.
 - After any job completes or fails, the orchestrator checks dependent jobs
+- **Every step records who asked for it** in `triggered_by_user_id`, written by
+  `runAllProcesses` (whoever started the round), `requeueStep` (whoever re-ran
+  that one step), and `advanceJob` (whoever released a step parked on
+  `pending_input`). The rule that makes the column trustworthy is that an
+  advance carrying **no** user never overwrites it: `checkAndAdvance` fires on
+  every worker completion with no user attached, so a plain assignment would
+  blank the attribution seconds after the pipeline recorded it and leave every
+  finished run credited to nobody — while still looking like a working feature.
+  Pinned by `services/queue/triggered-by.test.js`.
+
+  The jobs API returns it as `triggeredBy: { id, name }` (null for an automatic
+  advance), resolved with one extra query in the controller rather than an
+  include on `getForSubmission` — that method is the orchestrator's hot path on
+  every advance and has no use for the join. It is **not** gated on
+  `canViewInternals`: the change log already shows every editor's name to anyone
+  who can open the submission, and "a curator re-ran this on my manuscript" is
+  precisely what an author benefits from knowing.
 - **The move out of `waiting` is atomic.** `tryAdvanceStep` takes the step with
   a conditional update — `SET status='queued' WHERE id=? AND status='waiting'` —
   and enqueues only if that update touched a row. `checkAndAdvance` runs on

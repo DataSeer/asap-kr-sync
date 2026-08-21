@@ -198,6 +198,7 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 | `retry_count` | INTEGER | Default 0 |
 | `round` | INTEGER | Default 1 |
 | `logs` | JSONB | Structured log entries from job execution (`[]` default) |
+| `triggered_by_user_id` | UUID (FK, nullable) | Who asked for this step to run — **not** the submission's owner. `ON DELETE SET NULL`, though accounts are anonymised rather than deleted so it should never fire. NULL means the row predates the column or no user was involved. |
 | `started_at` / `completed_at` | TIMESTAMPTZ | |
 
 ### Supporting Tables

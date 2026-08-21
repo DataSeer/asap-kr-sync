@@ -267,6 +267,10 @@ const jobList = computed(() => {
       waitingReason: job?.waitingReason || null,
       result: job?.result || null,
       errorMessage: job?.errorMessage || null,
+      // { id, name } for a run a user asked for; null when the orchestrator
+      // advanced the step itself. This view-model is built field by field, so
+      // anything not named here never reaches the modal.
+      triggeredBy: job?.triggeredBy || null,
       retryCount: job?.retryCount || 0,
       startedAt: job?.startedAt || null,
       completedAt: job?.completedAt || null,
@@ -1428,6 +1432,16 @@ async function downloadMarkdownFile(fileId) {
                   </span>
                 </div>
 
+                <!-- Who asked for this run. NOT behind canViewInternals: the
+                     change log already shows every editor's name to anyone who
+                     can open the submission, and "a curator re-ran this on my
+                     manuscript" is exactly what an author benefits from
+                     knowing. Absent for a step the pipeline advanced on its
+                     own, where naming anyone would be a fiction. -->
+                <p v-if="activeJob.triggeredBy" class="job-modal-trigger">
+                  Requested by {{ activeJob.triggeredBy.name || 'a user who has since been removed' }}
+                </p>
+
                 <!-- Timestamps (hidden from authors) -->
                 <div v-if="canViewInternals && (activeJob.startedAt || activeJob.completedAt)" class="job-modal-times">
                   <span v-if="activeJob.createdAt">Queued: {{ formatTime(activeJob.createdAt) }}</span>
@@ -1533,6 +1547,12 @@ async function downloadMarkdownFile(fileId) {
 </template>
 
 <style scoped>
+.job-modal-trigger {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: #4b5563;
+}
+
 .job-status-unreadable {
   margin: 0 0 0.75rem;
   padding: 0.625rem 0.75rem;

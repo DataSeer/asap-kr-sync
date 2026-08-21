@@ -6,7 +6,7 @@
  * When omitted, defaults to the submission's current round.
  */
 
-const { SubmissionJob } = require('../models');
+const { SubmissionJob, User } = require('../models');
 const jobQueue = require('../services/queue/job-queue.service');
 const { JOB_CONFIG, JOB_TYPE_TO_QUEUE } = jobQueue;
 const orchestrator = require('../services/queue/orchestrator.service');
@@ -56,6 +56,18 @@ async function getJobs(req, res, next) {
     const round = resolveRound(req);
     const jobs = await SubmissionJob.getForSubmission(req.params.id, round);
     const includeInternals = req.user?.role !== ROLES.AUTHOR;
+
+    // Who asked for each step. One extra query rather than an include on
+    // getForSubmission: that method is also the orchestrator's hot path on
+    // every advance, and it has no use for a join it would pay for each time.
+    // An anonymised account still resolves — the row survives deletion with
+    // the name 'Deleted user' — so a name is either real or an honest
+    // tombstone, never a dangling id.
+    const triggerIds = [...new Set(jobs.map((j) => j.triggeredByUserId).filter(Boolean))];
+    const triggers = triggerIds.length
+      ? await User.findAll({ where: { id: triggerIds }, attributes: ['id', 'name'], raw: true })
+      : [];
+    const triggerById = new Map(triggers.map((u) => [u.id, u.name]));
     // Gates can read a dependency's result — "is there any converted text?" —
     // so they need the run, not just the submission.
     const jobsByType = new Map(jobs.map(j => [j.jobType, j]));
@@ -93,6 +105,11 @@ async function getJobs(req, res, next) {
           referenceId: job.referenceId,
           result: safeResult,
           errorMessage: job.errorMessage,
+          // null for a step no user asked for by hand, or a row older than the
+          // column. The UI says "automatically" rather than inventing a name.
+          triggeredBy: job.triggeredByUserId
+            ? { id: job.triggeredByUserId, name: triggerById.get(job.triggeredByUserId) || null }
+            : null,
           retryCount: job.retryCount || 0,
           round: job.round,
           startedAt: job.startedAt,

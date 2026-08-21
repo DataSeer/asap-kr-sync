@@ -41,6 +41,25 @@ module.exports = (sequelize) => {
       allowNull: true,
       field: 'reference_id'
     },
+    /**
+     * Who asked for this step to run.
+     *
+     * NOT the submission's owner — a curator re-running one detector on an
+     * author's manuscript is the trigger, not the owner. Set when the pipeline
+     * is started, when a step is re-queued, and when a parked step is advanced
+     * by hand; a step the orchestrator advances on its own keeps whoever
+     * started the round. NULL means no user was involved, or the row predates
+     * the column.
+     */
+    triggeredByUserId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'triggered_by_user_id',
+      references: {
+        model: 'users',
+        key: 'id'
+      }
+    },
     result: {
       type: DataTypes.JSONB,
       allowNull: true

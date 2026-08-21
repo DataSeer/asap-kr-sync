@@ -147,6 +147,23 @@ const timings = computed(() => [
   ['Model call time', ms(meta.value.geminiMs)]
 ].filter(([, v]) => v))
 
+/**
+ * Who asked for this run.
+ *
+ * Shown here rather than only in the job popup, because that popup never opens
+ * for a finished step — a completed tile is a link to this page — and a
+ * finished run is exactly the one whose origin you want to check.
+ *
+ * Empty when the orchestrator advanced the step itself, which is the normal
+ * case: naming the round's starter for a step nobody asked for by hand would
+ * read as a claim about a decision they did not make.
+ */
+const provenance = computed(() => {
+  const by = props.job?.triggeredBy
+  if (!by) return []
+  return [['Requested by', by.name || 'a user who has since been removed']]
+})
+
 // ── what went in ───────────────────────────────────────────────────────
 /**
  * What each module reads.
@@ -332,13 +349,14 @@ const responseUrl = (name) =>
         <h3>Configuration</h3>
         <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
       </div>
-      <div v-if="stats.length || timings.length" class="mt-block mt-narrow">
+      <div v-if="stats.length || timings.length || provenance.length" class="mt-block mt-narrow">
         <h3>Statistics</h3>
         <!-- Durations sit with the counts: both are "what this run did", and a
              column of its own for two numbers was a column too many. -->
         <dl>
           <template v-for="([k, v]) in stats" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
           <template v-for="([k, v]) in timings" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
+          <template v-for="([k, v]) in provenance" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
         </dl>
       </div>
       <div

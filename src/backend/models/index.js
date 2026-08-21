@@ -92,6 +92,12 @@ Report.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submission' });
 Submission.hasMany(SubmissionJob, { foreignKey: 'submissionId', as: 'jobs' });
 SubmissionJob.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submission' });
 
+// User -> SubmissionJobs they triggered. Distinct from submission ownership:
+// the person who re-runs a detector is often not the person who owns the
+// manuscript.
+User.hasMany(SubmissionJob, { foreignKey: 'triggeredByUserId', as: 'triggeredJobs' });
+SubmissionJob.belongsTo(User, { foreignKey: 'triggeredByUserId', as: 'triggeredBy' });
+
 // (Suggestion model + associations removed — suggestions are now derived
 // at read time as the diff between the Generated KRT and krt_data; only
 // rejections are persisted, in rejected_resources.)

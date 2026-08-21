@@ -287,13 +287,18 @@ async function runAllProcesses(submissionId, userId, round) {
       submissionJob.errorMessage = null;
       submissionJob.startedAt = null;
       submissionJob.completedAt = null;
+      // Whoever restarted the round owns it from here — but only if we know
+      // who that is. Writing `undefined` would erase the previous trigger and
+      // leave the round attributed to nobody.
+      if (userId) submissionJob.triggeredByUserId = userId;
       await submissionJob.save();
     } else {
       submissionJob = await SubmissionJob.create({
         submissionId,
         jobType: step.jobType,
         status: initialStatus,
-        round
+        round,
+        triggeredByUserId: userId || null
       });
     }
 
@@ -433,8 +438,14 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   //
   // Postgres serialises the UPDATE, so exactly one caller sees a row count of
   // 1. The loser stops here.
+  // The step is credited to whoever asked for it, when there is such a person.
+  // Most advances have none — a worker finishing its own step knows the
+  // submission, not a user — and those keep whoever started the round rather
+  // than nulling it, which is why this is conditional rather than a plain set.
+  const claim = { status: 'queued' };
+  if (userId) claim.triggeredByUserId = userId;
   const [claimed] = await SubmissionJob.update(
-    { status: 'queued' },
+    claim,
     { where: { id: job.id, status: 'waiting' } }
   );
   if (claimed === 0) {
@@ -444,6 +455,7 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
   job.status = 'queued';
+  if (userId) job.triggeredByUserId = userId;
 
   const queueName = JOB_TYPE_TO_QUEUE[step.jobType];
   const jobData = buildJobData(step.jobType, submissionId, userId, job);
@@ -652,6 +664,9 @@ async function advanceJob(submissionId, jobType, round, userId) {
 
   job.status = 'queued';
   job.pgBossJobId = pgBossJobId;
+  // Typed the missing Availability Statement, pressed the button: this user
+  // released the step, whoever started the round.
+  if (userId) job.triggeredByUserId = userId;
   await job.save();
 
   logger.info('Pipeline advanced manually: job enqueued', {
@@ -822,7 +837,9 @@ async function requeueStep(submissionId, jobType, round, userId) {
 
   let job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (!job) {
-    job = await SubmissionJob.create({ submissionId, jobType, status: 'waiting', round });
+    job = await SubmissionJob.create({
+      submissionId, jobType, status: 'waiting', round, triggeredByUserId: userId || null
+    });
   } else if (['queued', 'processing'].includes(job.status)) {
     // Already on its way — re-queueing would duplicate the work it is doing.
     return job;
@@ -835,6 +852,9 @@ async function requeueStep(submissionId, jobType, round, userId) {
     // failure text stayed on the row. The panel then showed a stale error
     // on a job that had just been queued to run again.
     job.errorMessage = null;
+    // This is the manual re-run path — the caller asked for this step by name,
+    // so they are the trigger even if the round was started by someone else.
+    if (userId) job.triggeredByUserId = userId;
     await job.save();
   }
 

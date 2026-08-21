@@ -1,0 +1,165 @@
+'use strict';
+
+/**
+ * Who asked for each step to run.
+ *
+ * `userId` was threaded from every controller through the whole orchestrator
+ * and then dropped on the floor — eleven of twelve steps never carried it into
+ * their payload, the twelfth carried it and never read it, and no column held
+ * it. These tests pin the rule that makes the column trustworthy:
+ *
+ *   a step is credited to the user who asked for it, and an advance with no
+ *   user attached NEVER erases the credit already there.
+ *
+ * That second half is the one worth pinning. Most advances are worker-driven
+ * and carry no user; a plain assignment would blank the attribution moments
+ * after the pipeline recorded it, leaving every finished run credited to
+ * nobody — and looking, from the outside, exactly like a feature that works.
+ */
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+
+const { SubmissionJob, Submission } = require('../../models');
+const orchestrator = require('./orchestrator.service');
+const jobQueue = require('./job-queue.service');
+const { JOB_TYPES } = require('../../config/constants');
+
+const STARTER = 'user-who-started';
+const CURATOR = 'user-who-restarted';
+
+function row(jobType, over = {}) {
+  return {
+    id: `${jobType}-row`,
+    jobType,
+    submissionId: 'sub-1',
+    round: 1,
+    status: 'waiting',
+    pgBossJobId: null,
+    result: null,
+    errorMessage: null,
+    triggeredByUserId: null,
+    createdAt: new Date('2026-08-21T00:00:00Z'),
+    async save() { return this; },
+    async markCancelled() { this.status = 'cancelled'; },
+    async markPendingInput() { this.status = 'pending_input'; }
+  , ...over };
+}
+
+function pipelineRows(over = {}) {
+  const rows = new Map();
+  for (const step of orchestrator.PIPELINE) rows.set(step.jobType, row(step.jobType));
+  for (const [jobType, patch] of Object.entries(over)) rows.set(jobType, row(jobType, patch));
+  return rows;
+}
+
+function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: 'Data are available at Zenodo.' }) {
+  t.mock.method(SubmissionJob, 'getForSubmission', async () => [...rows.values()]);
+  t.mock.method(SubmissionJob, 'findAll', async () => [...rows.values()]);
+  t.mock.method(SubmissionJob, 'getLatest', async (_s, jobType) => rows.get(jobType) || null);
+  t.mock.method(SubmissionJob, 'create', async (attrs) => {
+    const created = row(attrs.jobType, attrs);
+    rows.set(attrs.jobType, created);
+    return created;
+  });
+  t.mock.method(SubmissionJob, 'update', async (values, { where } = {}) => {
+    const target = [...rows.values()].find((r) => r.id === where.id);
+    if (!target) return [0];
+    if (where.status !== undefined && target.status !== where.status) return [0];
+    Object.assign(target, values);
+    return [1];
+  });
+  t.mock.method(Submission, 'findByPk', async () => submission);
+  t.mock.method(jobQueue, 'addJob', async () => 'pgboss-1');
+  return rows;
+}
+
+/** Mark a step's dependencies complete so it is actually advanceable. */
+function completeUpstreamOf(rows, jobType, seen = new Set()) {
+  const step = orchestrator.PIPELINE.find((s) => s.jobType === jobType);
+  for (const dep of step.dependsOn) {
+    if (seen.has(dep)) continue;
+    seen.add(dep);
+    completeUpstreamOf(rows, dep, seen);
+    const r = rows.get(dep);
+    r.status = 'complete';
+    r.result = {
+      status: { detected: true, characters: 5000 },
+      data: { meta: { characters: 5000 }, das: 'Data are available at Zenodo.' }
+    };
+  }
+}
+
+test('starting a pipeline credits every step to the person who started it', async (t) => {
+  const rows = new Map();
+  mockDb(t, rows);
+
+  await orchestrator.runAllProcesses('sub-1', STARTER, 1);
+
+  const credited = [...rows.values()].map((r) => r.triggeredByUserId);
+  assert.equal(credited.length, orchestrator.PIPELINE.length);
+  assert.ok(credited.every((u) => u === STARTER), 'every seeded row carries the starter');
+});
+
+test('re-starting a pipeline re-credits it to whoever restarted', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) { r.triggeredByUserId = STARTER; r.status = 'complete'; }
+  mockDb(t, rows);
+
+  await orchestrator.runAllProcesses('sub-1', CURATOR, 1);
+
+  assert.ok([...rows.values()].every((r) => r.triggeredByUserId === CURATOR));
+});
+
+test('a pipeline started with no user leaves the credit empty rather than undefined', async (t) => {
+  const rows = new Map();
+  mockDb(t, rows);
+
+  await orchestrator.runAllProcesses('sub-1', undefined, 1);
+
+  assert.ok([...rows.values()].every((r) => r.triggeredByUserId === null),
+    'null is storable; undefined is not a value the column can hold');
+});
+
+test('re-running one step credits the caller, not the round starter', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.triggeredByUserId = STARTER;
+  completeUpstreamOf(rows, JOB_TYPES.MATERIALS_DETECTION);
+  rows.get(JOB_TYPES.MATERIALS_DETECTION).status = 'complete';
+  mockDb(t, rows);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, CURATOR);
+
+  assert.equal(rows.get(JOB_TYPES.MATERIALS_DETECTION).triggeredByUserId, CURATOR);
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).triggeredByUserId, STARTER,
+    'a step nobody re-ran keeps its original credit');
+});
+
+test('an automatic advance keeps the credit it already had', async (t) => {
+  // THE case this column gets wrong. checkAndAdvance runs on every worker
+  // completion and passes no user; a plain `set` would wipe the starter out
+  // seconds after the pipeline recorded them.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.triggeredByUserId = STARTER;
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  mockDb(t, rows);
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1);
+
+  const analysis = rows.get(JOB_TYPES.PDF_ANALYSIS);
+  assert.equal(analysis.status, 'queued', 'the step did advance');
+  assert.equal(analysis.triggeredByUserId, STARTER,
+    'an advance with no user must not erase the credit');
+});
+
+test('a manual advance of a parked step credits whoever released it', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.triggeredByUserId = STARTER;
+  rows.get(JOB_TYPES.PDF_ANALYSIS).status = 'pending_input';
+  mockDb(t, rows);
+
+  await orchestrator.advanceJob('sub-1', JOB_TYPES.PDF_ANALYSIS, 1, CURATOR);
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).triggeredByUserId, CURATOR,
+    'typing the missing statement is what released it');
+});
