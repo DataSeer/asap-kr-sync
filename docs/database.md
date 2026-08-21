@@ -229,6 +229,36 @@ pipeline's own and the advancement that should follow lands on the wrong one.
 | `counts` / `result` / `logs` / `inputs` | JSONB | The payload. **Nullable on purpose**: the record above is small and kept forever, the payload can be pruned without losing the history |
 | `s3_prefix` | TEXT | Where this run's artefacts live |
 
+#### `submission_input_freezes`
+
+What one round is being processed from. **One row per (submission, round, input
+kind)**, created by the FIRST step that reads that input; every later reader in
+the round is handed the same thing.
+
+Before this, nine services each ran their own `File.findOne({ type }, order:
+version DESC)`, so "the input" meant whatever was newest when each step happened
+to run. Replacing a file mid-run split the round, and nothing recorded it. See
+[background-jobs.md](./background-jobs.md#one-round-one-pdf-one-krt).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | |
+| `submission_id` | UUID (FK) | Cascades |
+| `round` | INTEGER | |
+| `input_kind` | VARCHAR(32) | `pdf` \| `markdown` \| `krt`. Not an enum: adding a kind should not need a migration that rewrites a type |
+| `file_id` | UUID (FK, nullable) | File inputs, **by reference** — a File row is immutable once written. `ON DELETE SET NULL` |
+| `file_version` / `s3_key` / `bytes` | | Copied rather than joined, so "what did this run read" survives the file row being removed |
+| `sha256` | VARCHAR(64) | Unused here — hashing would mean downloading the object just to freeze a reference. The column exists for run inputs, which hash the buffer anyway |
+| `payload` | JSONB | Row inputs, **by value**. The KRT only: `krt_data` rows are the live editing surface and have no version to point at, so the snapshot IS the reference |
+| `row_count` | INTEGER | What `stale` is computed from. A count cannot see an edited cell, and the app says only what it can stand behind |
+| `frozen_by_job_type` | VARCHAR(64) | Which step read it first. For the re-freeze rule, not for display |
+| `frozen_at` | TIMESTAMPTZ | |
+
+`UNIQUE (submission_id, round, input_kind)` is load-bearing: two detectors
+starting in the same millisecond both find no freeze and both try to create one.
+The constraint decides, and the loser takes the winner's answer — the point is
+that the round agrees on one input, not that a particular step wins.
+
 ### Supporting Tables
 
 | Table | Purpose |

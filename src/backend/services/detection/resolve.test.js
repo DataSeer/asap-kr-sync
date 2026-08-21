@@ -19,7 +19,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 
-const { KRTData } = require('../../models');
+const inputFreeze = require('../queue/input-freeze.service');
 const { resolveDetection, detectionPromptsExist } = require('./resolve');
 const { getStrategy } = require('./registry');
 
@@ -27,11 +27,12 @@ const DETECTORS = ['materials', 'protocols', 'datasets'];
 
 /**
  * The seeded strategies load the author's rows to build their seeds, so
- * resolving one touches the database. Stubbed at the model, which works
- * regardless of how the strategy imported the loader.
+ * resolving one touches the database. Stubbed at the freeze service, which is
+ * where the rows now come from — the round's frozen table rather than the live
+ * one, so every detector in a run is seeded from the same KRT.
  */
 function noAuthorRows(t) {
-  t.mock.method(KRTData, 'findAll', async () => []);
+  t.mock.method(inputFreeze, 'resolveKrtRows', async () => []);
 }
 const submission = (over = {}) => ({ id: 'sub-1', currentRound: 1, status: 'step_pdf', ...over });
 const ctx = (over = {}) => ({ submission: submission(), markdownText: 'The manuscript text.', ...over });

@@ -21,6 +21,7 @@ const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
 const runInputs = require('../queue/run-inputs.service');
+const inputFreeze = require('../queue/input-freeze.service');
 
 /** Max authors to search via ORCID API fallback */
 const ORCID_API_MAX_AUTHORS = 10;
@@ -88,10 +89,12 @@ async function extractAuthorsForSubmission(submission, jobLogger) {
   const submissionId = submission.id;
   const round = submission.currentRound || 1;
 
-  const pdfFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.PDF, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const pdfFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.PDF, { jobType: JOB_TYPES.ORCID_EXTRACTION }
+  );
   if (!pdfFile) throw new Error('No PDF file found for ORCID extraction');
 
   logger.debug('ORCID extraction: downloading PDF from S3', {

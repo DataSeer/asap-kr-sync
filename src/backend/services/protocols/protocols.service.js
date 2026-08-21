@@ -38,6 +38,7 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const inputFreeze = require('../queue/input-freeze.service');
 const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
 const runInputs = require('../queue/run-inputs.service');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
@@ -173,10 +174,12 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.PROTOCOLS_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for protocols detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', { fileName: mdFile.fileName, s3Key: mdFile.s3Key });

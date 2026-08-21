@@ -72,15 +72,32 @@ async function captureDocuments(submissionId, round) {
     markdown: FILE_TYPES.MARKDOWN
   };
 
+  // What the ROUND is reading, when it has already settled on something. Once
+  // an input is frozen, a step enqueued afterwards will read the frozen file
+  // however many versions have been uploaded since — so recording the newest
+  // would put a document in the run record that the run never opened.
+  //
+  // Read-only: freezing is the reader's job, at read time. A step enqueued
+  // before anything has frozen records the newest, which is what it will freeze
+  // when it runs.
+  const { SubmissionInputFreeze } = require('../../models');
+  const freezes = new Map(
+    (await SubmissionInputFreeze.findAll({ where: { submissionId, round } }))
+      .map((freeze) => [freeze.inputKind, freeze])
+  );
+
   const documents = {};
   for (const [name, type] of Object.entries(wanted)) {
-    // Newest version of that type in this round — the one the run is about to
-    // work from. A step that runs before the markdown exists simply records no
-    // markdown, which is the truth about that run.
-    const file = await File.findOne({
-      where: { submissionId, type, round },
-      order: [['version', 'DESC']]
-    });
+    const frozenId = freezes.get(name)?.fileId;
+    // Newest version of that type in this round. A step that runs before the
+    // markdown exists simply records no markdown, which is the truth about that
+    // run.
+    const file = frozenId
+      ? await File.findByPk(frozenId)
+      : await File.findOne({
+        where: { submissionId, type, round },
+        order: [['version', 'DESC']]
+      });
     if (!file) continue;
     documents[name] = {
       fileId: file.id,

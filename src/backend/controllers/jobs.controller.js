@@ -15,6 +15,7 @@ const orchestrator = require('../services/queue/orchestrator.service');
 const s3Service = require('../services/storage/s3.service');
 const { ROLES } = require('../config/constants');
 const logger = require('../utils/logger');
+const inputFreeze = require('../services/queue/input-freeze.service');
 
 // Statuses of jobs that have NOT started yet — these can be truly cancelled
 // (they will never run). A 'processing' job is deliberately excluded: it is
@@ -74,8 +75,26 @@ async function getJobs(req, res, next) {
     // so they need the run, not just the submission.
     const jobsByType = new Map(jobs.map(j => [j.jobType, j]));
 
+    // What this round is being processed from, and whether the live data has
+    // moved on since. Without it the page shows a result beside inputs that may
+    // no longer be the ones it was built from, and says nothing about the
+    // difference — which is how an author comes to trust an analysis of a
+    // manuscript they have already replaced.
+    //
+    // Non-fatal: a pipeline page that fails to load because a provenance note
+    // could not be computed is a worse page.
+    let inputs = [];
+    try {
+      inputs = await inputFreeze.describe(req.params.id, round);
+    } catch (err) {
+      logger.error('Could not describe the round\'s frozen inputs', {
+        submissionId: req.params.id, round, error: err.message
+      });
+    }
+
     res.json({
       round,
+      inputs,
       jobs: jobs.map(job => {
         const queueName = JOB_TYPE_TO_QUEUE[job.jobType];
         const config = queueName ? JOB_CONFIG[queueName] : null;

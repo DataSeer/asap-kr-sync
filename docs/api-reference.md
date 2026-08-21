@@ -672,14 +672,25 @@ All job endpoints support an optional `?round=N` query parameter. When omitted, 
 
 ### `GET /api/submissions/:id/jobs?round=N`
 Get all background job statuses for a submission.
-- **Returns**: `{ round, jobs: [...] }` — each job includes `logs`, `files`, `result`, `config`
+- **Returns**: `{ round, inputs, jobs: [...] }` — each job includes `logs`, `files`, `result`, `config`
+- `inputs` is what the round is being **processed from**: one entry per frozen
+  input (`pdf`, `markdown`, `krt`), each with the version the run read, what is
+  live now, and `stale`. The pipeline page turns a stale entry into *"This
+  analysis used an earlier version of your data"*, naming the document and both
+  versions. For the KRT the comparison is row COUNTS, which cannot see an edited
+  cell — `stale` means rows were added or removed, never "nothing has changed".
+  See [background-jobs.md](./background-jobs.md#one-round-one-pdf-one-krt).
+- Non-fatal: if the freeze state cannot be computed, `inputs` is `[]` and the
+  page simply says nothing about provenance rather than failing to load.
 - A `waiting` job that is held by a submission-state gate (datasets/materials/protocols before KRT validation)
   carries `waitingReason: 'krt_validation'`, so the UI can show *"Waiting for the Key Resources Table to be
   validated."* These advance automatically once the KRT is validated — no `advance` call is needed (that is only
   for `pending_input` jobs).
 
 ### `POST /api/submissions/:id/processes/run`
-Run (or re-run) all background processes for a submission.
+Run (or re-run) all background processes for a submission. Every step in the
+round is about to run, so **every input freeze is released** — this is the call a
+PDF upload makes, and it is what lets a replaced manuscript reach the pipeline.
 
 ### `POST /api/submissions/:id/jobs/:jobType/advance?round=N`
 Manually advance a `pending_input` job to `queued`.

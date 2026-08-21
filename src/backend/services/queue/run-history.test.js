@@ -225,8 +225,14 @@ test('every column this feature added exists on its model', () => {
  * megabytes per run to record something that already cannot change would be
  * storage for nothing.
  */
+/** No freeze yet: the step being enqueued will be the one that takes it. */
+function noFreezes(t) {
+  t.mock.method(models.SubmissionInputFreeze, 'findAll', async () => []);
+}
+
 test('the document set is recorded by reference, never copied', async (t) => {
   const { File } = models;
+  noFreezes(t);
   t.mock.method(File, 'findOne', async ({ where }) => ({
     id: `${where.type}-id`, fileName: `f.${where.type}`, type: where.type,
     version: 2, s3Key: `key/${where.type}_v2`, size: 4096
@@ -242,7 +248,32 @@ test('the document set is recorded by reference, never copied', async (t) => {
     'and not hashed either — that would mean downloading every file on every enqueue');
 });
 
+test('the run records the document the ROUND is reading, not the newest', async (t) => {
+  // Once an input is frozen, a step enqueued afterwards reads the frozen file
+  // however many versions have been uploaded since. Recording the newest would
+  // put a document in the run record that the run never opened — and the module
+  // page shows that record beside the result.
+  const { File } = models;
+  t.mock.method(models.SubmissionInputFreeze, 'findAll', async () => ([
+    { inputKind: 'pdf', fileId: 'pdf-v1' }
+  ]));
+  t.mock.method(File, 'findByPk', async (id) => ({
+    id, fileName: 'manuscript.pdf', type: 'pdf', version: 1, s3Key: 'key/pdf_v1', size: 10
+  }));
+  const latest = t.mock.method(File, 'findOne', async ({ where }) => ({
+    id: `${where.type}-id`, fileName: `f.${where.type}`, type: where.type,
+    version: 9, s3Key: `key/${where.type}_v9`, size: 4096
+  }));
+
+  const docs = await runHistory.captureDocuments('sub-1', 1);
+
+  assert.equal(docs.pdf.version, 1, 'the frozen one');
+  assert.equal(docs.markdown.version, 9, 'and the newest for anything not yet frozen');
+  assert.equal(latest.mock.callCount(), 2, 'the frozen input is not looked up by type at all');
+});
+
 test('a document that does not exist yet is simply absent', async (t) => {
+  noFreezes(t);
   // A step that runs before the conversion records no markdown, which is the
   // truth about that run rather than a gap to paper over.
   const { File } = models;
@@ -258,6 +289,7 @@ test('a document that does not exist yet is simply absent', async (t) => {
 
 test('opening a run records the documents alongside it', async (t) => {
   const state = fakeDb(t);
+  noFreezes(t);
   t.mock.method(models.File, 'findOne', async ({ where }) => ({
     id: `${where.type}-id`, fileName: 'f', type: where.type, version: 1, s3Key: 'k', size: 1
   }));

@@ -25,6 +25,7 @@ const {
 const logger = require('../../utils/logger');
 const { repoPath } = require('../detection/repo-path');
 const runInputs = require('../queue/run-inputs.service');
+const inputFreeze = require('../queue/input-freeze.service');
 
 /**
  * Seed-retention invariant (issue #1): the Generated KRT MUST contain every
@@ -187,7 +188,13 @@ async function buildGeneratedKrt(submission, jobLogger) {
 
   // Seed retention: guarantee every author KRT item survives into the Generated
   // KRT, even if the LM consolidation dropped it (see reconcileWithAuthorKrt).
-  const authorRows = await KRTData.findAll({ where: { submissionId, round } });
+  // The round's frozen table, the same one the detectors were seeded from.
+  // Reading the live table here is what produced an analysis whose detections
+  // came from one version of the KRT and whose consolidation reconciled against
+  // another — silently, with nothing to show it had happened.
+  const authorRows = await inputFreeze.resolveKrtRows(submissionId, round, {
+    jobType: JOB_TYPES.PDF_ANALYSIS
+  });
   const { items: generatedKrt, carried } = reconcileWithAuthorKrt(consolidated.items, authorRows);
   if (carried.length) {
     jobLogger?.log('seed_retention', 'Carried author KRT items the consolidation did not reproduce', { carriedCount: carried.length });

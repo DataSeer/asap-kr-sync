@@ -34,6 +34,7 @@ const ResourceType = require('./ResourceType')(sequelize);
 const AppConfig = require('./AppConfig')(sequelize);
 const SubmissionJob = require('./SubmissionJob')(sequelize);
 const SubmissionJobRun = require('./SubmissionJobRun')(sequelize);
+const SubmissionInputFreeze = require('./SubmissionInputFreeze')(sequelize);
 const EnrichmentListEntry = require('./EnrichmentListEntry')(sequelize);
 const RefreshToken = require('./RefreshToken')(sequelize);
 const RejectedResource = require('./RejectedResource')(sequelize);
@@ -108,6 +109,11 @@ SubmissionJobRun.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submis
 User.hasMany(SubmissionJobRun, { foreignKey: 'triggeredByUserId', as: 'triggeredRuns' });
 SubmissionJobRun.belongsTo(User, { foreignKey: 'triggeredByUserId', as: 'triggeredBy' });
 
+Submission.hasMany(SubmissionInputFreeze, { foreignKey: 'submissionId', as: 'inputFreezes' });
+SubmissionInputFreeze.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submission' });
+File.hasMany(SubmissionInputFreeze, { foreignKey: 'fileId', as: 'freezes' });
+SubmissionInputFreeze.belongsTo(File, { foreignKey: 'fileId', as: 'file' });
+
 // (Suggestion model + associations removed — suggestions are now derived
 // at read time as the diff between the Generated KRT and krt_data; only
 // rejections are persisted, in rejected_resources.)
@@ -144,6 +150,7 @@ module.exports = {
   AppConfig,
   SubmissionJob,
   SubmissionJobRun,
+  SubmissionInputFreeze,
   EnrichmentListEntry,
   RefreshToken,
   RejectedResource,

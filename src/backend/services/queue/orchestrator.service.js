@@ -144,6 +144,7 @@ const PIPELINE = [
   // MARKDOWN_CONVERT just like the other Gemini-based detectors.
   {
     jobType: JOB_TYPES.DAS_EXTRACTION,
+    reads: ['markdown'],
     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT],
     gate: 'markdown_ready',
 
@@ -172,19 +173,19 @@ const PIPELINE = [
   // KRT_GROUNDING, which waits for the markdown-dependent detectors regardless.
   // Gated with the rest of detection so the whole detection stage starts at one
   // moment rather than trickling in around the KRT step.
-  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
-  { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [] },
-  { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [] },
+  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['pdf', 'markdown', 'krt'] },
+  { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [], reads: ['pdf'] },
+  { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [], reads: ['pdf'] },
   // Every text detector waits for BOTH the markdown and the curated KRT: the
   // seeded prompts carry the author's rows, so starting earlier would seed
   // from a table the author is still editing.
-  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
-  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
-  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['markdown', 'krt'] },
+  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['markdown', 'krt'] },
+  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['markdown', 'krt'] },
   // Identifier detection scans the post-conversion markdown against the
   // curated enrichment list. Cross-category — produces software/materials/
   // datasets/protocols items in one pass and lets pdf-analysis consolidate.
-  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['markdown', 'krt'] },
   {
     // Grounding reconciles the author's KRT against the candidate pool: for
     // every author row it decides confirmed / incomplete / not_detected, and
@@ -192,6 +193,7 @@ const PIPELINE = [
     // KRT step; with no KRT at all it still runs and reports zero author rows,
     // so the pipeline shape is identical in both modes.
     jobType: JOB_TYPES.KRT_GROUNDING,
+    reads: ['markdown', 'krt'],
     dependsOn: [
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
@@ -221,6 +223,7 @@ const PIPELINE = [
     // grounding verdicts exist by the time suggestions are built — and it is
     // how PDF_ANALYSIS inherits the krt_curated gate.
     jobType: JOB_TYPES.PDF_ANALYSIS,
+    reads: ['krt'],
     dependsOn: [
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
@@ -236,6 +239,8 @@ const PIPELINE = [
     // KRT is complete by the time this starts (ORCID is author metadata, not a
     // KRT contributor, so it isn't a dependency). Also re-triggerable on demand.
     jobType: JOB_TYPES.SUGGESTION_GENERATION,
+    // Reads only PDF Analysis's output — no document of its own.
+    reads: [],
     dependsOn: [JOB_TYPES.PDF_ANALYSIS]
   }
   ,
@@ -256,6 +261,7 @@ const PIPELINE = [
     // stage 1) but its gate makes it the last thing that happens, and a reader
     // following the page top to bottom should find it where it actually runs.
     jobType: JOB_TYPES.DAS_SUGGESTIONS,
+    reads: ['krt'],
     dependsOn: [JOB_TYPES.DAS_EXTRACTION],
     gate: ['availability_ready'],
     /**
@@ -294,6 +300,12 @@ const { JOB_TYPE_TO_QUEUE } = jobQueue;
  */
 async function runAllProcesses(submissionId, userId, round) {
   const jobs = [];
+
+  // Every step in the round is about to run, so every input is re-taken. This
+  // is the call a PDF upload makes, and it is what lets a replaced manuscript
+  // reach the pipeline: without it the round would keep reading the file it
+  // froze the first time, for ever.
+  await releaseInputFreezes(submissionId, round, PIPELINE.map((step) => step.jobType));
 
   // One row per (step, round), reused if it is already there.
   //
@@ -838,6 +850,56 @@ function computeDownstreamSet(rootJobType) {
  *   keeps the credit it already had.
  * @returns {Promise<string[]>} List of jobTypes that were reset.
  */
+/**
+ * Every step that reads each input, keyed by input kind.
+ *
+ * Derived from the `reads` declarations rather than listed somewhere: a step
+ * added without updating a hand-written list would silently make the re-freeze
+ * rule wrong, and the symptom — one module reading a different document from
+ * its siblings — is exactly the failure the freeze exists to prevent.
+ *
+ * @returns {Map<string, string[]>}
+ */
+function readersByInput() {
+  const readers = new Map();
+  for (const step of PIPELINE) {
+    for (const inputKind of step.reads || []) {
+      if (!readers.has(inputKind)) readers.set(inputKind, []);
+      readers.get(inputKind).push(step.jobType);
+    }
+  }
+  return readers;
+}
+
+/**
+ * Release the round's input freezes that this restart is entitled to re-take.
+ *
+ * An input is re-frozen only when EVERY step that reads it is being re-run.
+ * Restarting Markdown Convert cascades through every markdown reader, so the
+ * markdown freeze goes and the next run picks up the current file. Restarting
+ * one detector does not: its siblings keep results built from the frozen
+ * markdown, and handing the restarted one a different document would split the
+ * round — the failure the freeze exists to prevent.
+ *
+ * Never throws. A freeze left in place is the conservative outcome (the restart
+ * re-reads what the round was already using), and it is not worth failing a run
+ * the user asked for.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string[]} restartingJobTypes - the restarted step plus its cascade
+ */
+async function releaseInputFreezes(submissionId, round, restartingJobTypes) {
+  try {
+    const inputFreeze = require('./input-freeze.service');
+    await inputFreeze.releaseForRestart(submissionId, round, restartingJobTypes, readersByInput());
+  } catch (err) {
+    logger.error('Could not release input freezes for a restart', {
+      submissionId, round, restartingJobTypes, error: err.message
+    });
+  }
+}
+
 async function cascadeRestart(submissionId, restartedJobType, round, userId) {
   const downstream = computeDownstreamSet(restartedJobType);
   if (downstream.size === 0) return [];
@@ -946,6 +1008,16 @@ async function requeueStep(submissionId, jobType, round, userId) {
   const submission = await Submission.findByPk(submissionId, {
     attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
+
+  // Release the freezes this restart is entitled to re-take, BEFORE the step is
+  // advanced — a step that starts first would re-freeze what it just read.
+  //
+  // The set is the step plus everything downstream of it, which is what a
+  // restart re-runs. One residual race stays, and predates this: a downstream
+  // step already `processing` is deliberately left alone by cascadeRestart, so
+  // it finishes against the input the round was using while the restart takes a
+  // newer one. Its own run record still says which document it read.
+  await releaseInputFreezes(submissionId, round, [jobType, ...computeDownstreamSet(jobType)]);
 
   // A step may need to clear what its previous run produced before running
   // again — otherwise "re-run this module" is a button that appears to do

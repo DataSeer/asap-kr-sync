@@ -38,6 +38,7 @@ const { GoogleGenAI } = require('@google/genai');
 // matching comment in protocols.service.js for the rationale.
 const fs = require('fs');
 const path = require('path');
+const inputFreeze = require('../queue/input-freeze.service');
 const s3Service = require('../storage/s3.service');
 const groundingConfig = require('../../config/krt-grounding-api');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
@@ -420,8 +421,14 @@ async function groundSubmission(submission, jobLogger) {
  * @returns {Promise<object[]>}
  */
 async function loadAuthorKrtRows(submissionId, round) {
-  const { KRTData } = require('../../models');
-  const rows = await KRTData.findAll({ where: { submissionId, round } });
+  // The round's frozen table. Grounding judges the detectors' findings against
+  // the author's rows, and those detectors were seeded from this same snapshot
+  // — reading the live table here would grade one table's detections against
+  // another.
+  const inputFreeze = require('../queue/input-freeze.service');
+  const rows = await inputFreeze.resolveKrtRows(submissionId, round, {
+    jobType: JOB_TYPES.KRT_GROUNDING
+  });
   return rows.map((row) => ({
     id: row.id,
     resourceType: row.resourceType || '',
@@ -626,10 +633,12 @@ function usableHits(hits) {
  */
 async function loadMarkdown(submissionId, round) {
   const { File } = require('../../models');
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.KRT_GROUNDING }
+  );
   if (!mdFile) return null;
   const buffer = await s3Service.downloadFile(mdFile.s3Key);
   return buffer.toString('utf-8');

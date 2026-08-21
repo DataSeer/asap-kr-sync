@@ -233,6 +233,89 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 - Jobs with no dependencies and no gate start immediately with status `queued`
 - Jobs with dependencies start as `waiting` until all dependencies reach a terminal state (`complete` or `failed`)
 
+### One round, one PDF, one KRT
+
+Every step used to resolve its own input: nine services running the same
+`File.findOne({ type }, order: version DESC)`, each answering "the latest one"
+at whatever moment it happened to run. There was no pipeline-level notion of
+the round's inputs, so replacing a file mid-run split the round — some steps had
+read the old version, some the new, and nothing recorded that it had happened.
+
+The KRT was worse, because **nothing restarts when it changes**. Detectors are
+seeded from `krt_data` as each one runs; PDF Analysis reads `krt_data` again
+when it consolidates. An author editing their table between the two — which the
+workflow invites, the editor being one click away — got an analysis whose
+detections came from one version and whose consolidation reconciled against
+another. Silently.
+
+**The rule: the first step in a round to read an input freezes it.** Every later
+reader in that round is handed the same thing. `submission_input_freezes` holds
+one row per (submission, round, input kind), and the unique constraint is what
+makes two detectors starting in the same millisecond agree on one answer rather
+than produce two.
+
+The freeze **levels are not configured anywhere** — they fall out of the
+dependency graph:
+
+| Input | Frozen by | Which means |
+|---|---|---|
+| `pdf` | Markdown Convert | at the start of the round |
+| `markdown` | whichever detector runs first | as soon as there is text to read |
+| `krt` | the first detector | **after the author has validated it** — the detectors are gated on `krt_curated` |
+
+Adding a step changes the levels correctly and automatically, because the levels
+*are* the graph. Each step declares what it reads:
+
+```js
+{ jobType: JOB_TYPES.SOFTWARE_DETECTION, ..., reads: ['pdf', 'markdown', 'krt'] }
+```
+
+**Files are held by reference** (`file_id` plus the version and key as they
+were); a File row is immutable once written. **The KRT is held by value**,
+because `krt_data` rows are the live editing surface and have no version to
+point at — the snapshot IS the reference. It is small: 89 rows on an average
+KRT, 335 on the largest seen. Nothing in the pipeline writes `krt_data` (only
+user actions do, through the controllers), so handing a step a snapshot changes
+what it reads and nothing else.
+
+**Not fail-soft.** Most of this codebase degrades rather than stops, and that is
+usually right. Not here: a freeze that failed silently would mean the step read
+*something*, and the whole point is that nobody could tell which something. A
+frozen file that has since been deleted is an error, never a quiet substitution.
+
+#### When an input is re-frozen
+
+An input is re-taken **only when every step that reads it is being re-run**.
+
+- Restarting **Markdown Convert** cascades through every markdown reader, so the
+  markdown freeze goes and the next run picks up the current file.
+- Restarting **one detector** does not. Its siblings keep results built from the
+  frozen markdown, and handing the restarted one a different document would
+  split the round — the failure the freeze exists to prevent, arriving through
+  the repair path.
+- **`runAllProcesses`** releases everything. That is the call a PDF upload
+  makes, and it is what lets a replaced manuscript reach the pipeline at all.
+
+The readers are derived from the `reads` declarations rather than listed
+somewhere: a step added without updating a hand-written list would silently make
+the rule wrong.
+
+One residual race remains, and predates this: a downstream step already
+`processing` is deliberately left alone by `cascadeRestart`, so it finishes
+against the input the round was using while the restart takes a newer one. Its
+own run record still says which document it read.
+
+#### Saying so
+
+`GET /api/submissions/:id/jobs` returns an `inputs` array — one entry per frozen
+input, with the version the run read, what is live now, and `stale`. The
+pipeline page turns that into **"This analysis used an earlier version of your
+data"**, naming each document and both versions.
+
+For the KRT this compares row COUNTS, which cannot see an edited cell. That is
+the honest limit of it: `stale` means "rows were added or removed", never
+"nothing has changed". Both counts are reported so a reader can judge.
+
 ### The Availability Statement, and who vouches for it
 
 The Availability check reports on a paragraph that was pulled out of the

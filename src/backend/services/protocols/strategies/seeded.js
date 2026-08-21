@@ -12,6 +12,7 @@ const fs = require('fs');
 const { repoPath } = require('../../detection/repo-path');
 const { loadAuthorSeeds } = require('../../krt/author-krt-seeds.service');
 const { GROUP } = require('../../detection/resource-groups');
+const { JOB_TYPES } = require('../../../config/constants');
 
 const PROMPT = path.join(__dirname, '../../../data/prompts/seeded/protocols-detection.txt');
 
@@ -24,7 +25,7 @@ module.exports = {
   async shouldRun() { return { run: true }; },
 
   async buildInput({ submissionId, round, options = {} }) {
-    let seeds = await loadAuthorSeeds(submissionId, round, GROUP.protocol);
+    let seeds = await loadAuthorSeeds(submissionId, round, GROUP.protocol, { jobType: JOB_TYPES.PROTOCOLS_DETECTION });
     if (typeof options.filterSeeds === 'function') seeds = seeds.filter(options.filterSeeds);
     return {
       prompt: fs.readFileSync(PROMPT, 'utf-8'),

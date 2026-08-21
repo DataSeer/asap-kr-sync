@@ -38,6 +38,7 @@ const publishedProtocolScanner = require('./published-protocol-scanner.service')
 const identifierConfig = require('../../config/identifier-detection-api');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const inputFreeze = require('../queue/input-freeze.service');
 const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
 const runInputs = require('../queue/run-inputs.service');
@@ -276,10 +277,12 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
   const startTime = Date.now();
 
   // 1. Latest markdown for this round.
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.IDENTIFIER_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for identifier detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', {

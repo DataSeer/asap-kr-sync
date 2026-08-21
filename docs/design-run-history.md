@@ -691,8 +691,24 @@ surface and have no immutable version to point at.
 Then say so: when the current table or PDF differs from the frozen set, the
 submission shows *"this analysis used an earlier version of your data"*.
 
-Not built. It changes what the pipeline reads, across roughly nine services,
-which is a bigger decision than a display fix.
+**Built** — 2026-08-21, but not as proposed. Freezing "when the pipeline starts"
+was wrong: some steps run before the author has finished, so the KRT cannot be
+frozen at the same moment as the PDF.
+
+What shipped instead: **the first step in a round to read an input freezes it**,
+in `submission_input_freezes`, and every later reader is handed the same thing.
+The levels then fall out of the dependency graph rather than being configured —
+the PDF freezes at Markdown Convert (the start of the round), the KRT at the
+first detector, and the detectors are gated on `krt_curated`, so the KRT freezes
+after validation. Exactly the two levels wanted, derived rather than declared.
+
+Files are held by reference as §6.4 does; the KRT is held by value, because
+`krt_data` rows have no immutable version to point at. Re-freezing happens only
+when every step that reads an input is being re-run.
+
+`GET /jobs` returns the freeze state, and the pipeline page says *"this analysis
+used an earlier version of your data"* when the live document has moved on. See
+[background-jobs.md](./background-jobs.md#one-round-one-pdf-one-krt).
 
 ## 14. Open questions
 

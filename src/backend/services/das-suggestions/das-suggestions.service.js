@@ -280,7 +280,12 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
   const submission = await Submission.findByPk(submissionId);
   const rawDas = submission?.dataAvailabilityStatement || '';
   const dasText = rawDas === NO_DAS_SENTINEL ? '' : rawDas;
-  const krtRows = await KRTData.findAll({ where: { submissionId, round } });
+  // The round's frozen table: the signals handed to the checker as ground truth
+  // must describe the KRT the rest of the run was built from.
+  const inputFreeze = require('../queue/input-freeze.service');
+  const krtRows = await inputFreeze.resolveKrtRows(submissionId, round, {
+    jobType: JOB_TYPES.DAS_SUGGESTIONS
+  });
   const signals = computeKrtSignals(krtRows);
 
   jobLogger?.log('das_suggestions_start', 'Checking DAS against the rulebook', {

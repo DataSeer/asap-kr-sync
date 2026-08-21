@@ -28,7 +28,7 @@ import { setSubmissionTitle } from '@/router'
 
 const route = useRoute()
 const submissionId = computed(() => route.params.id)
-const { jobs } = useJobPoller(submissionId)
+const { jobs, inputs } = useJobPoller(submissionId)
 
 
 
@@ -86,6 +86,29 @@ const GATE_LABELS = {
 const gateLabel = (name) => GATE_LABELS[name] || name
 
 const jobFor = (jobType) => (jobs.value || {})[jobType] || null
+
+// ── What this round was processed from ──────────────────────────────────────
+// Every step in a round reads one PDF, one converted manuscript and one KRT:
+// the first step to need each freezes it, and the rest are handed the same one.
+// That is what stops a file replaced mid-run from splitting a round in two.
+//
+// The consequence has to be said out loud, though. When the live document has
+// moved on, the results on this page describe the older one — and without a
+// note, an author reads an analysis of a manuscript they have already replaced
+// as though it were about the current version.
+const INPUT_LABELS = {
+  pdf: 'manuscript PDF',
+  markdown: 'converted manuscript',
+  krt: 'Key Resources Table'
+}
+const staleInputs = computed(() => (inputs.value || []).filter((i) => i.stale))
+const inputLabel = (input) => INPUT_LABELS[input.inputKind] || input.inputKind
+function inputDetail(input) {
+  if (input.inputKind === 'krt') {
+    return `${input.rowCount} rows when this ran, ${input.liveRowCount} now`
+  }
+  return `version ${input.version} when this ran, version ${input.liveVersion} now`
+}
 
 /**
  * The configuration this step RAN under — `off`, `demo`, or on.
@@ -266,6 +289,22 @@ const activeStage = computed(() => {
       it depends on has finished, so a step sitting idle is usually waiting rather than broken.
       Steps shown side by side run at the same time.
     </p>
+
+    <!-- Said before any result is shown, because it changes what they mean. -->
+    <div v-if="staleInputs.length" class="pv-stale" role="status">
+      <svg class="pv-stale-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <div class="pv-stale-body">
+        <p class="pv-stale-title">This analysis used an earlier version of your data</p>
+        <p class="pv-stale-sub">
+          <template v-for="(input, i) in staleInputs" :key="input.inputKind">
+            <template v-if="i">; </template>the {{ inputLabel(input) }} has changed ({{ inputDetail(input) }})
+          </template>.
+          Restart a step to run it against what is there now.
+        </p>
+      </div>
+    </div>
 
     <!-- Where the pipeline is right now, before any of the detail. -->
     <div v-if="graph.nodes.length" class="pv-state">
@@ -488,4 +527,22 @@ const activeStage = computed(() => {
   .pv-group, .pv-group-boxed { flex: 1 1 100%; }
   .pv-card { flex: 1 1 100%; }
 }
+
+/* Said plainly rather than styled as an error: nothing has gone wrong, the
+   results simply describe a document that is no longer the current one. */
+.pv-stale {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #fcd34d;
+  border-left: 4px solid #f59e0b;
+  border-radius: 0.5rem;
+  background: #fffbeb;
+}
+.pv-stale-icon { width: 1.1rem; height: 1.1rem; flex-shrink: 0; margin-top: 0.1rem; color: #b45309; }
+.pv-stale-body { min-width: 0; }
+.pv-stale-title { font-weight: 600; color: #78350f; font-size: 0.9rem; }
+.pv-stale-sub { margin-top: 0.15rem; font-size: 0.82rem; color: #92400e; }
 </style>

@@ -39,12 +39,19 @@ export function isTerminalStatus(status) {
  * Fires callbacks only on status transitions observed during this session.
  *
  * @param {import('vue').Ref<string>|string} submissionId - Submission ID (ref or string)
- * @returns {Object} - { jobs, isAnyRunning, getJob, onJobComplete, onJobFailed, refresh }
+ * @returns {Object} - { jobs, inputs, isAnyRunning, getJob, onJobComplete, onJobFailed, refresh }
  */
 export function useJobPoller(submissionId) {
   const jobs = ref({})
   const isAnyRunning = ref(false)
   const fetchError = ref(null)
+  /**
+   * What the round is being processed from — one entry per frozen input, each
+   * saying which version the run read and whether the live data has moved on.
+   * This is what lets a page say "this used an earlier version of your data"
+   * instead of showing a result beside inputs that no longer match it.
+   */
+  const inputs = ref([])
 
   let pollTimer = null
   let currentIntervalMs = INITIAL_POLL_MS
@@ -134,6 +141,7 @@ export function useJobPoller(submissionId) {
 
       isFirstFetch = false
       jobs.value = jobMap
+      inputs.value = data.inputs || []
 
       // Check if any jobs are still running. A job parked behind a step the
       // submission has not reached does not count — see isFutureStepJob.
@@ -221,6 +229,7 @@ export function useJobPoller(submissionId) {
 
   return {
     jobs,
+    inputs,
     /** The last poll's failure, or null. Cleared by the next success. */
     fetchError,
     isAnyRunning,

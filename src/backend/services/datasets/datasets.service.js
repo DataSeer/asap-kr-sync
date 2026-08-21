@@ -38,6 +38,7 @@ const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
 const runInputs = require('../queue/run-inputs.service');
 const { buildKrtItemFromLM } = require('../pdf-analysis/lm-resource.service');
+const inputFreeze = require('../queue/input-freeze.service');
 const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
@@ -163,10 +164,12 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.DATASETS_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for datasets detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', { fileName: mdFile.fileName, s3Key: mdFile.s3Key });

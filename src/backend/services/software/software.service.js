@@ -38,6 +38,7 @@
 const s3Service = require('../storage/s3.service');
 const softciteClient = require('./softcite-client.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
+const inputFreeze = require('../queue/input-freeze.service');
 const softciteConfig = require('../../config/softcite-api');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
@@ -131,10 +132,12 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const pdfFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.PDF, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const pdfFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.PDF, { jobType: JOB_TYPES.SOFTWARE_DETECTION }
+  );
   if (!pdfFile) throw new Error('No PDF file found for software detection');
 
   jobLogger?.log('download_pdf', 'Downloading PDF from S3', { fileName: pdfFile.fileName });
@@ -264,10 +267,12 @@ async function runLmPass(submissionId, round, jobLogger) {
   if (!softwareLm.isEnabled()) return none('not_configured');
 
   const { File } = require('../../models');
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.SOFTWARE_DETECTION }
+  );
   if (!mdFile) {
     jobLogger?.log('software_lm_skipped', 'No markdown yet — Softcite-only for this run');
     return none('no_markdown');
