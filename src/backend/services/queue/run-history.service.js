@@ -62,12 +62,18 @@ async function openRun(job, { userId = null, triggerKind = null } = {}) {
     const [rows] = await sequelize.query(`
       INSERT INTO "submission_job_runs" (
         id, submission_job_id, submission_id, job_type, round, run_number,
-        status, triggered_by_user_id, trigger_kind, created_at, updated_at
+        status, triggered_by_user_id, trigger_kind, s3_prefix, created_at, updated_at
       )
       SELECT
         gen_random_uuid(), :jobId, :submissionId, :jobType, :round,
         COALESCE(MAX(r.run_number), 0) + 1,
-        'queued'::"enum_submission_job_runs_status", :userId, :triggerKind, NOW(), NOW()
+        'queued'::"enum_submission_job_runs_status", :userId, :triggerKind,
+        -- Where this run's artefacts will be written, recorded in the same
+        -- statement that decides the number they are keyed by. Runs from before
+        -- run history keep their old jobs/<type>/<jobRowId> prefix, which is
+        -- why this is stored per run rather than derived from the job type.
+        'jobs/' || :jobType || '/run-' || (COALESCE(MAX(r.run_number), 0) + 1),
+        NOW(), NOW()
       FROM "submission_job_runs" r
       WHERE r.submission_job_id = :jobId
       RETURNING id, run_number

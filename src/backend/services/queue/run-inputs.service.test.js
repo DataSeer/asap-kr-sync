@@ -11,11 +11,34 @@ const { sha256, fileRef, promptRef, upstreamRefs } = require('./run-inputs.servi
 const { generateJobS3Key } = require('../../utils/helpers');
 
 test('artefact keys are per RUN, so a re-run cannot overwrite the last one', () => {
-  const a = generateJobS3Key('MS1', 'sub-1', 1, 'materials_detection', 'inputs.json', 'job-a');
-  const b = generateJobS3Key('MS1', 'sub-1', 1, 'materials_detection', 'inputs.json', 'job-b');
-  assert.notEqual(a, b, 'two runs of the same step in the same round must not share a key');
-  assert.ok(a.includes('/job-a/'));
-  assert.ok(a.endsWith('/inputs.json'));
+  // Keyed by run NUMBER. It used to be the job row's id, which separated runs
+  // only because `runAllProcesses` created a new row each time — reusing the
+  // row is the rival-row fix, and it silently took that separation with it.
+  // Same row, second run, and the keys must still differ.
+  const first = generateJobS3Key('MS1', 'sub-1', 1, 'materials_detection', 'inputs.json', 1);
+  const second = generateJobS3Key('MS1', 'sub-1', 1, 'materials_detection', 'inputs.json', 2);
+
+  assert.notEqual(first, second, 'two runs of the same step in the same round must not share a key');
+  assert.ok(first.includes('/run-1/'));
+  assert.ok(second.includes('/run-2/'));
+  assert.ok(first.endsWith('/inputs.json'));
+});
+
+test('rounds and steps stay separate from each other', () => {
+  const key = (round, jobType, run) => generateJobS3Key('MS1', 'sub-1', round, jobType, 'inputs.json', run);
+
+  assert.notEqual(key(1, 'materials_detection', 1), key(2, 'materials_detection', 1), 'round 2 is not round 1');
+  assert.notEqual(key(1, 'materials_detection', 1), key(1, 'datasets_detection', 1), 'two steps are not one');
+});
+
+test('a run with no number keeps the unnumbered path', () => {
+  // Rows that predate run history: their artefacts are already written under
+  // the old path, and each run row carries its own `s3_prefix`, so nothing has
+  // to be moved to satisfy the new convention.
+  const key = generateJobS3Key('MS1', 'sub-1', 1, 'materials_detection', 'inputs.json', undefined);
+
+  assert.ok(!key.includes('/run-'), 'no run segment invented for a run we cannot number');
+  assert.ok(key.endsWith('jobs/materials_detection/inputs.json'));
 });
 
 test('a file is recorded by identity and digest, not copied', () => {

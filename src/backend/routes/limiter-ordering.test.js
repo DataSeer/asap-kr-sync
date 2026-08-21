@@ -81,21 +81,21 @@ test('the check itself finds the routes it is meant to be checking', () => {
  * would be decoration: the data would still be one URL away.
  */
 test('the run-history endpoints are gated to the same audience as the other internals', () => {
-  const source = fs.readFileSync(path.join(ROUTES_DIR, 'submissions.routes.js'), 'utf8')
-  const ungated = []
+  const source = fs.readFileSync(path.join(ROUTES_DIR, 'submissions.routes.js'), 'utf8');
+  const ungated = [];
 
   for (const { verb, routePath, middleware } of routeDeclarations(source)) {
-    if (!/\/runs/.test(routePath)) continue
-    const access = middleware.findIndex((m) => m.includes('canAccessSubmission'))
-    const internals = middleware.findIndex((m) => m.includes('canViewJobInternals'))
+    if (!/\/runs/.test(routePath)) continue;
+    const access = middleware.findIndex((m) => m.includes('canAccessSubmission'));
+    const internals = middleware.findIndex((m) => m.includes('canViewJobInternals'));
     if (access === -1 || internals === -1 || access > internals) {
-      ungated.push(`${verb.toUpperCase()} ${routePath}`)
+      ungated.push(`${verb.toUpperCase()} ${routePath}`);
     }
   }
 
   assert.ok(ungated.length === 0,
-    `run routes must be canAccessSubmission then canViewJobInternals: ${ungated.join(', ')}`)
+    `run routes must be canAccessSubmission then canViewJobInternals: ${ungated.join(', ')}`);
   // A guard that matches nothing passes forever.
-  const runRoutes = routeDeclarations(source).filter((r) => /\/runs/.test(r.routePath))
+  const runRoutes = routeDeclarations(source).filter((r) => /\/runs/.test(r.routePath));
   assert.equal(runRoutes.length, 2, 'expected the list and the single-run routes');
 });

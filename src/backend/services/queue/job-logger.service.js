@@ -69,8 +69,11 @@ function createJobLogger(submissionJob, manuscriptId, round) {
       const ext = options.extension || '.json';
       const mime = options.mimeType || 'application/json';
       const fileName = `${name}${ext}`;
+      // `runCount` IS this run's number — it is bumped when the run opens, and
+      // the worker loads the row after that. Falls back to unnumbered for a row
+      // that predates run history, which is where its artefacts already are.
       const s3Key = generateJobS3Key(
-        manuscriptId, submissionJob.submissionId, round, jobType, fileName, submissionJob.id
+        manuscriptId, submissionJob.submissionId, round, jobType, fileName, submissionJob.runCount
       );
       const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 

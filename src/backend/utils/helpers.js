@@ -93,24 +93,30 @@ function generateS3Key(manuscriptId, submissionId, round, fileType, originalName
 
 /**
  * Generate an S3 key for job log/response files.
- * Structure: {manuscriptId}_{submissionId}/round-{round}/jobs/{jobType}/{fileName}
+ * Structure: {manuscriptId}_{submissionId}/round-{round}/jobs/{jobType}/run-{n}/{fileName}
  *
  * @param {string} manuscriptId - Manuscript ID (can be null)
  * @param {string} submissionId - Submission UUID
  * @param {number} round - Submission round number
  * @param {string} jobType - Job type (e.g., "datasets_detection")
  * @param {string} fileName - File name (e.g., "logs.json", "gemini-consolidation.json")
+ * @param {number} [runNumber] - Which run of this step these artefacts belong to
  * @returns {string} S3 key (without bucket prefix)
  */
-function generateJobS3Key(manuscriptId, submissionId, round, jobType, fileName, jobId) {
+function generateJobS3Key(manuscriptId, submissionId, round, jobType, fileName, runNumber) {
   const folder = buildS3Folder(manuscriptId, submissionId);
-  // The job row id is in the path so a re-run cannot overwrite the previous
-  // run's artefacts. It used to: every run of a job type in a round wrote to
-  // the same keys, while `runAllProcesses` created a NEW SubmissionJob row each
-  // time — so the older row survived, still pointing at keys whose contents had
-  // been replaced. Its "raw responses" then showed the newer run's data under
-  // the older run's timestamps, which is worse than losing them.
-  const run = jobId ? `/${jobId}` : '';
+  // Keyed by RUN, so a re-run cannot overwrite the previous run's artefacts.
+  //
+  // This used to be the job row's id, which separated runs only because
+  // `runAllProcesses` created a new row every time. Reusing the row is the
+  // rival-row fix, and it silently took that separation with it: re-running a
+  // step wrote over its own previous raw responses and frozen inputs. Nothing
+  // reported it, because the row and the artefacts still agreed — they were
+  // simply both the newest run.
+  //
+  // Runs recorded before this change keep their old `.../{jobRowId}/` path;
+  // each run row carries its own `s3_prefix`, so nothing has to be moved.
+  const run = runNumber ? `/run-${runNumber}` : '';
   return `${folder}/round-${round}/jobs/${jobType}${run}/${fileName}`;
 }
 
