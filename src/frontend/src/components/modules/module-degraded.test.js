@@ -112,14 +112,15 @@ describe('counts owned by the failed engine', () => {
     const stats = wrapper.findAll('.mt-block').find((b) => b.text().includes('Statistics'))
     expect(stats, 'the Statistics block must render').toBeTruthy()
     expect(stats.text()).toContain('—')
-    expect(stats.text()).not.toMatch(/Total\s*0\b/)
+    // "Found" is what `total` is called for a detector — see STAT_META.
+    expect(stats.text()).not.toMatch(/Found\s*0\b/)
   })
 
   it('are shown normally on a healthy run', async () => {
     const wrapper = await mountOpen({ state: 'done', source: 'external', failReason: null, externalError: null })
 
     // A real zero from an engine that DID answer is information, and stays.
-    expect(wrapper.text()).toMatch(/Total\s*0/)
+    expect(wrapper.text()).toMatch(/Found\s*0/)
   })
 })
 

@@ -588,6 +588,49 @@ decoration, so both exist. Pinned by `routes/limiter-ordering.test.js`.
 `job.result.data.*`, so a past run goes through exactly the same path as the
 current one — one rendering branch rather than two that can drift.
 
+### The Technical detail panel
+
+Two rules, both learned the hard way.
+
+**Frozen data only, and never a step page.** Every link goes to the exact object
+this run read — the S3 file for a document, a blob of the run's own copy for a
+prompt, the run's `inputs` artefact for anything with no file of its own.
+
+It used to link to step pages. A step page shows the CURRENT state of that step,
+so *"Your Availability Statement ↗"* took you to whatever the statement says
+today, sitting beside a result computed from what it said during the run. The
+panel exists to say what a run actually did, and half its links quietly said
+something else. Anything with no frozen file to open is described rather than
+linked, because a link to today's version is worse than no link.
+
+Prompts open in a **tab of their own** rather than expanding in place: a prompt
+is a page of text, and read inside a panel inside a page it was a keyhole. There
+is no URL to link to — the copy lives in the run record, not in S3 — so the tab
+is served a blob built from it.
+
+**Every statistic says what it counts.** The list was whatever numeric keys the
+module happened to record, camelCase turned into Title Case: *"Total 9, Unique
+2"* over a run that checked nine rules and found two to act on. A number nobody
+understands is not evidence; it is decoration that looks like evidence.
+
+Each key now has a name and a sentence, shown in the app's own tooltip (never a
+`title` attribute — it waits a second, cannot be styled, and does not appear on
+touch). `total` and `unique` mean genuinely different things per module — raw
+mentions vs deduplicated for a detector, rules checked vs rules that apply for
+the Availability check — so those are overridden per module rather than given
+one vague description that fits none of them. Counts are ordered whole-then-
+parts: grounding recorded *"Absent 51, Present 60, Confirmed 94 … Your KRT rows
+111"*, so the total everything is a share **of** came fifth.
+
+A key with no entry still shows, title-cased and without an explanation: a
+missing sentence is a gap to fill, not a reason to hide a number the run
+recorded.
+
+> **Not shown, because it is not recorded:** model token usage and therefore
+> estimated cost. No service captures the provider's `usageMetadata`, so there
+> is nothing to display and inventing a figure would be worse than the gap.
+> Capturing it is a backend change — one field per LM client, then a count here.
+
 On the page: the latest run comes from the poller and costs no extra request,
 and selecting "latest" returns to the live job rather than pinning a frozen copy
 that would go stale on screen. A past run shows a persistent

@@ -158,21 +158,35 @@ describe('the prompt shown is the run\'s own copy', () => {
     expect(wrapper.findAll('a').every((a) => !(a.attributes('href') || '').includes('/blob/'))).toBe(true)
   })
 
-  it('shows the stored text when the prompt is expanded', async () => {
+  it('opens the stored text in a tab of its own', async () => {
+    // A prompt is a page of text. Read inside a panel inside a page it was a
+    // keyhole, and it pushed everything below it far off screen. The tab is
+    // served a blob built from the run's copy — there is no URL to link to,
+    // and linking to the file in the repository is the one thing this must not
+    // do, since that file is today's.
+    const opened = []
+    const createObjectURL = vi.fn(() => 'blob:stored-prompt')
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() })
+    vi.stubGlobal('open', (url, target) => { opened.push({ url, target }); return null })
+
     withPrompts([{ key: 'prompt', file: 'src/backend/data/prompts/das-suggestions.txt', text: 'THE EXACT PROMPT THAT RAN', bytes: 25 }])
     const wrapper = await mountOpen({ jobType: 'das_suggestions', job: dasJob() })
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(wrapper.text()).not.toContain('THE EXACT PROMPT THAT RAN')
     await wrapper.findAll('button.mt-linkish').find((b) => b.text().includes('das-suggestions.txt')).trigger('click')
 
-    expect(wrapper.text()).toContain('THE EXACT PROMPT THAT RAN')
+    expect(opened).toEqual([{ url: 'blob:stored-prompt', target: '_blank' }])
+    const blob = createObjectURL.mock.calls[0][0]
+    expect(blob.type).toMatch(/text\/plain/)
+    expect(await blob.text()).toBe('THE EXACT PROMPT THAT RAN')
+
+    vi.unstubAllGlobals()
   })
 
-  it('shows an attachment the prompt cannot work without', async () => {
+  it('lists an attachment the prompt cannot work without, openable too', async () => {
     // LangExtract's few-shot examples are handed to the extractor as a separate
-    // argument and never enter the prompt text, so showing the template alone
-    // would show only part of what the run was given.
+    // argument and never enter the prompt text, so offering the template alone
+    // would offer only part of what the run was given.
     withPrompts([{
       key: 'signalsPrompt',
       file: 'src/backend/data/prompts/blind/datasets-signals-extraction.txt',
@@ -183,11 +197,9 @@ describe('the prompt shown is the run\'s own copy', () => {
     const wrapper = await mountOpen({ jobType: 'datasets_detection', job: dasJob() })
     await new Promise((r) => setTimeout(r, 0))
 
-    await wrapper.findAll('button.mt-linkish').find((b) => b.text().includes('datasets-signals-extraction.txt')).trigger('click')
-
-    expect(wrapper.text()).toContain('SIGNALS PROMPT')
-    expect(wrapper.text()).toContain('EXAMPLE ROW')
-    expect(wrapper.text()).toContain('datasets-signals-examples.json')
+    const openers = wrapper.findAll('button.mt-linkish').map((b) => b.text())
+    expect(openers.some((t) => t.includes('datasets-signals-extraction.txt'))).toBe(true)
+    expect(openers.some((t) => t.includes('datasets-signals-examples.json'))).toBe(true)
   })
 
   it('says so when a run recorded no prompt, rather than showing nothing', async () => {

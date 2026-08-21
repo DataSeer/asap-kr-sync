@@ -17,7 +17,6 @@ import jobService from '@/services/job.service'
 import { describeJobStatus } from '@/utils/job-status'
 import { formatDateTime } from '@/utils/format-date'
 import { labelFor } from '@/components/modules/module-meta'
-import { RouterLink } from 'vue-router'
 
 const props = defineProps({
   job: { type: Object, required: true },
@@ -83,7 +82,6 @@ watch(() => props.job?.runNumber, () => {
   prompts.value = []
   if (open.value) loadPrompts()
 })
-const openPrompt = ref(null)
 
 async function loadPrompts() {
   if (promptsState.value !== 'idle') return
@@ -174,14 +172,90 @@ const degraded = computed(() => {
  */
 const DEGRADED_ENGINE_COUNTS = { softcite: ['total'] }
 
+/**
+ * What each number means, in words.
+ *
+ * The list used to be whatever numeric keys the module happened to record,
+ * camelCase turned into Title Case: "Total 9, Unique 2" over a run that checked
+ * nine rules and found two to act on. Nobody could tell what was being counted,
+ * and a number nobody understands is not evidence — it is decoration that looks
+ * like evidence.
+ *
+ * So every key gets a name and a sentence. `total` and `unique` mean genuinely
+ * different things per module — raw mentions vs deduplicated for a detector,
+ * rules checked vs rules that apply for the Availability check — so those are
+ * overridden per module rather than given one vague description that fits none
+ * of them.
+ *
+ * A key with no entry still shows, title-cased and without an explanation: a
+ * missing sentence is a gap to fill, not a reason to hide a number the run
+ * recorded.
+ */
+const STAT_META = {
+  total: { label: 'Found', explain: 'Every mention the module picked up, including the same thing named more than once.' },
+  unique: { label: 'Distinct', explain: 'What is left after the same thing mentioned several times is counted once.' },
+  enriched: { label: 'Enriched', explain: 'How many were matched to a known catalogue entry, adding an identifier or a canonical name.' },
+  highRelevance: { label: 'High confidence', explain: 'How many the module judged clearly relevant, rather than a possible mention.' },
+  resources: { label: 'Rows produced', explain: 'Rows in the Generated Key Resources Table this run built.' },
+  contributors: { label: 'Contributing modules', explain: 'How many detection modules fed rows into that table.' },
+  multiSource: { label: 'Corroborated rows', explain: 'Rows more than one module found independently — usually the most reliable ones.' },
+  authors: { label: 'Authors', explain: 'Authors read from the manuscript.' },
+  orcids: { label: 'With an ORCID', explain: 'How many of those authors had an ORCID identifier that could be resolved.' },
+  // Grounding: the whole first, then how it divides.
+  authorRows: { label: 'Your KRT rows', explain: 'Rows in your Key Resources Table that this run checked against the manuscript. Everything below is a share of this.' },
+  confirmed: { label: 'Confirmed', explain: 'Your rows the module found in the manuscript, matching what you wrote.' },
+  incomplete: { label: 'Incomplete', explain: 'Your rows found in the manuscript but missing something the checklist expects, such as an identifier.' },
+  notDetected: { label: 'Not found', explain: 'Your rows the module could not find in the manuscript. Not necessarily wrong — it may simply not be described there.' },
+  conflicts: { label: 'Conflicts', explain: 'Rows where what you wrote and what the manuscript says disagree — these need your decision.' },
+  present: { label: 'Present in the text', explain: 'Your rows located by searching the manuscript directly, rather than by matching a detector\'s finding. A second, independent measure of the same table.' },
+  absent: { label: 'Absent from the text', explain: 'Your rows that direct search of the manuscript did not locate.' },
+  unmatchedCandidates: { label: 'Found but not in your table', explain: 'Resources the detectors found in the manuscript that no row of yours accounts for. Not a share of your rows — these are additions to consider.' }
+}
+
+/** Where a key means something different from module to module. */
+const STAT_OVERRIDES = {
+  das_suggestions: {
+    total: { label: 'Checks run', explain: 'How many of the ASAP availability rules were evaluated against your statement.' },
+    unique: { label: 'Need action', explain: 'How many of those rules your statement does not yet satisfy.' }
+  },
+  identifier_detection: {
+    total: { label: 'Identifiers found', explain: 'Every identifier matched in the manuscript — RRIDs, DOIs, accession numbers — including repeats.' },
+    unique: { label: 'Distinct identifiers', explain: 'What is left after the same identifier appearing several times is counted once.' }
+  }
+}
+
+const statMeta = (key) => STAT_OVERRIDES[props.jobType]?.[key] || STAT_META[key] || null
+
+/**
+ * Reading order, which is not the order the modules happen to record them in.
+ *
+ * A breakdown before its denominator reads as a list of unrelated numbers:
+ * grounding recorded "Absent 51, Present 60, Confirmed 94 … Your KRT rows 111",
+ * so the total everything is a share OF came fifth. The order below is the
+ * order of `STAT_META` — the whole first, then how it divides — and anything
+ * not named there keeps its position at the end rather than being dropped.
+ */
+const STAT_ORDER = Object.keys(STAT_META)
+const statRank = (key) => {
+  const i = STAT_ORDER.indexOf(key)
+  return i === -1 ? STAT_ORDER.length : i
+}
+
 const stats = computed(() => {
   const blanked = degraded.value ? (DEGRADED_ENGINE_COUNTS[degraded.value.engine] || []) : []
   return Object.entries(counts.value)
     .filter(([, v]) => typeof v === 'number')
-    .map(([k, v]) => [
-      k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
-      blanked.includes(k) ? '—' : v
-    ])
+    .sort(([a], [b]) => statRank(a) - statRank(b))
+    .map(([k, v]) => {
+      const known = statMeta(k)
+      return {
+        label: known?.label || k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
+        value: blanked.includes(k) ? '—' : v,
+        explain: blanked.includes(k)
+          ? 'This engine failed on this run, so its share of the count is not known.'
+          : (known?.explain || null)
+      }
+    })
 })
 
 /**
@@ -189,9 +263,17 @@ const stats = computed(() => {
  * "Total 67" now, and two rows labelled "Total" say nothing.
  */
 const timings = computed(() => [
-  ['Total time', ms(result.value.timing?.totalMs ?? meta.value.totalMs)],
-  ['Model call time', ms(meta.value.geminiMs)]
-].filter(([, v]) => v))
+  {
+    label: 'Duration',
+    value: ms(result.value.timing?.totalMs ?? meta.value.totalMs),
+    explain: 'How long this run took from start to finish, including time spent waiting on an external service.'
+  },
+  {
+    label: 'Model call',
+    value: ms(meta.value.geminiMs ?? result.value.timing?.apiMs),
+    explain: 'How much of that was the language model or detection API answering. The rest is reading the document, matching and storing results.'
+  }
+].filter((row) => row.value))
 
 /**
  * Who ran this, when, and under what configuration.
@@ -239,6 +321,12 @@ function promptProvenance(p) {
   const size = p.bytes ? ` · ${p.bytes} bytes` : ''
   return `Copy of ${p.file} as it was${when}${size}. The file may have changed since.`
 }
+
+/**
+ * Counts and durations in one list — both answer "what did this run do", and a
+ * column of its own for two timings was a column too many.
+ */
+const statRows = computed(() => [...stats.value, ...timings.value])
 
 const metadata = computed(() => {
   const job = props.job || {}
@@ -336,54 +424,80 @@ const inputCounts = computed(() => INPUT_COUNTS
  * plainly rather than omitted, because "no link" and "no input" are very
  * different facts.
  */
+/**
+ * What this run was given — and nothing else.
+ *
+ * Every entry is either a FROZEN file (the S3 object this run read, opened in a
+ * new tab) or a description of something whose exact bytes are in the run's
+ * `inputs` artefact below. Nothing here links to a step page.
+ *
+ * It used to. A step page shows the CURRENT state of that step, so "Your
+ * Availability Statement ↗" took you to whatever the statement says today —
+ * beside a result computed from what it said during the run. The panel exists
+ * to say what a run actually did, and half its links quietly said something
+ * else.
+ *
+ * `props.files` is the run's own document record (`job.documents`), not the
+ * submission's current files, so an older version is its own row and asking for
+ * that id returns exactly the file this run read.
+ */
 const inputs = computed(() => {
   const out = []
+  const doc = (name) => props.files?.[name] || null
+
   for (const kind of (READS[props.jobType] || [])) {
-    if (kind === 'pdf' && props.files?.pdf) {
-      out.push({ label: 'The manuscript PDF', fileId: props.files.pdf.id, note: 'as uploaded' })
+    if (kind === 'pdf') {
+      const pdf = doc('pdf')
+      out.push({
+        label: 'The manuscript PDF',
+        fileId: pdf?.id || null,
+        note: pdf?.version ? `version ${pdf.version}, frozen for this run` : 'not recorded for this run'
+      })
     } else if (kind === 'markdown') {
-      const md = jobOf('markdown_convert')
-      const len = md?.result?.data?.markdownLength
+      const md = doc('markdown')
+      const len = jobOf('markdown_convert')?.result?.data?.markdownLength
       out.push({
         label: 'The converted manuscript text',
-        fileId: md?.result?.data?.fileId || null,
-        route: { name: 'submission-module', params: { id: props.submissionId, type: 'markdown_convert' } },
-        note: len ? `${len.toLocaleString()} characters` : 'not converted'
+        fileId: md?.id || null,
+        note: md?.version
+          ? `version ${md.version}, frozen for this run${len ? ` · ${len.toLocaleString()} characters` : ''}`
+          : 'not recorded for this run'
       })
     } else if (kind === 'krt' || kind === 'seeds') {
+      const krt = doc('krt')
+      const seedsEmpty = kind === 'seeds' && meta.value.seedCount === 0
       out.push({
         label: kind === 'seeds' ? 'Your KRT rows, as prompt seeds' : 'Your Key Resources Table',
-        fileId: props.files?.krt?.id || null,
-        note: kind === 'seeds' && meta.value.seedCount === 0
+        fileId: krt?.id || null,
+        note: seedsEmpty
           ? 'no rows to seed with — the discovery prompt was used instead'
-          : 'the file you uploaded'
+          : (krt?.version ? `version ${krt.version}, frozen for this run` : 'not recorded for this run')
       })
     } else if (kind === 'candidates') {
+      // Another step's findings, as this run received them. There is no file to
+      // open: the copy this run was handed is in the `inputs` artefact below,
+      // and today's version of that step is a different thing.
       for (const t of CANDIDATE_SOURCES) {
         const j = jobOf(t)
         if (!j) continue
         out.push({
-          label: labelFor(t),
-          route: { name: 'submission-module', params: { id: props.submissionId, type: t } },
-          note: `${j.result?.data?.items?.length ?? 0} items`
+          label: `${labelFor(t)} findings`,
+          note: `${j.result?.data?.items?.length ?? 0} items, as handed to this run`
         })
       }
     } else if (kind === 'das') {
       const j = jobOf('das_extraction')
-      const detected = j?.result?.status?.detected
       out.push({
         label: 'Your Availability Statement',
-        route: { name: 'submission-module', params: { id: props.submissionId, type: 'das_extraction' } },
-        note: detected === false
-          ? 'not found in the manuscript — whatever you entered by hand'
-          : 'as extracted, plus any edit you made on the Availability step'
+        note: j?.result?.status?.detected === false
+          ? 'not found in the manuscript — the text as it stood for this run'
+          : 'the text as it stood for this run'
       })
     } else if (kind === 'generatedKrt') {
       const j = jobOf('pdf_analysis')
       out.push({
         label: 'The Generated KRT',
-        route: { name: 'submission-module', params: { id: props.submissionId, type: 'pdf_analysis' } },
-        note: `${j?.result?.data?.items?.length ?? 0} rows`
+        note: `${j?.result?.data?.items?.length ?? 0} rows, as handed to this run`
       })
     }
   }
@@ -439,6 +553,25 @@ async function openFile(fileId) {
   }
 }
 
+/**
+ * Open a stored prompt in a new tab.
+ *
+ * The text is this run's frozen copy and lives in the run record, not in S3 —
+ * so there is no URL to link to and the tab is served a blob built from it. The
+ * alternative was linking to the file in the repository, which is the one thing
+ * this must not do: that file is today's, and the whole point of the copy is
+ * that the two can differ.
+ *
+ * The object URL is released on a timer rather than immediately: revoking it in
+ * the same tick can beat the new tab to it, and the reader gets a blank page.
+ */
+function openPromptFile(p) {
+  if (!p?.text) return
+  const url = URL.createObjectURL(new Blob([p.text], { type: 'text/plain;charset=utf-8' }))
+  window.open(url, '_blank', 'noopener,noreferrer')
+  setTimeout(() => URL.revokeObjectURL(url), 60000)
+}
+
 const responseUrl = (name) =>
   `/api/submissions/${props.submissionId}/jobs/${props.jobType}`
   + `/responses/${encodeURIComponent(name)}?redirect=1`
@@ -467,13 +600,21 @@ const responseUrl = (name) =>
         <h3>Configuration</h3>
         <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
       </div>
-      <div v-if="stats.length || timings.length" class="mt-block mt-narrow">
+      <div v-if="statRows.length" class="mt-block mt-narrow">
         <h3>Statistics</h3>
         <!-- Durations sit with the counts: both are "what this run did", and a
              column of its own for two numbers was a column too many. -->
+        <!-- Every label carries its explanation. The app's own tooltip, never
+             the browser's: a `title` attribute waits a second, cannot be
+             styled, and does not appear on touch at all. -->
         <dl>
-          <template v-for="([k, v]) in stats" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
-          <template v-for="([k, v]) in timings" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
+          <template v-for="row in statRows" :key="row.label">
+            <dt
+              :class="{ 'mt-stat-explained': row.explain }"
+              v-tooltip="row.explain || undefined"
+            >{{ row.label }}</dt>
+            <dd>{{ row.value }}</dd>
+          </template>
         </dl>
       </div>
       <div
@@ -486,7 +627,6 @@ const responseUrl = (name) =>
             <button v-if="i.fileId" type="button" class="mt-linkish" @click="openFile(i.fileId)">
               {{ i.label }} ↗
             </button>
-            <RouterLink v-else-if="i.route" :to="i.route">{{ i.label }} ↗</RouterLink>
             <span v-else>{{ i.label }}</span>
             <span v-if="i.note" class="mt-files-note">{{ i.note }}</span>
           </li>
@@ -501,31 +641,45 @@ const responseUrl = (name) =>
         <p v-else-if="promptsState === 'ready' && !prompts.length" class="mt-files-note">
           This run recorded no prompt.
         </p>
+        <!-- Opened in a tab of its own rather than expanded here. A prompt is
+             a page of text; read inside a panel inside a page it is a keyhole,
+             and it pushed everything below it far off screen.
+             Files the prompt cannot work without get their own line for the
+             same reason: LangExtract's few-shot examples are handed to the
+             extractor separately and never enter the prompt text, so the
+             template alone would show only part of what the run was given. -->
         <ul v-if="prompts.length" class="mt-files">
-          <li v-for="p in prompts" :key="p.file">
-            <button
-              type="button"
-              class="mt-linkish"
-              v-tooltip="p.file"
-              @click="openPrompt = openPrompt === p.file ? null : p.file"
-            >
-              {{ p.name }} {{ openPrompt === p.file ? '▾' : '▸' }}
-            </button>
-            <span class="mt-files-note">{{ p.label }}</span>
-            <div v-if="openPrompt === p.file" class="mt-prompt">
-              <p class="mt-prompt-path">{{ promptProvenance(p) }}</p>
-              <pre v-if="p.text" class="mt-prompt-text">{{ p.text }}</pre>
-              <p v-else class="mt-files-note">This run did not store the prompt text.</p>
-              <!-- Files the prompt cannot work without. LangExtract's few-shot
-                   examples are handed to the extractor separately and never
-                   enter the prompt text, so the template alone would show only
-                   part of what the run was given. -->
-              <div v-for="a in p.attachments || []" :key="a.file" class="mt-prompt-attachment">
-                <p class="mt-prompt-path">{{ promptProvenance(a) }}</p>
-                <pre v-if="a.text" class="mt-prompt-text">{{ a.text }}</pre>
-              </div>
-            </div>
-          </li>
+          <template v-for="p in prompts" :key="p.file">
+            <li>
+              <button
+                v-if="p.text"
+                type="button"
+                class="mt-linkish"
+                v-tooltip="'Opens this run\'s copy in a new tab'"
+                @click="openPromptFile(p)"
+              >
+                {{ p.name }} ↗
+              </button>
+              <span v-else>{{ p.name }}</span>
+              <span class="mt-files-note">{{ p.label }}</span>
+              <p class="mt-prompt-path">
+                {{ p.text ? promptProvenance(p) : 'This run did not store the prompt text.' }}
+              </p>
+            </li>
+            <li v-for="a in p.attachments || []" :key="a.file">
+              <button
+                v-if="a.text"
+                type="button"
+                class="mt-linkish"
+                v-tooltip="'Opens this run\'s copy in a new tab'"
+                @click="openPromptFile(a)"
+              >
+                {{ (a.file || '').split('/').pop() }} ↗
+              </button>
+              <span class="mt-files-note">handed to the model alongside the prompt</span>
+              <p class="mt-prompt-path">{{ promptProvenance(a) }}</p>
+            </li>
+          </template>
         </ul>
         <ul v-if="inputArtefacts.length" class="mt-files">
           <li v-for="name in inputArtefacts" :key="name">
@@ -537,10 +691,9 @@ const responseUrl = (name) =>
           <template v-for="([k, v]) in inputCounts" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
         </dl>
         <p class="mt-note">
-          Every module freezes what it was given, and that record is the
-          <code>inputs</code> file above. The documents beside it are shown as they are stored
-          <em>now</em>, so an edit made after the run appears there even though the run never saw it —
-          when the two disagree, the frozen record is what happened.
+          Everything here is what this run was given, not what the submission holds today.
+          Each file opens the exact version this run read; anything without a link had its
+          exact bytes recorded in the <code>inputs</code> file above.
         </p>
       </div>
       <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
@@ -659,6 +812,12 @@ const responseUrl = (name) =>
 @media (max-width: 640px) {
   .mt-body { grid-template-columns: minmax(0, 1fr); }
   .mt-narrow, .mt-wide { grid-column: span 1; }
+}
+/* A label with something to say, marked so the reader knows to hover. */
+.mt-stat-explained {
+  text-decoration: underline dotted #d1d5db;
+  text-underline-offset: 0.2em;
+  cursor: help;
 }
 .mt-block h3 {
   font-size: 0.68rem; font-weight: 700; color: #9ca3af;
