@@ -692,6 +692,22 @@ Run (or re-run) all background processes for a submission. Every step in the
 round is about to run, so **every input freeze is released** — this is the call a
 PDF upload makes, and it is what lets a replaced manuscript reach the pipeline.
 
+### `POST /api/submissions/:id/processes/restart`
+Re-run a **chosen set** of steps as one restart.
+
+- **Body**: `{ jobTypes: string[] }` — pipeline step names, at most 20.
+- **Returns**: `{ message, restarted, reset }`. `reset` is what the selection
+  carried with it (its shared downstream) — the UI already showed the user, but
+  a script or a log has to be told.
+- **400** on an unknown or empty list, *before anything is touched*: half a
+  restart is worse than none, because the caller has to work out which half ran.
+- **Not a loop of single restarts.** The first step to finish would release the
+  work the selection shares — grounding, the consolidator — which then runs and
+  is thrown away by the next reset, and both runs are paid for. Every selected
+  step's downstream is reset before any of them is enqueued.
+- Behind the LM budget: a selection of five detectors is five detectors' worth of
+  model work.
+
 ### `POST /api/submissions/:id/jobs/:jobType/advance?round=N`
 Manually advance a `pending_input` job to `queued`.
 
