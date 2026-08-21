@@ -356,7 +356,14 @@ otherwise it stays `waiting` for the orchestrator to advance. It does not create
 a second job row, and it cannot jump ahead of the detectors it consolidates.
 
 ### `POST /api/submissions/:id/pdf/extract-das`
-Re-trigger DAS extraction from the latest PDF.
+Re-run DAS extraction **as a pipeline step**, and return immediately (202).
+- **Returns**: `{ message, status, submissionJobId }`
+- It used to run the extraction inside the request. That worked, but left the
+  pipeline untouched: the `das_extraction` job row kept the previous run's
+  status, result, frozen inputs and prompt — so the module page described a run
+  that was no longer the latest — and nothing downstream re-ran, so
+  consolidation and the Availability check kept answers built from a statement
+  that had just been replaced.
 
 ---
 

@@ -108,23 +108,34 @@ async function uploadSupplemental(req, res, next) {
 async function extractDAS(req, res, next) {
   try {
     const submission = req.submission;
-    const result = await pdfService.extractAndSaveDAS(submission.id);
 
-    // `result.extracted` does not exist — extractAndSaveDAS returns the helper
-    // shape { data, status, source, ... }. Reading a missing field meant the
-    // ternary always took the "not found" branch, so a successful re-run of DAS
-    // extraction reported failure, and the `das` the frontend documents was
-    // never in the body either.
-    const das = result.data?.meta?.das ?? null;
-    const extracted = result.status === 'done' && !!das;
+    // Re-run it as a PIPELINE STEP, like every other module.
+    //
+    // This used to call `extractAndSaveDAS` directly, inside the request. That
+    // ran the extraction but left the pipeline untouched: the `das_extraction`
+    // job row kept the PREVIOUS run's status, result, frozen inputs and prompt,
+    // so the module page described a run that was no longer the latest one —
+    // and nothing downstream re-ran, so consolidation and the Availability
+    // check kept answers built from a statement that had just been replaced.
+    //
+    // `queueDASExtraction` reuses the round's row, cascades to the steps that
+    // read the statement, and respects the gates. It also means the endpoint
+    // answers immediately instead of holding the request open for the length of
+    // an LM call.
+    const { job, alreadyInFlight } = await pdfService.queueDASExtraction(
+      submission.id,
+      submission.currentRound,
+      req.userId
+    );
 
-    res.json({
-      message: extracted
-        ? 'Availability Statement extracted successfully'
-        : 'Availability Statement not found',
-      extracted,
-      das,
-      ...result
+    logger.info('DAS extraction queued', { submissionId: submission.id, status: job.status });
+
+    res.status(202).json({
+      message: alreadyInFlight
+        ? 'Availability Statement extraction is already running'
+        : 'Availability Statement extraction queued',
+      status: job.status,
+      submissionJobId: job.id
     });
   } catch (error) {
     next(error);

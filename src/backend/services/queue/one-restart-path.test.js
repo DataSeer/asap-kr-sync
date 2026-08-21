@@ -154,3 +154,38 @@ test('the rule covers every step in the pipeline, not just the ones with a queue
   assert.ok(found.length >= 10,
     `expected a queue function per re-runnable step, found ${found.length}: ${found.join(', ')}`);
 });
+
+test('the DAS extraction endpoint re-runs the step rather than doing the work itself', async (t) => {
+  // The last place a "re-run" bypassed the pipeline entirely. It called
+  // `extractAndSaveDAS` inside the request: the extraction happened, but the
+  // job row kept the PREVIOUS run's status, result, frozen inputs and prompt,
+  // so the module page described a run that was no longer the latest — and
+  // nothing downstream re-ran, so consolidation and the Availability check kept
+  // answers built from a statement that had just been replaced.
+  const pdfService = require('../pdf/pdf.service');
+  const controller = require('../../controllers/pdf.controller');
+
+  let queued = false;
+  let ranDirectly = false;
+  t.mock.method(pdfService, 'queueDASExtraction', async () => {
+    queued = true;
+    return { job: { id: 'row-1', status: 'queued' }, alreadyInFlight: false };
+  });
+  t.mock.method(pdfService, 'extractAndSaveDAS', async () => {
+    ranDirectly = true;
+    return { status: 'done', data: { meta: { das: 'x' } } };
+  });
+
+  const body = await new Promise((resolve) => {
+    const res = { statusCode: 200, json: resolve, status(c) { this.statusCode = c; return this; } };
+    controller.extractDAS(
+      { submission: { id: 'sub-1', currentRound: 1 }, userId: 'user-1', params: {}, body: {} },
+      res,
+      resolve
+    );
+  });
+
+  assert.equal(queued, true, 'it must go through the pipeline');
+  assert.equal(ranDirectly, false, 'and must not do the extraction inside the request');
+  assert.match(body.message, /queued/i);
+});
