@@ -37,6 +37,9 @@ the page were live, selecting run 2 would render a chimera: run 2's detections
 beside today's KRT. Freezing the whole page is what makes a run selector
 coherent.
 
+This covers **configuration as well as data**: a module disabled during a run
+and enabled later must still read as disabled in that run's history (§6.1).
+
 ---
 
 ## 2. What is true today
@@ -227,15 +230,59 @@ naming convention is risk with no user-visible gain.
 | Markdown viewer | **live fetch** | the run's recorded markdown `s3Key` |
 | ORCID author list | **live fetch** | stored in the run's `result` |
 | Generated-KRT rows | run's `result` ✓ | unchanged |
+| Module config (on/demo/off) | captured ✓, **displayed live in places** | display the run's captured config — see §6.1 |
+| Resource-type vocabulary (type → tab group) | **live** | stored in the run — see §6.2 |
 
-### 6.1 The one deliberate exception
+### 6.1 Module configuration is already frozen — it just is not always shown
 
-**Resource-type display config stays live** — colours, tab groups, sort order.
-Freezing presentation would render an old run in stale colours after a
-reconfiguration, which is worse, not better. It is presentation, not data.
-Written down here so it reads as a decision rather than an oversight.
+A module that was **off** or on **demo data** during a run, and switched on
+afterwards, must still read as off in that run's history. Otherwise the record
+claims the module looked at the manuscript when it never ran.
 
-### 6.2 When an input is gone
+The good news: `buildServiceSnapshot` **already stores this per run**:
+
+```js
+config:  { state: 'on' | 'demo' | 'off', enabled, demoEnabled }
+outcome: { state, source, failReason, externalError }
+```
+
+So this is a **display** change, not a storage one. Concretely:
+
+- **Processes panel** — already correct: `getConfigPill` is
+  `job.configState || job.liveConfigState`, i.e. the run's captured config wins.
+- **Module page** — Technical detail shows `outcome.source` ("Ran via external")
+  but not the run's `config.state`. Add it, from the frozen snapshot.
+- **Pipeline page** — shows no config at all today, so a step that was disabled
+  during the run is indistinguishable from one that ran and found nothing. It
+  should carry the run's config state.
+
+**The one legitimate use of live config**, and the reason `liveConfigState`
+exists: a step that has **never run** has no frozen config to show. There the
+panel shows the current setting to explain why nothing will happen — a statement
+about the *future*, not a claim about a past run. That is not a violation of the
+principle; it is the absence of a run to describe.
+
+Live configuration otherwise belongs to the working views (the submission's own
+step pages), where the user is *changing* things — and even there it is frozen
+into the run the moment a run starts.
+
+### 6.2 Resource types: vocabulary frozen, palette live
+
+Resource types are two things wearing one name, and the principle lands
+differently on each:
+
+- **The vocabulary** — which types exist, and which tab group each belongs to —
+  is *data*. Rename or remove a type after a run and that run's rows land in the
+  wrong tab, or none. **Freeze it with the run**: a `{ type → group, order }`
+  map is a few hundred bytes.
+- **The palette** — the colours drawn from those types — is *presentation*.
+  Freezing it renders an old run in a superseded palette after a rebrand, which
+  makes the app look broken rather than faithful. **Keep it live.**
+
+Recorded as a decision rather than an oversight. If strict fidelity is wanted
+for colour too, freezing it costs nothing extra — it rides in the same map.
+
+### 6.3 When an input is gone
 
 A run whose recorded `s3Key` no longer resolves shows *"this run's input is no
 longer stored"* — never a broken link, and never a silent fallback to the
@@ -338,7 +385,9 @@ presented as run 1.
 2. **Read a past run.** The two endpoints, the module-page selector, the
    read-only bar, role gating.
 3. **Freeze the remaining live reads.** File links, markdown viewer, ORCID
-   authors, and the "as at" line — plus S3 keyed by run number.
+   authors, the run's module config on the pipeline and module pages (§6.1 —
+   display only, the data is already captured), the resource-type vocabulary
+   (§6.2), and the "as at" line — plus S3 keyed by run number.
 
 Each phase is independently shippable, and phase 1 carries the risk (write
 paths); 2 and 3 are additive reads.
