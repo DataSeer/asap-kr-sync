@@ -1,0 +1,86 @@
+/**
+ * The app's RESULT-TABLE badge colours, in one place.
+ *
+ * Prefixed `rbadge-` rather than `badge-` on purpose: main.css already owns a
+ * `.rbadge` component class and a `.rbadge-warning`/`-success`/`-error` family,
+ * used by the reports, the profile and the admin views. Two `.rbadge-warning`
+ * rules with different intent is precisely the drift this file exists to stop,
+ * and whichever one won would depend on cascade order rather than meaning.
+ *
+ * Every table that names a resource category, a detection module, a NEW/REUSE
+ * value or who proposed a row had grown its own palette — "Materials" was amber
+ * on one page and blue on another, and NEW was green in the Generated KRT while
+ * the detections table drew it in the same blue it used for "found by Softcite".
+ * A colour that means two things is worse than no colour.
+ *
+ * The category hues are taken from /admin/krt-editor/resource-types, which is
+ * where a curator sets them up and therefore where the app's colour vocabulary
+ * is established. The rest are chosen not to collide with them.
+ *
+ *   Datasets        blue      Software/code   green
+ *   Protocols       purple    Lab materials   teal
+ *   anything else   gray
+ *
+ * Lab materials was amber, which is exactly the app's "waiting" status colour —
+ * same background, to the byte — so a run in progress and a class of reagent
+ * looked alike. Amber and red are reserved for status now, and no badge uses
+ * either.
+ *
+ * A detection module takes the colour of what it finds, so the badge for
+ * Materials Detection matches a Lab Materials row. Modules that span categories
+ * (identifiers) or are pipeline steps rather than detectors (grounding,
+ * consolidation) are grey — they are not a category and should not borrow one.
+ *
+ * NEW / REUSE is deliberately NOT a badge. After four category hues and two
+ * status hues there is no pair left far enough apart to read as opposites at
+ * badge size, and every attempt either crowded the error red or gave a
+ * two-state attribute more weight than the category colour beside it — which is
+ * the thing actually worth seeing in that row. It is plain text; the word says
+ * it.
+ *
+ * Where a value came from — slate for the document's own, indigo for anything
+ * derived. That covers Author vs LM on a suggestion, the KRT tag on a
+ * detection, and the ORCID ladder: GROBID reads the paper, OpenAlex and the
+ * ORCID API look it up elsewhere. Same distinction, so the same colours.
+ */
+
+.rbadge {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  line-height: 1.35;
+  white-space: nowrap;
+  /* Never flush against the cell edge or the badge beside it. Small enough not
+     to change a row's height, since a badge is usually the tallest thing in
+     its cell. */
+  margin: 0.15rem 0.2rem;
+}
+
+/* ── resource categories, and the modules that detect them ───────────── */
+.rbadge-datasets { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.rbadge-software { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+.rbadge-protocols { background: #f3e8ff; color: #7e22ce; border: 1px solid #e9d5ff; }
+.rbadge-materials { background: #ccfbf1; color: #0f766e; border: 1px solid #99f6e4; }
+/* Cross-category or not a detector at all. */
+.rbadge-neutral { background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
+
+/* ── where a value came from ─────────────────────────────────────────── */
+/* From the document or the author's own table — not inferred by anything.
+   Slate, because it is a fact rather than a finding. */
+.rbadge-own { background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; }
+/* Produced elsewhere: a model's proposal, or an external registry lookup.
+   Indigo rather than purple, which is Protocols. */
+.rbadge-derived { background: #e0e7ff; color: #4338ca; border: 1px solid #c7d2fe; }
+
+/* ── a caveat on a finding ───────────────────────────────────────────── */
+/* Amber, the app's warning colour. This is the one badge that SHOULD look like
+   a status: "partial" and "not verbatim" mean the evidence behind a row is
+   weaker than it appears, and a curator has to notice that. Nothing else in a
+   results table is amber, so it cannot be mistaken for a category. */
+.rbadge-warning { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+
+/* A badge that explains itself on hover says so with the cursor. */
+.rbadge[title] { cursor: help; }

@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useTeamsStore } from '@/stores/teams.store'
 import SearchInput from '@/components/common/SearchInput.vue'
+import { formatDate } from '@/utils/format-date'
 
 const authStore = useAuthStore()
 const notificationStore = useNotificationStore()
@@ -55,9 +56,12 @@ const canManageUsers = computed(() => authStore.canManageUsers)
 const isAdmin = computed(() => authStore.isAdmin)
 
 onMounted(async () => {
+  // fetchUsers handles its own failure. The team codes only populate a filter
+  // dropdown, but inside Promise.all their rejection took the whole hook down
+  // as an unhandled rejection — nothing rendered, nothing logged for the user.
   await Promise.all([
     fetchUsers(),
-    teamsStore.fetchTeamCodes()
+    teamsStore.fetchTeamCodes().catch(() => { /* the filter falls back to free text */ })
   ])
 })
 
@@ -71,10 +75,6 @@ async function fetchUsers() {
   } finally {
     loading.value = false
   }
-}
-
-function formatDate(date) {
-  return new Date(date).toLocaleDateString()
 }
 
 function openEditModal(user) {
@@ -121,7 +121,16 @@ async function handleSaveUser() {
 }
 
 async function handleDeleteUser(user) {
-  if (!confirm(`Are you sure you want to delete ${user.name}?`)) {
+  // Say what actually happens: the account is closed and its identity erased,
+  // but the person's submissions and their edits to other people's submissions
+  // stay where they are. An admin reading "delete" would reasonably expect the
+  // opposite, in either direction.
+  if (!confirm(
+    `Delete ${user.name}?\n\n` +
+    'Their account will be closed and their name and email address erased. ' +
+    'Their submissions and their edits to other submissions are kept, ' +
+    'attributed to "Deleted user".\n\nThis cannot be undone.'
+  )) {
     return
   }
 
@@ -238,7 +247,7 @@ async function handleCreateUser() {
                 <span
                   v-if="user.isAuth0User"
                   class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700"
-                  title="Authenticated via ASAP Hub (Auth0) — password is managed by the identity provider"
+                  v-tooltip="'Authenticated via ASAP Hub (Auth0) — password is managed by the identity provider'"
                 >
                   ASAP Hub
                 </span>

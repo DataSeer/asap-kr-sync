@@ -41,6 +41,29 @@ module.exports = (sequelize) => {
       allowNull: true,
       field: 'reference_id'
     },
+    /**
+     * Who asked for this step to run.
+     *
+     * NOT the submission's owner — a curator re-running one detector on an
+     * author's manuscript is the trigger, not the owner. Set when the pipeline
+     * is started, when a step is re-queued (and on everything downstream that
+     * re-run restarts), and when a parked step is advanced by hand. A step the
+     * orchestrator advances on its own — a worker finishing, or the periodic
+     * reconciler — keeps the credit already there.
+     *
+     * Every HTTP route that starts work is authenticated and passes its
+     * `req.userId`, so NULL means the row predates this column, a script drove
+     * the service layer directly, or no user was ever involved.
+     */
+    triggeredByUserId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'triggered_by_user_id',
+      references: {
+        model: 'users',
+        key: 'id'
+      }
+    },
     result: {
       type: DataTypes.JSONB,
       allowNull: true
@@ -101,6 +124,14 @@ module.exports = (sequelize) => {
    * @param {number} retryCount - Current retry attempt (from pg-boss)
    */
   SubmissionJob.prototype.markProcessing = async function(retryCount = 0) {
+    // Same reload-then-check as markComplete, and for the same reason: the
+    // worker's instance was loaded before the handler started, so a cancel that
+    // landed in between is invisible in memory. Without this, a worker that had
+    // already fetched a job wrote `processing` OVER the cancel — and then
+    // markComplete's own guard saw `processing`, not `cancelled`, and completed
+    // the job the user had stopped.
+    await this.reload();
+    if (this.status === 'cancelled') return this;
     this.status = 'processing';
     this.startedAt = new Date();
     this.retryCount = retryCount;
@@ -137,10 +168,45 @@ module.exports = (sequelize) => {
     // A job the user cancelled must stay cancelled even if the worker that was
     // mid-flight ultimately errors — the failure is a consequence of the cancel,
     // not a real error to surface or retry.
+    //
+    // The reload is what makes the guard work. Checking the in-memory status
+    // asks the copy this worker loaded before the handler ran, which still says
+    // `processing`; the row was overwritten with `failed`, the user saw a
+    // failure for something they had cancelled, and — if it was the round's
+    // only cancelled row — `isRoundCancelled` flipped back to false, which
+    // un-suppressed the retry and restarted the external work they had stopped.
+    await this.reload();
     if (this.status === 'cancelled') return this;
     this.status = 'failed';
     this.errorMessage = errorMessage;
     this.completedAt = new Date();
+    return this.save();
+  };
+
+  /**
+   * Record an error on an attempt that pg-boss is going to retry.
+   *
+   * `failed` is a TERMINAL state to everything that reads these rows, and using
+   * it for a retryable error strands the pipeline. The orchestrator treats a
+   * dependency as done when it is `complete` **or** `failed`, so a sweep landing
+   * in the retry backoff window read the dependency as finished, evaluated the
+   * dependent's gate against a result that was not there yet, and parked it in
+   * `pending_input`. Nothing revisits `pending_input`: when the retry then
+   * succeeded, the advance found the dependent no longer `waiting` and did
+   * nothing. Only a manual advance recovered it. (Observed as PDF Analysis stuck
+   * behind a DAS extraction that had in fact succeeded on its second attempt.)
+   *
+   * So the row stays `processing` — which is true, the job is still in flight —
+   * and carries the last error for the UI to show alongside its attempt counter.
+   *
+   * @param {string} errorMessage
+   */
+  SubmissionJob.prototype.markRetrying = async function(errorMessage) {
+    await this.reload();   // see markFailed: the in-memory status is stale here
+    if (this.status === 'cancelled') return this;
+    this.status = 'processing';
+    this.errorMessage = errorMessage;
+    this.completedAt = null;
     return this.save();
   };
 
@@ -185,21 +251,35 @@ module.exports = (sequelize) => {
       where.round = round;
     }
 
-    // Get all jobs for this submission/round, ordered newest first
-    const allJobs = await SubmissionJob.findAll({
+    // Two queries on purpose. `result` is JSONB and holds a whole detection —
+    // one submission in dev carries 2.3 MB across its rows — and the jobs
+    // endpoint is polled every few seconds by every open tab. Selecting every
+    // row and then dropping all but the newest per type read (and shipped from
+    // Postgres) every superseded payload on every poll.
+    //
+    // Pass 1 is metadata only, so it stays small no matter what the runs hold.
+    const index = await SubmissionJob.findAll({
       where,
-      order: [['createdAt', 'DESC']]
+      attributes: ['id', 'jobType', 'createdAt'],
+      order: [['createdAt', 'DESC']],
+      raw: true
     });
 
-    // Keep only the latest per job type
-    const latestByType = new Map();
-    for (const job of allJobs) {
-      if (!latestByType.has(job.jobType)) {
-        latestByType.set(job.jobType, job);
+    const latestIdByType = new Map();
+    for (const row of index) {
+      if (!latestIdByType.has(row.jobType)) {
+        latestIdByType.set(row.jobType, row.id);
       }
     }
+    if (latestIdByType.size === 0) return [];
 
-    return Array.from(latestByType.values());
+    // Pass 2 fetches only those rows, as full instances — callers call
+    // markComplete/markFailed on what comes back, so these cannot be `raw`.
+    const jobs = await SubmissionJob.findAll({
+      where: { id: Array.from(latestIdByType.values()) },
+      order: [['createdAt', 'DESC']]
+    });
+    return jobs;
   };
 
   /**

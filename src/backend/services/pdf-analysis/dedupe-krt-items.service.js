@@ -17,6 +17,7 @@
  * Pure function — no I/O, no async.
  */
 
+const { pickBestEvidence } = require('./evidence.service');
 const { mergeDetections } = require('./merge-detections.service');
 
 /**
@@ -27,6 +28,7 @@ const { mergeDetections } = require('./merge-detections.service');
  *   `origin` if set.
  * @returns {object[]} KrtEntry[] with `mergedFrom` populated
  */
+
 function dedupeKrtItems(items, sourceLabel = 'detector') {
   if (!Array.isArray(items) || items.length === 0) return [];
 
@@ -58,6 +60,13 @@ function dedupeKrtItems(items, sourceLabel = 'detector') {
       // Other contributors' detectorMeta lives on their originalItem in
       // mergedFrom, so nothing is lost.
       ...(bestItem.detectorMeta ? { detectorMeta: bestItem.detectorMeta } : {}),
+      // Manuscript evidence, picked across ALL contributors rather than taken
+      // from the highest-confidence one: the strongest contributor is not
+      // necessarily the best-grounded, and dropping this here silently broke
+      // every downstream consumer (the modal's context line, the grounding
+      // matcher, and the evidence attached to suggestions).
+      ...(pickBestEvidence(contributions.map(c => c?.originalItem?.evidence))
+        ? { evidence: pickBestEvidence(contributions.map(c => c?.originalItem?.evidence)) } : {}),
       mergedFrom: contributions.map(d => ({
         confidence: d.confidence,
         originalItem: d.originalItem

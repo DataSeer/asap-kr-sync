@@ -41,7 +41,26 @@ const dropMainTopPadding = computed(() => SUBMISSION_STEP_RE.test(route.path))
         class="flex-1 px-6 pb-6 min-w-0 overflow-y-auto overflow-x-hidden"
         :class="dropMainTopPadding ? 'pt-0' : 'pt-6'"
       >
-        <RouterView />
+        <!--
+          Most views are kept alive across a route change, which is what you
+          want: the KRT editor should not rebuild itself every time the URL
+          moves. A view that swaps its whole subject on a param change wants the
+          opposite, and says so with `meta.remountOnRouteChange` — keyed by
+          path, a param change produces a NEW component instance, so `onMounted`
+          means what everyone assumes it means.
+
+          Without it, navigating between module pages reused one instance and
+          only the param changed: anything loaded on mount had already run, for
+          whichever module was opened first, and the page showed nothing until a
+          reload. Watchers can express the same thing, but only for the state
+          someone remembered to watch.
+        -->
+        <RouterView v-slot="{ Component, route: current }">
+          <component
+            :is="Component"
+            :key="current.meta.remountOnRouteChange ? current.fullPath : undefined"
+          />
+        </RouterView>
       </main>
     </div>
     <NotificationContainer />

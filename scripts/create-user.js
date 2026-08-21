@@ -5,7 +5,11 @@
  * Usage: node scripts/create-user.js --email=email@example.com --password=password --name="User Name" --role=admin
  */
 
-require('dotenv').config({ path: '.env' });
+// Anchored on the script, not the cwd: run from elsewhere and the app's
+// database config silently falls back to the local dev default, so the
+// account is created in a different database than intended.
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const { User, sequelize } = require('../src/backend/models');
 
@@ -14,8 +18,13 @@ async function createUser() {
   const params = {};
 
   args.forEach(arg => {
-    const [key, value] = arg.replace('--', '').split('=');
-    params[key] = value;
+    // Split on the FIRST '=' only. `.split('=')` silently truncated any
+    // value containing one — a password of `a=b` became `a`, was hashed as
+    // that, and the account could then never be logged into.
+    const body = arg.replace(/^--/, '');
+    const eq = body.indexOf('=');
+    if (eq === -1) { params[body] = true; return; }
+    params[body.slice(0, eq)] = body.slice(eq + 1);
   });
 
   const { email, password, name, role = 'author', team } = params;

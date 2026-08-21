@@ -93,12 +93,29 @@ module.exports = {
   async up(queryInterface) {
     const now = new Date();
 
-    // Insert resource types with sort_order
+    // Insert resource types with sort_order AND their group.
+    //
+    // `type` was omitted, and the column defaults to 'lab_material' — so every
+    // type on a freshly seeded database, Dataset and Software/code and Protocol
+    // included, was classified as a lab material. That is not cosmetic:
+    // getResourceTypeGroupOrder maps name -> group, and the seeded detection
+    // strategies load their author seeds by group. Datasets, software and
+    // protocols each asked for their own group and got NOTHING, while materials
+    // asked for group 3 and received every row in the table.
+    //
+    // It went unnoticed because the working databases had been corrected by
+    // hand through the admin Resource Types page.
+    const TYPE_BY_NAME = {
+      'Dataset': 'dataset',
+      'Software/code': 'software',
+      'Protocol': 'protocol'
+    };
     const resourceTypeRecords = resourceTypes.map((name, index) => ({
       id: uuidv4(),
       name,
       description: null,
       active: true,
+      type: TYPE_BY_NAME[name] || 'lab_material',
       sort_order: index,
       created_at: now,
       updated_at: now

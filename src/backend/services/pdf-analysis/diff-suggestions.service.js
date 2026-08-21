@@ -52,14 +52,10 @@ function lookupIdTokens(idField, name, typeKey) {
   return tokens;
 }
 
-const KRT_COLUMNS = [
-  'resourceType',
-  'resourceName',
-  'source',
-  'identifier',
-  'newReuse',
-  'additionalInformation'
-];
+// (A `KRT_COLUMNS` array used to sit here listing all six columns. Nothing read
+// it — the columns suggestions may edit are the explicit `editableColumns`
+// subset below, and everything else looks up COLUMN_MAP by key. Keeping it
+// implied the six were handled uniformly, which they are not.)
 
 // Map between the GeneratedResource camelCase fields, the KRT row's persisted
 // snake_case fields, and the suggestion-data field names the frontend expects.

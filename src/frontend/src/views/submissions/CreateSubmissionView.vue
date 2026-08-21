@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useAuthStore } from '@/stores/auth.store'
@@ -329,9 +329,6 @@ async function proceedWithSubmit(krtFileToSend) {
   }
 }
 
-function handleCancel() {
-  router.push({ name: 'dashboard' })
-}
 </script>
 
 <template>
@@ -342,7 +339,7 @@ function handleCancel() {
         <button
           type="button"
           class="btn-secondary text-sm"
-          title="Load demo metadata and files (PDF, Key Resources Table if available) in one click"
+          v-tooltip="'Load demo metadata and files (PDF, Key Resources Table if available) in one click'"
           @click="showDemoSelector = !showDemoSelector"
         >
           Use Demo Data
@@ -379,7 +376,7 @@ function handleCancel() {
                 <span
                   v-if="doc.krt"
                   class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium flex-shrink-0"
-                  :title="'Includes a Key Resources Table file: ' + doc.krt"
+                  v-tooltip="'Includes a Key Resources Table file: ' + doc.krt"
                 >Key Resources Table</span>
               </div>
               <div class="text-sm text-gray-700 mt-1 line-clamp-2">{{ doc.title }}</div>
@@ -435,7 +432,7 @@ function handleCancel() {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ krtFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (krtFile.size / 1024).toFixed(1) }} KB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearKrtFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearKrtFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -467,7 +464,7 @@ function handleCancel() {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ pdfFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (pdfFile.size / 1024 / 1024).toFixed(1) }} MB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearPdfFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearPdfFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -496,7 +493,7 @@ function handleCancel() {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ supplementalFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (supplementalFile.size / 1024 / 1024).toFixed(1) }} MB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearSupplementalFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearSupplementalFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -541,7 +538,9 @@ function handleCancel() {
       </div>
 
       <div class="flex items-center justify-end space-x-4 pt-4 border-t">
-        <button type="button" class="btn-secondary" @click="handleCancel">Cancel</button>
+        <!-- Cancel goes somewhere; it does not DO anything. So it is a link,
+             and ctrl-click opens the dashboard in a new tab like any other. -->
+        <RouterLink :to="{ name: 'dashboard' }" class="btn-secondary">Cancel</RouterLink>
         <!-- Always clickable (except while loading) so the click handler can
              highlight missing required inputs (title + PDF). A missing KRT opens
              a confirmation modal instead of blocking. -->

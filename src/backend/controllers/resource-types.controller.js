@@ -206,7 +206,11 @@ async function exportCsv(req, res, next) {
         escapeCsvField(e.name),
         escapeCsvField(e.type || 'lab_material'),
         escapeCsvField(e.description),
-        e.sort_order ?? 0,
+        // `raw: true` returns the ALIASED name, so `e.sort_order` was always
+        // undefined and every exported row said 0 — re-importing then
+        // collapsed the editor's tab order. Same bug the enrichment and
+        // project exports already fixed.
+        e.sortOrder ?? 0,
         e.active ? 'true' : 'false'
       ];
       csvRows.push(row.join(','));

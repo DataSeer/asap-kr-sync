@@ -24,7 +24,7 @@ function cellText(v) {
 }
 
 function norm(s) {
-  return String(s || '').replace(/﻿/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return String(s || '').replace(/\uFEFF/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 /** Locate the DataSeer report file for a manuscript id. */

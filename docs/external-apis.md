@@ -54,7 +54,7 @@ Each suggestion carries the real contributing detection module(s) (software/data
 
 ## Google Gemini API (DAS Suggestions)
 
-Powers the standalone `das_suggestions` background job. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
+Powers the `das_suggestions` background job — a pipeline step gated to the Availability step. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
 
 | Property | Value |
 |----------|-------|
@@ -65,7 +65,7 @@ Powers the standalone `das_suggestions` background job. A Gemini call checks the
 | **Model** | `gemini-2.5-flash` (configurable via `DAS_SUGGESTIONS_GEMINI_MODEL`) |
 | **Auth** | API key (`DAS_SUGGESTIONS_GEMINI_API_KEY`) |
 | **Timeout** | 2 minutes (`DAS_SUGGESTIONS_API_TIMEOUT`) |
-| **Depends on** | Nothing in the pipeline — standalone; started from `/availability` (DAS already extracted, KRT final) |
+| **Depends on** | `das_extraction` for the statement, then held by the `availability_ready` gate until the submission reaches `step_as` **and** carries a real statement |
 | **Disable** | `DAS_SUGGESTIONS_ENABLED=false` (frontend falls back to legacy in-browser rules) |
 
 The verdicts are **persisted** on the job result and read via `GET /api/submissions/:id/das-suggestions`. Re-run via `POST /api/submissions/:id/das-suggestions/regenerate` (on first arrival at `/availability` and whenever the DAS text is edited).
@@ -298,10 +298,13 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 
 ## Google Gemini API (Materials Detection)
 
-> **Author-seeded and minimal.** Materials detection is now grounded on the author's KRT: the prompt
-> (`src/backend/data/prompts/materials-detection.txt`) is seeded with the author's KRT material rows (via the
-> shared `src/backend/services/krt/author-krt-seeds.service.js`). The detector **skips extraction entirely when
-> the author provided no materials** — no author material rows → no Gemini call.
+> **Cue-driven.** The prompt tells the model which *textual cues* mark a material — a catalog number, an RRID, a
+> vendor name, a clone ID, a concentration in a methods sentence. Which prompt file it uses depends on the
+> pipeline and on the submission: `seeded/materials-detection.txt` when the author's KRT has materials to seed
+> with, `blind/materials-detection.txt` otherwise. It runs on **every** submission,
+> including ones with no author materials; the author's table enters one step later, at `krt_grounding`.
+> *(Until 2026-08 the prompt was seeded with the author's material rows and skipped entirely when there were
+> none, which made the KRT-less mode blind by construction.)*
 
 Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Follows the same pattern as datasets detection.
 
@@ -345,7 +348,7 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 - `canonical_name`, `protocol_type` (EXPERIMENTAL, COMPUTATIONAL, etc.), `protocol_role` (NEW/REUSE)
 - `source`, `doi`, `url`, `krt_relevance`
 
-**Author-KRT seeding:** the prompt is seeded with the author's protocol rows as "Section 0" (via the shared `src/backend/services/krt/author-krt-seeds.service.js`). Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
+**Seeding:** the prompt's "Section 0" — the author's protocol rows as authoritative base records — is what `blind-v1` removes; under the default `seeded-v1` those rows are still passed as seeds. Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
 
 **Prompt file:** `src/backend/data/prompts/protocols-detection.txt`
 
@@ -365,12 +368,12 @@ env vars). Excel is the only active export format — see the next section.
 
 ## Excel Report Generation
 
-Active report format using the `xlsx` (SheetJS) library.
+Active report format, written with **exceljs**.
 
 | Property | Value |
 |----------|-------|
 | **Exporter** | `src/backend/services/reports/ExcelExporter.js` |
-| **Library** | `xlsx` (SheetJS) |
+| **Library** | `exceljs` — the app's only spreadsheet library |
 
 **Sheets generated:**
 1. **Summary** — manuscript metadata, resource/change counts

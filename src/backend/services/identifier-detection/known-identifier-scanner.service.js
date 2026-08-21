@@ -40,10 +40,17 @@ const {
 // ---------------------------------------------------------------------------
 const REFERENCES_HEADING_RE = /^[ \t]*#+\s*(?:References?|Bibliography|Citations|Works\s+Cited|Literature\s+Cited)\b.*$/im;
 
+// The `\\?` before each underscore is not decoration. The PDF-to-markdown
+// converter escapes markdown punctuation, and across this corpus the underscore
+// is the ONLY character it escapes — 396 times. An RRID is mostly underscore, so
+// `RRID:AB\\_2687579` never matched `[A-Za-z]+_` and every RRID in those
+// manuscripts was invisible to this scanner: 79 of 79 in one paper, 18 of 18 in
+// another. normalizeRawValue drops the backslash again, so the DOI and URL
+// patterns need no change — their character classes already swallow it.
 const STRUCTURED_PATTERNS = [
   { type: 'doi',  re: /\b10\.\d{4,9}\/[^\s,;)\]]+/gi,                     normalize: v => normalizeRawValue(v) },
-  { type: 'rrid', re: /\bRRID:\s*([A-Za-z]+_[A-Za-z0-9]+)/gi,            normalize: (_v, m) => normalizeRawValue(m[1]) },
-  { type: 'scr',  re: /\bSCR_\d+\b/gi,                                   normalize: v => normalizeRawValue(v) },
+  { type: 'rrid', re: /\bRRID:\s*([A-Za-z]+\\?_[A-Za-z0-9]+)/gi,         normalize: (_v, m) => normalizeRawValue(m[1]) },
+  { type: 'scr',  re: /\bSCR\\?_\d+\b/gi,                                 normalize: v => normalizeRawValue(v) },
   { type: 'url',  re: /https?:\/\/[^\s,;)\]<>"]+/gi,                     normalize: v => normalizeRawValue(v) }
 ];
 

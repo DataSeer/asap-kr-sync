@@ -47,13 +47,31 @@ module.exports = (sequelize) => {
       allowNull: false,
       defaultValue: ROLES.AUTHOR
     },
+    /**
+     * Anonymised rather than removed.
+     *
+     * The row has to survive: `submissions.user_id` and `change_logs.user_id`
+     * are ON DELETE CASCADE, so a real DELETE took the person's submissions
+     * with them AND punched holes in the history of everyone else's. A deleted
+     * user keeps their id and their foreign keys; what goes is the identity.
+     */
+    deleted: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false
+    },
+    deletedAt: {
+      type: DataTypes.DATE,
+      allowNull: true
+    }
   }, {
     tableName: 'users',
     timestamps: true,
     underscored: true,
     indexes: [
       { fields: ['email'], unique: true },
-      { fields: ['role'] }
+      { fields: ['role'] },
+      { fields: ['deleted'] }
     ]
   });
 
@@ -93,8 +111,10 @@ module.exports = (sequelize) => {
     }
   });
 
+  // `user.passwordHash &&` is not redundant: anonymising an account erases the
+  // hash by setting it to null, and bcrypt.hash(null) throws.
   User.beforeUpdate(async (user) => {
-    if (user.changed('passwordHash') && !isBcryptHash(user.passwordHash)) {
+    if (user.changed('passwordHash') && user.passwordHash && !isBcryptHash(user.passwordHash)) {
       user.passwordHash = await User.hashPassword(user.passwordHash);
     }
   });

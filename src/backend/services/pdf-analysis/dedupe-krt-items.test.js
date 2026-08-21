@@ -162,3 +162,70 @@ test('origin uses the strongest contributor\'s origin when set', () => {
   ]);
   assert.equal(r[0].origin, 'detector-b');
 });
+
+// ── Evidence preservation ───────────────────────────────────────────────────
+// dedupeKrtItems rebuilds each entry from a fixed field list, so a field it
+// does not name is silently dropped. `evidence` was, which broke every
+// downstream consumer at once: the modal's context line, the grounding
+// matcher, and the evidence attached to suggestions.
+
+const evidence = (over = {}) => ({
+  quote: 'a rabbit anti-TH antibody',
+  offset: 100,
+  section: 'Methods > Immunohistochemistry',
+  match: 'exact',
+  context: 'Free-floating sections were incubated with a rabbit anti-TH antibody.',
+  quoteStart: 45,
+  quoteEnd: 70,
+  sentenceStart: 0,
+  sentenceEnd: 68,
+  ...over
+});
+
+const withEvidence = (over = {}) => ({
+  resourceType: 'Lab Material',
+  resourceName: 'anti-TH',
+  identifier: 'RRID:AB_2201528',
+  source: 'Abcam',
+  newReuse: 'reuse',
+  origin: 'materials-gemini',
+  confidence: 0.9,
+  additionalInformation: '',
+  detectorMeta: {},
+  evidence: evidence(),
+  ...over
+});
+
+test('evidence survives dedupe on a single item', () => {
+  const [out] = dedupeKrtItems([withEvidence()], 'materials');
+  assert.ok(out.evidence, 'evidence must not be dropped');
+  assert.equal(out.evidence.match, 'exact');
+  assert.equal(out.evidence.section, 'Methods > Immunohistochemistry');
+  assert.equal(out.evidence.context, evidence().context);
+});
+
+test('the best-grounded evidence wins, not the highest-confidence contributor', () => {
+  const [out] = dedupeKrtItems([
+    withEvidence({ confidence: 0.99, evidence: { quote: 'x', offset: 1, section: '', match: 'partial' } }),
+    withEvidence({ confidence: 0.4 })
+  ], 'materials');
+  assert.equal(out.evidence.match, 'exact', 'exact beats partial regardless of confidence');
+  assert.ok(out.evidence.context, 'and the one carrying a context paragraph is preferred');
+});
+
+test('an item with no evidence stays clean rather than gaining an empty block', () => {
+  const item = withEvidence();
+  delete item.evidence;
+  const [out] = dedupeKrtItems([item], 'materials');
+  assert.equal('evidence' in out, false);
+});
+
+test('every contributor keeps its own evidence in mergedFrom', () => {
+  const [out] = dedupeKrtItems([
+    withEvidence({ confidence: 0.9 }),
+    withEvidence({ confidence: 0.5, evidence: evidence({ section: 'Results', match: 'partial' }) })
+  ], 'materials');
+  const sections = (out.mergedFrom || []).map(c => c.originalItem?.evidence?.section);
+  assert.ok(sections.includes('Methods > Immunohistochemistry'));
+  assert.ok(sections.includes('Results'), 'per-contributor evidence is still inspectable');
+});

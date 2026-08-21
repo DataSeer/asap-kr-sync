@@ -9,18 +9,18 @@
  * No demo data exists for ORCID extraction yet; getDemoData returns null.
  */
 
-const { Submission, File, SubmissionJob } = require('../../models');
+const { Submission, File } = require('../../models');
 const s3Service = require('../storage/s3.service');
 const grobidClient = require('./grobid-client.service');
 const openalexClient = require('./openalex-client.service');
 const orcidApiClient = require('./orcid-api-client.service');
 const grobidConfig = require('../../config/grobid-api');
 const orcidApiConfig = require('../../config/orcid-api');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
+const runInputs = require('../queue/run-inputs.service');
 
 /** Max authors to search via ORCID API fallback */
 const ORCID_API_MAX_AUTHORS = 10;
@@ -67,11 +67,16 @@ async function processOrcidExtraction(submissionId, jobLogger = null, { isFinalA
 
   // Authors are stored on the Submission (not the SubmissionJob) — preserve
   // existing reads from submission.authors.
-  submission.authors = {
-    items: result.data.items || [],
-    meta: result.data.meta || {}
-  };
-  await submission.save();
+  // Only on success. `fail` resolves rather than throwing, and its data.items
+  // is [] — so a GROBID outage on the final attempt replaced a previously
+  // extracted author list with nothing.
+  if (result.status === 'done') {
+    submission.authors = {
+      items: result.data.items || [],
+      meta: result.data.meta || {}
+    };
+    await submission.save();
+  }
 
   return result;
 }
@@ -97,6 +102,11 @@ async function extractAuthorsForSubmission(submission, jobLogger) {
 
   // Step 1: GROBID header extraction
   jobLogger?.log('grobid_start', 'Sending PDF to GROBID for header extraction');
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { pdf: runInputs.fileRef(pdfFile, pdfBuffer) },
+    meta: { engines: ['grobid', 'openalex', 'orcid_api'] }
+  });
+
   const grobidResult = await grobidClient.extractHeader(pdfBuffer, pdfFile.fileName);
   const { doi, authors: grobidAuthors } = grobidResult;
   await jobLogger?.saveRawResponse('grobid-header', {
@@ -229,27 +239,38 @@ async function extractAuthorsForSubmission(submission, jobLogger) {
   };
 }
 
-async function queueOrcidExtraction(submissionId, round = 1) {
+/**
+ * Re-run author extraction, in the pipeline.
+ *
+ * Goes through `requeueStep` — the round's own row is reused instead of a
+ * second one being inserted beside it. See `queueMarkdownConvert` for why that
+ * distinction is not cosmetic; nothing depends on ORCID output today, but the
+ * two paths disagreeing about in-flight and cancelled work is exactly how the
+ * pipeline drifts.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<object>} the orcid_extraction SubmissionJob row
+ */
+async function queueOrcidExtraction(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.ORCID_EXTRACTION, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.ORCID_EXTRACTION,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // returned row cannot tell a caller whether it started this run or found one
+  // already going — the endpoints reported "already running" for runs they had
+  // just started this instant.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.ORCID_EXTRACTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.ORCID_EXTRACTION, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.ORCID_EXTRACTION, round, userId);
+
+  logger.info('ORCID extraction re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.ORCID_EXTRACTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('ORCID extraction queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 async function getAuthors(submissionId) {

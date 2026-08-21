@@ -28,6 +28,14 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       __APP_VERSION__: JSON.stringify(process.env.npm_package_version)
+    },
+    test: {
+      // Node by default — most suites are pure functions and start faster
+      // without a DOM. A file that mounts a component or a composable with
+      // lifecycle hooks opts in with `// @vitest-environment happy-dom` on its
+      // first line.
+      environment: 'node',
+      include: ['src/**/*.test.js']
     }
   }
 })

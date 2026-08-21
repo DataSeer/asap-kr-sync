@@ -9,6 +9,8 @@ import { setSubmissionTitle } from '@/router'
 import submissionService from '@/services/submission.service'
 import suggestionService from '@/services/suggestion.service'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 
 const route = useRoute()
 const router = useRouter()
@@ -308,15 +310,33 @@ const hasChanges = computed(() => {
   return changeStats.value.updated > 0 || changeStats.value.added > 0 || changeStats.value.removed > 0
 })
 
-onMounted(async () => {
+/**
+ * A failed load must not read as a finding. This page's empty state is the
+ * sentence "No changes have been made to this KRT" over the original table —
+ * which is a perfectly reassuring thing to be told, and completely wrong when
+ * the truth is that the submission never arrived. The fetches also ran
+ * unguarded, so a rejection aborted the mount chain and left the suggestions
+ * and the change list unfetched behind that same sentence.
+ */
+const loadError = ref(null)
+
+onMounted(loadPage)
+
+async function loadPage() {
+  loadError.value = null
   krtStore.clearKRT()
   allSuggestions.value = []
   resourceTypesStore.fetchResourceTypeNames().catch(() => {})
-  await submissionStore.fetchSubmission(route.params.id)
-  await krtStore.fetchKRT(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+    await krtStore.fetchKRT(route.params.id)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
   await fetchChanges()
   await fetchSuggestions()
-})
+}
 
 async function fetchSuggestions() {
   try {
@@ -492,6 +512,15 @@ function getCellClass(row, columnKey) {
       @go-next="handleApprove"
     />
 
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
+    <template v-else>
     <!-- Already approved notice -->
     <div v-if="isAlreadyApproved" class="card bg-green-50 border-green-200">
       <div class="flex items-center">
@@ -647,7 +676,7 @@ function getCellClass(row, columnKey) {
             :key="suggestion.id"
             class="w-2 h-2 rounded-full transition-colors"
             :class="index === currentRejectedIndex ? 'bg-primary-600' : 'bg-gray-300 hover:bg-gray-400'"
-            :title="`Rejected suggestion ${index + 1}`"
+            v-tooltip="`Rejected suggestion ${index + 1}`"
             @click="goToRejected(index)"
           />
         </div>
@@ -690,19 +719,19 @@ function getCellClass(row, columnKey) {
             <span
               class="source-tag source-tag-ai source-tag-clickable"
               :class="{ 'source-tag-hidden': hiddenSources.has('AI') }"
-              title="Click to show/hide AI changes"
+              v-tooltip="'Click to show/hide AI changes'"
               @click="toggleSourceVisibility('AI')"
             >AI</span>
             <span
               class="source-tag source-tag-validation source-tag-clickable"
               :class="{ 'source-tag-hidden': hiddenSources.has('Val') }"
-              title="Click to show/hide Validation changes"
+              v-tooltip="'Click to show/hide Validation changes'"
               @click="toggleSourceVisibility('Val')"
             >Val</span>
             <span
               class="source-tag source-tag-manual source-tag-clickable"
               :class="{ 'source-tag-hidden': hiddenSources.has('User') }"
-              title="Click to show/hide User changes"
+              v-tooltip="'Click to show/hide User changes'"
               @click="toggleSourceVisibility('User')"
             >User</span>
           </div>
@@ -751,13 +780,13 @@ function getCellClass(row, columnKey) {
               :class="getRowClass(row)"
             >
               <td class="col-row-num">
-                <span v-if="row.isDeleted" class="text-red-500" title="Deleted row">
+                <span v-if="row.isDeleted" class="text-red-500" v-tooltip="'Deleted row'">
                   &times;
                 </span>
                 <span v-else>{{ index + 1 }}</span>
               </td>
               <td v-if="showDetails && hasChanges" class="col-status">
-                <div v-if="row.isDeleted" class="status-group" :title="`Deleted by ${row.deletedBy} on ${formatTime(row.deletedAt)}`">
+                <div v-if="row.isDeleted" class="status-group" v-tooltip="`Deleted by ${row.deletedBy} on ${formatTime(row.deletedAt)}`">
                   <span class="status-badge status-deleted">Deleted</span>
                   <span class="source-tag" :class="getDeletedSourceTag(row).class">{{ getDeletedSourceTag(row).label }}</span>
                 </div>
@@ -781,7 +810,7 @@ function getCellClass(row, columnKey) {
                   :class="{ 'clickable': showDetails && !row.isDeleted && hasCellChange(row, col.key) }"
                   @click="showDetails && !row.isDeleted && hasCellChange(row, col.key) && openHistoryModal(row, col.key, col.label)"
                 >
-                  <span class="cell-text" :class="{ 'text-deleted': row.isDeleted }" :title="row[col.key]">
+                  <span class="cell-text" :class="{ 'text-deleted': row.isDeleted }" v-tooltip="row[col.key]">
                     {{ row[col.key] || '-' }}
                   </span>
 
@@ -789,7 +818,7 @@ function getCellClass(row, columnKey) {
                   <span
                     v-if="showDetails && !row.isDeleted && hasCellChange(row, col.key)"
                     class="history-icon"
-                    title="Click to see change history"
+                    v-tooltip="'Click to see change history'"
                   >?</span>
                 </div>
               </td>
@@ -803,7 +832,10 @@ function getCellClass(row, columnKey) {
       </p>
     </div>
 
-    <!-- History Modal -->
+    </template>
+
+    <!-- History Modal — outside the guard: it is opened from the table above,
+         so it can only be showing when there is something to show. -->
     <div v-if="historyModal.show" class="modal-overlay" @click.self="closeHistoryModal">
       <div class="modal-container history-modal">
         <div class="modal-header">

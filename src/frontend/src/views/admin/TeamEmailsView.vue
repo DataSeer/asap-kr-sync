@@ -11,6 +11,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useTeamsStore } from '@/stores/teams.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import SearchInput from '@/components/common/SearchInput.vue'
+import { formatDate } from '@/utils/format-date'
 
 const teamsStore = useTeamsStore()
 const notificationStore = useNotificationStore()
@@ -75,10 +76,6 @@ async function handleAddSingle() {
   } finally {
     addingSingle.value = false
   }
-}
-
-function formatDate(date) {
-  return new Date(date).toLocaleDateString()
 }
 
 /**

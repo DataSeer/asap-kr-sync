@@ -14,10 +14,14 @@ import protocolsService from '@/services/protocols.service'
 import suggestionService from '@/services/suggestion.service'
 import jobService from '@/services/job.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
+import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
+import { isFutureStepJob } from '@/composables'
 
 const route = useRoute()
 const router = useRouter()
@@ -80,6 +84,16 @@ function getJob(type) {
 // empty-state visible even after every job has hit 'complete'.
 const jobs = computed(() => bgProcessesRef.value?.jobs || {})
 
+// SubmissionHeader injects this to know whether pdf_analysis is parked on
+// `pending_input`, which is what makes saving a DAS advance the pipeline.
+// BackgroundProcesses provides the same key, but it is the header's SIBLING
+// here — provide only travels DOWN, so without this line the header falls back
+// to its `ref({})` default, the banner never shows and saving a DAS never
+// releases the step. Declared after `jobs` on purpose: provide() runs at setup,
+// and referencing the computed above its declaration is a TDZ throw that takes
+// the whole page down.
+provide('submissionJobs', jobs)
+
 // Derive analyzing state from job poller
 const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))
 const pdfAnalysisPendingInput = computed(() => pdfAnalysisJob.value?.status === 'pending_input')
@@ -120,12 +134,24 @@ async function handleAdvanceAnalysis() {
 }
 
 // Wires job-completion side-effects (refreshing suggestions, surfacing
-// notifications, etc.) into the shared BackgroundProcesses wrapper. Called
-// from onMounted once bgProcessesRef is bound — the wrapper itself runs
-// useJobPoller; we just register PDFView-specific reactions on top.
+// notifications, etc.) into the shared BackgroundProcesses wrapper. The wrapper
+// itself runs useJobPoller; we just register PDFView-specific reactions on top.
+//
+// It cannot simply be called from onMounted. The panel lives inside a `v-else`
+// on `pdfFile`, which comes from the submission — not fetched until later in
+// that same onMounted. So on a COLD load the panel is not rendered yet, the ref
+// is null, and every callback here was silently skipped: the suggestions card
+// sat on "Analyzing…" until the page was reloaded a second time, by which point
+// the store already had the submission and the panel rendered immediately. It
+// looked like a slow first load rather than a wiring bug.
+//
+// So it is driven by the ref instead: registered the moment the panel exists,
+// once.
+let callbacksRegistered = false
 function registerJobCallbacks() {
   const bg = bgProcessesRef.value
-  if (!bg) return
+  if (!bg || callbacksRegistered) return
+  callbacksRegistered = true
 
   bg.onJobComplete('pdf_analysis', async () => {
     analyzing.value = false
@@ -310,8 +336,18 @@ const showRejectModal = ref(false)
 const rejectingFinding = ref(null)
 const rejectionReason = ref('')
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its empty state — which reads as a fact about the manuscript
+// rather than as a page that never received it.
+const loadError = ref(null)
+
+onMounted(loadPage)
+
+async function loadPage() {
   // Reset state for the new submission
+  loadError.value = null
   replacingPdf.value = false
   analyzing.value = false
   analysisStatus.value = null
@@ -320,24 +356,46 @@ onMounted(async () => {
   // Clear previous KRT data before loading new submission
   krtStore.clearKRT()
 
-  // The BackgroundProcesses child is mounted before the parent, so its ref
-  // is bound by the time we get here — wire our job-completion callbacks
-  // into the shared poller.
+  // Registers now if the panel is already rendered (a warm store); the watcher
+  // below covers the cold load, where it appears only once the submission
+  // arrives.
+  callbacksRegistered = false
   registerJobCallbacks()
 
   // Load resource type categories (non-blocking) — service status is owned
   // by the BackgroundProcesses wrapper now.
   resourceTypesStore.fetchResourceTypeNames().catch(() => {})
 
-  await submissionStore.fetchSubmission(route.params.id)
-  await krtStore.fetchKRT(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
+  // The KRT is what every suggestion on this page is compared against, so a
+  // failure to read it is a failed page, not a page with no suggestions. The
+  // six loaders after it each swallow their own errors (a module that has not
+  // run yet is normal), but they were unreachable while this call was
+  // unguarded: one rejection aborted the mounted hook and the page settled on
+  // its empty state.
+  try {
+    await krtStore.fetchKRT(route.params.id)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
   await checkAnalysisStatus()
   await loadSoftwareMentions()
   await loadAuthors()
   await loadDatasets()
   await loadMaterials()
   await loadProtocols()
-})
+}
+
+// The panel appears only once the submission has loaded (it is inside a v-else
+// on `pdfFile`), so this is what catches the cold load — see the note on
+// registerJobCallbacks.
+watch(bgProcessesRef, () => registerJobCallbacks())
 
 // Update page title with the submission title (manuscriptId is optional).
 watch(submission, (sub) => {
@@ -444,7 +502,9 @@ async function loadAuthors() {
 async function loadDatasets() {
   try {
     const data = await datasetsService.getMentions(route.params.id)
-    datasetItems.value = data?.items || []
+    // The endpoint returns { mentions, meta } — reading `.items` here always
+    // produced [], so these panels silently fell back to the job result.
+    datasetItems.value = data?.mentions || data?.items || []
   } catch {
     datasetItems.value = []
   }
@@ -453,7 +513,9 @@ async function loadDatasets() {
 async function loadMaterials() {
   try {
     const data = await materialsService.getMentions(route.params.id)
-    materialsItems.value = data?.items || []
+    // The endpoint returns { mentions, meta } — reading `.items` here always
+    // produced [], so these panels silently fell back to the job result.
+    materialsItems.value = data?.mentions || data?.items || []
   } catch {
     materialsItems.value = []
   }
@@ -462,7 +524,9 @@ async function loadMaterials() {
 async function loadProtocols() {
   try {
     const data = await protocolsService.getMentions(route.params.id)
-    protocolsItems.value = data?.items || []
+    // The endpoint returns { mentions, meta } — reading `.items` here always
+    // produced [], so these panels silently fell back to the job result.
+    protocolsItems.value = data?.mentions || data?.items || []
   } catch {
     protocolsItems.value = []
   }
@@ -1178,11 +1242,22 @@ function scrollToFindingRow(finding) {
       </template>
     </SubmissionHeader>
 
+    <!-- The submission never arrived. Shown INSTEAD of the no-PDF message
+         below, which would otherwise state as fact something this page has no
+         way of knowing. -->
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
     <!-- Fallback: if the PDF upload failed during step 1, surface a recovery
          path. Step 1 enforces PDF-required at the form level, but a failed
          upload after submission creation could land the user here without
          one. We send them back to step 2 to retry. -->
-    <div v-if="!pdfFile" class="card text-center py-8">
+    <div v-else-if="!pdfFile" class="card text-center py-8">
       <p class="text-sm text-gray-700 mb-2">
         No PDF file is associated with this submission. The original upload may have failed.
       </p>
@@ -1210,7 +1285,7 @@ function scrollToFindingRow(finding) {
               :disabled="regenerating || hasCancelledJobs"
               class="btn-secondary text-xs inline-flex items-center"
               :class="{ 'opacity-50 cursor-not-allowed': regenerating || hasCancelledJobs }"
-              :title="hasCancelledJobs
+              v-tooltip="hasCancelledJobs
                 ? 'Processing was cancelled — use \'Re-run all\' to restart before regenerating suggestions'
                 : 'Regenerate AI suggestions by re-comparing your KRT with the generated KRT (does not re-run detection)'"
               @click="regenerateSuggestions"
@@ -1228,7 +1303,7 @@ function scrollToFindingRow(finding) {
               :disabled="analyzing"
               class="btn-secondary text-xs inline-flex items-center"
               :class="{ 'opacity-50 cursor-not-allowed': analyzing }"
-              title="Re-run all background processes (PDF analysis, DAS extraction, software detection)"
+              v-tooltip="'Re-run all background processes (PDF analysis, DAS extraction, software detection)'"
               @click="handleRerunAnalysis"
             >
               <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1278,14 +1353,10 @@ function scrollToFindingRow(finding) {
              found" copy below, which only kicks in once a process actually
              completes. -->
         <div v-if="findings.length === 0 && pdfAnalysisInFlight" class="text-center py-6 px-4">
-          <svg class="mx-auto w-8 h-8 text-primary-500 mb-2 animate-spin" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-          </svg>
           <p class="text-sm font-medium text-gray-800">Analyzing the manuscript…</p>
           <p class="text-xs text-gray-500 mt-1">PDF analysis is running. Suggestions will appear here as they're generated.</p>
-          <!-- Progress bar (#9): an indeterminate bar so Step 2 shows analysis
-               progress in the suggestions header, matching the KRT-processing UX. -->
+          <!-- One indeterminate bar, and only one: a spinner above it said the
+               same thing twice, and neither knows the real progress. -->
           <div class="mx-auto mt-3 max-w-xs h-1.5 rounded-full bg-primary-100 overflow-hidden">
             <div class="analysis-progress-bar h-full rounded-full bg-primary-500"></div>
           </div>
@@ -1305,12 +1376,11 @@ function scrollToFindingRow(finding) {
             <p class="text-xs text-gray-500 mt-1">No suggestions to review. You can open the background processes panel above to check what was detected.</p>
           </template>
           <template v-else>
-            <svg class="mx-auto w-8 h-8 text-primary-500 mb-2 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
             <p class="text-sm font-medium text-gray-800">Analyzing the manuscript…</p>
             <p class="text-xs text-gray-500 mt-1">Background processes are still running. New suggestions will appear here as they finish.</p>
+            <div class="mx-auto mt-3 max-w-xs h-1.5 rounded-full bg-primary-100 overflow-hidden">
+              <div class="analysis-progress-bar h-full rounded-full bg-primary-500"></div>
+            </div>
           </template>
         </div>
 
@@ -1362,17 +1432,17 @@ function scrollToFindingRow(finding) {
                   v-if="cellState(currentSuggestion, 'resourceType').editable && cellState(currentSuggestion, 'resourceType').mode === 'add'"
                   v-model="suggestionOverrides[currentSuggestion.id].resourceType"
                   class="suggestion-input"
-                  title="Resource Type"
+                  v-tooltip="'Resource Type'"
                 >
                   <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
                 </select>
                 <div v-else-if="cellState(currentSuggestion, 'resourceType').mode === 'edit_target' && cellState(currentSuggestion, 'resourceType').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'resourceType').oldValue || ''">{{ cellState(currentSuggestion, 'resourceType').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'resourceType').oldValue || ''">{{ cellState(currentSuggestion, 'resourceType').oldValue || '(empty)' }}</span>
                   <select v-model="suggestionOverrides[currentSuggestion.id]" class="suggestion-input">
                     <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
                   </select>
                 </div>
-                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'resourceType').value || ''">
+                <span v-else class="suggestion-cell-text" v-tooltip="cellState(currentSuggestion, 'resourceType').value || ''">
                   {{ cellState(currentSuggestion, 'resourceType').value || '—' }}
                 </span>
               </div>
@@ -1385,13 +1455,13 @@ function scrollToFindingRow(finding) {
                   v-model="suggestionOverrides[currentSuggestion.id].resourceName"
                   type="text"
                   class="suggestion-input"
-                  title="Resource Name"
+                  v-tooltip="'Resource Name'"
                 />
                 <div v-else-if="cellState(currentSuggestion, 'resourceName').mode === 'edit_target' && cellState(currentSuggestion, 'resourceName').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'resourceName').oldValue || ''">{{ cellState(currentSuggestion, 'resourceName').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'resourceName').oldValue || ''">{{ cellState(currentSuggestion, 'resourceName').oldValue || '(empty)' }}</span>
                   <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
                 </div>
-                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'resourceName').value || ''">
+                <span v-else class="suggestion-cell-text" v-tooltip="cellState(currentSuggestion, 'resourceName').value || ''">
                   {{ cellState(currentSuggestion, 'resourceName').value || '—' }}
                 </span>
               </div>
@@ -1404,13 +1474,13 @@ function scrollToFindingRow(finding) {
                   v-model="suggestionOverrides[currentSuggestion.id].source"
                   type="text"
                   class="suggestion-input"
-                  title="Source"
+                  v-tooltip="'Source'"
                 />
                 <div v-else-if="cellState(currentSuggestion, 'source').mode === 'edit_target' && cellState(currentSuggestion, 'source').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'source').oldValue || ''">{{ cellState(currentSuggestion, 'source').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'source').oldValue || ''">{{ cellState(currentSuggestion, 'source').oldValue || '(empty)' }}</span>
                   <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
                 </div>
-                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'source').value || ''">
+                <span v-else class="suggestion-cell-text" v-tooltip="cellState(currentSuggestion, 'source').value || ''">
                   {{ cellState(currentSuggestion, 'source').value || '—' }}
                 </span>
               </div>
@@ -1423,13 +1493,13 @@ function scrollToFindingRow(finding) {
                   v-model="suggestionOverrides[currentSuggestion.id].identifier"
                   type="text"
                   class="suggestion-input"
-                  title="Identifier"
+                  v-tooltip="'Identifier'"
                 />
                 <div v-else-if="cellState(currentSuggestion, 'identifier').mode === 'edit_target' && cellState(currentSuggestion, 'identifier').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'identifier').oldValue || ''">{{ cellState(currentSuggestion, 'identifier').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'identifier').oldValue || ''">{{ cellState(currentSuggestion, 'identifier').oldValue || '(empty)' }}</span>
                   <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
                 </div>
-                <span v-else class="suggestion-cell-text" :title="cellState(currentSuggestion, 'identifier').value || ''">
+                <span v-else class="suggestion-cell-text" v-tooltip="cellState(currentSuggestion, 'identifier').value || ''">
                   {{ cellState(currentSuggestion, 'identifier').value || '—' }}
                 </span>
               </div>
@@ -1441,7 +1511,7 @@ function scrollToFindingRow(finding) {
                   v-if="cellState(currentSuggestion, 'newReuse').editable && cellState(currentSuggestion, 'newReuse').mode === 'add'"
                   v-model="suggestionOverrides[currentSuggestion.id].newReuse"
                   class="suggestion-input"
-                  title="New/Reuse"
+                  v-tooltip="'New/Reuse'"
                 >
                   <option value="">—</option>
                   <option value="new">new</option>
@@ -1468,13 +1538,13 @@ function scrollToFindingRow(finding) {
                   v-model="suggestionOverrides[currentSuggestion.id].additionalInformation"
                   type="text"
                   class="suggestion-input"
-                  title="Additional Information"
+                  v-tooltip="'Additional Information'"
                 />
                 <div v-else-if="cellState(currentSuggestion, 'additionalInformation').mode === 'edit_target' && cellState(currentSuggestion, 'additionalInformation').editable" class="suggestion-cell-stack">
-                  <span class="suggestion-diff-old" :title="cellState(currentSuggestion, 'additionalInformation').oldValue || ''">{{ cellState(currentSuggestion, 'additionalInformation').oldValue || '(empty)' }}</span>
+                  <span class="suggestion-diff-old" v-tooltip="cellState(currentSuggestion, 'additionalInformation').oldValue || ''">{{ cellState(currentSuggestion, 'additionalInformation').oldValue || '(empty)' }}</span>
                   <input v-model="suggestionOverrides[currentSuggestion.id]" type="text" class="suggestion-input" />
                 </div>
-                <span v-else class="suggestion-cell-text suggestion-cell-text-wrap" :title="cellState(currentSuggestion, 'additionalInformation').value || ''">
+                <span v-else class="suggestion-cell-text suggestion-cell-text-wrap" v-tooltip="cellState(currentSuggestion, 'additionalInformation').value || ''">
                   {{ cellState(currentSuggestion, 'additionalInformation').value || '—' }}
                 </span>
               </div>
@@ -1482,9 +1552,17 @@ function scrollToFindingRow(finding) {
           </div>
 
           <!-- Manuscript excerpt — always shown so the user can verify the
-               suggestion against the paper without an extra click. -->
+               suggestion against the paper without an extra click.
+               `evidence` is an OBJECT (quote + section + surrounding paragraph
+               with offsets); it used to be a plain string, so it is rendered by
+               EvidenceContext rather than interpolated. A legacy string result
+               still renders, via the fallback below. -->
           <div v-if="currentSuggestion.evidence || currentSuggestion.description || currentSuggestion.detail" class="suggestion-evidence">
-            <p v-if="currentSuggestion.evidence" class="suggestion-evidence-line">
+            <template v-if="currentSuggestion.evidence && typeof currentSuggestion.evidence === 'object'">
+              <span class="suggestion-evidence-label">Found in manuscript:</span>
+              <EvidenceContext :evidence="currentSuggestion.evidence" />
+            </template>
+            <p v-else-if="currentSuggestion.evidence" class="suggestion-evidence-line">
               <span class="suggestion-evidence-label">Found in manuscript:</span>
               <span class="italic">"{{ currentSuggestion.evidence }}"</span>
             </p>
@@ -1496,7 +1574,7 @@ function scrollToFindingRow(finding) {
           <div class="suggestion-actions">
             <button
               class="suggestion-view-btn"
-              title="View in KRT Editor"
+              v-tooltip="'View in KRT Editor'"
               @click="scrollToFindingRow(currentSuggestion)"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1543,7 +1621,7 @@ function scrollToFindingRow(finding) {
                 'bg-gray-300': index !== currentSuggestionIndex && finding.status === 'rejected',
                 'bg-blue-300 hover:bg-blue-400': index !== currentSuggestionIndex && finding.status === 'pending'
               }"
-              :title="`Suggestion ${index + 1}: ${finding.status}`"
+              v-tooltip="`Suggestion ${index + 1}: ${finding.status}`"
               @click="goToSuggestion(index)"
             />
           </div>

@@ -191,7 +191,7 @@ S3_BUCKET_PREFIX=prod/
 PDF_ANALYSIS_ENABLED=true
 
 # Logging
-LOG_LEVEL=info
+LOG_LEVEL=http
 LOG_FILE=logs/app.log
 
 # KRT

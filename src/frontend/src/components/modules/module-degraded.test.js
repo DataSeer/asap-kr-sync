@@ -1,0 +1,123 @@
+// @vitest-environment happy-dom
+/**
+ * The module page's account of a partly-complete run.
+ *
+ * This is where a finished run is actually read — the job popup never opens for
+ * a completed step, because a completed tile links here instead. So if the
+ * degradation is not stated on this page, the only place it appears is a badge
+ * on a panel the reader has already left.
+ *
+ * It leads the panel rather than sitting in Statistics on purpose: the counts
+ * below it are correct but are a floor, not a total, and a reader who meets the
+ * number first has already drawn the wrong conclusion.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { tooltip } from '@/directives/tooltip'
+
+vi.mock('vue-router', async (importOriginal) => ({
+  ...(await importOriginal()),
+  useRoute: () => ({ params: { id: 'sub-1' } })
+}))
+vi.mock('@/services/job.service', () => ({ default: { getJobPrompts: vi.fn().mockResolvedValue({ prompts: [] }) } }))
+vi.mock('@/services/file.service', () => ({ default: { download: vi.fn() } }))
+
+import ModuleTechnical from './ModuleTechnical.vue'
+
+const job = (outcome) => ({
+  jobType: 'software_detection',
+  status: 'complete',
+  result: {
+    status: { detected: true },
+    // `total` is Softcite's raw mention count — 0 when Softcite never answered.
+    // Present because the real row has it; that is the number this blanks.
+    counts: { total: 0, unique: 21, enriched: 0 },
+    data: { meta: { uniqueCount: 21, lmCount: 21, softciteCount: 0 } },
+    service: { config: { state: 'on', enabled: true, demoEnabled: false }, outcome }
+  }
+})
+
+/** The panel is a collapsed disclosure — open it, or nothing is asserted. */
+async function mountOpen(outcome) {
+  const wrapper = mount(ModuleTechnical, {
+    props: { job: job(outcome), jobType: 'software_detection', submissionId: 'sub-1', jobs: {} },
+    global: { directives: { tooltip }, stubs: { RouterLink: { template: '<a><slot /></a>' } } }
+  })
+  await wrapper.find('button.mt-toggle').trigger('click')
+  return wrapper
+}
+
+describe('a partly-complete run on the module page', () => {
+  beforeEach(() => { setActivePinia(createPinia()) })
+
+  it('says so, and names the engine that failed', async () => {
+    const wrapper = await mountOpen({
+      state: 'partial', source: 'external',
+      failReason: 'softcite_failed', externalError: 'Softcite error: Service error'
+    })
+
+    const panel = wrapper.find('.mt-degraded')
+    expect(panel.exists()).toBe(true)
+    expect(panel.text()).toContain('Partly complete')
+    expect(panel.text()).toContain('softcite')
+  })
+
+  it('shows the service\'s own error text', async () => {
+    const wrapper = await mountOpen({
+      state: 'partial', source: 'external',
+      failReason: 'softcite_failed', externalError: 'Softcite error: Service error'
+    })
+
+    expect(wrapper.find('.mt-degraded-error').text()).toBe('Softcite error: Service error')
+  })
+
+  it('says the counts are real but incomplete — not that they are wrong', async () => {
+    const wrapper = await mountOpen({
+      state: 'partial', source: 'external', failReason: 'softcite_failed', externalError: 'x'
+    })
+
+    const text = wrapper.find('.mt-degraded').text()
+    expect(text).toMatch(/real/)
+    expect(text).toMatch(/re-run/i)
+  })
+
+  it('says nothing at all on a healthy run', async () => {
+    const wrapper = await mountOpen({ state: 'done', source: 'external', failReason: null, externalError: null })
+
+    expect(wrapper.find('.mt-degraded').exists()).toBe(false)
+  })
+
+  it('says nothing on an outright failure — that is the badge\'s job, not a caveat', async () => {
+    const wrapper = await mountOpen({
+      state: 'fail', source: null, failReason: 'external_failed_demo_disabled', externalError: 'boom'
+    })
+
+    expect(wrapper.find('.mt-degraded').exists()).toBe(false)
+  })
+})
+
+describe('counts owned by the failed engine', () => {
+  it('are blanked, not shown as zero', async () => {
+    // "Total 0 / Unique 18" reads as "Softcite looked and found none", which is
+    // the opposite of what happened. Same error the panel summary used to make
+    // with "Softcite 0 + LM 18".
+    const wrapper = await mountOpen({
+      state: 'partial', source: 'external', failReason: 'softcite_failed', externalError: 'x'
+    })
+
+    // The FIRST .mt-block is Configuration; the counts live in the one headed
+    // "Statistics".
+    const stats = wrapper.findAll('.mt-block').find((b) => b.text().includes('Statistics'))
+    expect(stats, 'the Statistics block must render').toBeTruthy()
+    expect(stats.text()).toContain('—')
+    expect(stats.text()).not.toMatch(/Total\s*0\b/)
+  })
+
+  it('are shown normally on a healthy run', async () => {
+    const wrapper = await mountOpen({ state: 'done', source: 'external', failReason: null, externalError: null })
+
+    // A real zero from an engine that DID answer is information, and stays.
+    expect(wrapper.text()).toMatch(/Total\s*0/)
+  })
+})

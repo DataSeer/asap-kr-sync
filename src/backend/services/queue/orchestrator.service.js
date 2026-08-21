@@ -10,6 +10,7 @@ const { Op } = require('sequelize');
 const { sequelize, SubmissionJob, Submission } = require('../../models');
 const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ConflictError, ValidationError } = require('../../utils/errors');
+const { NO_DAS_SENTINEL } = require('../das-suggestions/das-suggestions.service');
 const jobQueue = require('./job-queue.service');
 const logger = require('../../utils/logger');
 
@@ -39,39 +40,154 @@ const RECONCILE_GRACE_MS = 5 * 60 * 1000; // 5 minutes
  */
 
 /**
- * Submission-state gates, by name. Each receives the Submission (id, status)
- * and returns whether the gated step may start.
+ * Gates, by name. Each receives `(submission, jobsByType)` and returns whether
+ * the gated step may start.
+ *
+ * A gate is not a failure: an unsatisfied one keeps the step in `waiting`, and
+ * the reconciler re-checks it every sweep, so the step starts by itself the
+ * moment the condition holds. That is the difference from `canAutoAdvance`,
+ * which parks a step in `pending_input` awaiting a human decision.
+ *
+ * A step may list several (`gate: ['a', 'b']`); the first unsatisfied one is
+ * what blocks it, and is what the jobs API reports.
  */
 const GATES = {
-  // The author KRT feeds the seeded detectors (datasets/materials/protocols
-  // load author rows as LM seeds), so those must not run until the author has
-  // finished curating the KRT — i.e. the submission has moved past the KRT
-  // step. draft/step_krt = still curating.
-  krt_curated: (submission) => !['draft', 'step_krt'].includes(submission.status)
+  // Nothing that reads the author's KRT may start until the author has
+  // finished curating it — i.e. the submission has moved past the KRT step
+  // (draft/step_krt = still curating).
+  //
+  // This covers the five detection modules as well as grounding. Under the
+  // default `seeded` pipeline the detectors are seeded WITH the author's rows,
+  // so a detector that starts while the table is still being edited answers a
+  // question about a KRT that no longer exists — and burns the LM call doing
+  // it. PDF_ANALYSIS and SUGGESTION_GENERATION inherit the gate through their
+  // dependencies.
+  //
+  // The gate is on submission STATE, not on the presence of a KRT: a
+  // submission with no KRT at all passes it the moment the author moves on, so
+  // the no-KRT mode is unaffected.
+  krt_curated: (submission) => !['draft', 'step_krt'].includes(submission.status),
+
+  // The Availability Statement check waits for the step it is about.
+  //
+  // Two conditions, one gate, because either alone would run it pointlessly:
+  //
+  //   - the submission has REACHED the Availability step. Before that the
+  //     author is still editing the table the check reads, and the check's
+  //     whole subject — their statement — is not in front of them yet.
+  //   - there IS a statement to check. Extraction is fail-soft: it always
+  //     persists something, writing NO_DAS_SENTINEL when it found nothing. The
+  //     manual queue path already refused to run on that; now that the pipeline
+  //     can start the job itself, the refusal has to live where the pipeline
+  //     will see it, or every submission without a statement burns an LM call
+  //     against an empty string.
+  //
+  // Reads the submission's CURRENT statement rather than the extraction result,
+  // so an author who types one by hand releases the gate — the extraction
+  // result still says "not found" and always will.
+  availability_ready: (submission) => {
+    if (!['step_as', 'step_report', 'completed'].includes(submission.status)) return false;
+    const das = (submission.dataAvailabilityStatement || '').trim();
+    return das.length > 0 && das !== NO_DAS_SENTINEL;
+  },
+
+  // Nothing that reads the manuscript may run when there is no manuscript text.
+  //
+  // Conversion is fail-soft: when the converter errors or returns nothing, the
+  // job still completes, with `markdownLength: 0` and `detected: false`. Every
+  // downstream module then ran happily against an empty document and reported
+  // zero findings — which reads as "your manuscript mentions none of this",
+  // when the truth is that the app never read the manuscript. Observed on a
+  // real run: 11/11 steps "complete", 0 datasets, 0 materials, 0 protocols, and
+  // all 12 author rows reported as not detected.
+  //
+  // So the detectors hold in `waiting` instead. Re-running conversion releases
+  // them automatically; until then the panel says the pipeline is blocked and
+  // why.
+  markdown_ready: (submission, jobsByType) => {
+    const job = jobsByType?.get(JOB_TYPES.MARKDOWN_CONVERT);
+    // No conversion job in this map (e.g. a partial view): do not claim to
+    // know. The dependency check already keeps the step waiting.
+    if (!job) return true;
+    // A conversion that FAILED is the same situation as one that produced
+    // nothing, and it was slipping through: the gate only ever inspected
+    // `complete` rows, while the dependency check counts `failed` as terminal.
+    // So a failed conversion released every detector to read a manuscript that
+    // does not exist — the exact outcome this gate was added to prevent, by the
+    // one route that skipped it.
+    if (['failed', 'cancelled'].includes(job.status)) return false;
+    if (job.status !== 'complete') return true;
+    return (job.result?.data?.markdownLength || 0) > 0;
+  }
 };
+
+/** A step's gates, however it declared them. */
+const gatesOf = (step) => (Array.isArray(step.gate) ? step.gate : (step.gate ? [step.gate] : []));
+
+/**
+ * The first gate stopping this step, or null.
+ *
+ * @returns {string|null} gate name
+ */
+function blockingGate(step, submission, jobsByType) {
+  for (const name of gatesOf(step)) {
+    const fn = GATES[name];
+    if (!fn) continue;
+    if (submission && !fn(submission, jobsByType)) return name;
+  }
+  return null;
+}
 const PIPELINE = [
   // DAS extraction now reads the converted markdown (Gemini-based, replaces
   // the Modal Llama fine-tune that ate the PDF directly), so it depends on
   // MARKDOWN_CONVERT just like the other Gemini-based detectors.
-  { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
-  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [] },
+  { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'markdown_ready' },
+  // Softcite reads the PDF and could start immediately, but the module's second
+  // engine — the LM pass — reads the converted markdown, and without this
+  // dependency it would race conversion and skip on nearly every run. Waiting
+  // costs nothing end-to-end: no step consumes software output until
+  // KRT_GROUNDING, which waits for the markdown-dependent detectors regardless.
+  // Gated with the rest of detection so the whole detection stage starts at one
+  // moment rather than trickling in around the KRT step.
+  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
   { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [] },
   { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [] },
-  // The three seeded detectors read the author KRT (seeds for the LM prompt),
-  // so they additionally gate on the author having validated the KRT step.
-  // Software/ORCID/DAS/identifier detection don't consume author KRT data and
-  // keep starting as early as their job dependencies allow.
-  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
-  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
-  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'krt_curated' },
+  // Every text detector waits for BOTH the markdown and the curated KRT: the
+  // seeded prompts carry the author's rows, so starting earlier would seed
+  // from a table the author is still editing.
+  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
   // Identifier detection scans the post-conversion markdown against the
   // curated enrichment list. Cross-category — produces software/materials/
   // datasets/protocols items in one pass and lets pdf-analysis consolidate.
-  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT] },
+  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  {
+    // Grounding reconciles the author's KRT against the candidate pool: for
+    // every author row it decides confirmed / incomplete / not_detected, and
+    // never mutates the row itself. Gated on the author having finished the
+    // KRT step; with no KRT at all it still runs and reports zero author rows,
+    // so the pipeline shape is identical in both modes.
+    jobType: JOB_TYPES.KRT_GROUNDING,
+    dependsOn: [
+      JOB_TYPES.SOFTWARE_DETECTION,
+      JOB_TYPES.DATASETS_DETECTION,
+      JOB_TYPES.MATERIALS_DETECTION,
+      JOB_TYPES.PROTOCOLS_DETECTION,
+      JOB_TYPES.IDENTIFIER_DETECTION
+    ],
+    gate: ['markdown_ready', 'krt_curated']
+  },
   {
     // PDF Analysis is the consolidator: it merges every detection's items
     // into the Generated KRT. So it depends on every detection that
     // contributes resources (DAS is kept as a soft gate via canAutoAdvance).
+    //
+    // It also depends on KRT_GROUNDING even though it does not read the
+    // outcomes itself: SUGGESTION_GENERATION does, and it reaches this table
+    // only through PDF_ANALYSIS. Ordering it here is what guarantees the
+    // grounding verdicts exist by the time suggestions are built — and it is
+    // how PDF_ANALYSIS inherits the krt_curated gate.
     jobType: JOB_TYPES.PDF_ANALYSIS,
     dependsOn: [
       JOB_TYPES.DAS_EXTRACTION,
@@ -79,7 +195,8 @@ const PIPELINE = [
       JOB_TYPES.DATASETS_DETECTION,
       JOB_TYPES.MATERIALS_DETECTION,
       JOB_TYPES.PROTOCOLS_DETECTION,
-      JOB_TYPES.IDENTIFIER_DETECTION
+      JOB_TYPES.IDENTIFIER_DETECTION,
+      JOB_TYPES.KRT_GROUNDING
     ],
     canAutoAdvance(dependencyJobs) {
       const dasJob = dependencyJobs.get(JOB_TYPES.DAS_EXTRACTION);
@@ -95,11 +212,28 @@ const PIPELINE = [
     jobType: JOB_TYPES.SUGGESTION_GENERATION,
     dependsOn: [JOB_TYPES.PDF_ANALYSIS]
   }
-  // NOTE: DAS_SUGGESTIONS is intentionally NOT in the auto pipeline. It is a
-  // standalone, re-triggerable job started by the /availability view once the
-  // user has finished review (so the DAS is extracted and the KRT is final).
-  // Keeping it out of the pipeline avoids it sitting in `waiting` and blocking
-  // the earlier steps' "all processes finished" gate.
+  ,
+  {
+    // The Availability Statement check. It needs the extracted statement, so it
+    // depends on DAS_EXTRACTION — but it is ABOUT the Availability step, and
+    // its gate holds it there rather than running it the moment extraction
+    // finishes.
+    //
+    // It used to sit outside the pipeline entirely, precisely so it could not
+    // wait: a `waiting` job counts as outstanding work, and it would have held
+    // the KRT and PDF steps' "all processes finished" gate shut. That is now
+    // handled where it belongs — a job blocked by a gate the submission has not
+    // reached is not outstanding work for the step the user is on, and the API
+    // says so via `waitingReason` so the client can tell the difference.
+    //
+    // `displayStage` is presentation only: its dependency is early (extraction,
+    // stage 1) but its gate makes it the last thing that happens, and a reader
+    // following the page top to bottom should find it where it actually runs.
+    jobType: JOB_TYPES.DAS_SUGGESTIONS,
+    dependsOn: [JOB_TYPES.DAS_EXTRACTION],
+    gate: ['availability_ready'],
+    displayStage: 4
+  }
 ];
 
 // Map jobType to the queue name used by pg-boss — shared, derived map so it
@@ -119,17 +253,54 @@ const { JOB_TYPE_TO_QUEUE } = jobQueue;
 async function runAllProcesses(submissionId, userId, round) {
   const jobs = [];
 
+  // One row per (step, round), reused if it is already there.
+  //
+  // This used to INSERT a fresh set of twelve unconditionally, and it is called
+  // on every PDF upload and by POST /processes/run. A second call in the same
+  // round therefore produced a second full set, and `getForSubmission` keeps
+  // only the newest row per type — so the whole previous set went invisible
+  // while any worker still holding one carried on writing results nobody would
+  // read. That is the same failure the per-step re-runs were fixed for, twelve
+  // rows at a time. Five submissions in the dev database carry two
+  // `pdf_analysis` rows from exactly this.
+  const existing = await SubmissionJob.findAll({ where: { submissionId, round } });
+  const byType = new Map();
+  for (const row of existing) {
+    // Newest wins, matching getForSubmission, so a submission that already has
+    // duplicates converges on one row rather than adding to the pile.
+    const seen = byType.get(row.jobType);
+    if (!seen || row.createdAt > seen.createdAt) byType.set(row.jobType, row);
+  }
+
   for (const step of PIPELINE) {
     const hasDependencies = step.dependsOn.length > 0;
     const initialStatus = hasDependencies ? 'waiting' : 'queued';
 
-    // Create the tracking record
-    const submissionJob = await SubmissionJob.create({
-      submissionId,
-      jobType: step.jobType,
-      status: initialStatus,
-      round
-    });
+    let submissionJob = byType.get(step.jobType);
+    if (submissionJob) {
+      // A re-start of the whole pipeline: the row goes back to its initial
+      // state carrying nothing from the run before it, exactly as requeueStep
+      // does for a single step.
+      submissionJob.status = initialStatus;
+      submissionJob.pgBossJobId = null;
+      submissionJob.result = null;
+      submissionJob.errorMessage = null;
+      submissionJob.startedAt = null;
+      submissionJob.completedAt = null;
+      // Whoever restarted the round owns it from here — but only if we know
+      // who that is. Writing `undefined` would erase the previous trigger and
+      // leave the round attributed to nobody.
+      if (userId) submissionJob.triggeredByUserId = userId;
+      await submissionJob.save();
+    } else {
+      submissionJob = await SubmissionJob.create({
+        submissionId,
+        jobType: step.jobType,
+        status: initialStatus,
+        round,
+        triggeredByUserId: userId || null
+      });
+    }
 
     // Only enqueue jobs with no dependencies
     if (!hasDependencies) {
@@ -160,7 +331,11 @@ async function runAllProcesses(submissionId, userId, round) {
  * @param {string} submissionId
  * @param {string} completedJobType - The job type that just finished
  * @param {number} round
- * @param {string} userId - Needed for jobs that require it (e.g., PDF analysis)
+ * @param {string} [userId] - Who asked, when anybody did. Absent for the ~20
+ *   worker-driven advances: a finished worker knows the submission, not a
+ *   person. Note that HAVING a userId is not sufficient to be credited for the
+ *   step — the reconciler is handed the submission's owner and must not be —
+ *   see the claim in tryAdvanceStep.
  */
 async function checkAndAdvance(submissionId, completedJobType, round, userId) {
   // Find pipeline steps that depend on the completed job type
@@ -176,7 +351,8 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
 
   // Submission state is needed to evaluate step gates
   const submission = await Submission.findByPk(submissionId, {
-    attributes: ['id', 'status']
+    // `availability_ready` reads the statement itself, not just the status.
+    attributes: ['id', 'status', 'dataAvailabilityStatement']
   });
 
   for (const step of dependentSteps) {
@@ -229,9 +405,10 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   // the status-change handler / reconciler re-drives once the state changes.
   // Debug level: the reconciler sweep re-checks gated jobs every interval and
   // an info log per sweep per job would be pure noise.
-  if (step.gate && GATES[step.gate] && submission && !GATES[step.gate](submission)) {
+  const blocked = blockingGate(step, submission, jobsByType);
+  if (blocked) {
     logger.debug('Pipeline step gated, staying in waiting', {
-      submissionId, jobType: step.jobType, gate: step.gate,
+      submissionId, jobType: step.jobType, gate: blocked,
       submissionStatus: submission.status, triggeredBy
     });
     return false;
@@ -250,14 +427,62 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
 
-  // All dependencies met and gate passed — enqueue this job
+  // All dependencies met and gate passed — enqueue this job.
+  //
+  // Claim the row FIRST, with the old status in the WHERE clause, so the
+  // transition out of `waiting` happens exactly once. checkAndAdvance runs on
+  // every worker completion, and a step like pdf_analysis sits behind eight
+  // detections that finish within milliseconds of each other: two of them
+  // completing together both read `waiting`, both found every dependency
+  // terminal, and both enqueued the same row — two pg-boss jobs, two runs of
+  // the same model call, both writing their result to one row.
+  //
+  // Postgres serialises the UPDATE, so exactly one caller sees a row count of
+  // 1. The loser stops here.
+  // The step is credited only to a person who ASKED for it — which is not the
+  // same as "there is a userId in scope".
+  //
+  // `triggeredBy` is the provenance: 'manual' means requeueStep, i.e. somebody
+  // clicked; 'reconciler' is the periodic sweep; anything else is the jobType
+  // of the worker that just finished. Only the first is a decision.
+  //
+  // The reconciler is the trap. `reconcileStuckJobs` hands it the SUBMISSION'S
+  // OWNER as `userId`, so gating on `userId` alone would credit the author for
+  // a re-drive they never asked for — and, because the sweep runs on a timer,
+  // would quietly overwrite the curator who did. A worker-driven advance
+  // carries no user at all and keeps whatever is already there.
+  const claim = { status: 'queued' };
+  const isManual = triggeredBy === 'manual';
+  if (userId && isManual) claim.triggeredByUserId = userId;
+  const [claimed] = await SubmissionJob.update(
+    claim,
+    { where: { id: job.id, status: 'waiting' } }
+  );
+  if (claimed === 0) {
+    logger.debug('Pipeline step already claimed by a concurrent advance', {
+      submissionId, jobType: step.jobType, triggeredBy
+    });
+    return false;
+  }
+  job.status = 'queued';
+  if (userId && isManual) job.triggeredByUserId = userId;
+
   const queueName = JOB_TYPE_TO_QUEUE[step.jobType];
   const jobData = buildJobData(step.jobType, submissionId, userId, job);
 
-  const pgBossJobId = await jobQueue.addJob(queueName, jobData);
-  job.status = 'queued';
-  job.pgBossJobId = pgBossJobId;
-  await job.save();
+  try {
+    const pgBossJobId = await jobQueue.addJob(queueName, jobData);
+    job.pgBossJobId = pgBossJobId;
+    await job.save();
+  } catch (err) {
+    // Nothing is going to run this row: put the claim back rather than leave
+    // it `queued` with no queue job behind it, which no reconciler heals — it
+    // watches `processing` and `waiting`, not a `queued` row with a null
+    // pgBossJobId.
+    await SubmissionJob.update({ status: 'waiting' }, { where: { id: job.id, status: 'queued' } });
+    job.status = 'waiting';
+    throw err;
+  }
 
   logger.info('Pipeline advanced: job enqueued', {
     submissionId,
@@ -280,7 +505,8 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
   const jobsByType = new Map(allJobs.map(j => [j.jobType, j]));
 
   const sub = submission || await Submission.findByPk(submissionId, {
-    attributes: ['id', 'status']
+    // `availability_ready` reads the statement itself, not just the status.
+    attributes: ['id', 'status', 'dataAvailabilityStatement']
   });
 
   let advanced = 0;
@@ -302,8 +528,68 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
  * @param {{ graceMs?: number }} [opts]
  * @returns {Promise<number>} total jobs re-driven across all submissions
  */
+/**
+ * Rows that say `processing` while their queue entry is gone.
+ *
+ * A worker records `processing` when it picks a job up, and something has to
+ * record the end. Usually the handler does — it completes or it throws. But a
+ * job that **expires** never reaches the handler at all: pg-boss times it out,
+ * and after the final retry it stops redelivering. Nothing then updates our
+ * row, which sits at `processing` for ever: a spinner that never resolves,
+ * `isAnyRunning` permanently true, and the Continue gate held shut.
+ *
+ * The same happens whenever a worker dies mid-job — a deploy, a container
+ * restart, a crash.
+ *
+ * pg-boss's own table is the authority on whether the work is still live, so
+ * this asks it rather than guessing from elapsed time. A row is only failed
+ * when its queue entry is in a terminal state (or has been archived away
+ * entirely); anything still `active` or `created` is left alone, because it IS
+ * running.
+ *
+ * @param {Date} cutoff only rows that started before this are considered
+ * @returns {Promise<number>} how many were failed
+ */
+async function failStrandedProcessingJobs(cutoff) {
+  const candidates = await SubmissionJob.findAll({
+    where: { status: 'processing', startedAt: { [Op.lt]: cutoff } },
+    // `status` is in the list because markFailed refuses to touch a cancelled
+    // row — and a guard reading an attribute that was not selected compares
+    // against `undefined` and never fires.
+    attributes: ['id', 'submissionId', 'round', 'jobType', 'pgBossJobId', 'status']
+  });
+  if (candidates.length === 0) return 0;
+
+  let failed = 0;
+  for (const job of candidates) {
+    // No queue id recorded: nothing can be running, so it cannot recover.
+    let live = false;
+    if (job.pgBossJobId) {
+      const [rows] = await sequelize.query(
+        'SELECT state FROM pgboss.job WHERE id = :id',
+        { replacements: { id: job.pgBossJobId } }
+      );
+      // Absent means archived — pg-boss moves finished jobs out of `job`, so a
+      // missing row is a finished one, not a running one.
+      live = rows.length > 0 && ['created', 'active', 'retry'].includes(rows[0].state);
+    }
+    if (live) continue;
+
+    await job.markFailed('The worker stopped without recording a result (the job expired or the process restarted).');
+    failed++;
+    logger.warn('Reconciler failed a stranded processing job', {
+      submissionId: job.submissionId, jobType: job.jobType, round: job.round
+    });
+  }
+  return failed;
+}
+
 async function reconcileStuckJobs({ graceMs = RECONCILE_GRACE_MS } = {}) {
   const cutoff = new Date(Date.now() - graceMs);
+
+  // Before looking for work to re-drive, heal rows that claim to be running and
+  // are not. Otherwise their dependents wait on a job nothing will ever finish.
+  const stranded = await failStrandedProcessingJobs(cutoff);
 
   // Distinct (submission, round) pairs that have at least one long-waiting job.
   const stuck = await SubmissionJob.findAll({
@@ -313,7 +599,11 @@ async function reconcileStuckJobs({ graceMs = RECONCILE_GRACE_MS } = {}) {
     raw: true
   });
 
-  if (stuck.length === 0) return 0;
+  // Healing a stranded row IS work — it unblocks everything downstream of it.
+  // Returning 0 here reported "the reconciler found nothing" for a run that had
+  // just failed five rows, which is the number that would be watched to decide
+  // whether the reconciler is doing anything at all.
+  if (stuck.length === 0) return stranded;
 
   let advancedTotal = 0;
   for (const { submissionId, round } of stuck) {
@@ -331,13 +621,14 @@ async function reconcileStuckJobs({ graceMs = RECONCILE_GRACE_MS } = {}) {
     }
   }
 
-  if (advancedTotal > 0) {
+  if (advancedTotal > 0 || stranded > 0) {
     logger.warn('Pipeline reconciler re-drove stuck jobs', {
       submissions: stuck.length,
-      advanced: advancedTotal
+      advanced: advancedTotal,
+      stranded
     });
   }
-  return advancedTotal;
+  return advancedTotal + stranded;
 }
 
 /**
@@ -383,6 +674,9 @@ async function advanceJob(submissionId, jobType, round, userId) {
 
   job.status = 'queued';
   job.pgBossJobId = pgBossJobId;
+  // Typed the missing Availability Statement, pressed the button: this user
+  // released the step, whoever started the round.
+  if (userId) job.triggeredByUserId = userId;
   await job.save();
 
   logger.info('Pipeline advanced manually: job enqueued', {
@@ -406,6 +700,12 @@ function buildJobData(jobType, submissionId, userId, submissionJob) {
   const base = { submissionId, submissionJobId: submissionJob.id };
 
   switch (jobType) {
+    // The only step whose PAYLOAD carries userId, and its handler still does
+    // not read it. Attribution no longer depends on this: it lives on the row,
+    // in `triggered_by_user_id`, written by the orchestrator. This is a
+    // leftover the worker could stop being sent — kept only because removing a
+    // payload field is a change to what the queue carries, and it earns
+    // nothing.
     case JOB_TYPES.PDF_ANALYSIS:
       return { ...base, userId };
     case JOB_TYPES.DAS_EXTRACTION:
@@ -466,9 +766,14 @@ function computeDownstreamSet(rootJobType) {
  * @param {string} submissionId
  * @param {string} restartedJobType - The jobType being re-run.
  * @param {number} round
+ * @param {string} [userId] - Who caused the cascade. Credited on every row it
+ *   resets: asking for one step to re-run is asking for everything downstream
+ *   of it to re-run too, and that is real work — and real spend — that this
+ *   person set going. Omitted for an internal caller, in which case each row
+ *   keeps the credit it already had.
  * @returns {Promise<string[]>} List of jobTypes that were reset.
  */
-async function cascadeRestart(submissionId, restartedJobType, round) {
+async function cascadeRestart(submissionId, restartedJobType, round, userId) {
   const downstream = computeDownstreamSet(restartedJobType);
   if (downstream.size === 0) return [];
 
@@ -494,6 +799,16 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
       if (job.status === 'queued' || job.status === 'processing' || job.status === 'cancelled') continue;
       job.status = 'waiting';
       job.pgBossJobId = null;
+      // Same rule as requeueStep, and it was missing here: a job queued to run
+      // again carries nothing from the run before it. Without this, a step that
+      // had FAILED was reset to `waiting` still holding its error, and the panel
+      // showed that failure against a job that was about to re-run — the exact
+      // complaint requeueStep was fixed for, one function along. Seen live: a
+      // Gemini 503 on suggestion_generation stayed on screen after a grounding
+      // re-run had already reset it.
+      job.result = null;
+      job.errorMessage = null;
+      if (userId) job.triggeredByUserId = userId;
       await job.save({ transaction: t });
       reset.push(jobType);
     }
@@ -508,6 +823,70 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
 }
 
 /**
+ * Re-run one pipeline step, respecting the pipeline.
+ *
+ * Reuses the round's existing row for that step instead of inserting a rival
+ * one, and only enqueues when the step is actually runnable — dependencies
+ * terminal and gates satisfied. Otherwise it is left `waiting` for
+ * checkAndAdvance/reconcile to pick up, which is what every other step does.
+ *
+ * This exists because "trigger analysis" used to INSERT a second
+ * SubmissionJob row for a type the pipeline had already created, and
+ * getForSubmission keeps only the newest row per type. Observed on a real run:
+ * uploading a PDF seeds pdf_analysis as `waiting` (it depends on every
+ * detector); POST /pdf/analyze then created a second, `queued` row that ran
+ * within a second — before any detector had produced anything. When the
+ * detectors finished, checkAndAdvance looked up pdf_analysis, found that newer
+ * row `complete`, and advanced nothing. The pipeline reported 11/11 complete
+ * and the Generated KRT contained 98 author rows and ZERO detections, while
+ * datasets detection alone had found 96 items. A wrong answer presented as a
+ * finished one.
+ *
+ * @param {string} submissionId
+ * @param {string} jobType
+ * @param {number} round
+ * @param {string} userId
+ * @returns {Promise<object>} the step's SubmissionJob row
+ */
+async function requeueStep(submissionId, jobType, round, userId) {
+  const step = PIPELINE.find((s) => s.jobType === jobType);
+  if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
+
+  let job = await SubmissionJob.getLatest(submissionId, jobType, round);
+  if (!job) {
+    job = await SubmissionJob.create({
+      submissionId, jobType, status: 'waiting', round, triggeredByUserId: userId || null
+    });
+  } else if (['queued', 'processing'].includes(job.status)) {
+    // Already on its way — re-queueing would duplicate the work it is doing.
+    return job;
+  } else {
+    job.status = 'waiting';
+    job.pgBossJobId = null;
+    job.result = null;
+    // `errorMessage`, not `error` — the model has no `error` field, so this
+    // set a plain JS property Sequelize ignores and the previous run's
+    // failure text stayed on the row. The panel then showed a stale error
+    // on a job that had just been queued to run again.
+    job.errorMessage = null;
+    // This is the manual re-run path — the caller asked for this step by name,
+    // so they are the trigger even if the round was started by someone else.
+    if (userId) job.triggeredByUserId = userId;
+    await job.save();
+  }
+
+  const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
+  const jobsByType = new Map(allJobs.map((j) => [j.jobType, j]));
+  jobsByType.set(jobType, job);
+  const submission = await Submission.findByPk(submissionId, {
+    attributes: ['id', 'status', 'dataAvailabilityStatement']
+  });
+
+  await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, 'manual');
+  return job;
+}
+
+/**
  * Whether a job type is currently blocked by its submission-state gate.
  * Used by the jobs API to explain WHY a job is `waiting` (the frontend shows
  * "waiting for KRT validation" instead of a generic dependency message).
@@ -515,15 +894,17 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
  * @param {object} submission - needs `status`
  * @returns {boolean}
  */
-function isGateBlocked(jobType, submission) {
+function isGateBlocked(jobType, submission, jobsByType) {
   const step = PIPELINE.find(s => s.jobType === jobType);
-  if (!step || !step.gate || !GATES[step.gate]) return false;
-  return !GATES[step.gate](submission);
+  if (!step) return null;
+  return blockingGate(step, submission, jobsByType);
 }
 
 module.exports = {
   PIPELINE,
   runAllProcesses,
+  requeueStep,
+  failStrandedProcessingJobs,
   checkAndAdvance,
   reconcileSubmission,
   reconcileStuckJobs,

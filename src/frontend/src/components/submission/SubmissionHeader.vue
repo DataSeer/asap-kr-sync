@@ -18,9 +18,11 @@ import jobService from '@/services/job.service'
 import { useNotificationStore } from '@/stores/notification.store'
 import { statusToStep } from '@/utils/submission'
 
-// Optional injection — present on step 2 and step 3 (provided by KRTView /
-// PDFView's useJobPoller). Other views render the header without it, so the
-// banner stays hidden.
+// Optional injection — provided by KRTView (step 2) and PDFView (step 3), the
+// two views that poll jobs. Other views render the header without it and the
+// banner stays hidden. NOTE: it must be provided by the VIEW, not by
+// BackgroundProcesses — that component is this one's sibling, so its provide()
+// does not reach here.
 const injectedJobs = inject('submissionJobs', ref({}))
 
 const pdfAnalysisPendingInput = computed(() => {
@@ -245,16 +247,32 @@ async function downloadCurrentKRT(round) {
         <div class="flex items-center space-x-4">
           <div>
             <div class="flex items-center">
-              <h2 class="text-sm font-medium text-gray-500" :title="isTitleTruncated ? submission.title : undefined">{{ truncatedTitle }}</h2>
+              <h2 class="text-sm font-medium text-gray-500" v-tooltip="isTitleTruncated ? submission.title : undefined">{{ truncatedTitle }}</h2>
               <button
                 class="ml-2 text-gray-400 hover:text-gray-600 transition-colors"
-                title="Edit metadata"
+                v-tooltip="'Edit metadata'"
                 @click="openEditModal"
               >
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                 </svg>
               </button>
+
+              <!-- The pipeline, reachable from every step. The module statuses
+                   themselves live on the PDF step and on the pipeline page —
+                   this header is on every submission page, so it is the one
+                   place a link to them works from anywhere. -->
+              <span class="mx-2 text-gray-300">|</span>
+              <RouterLink
+                :to="{ name: 'submission-pipeline', params: { id: submission.id } }"
+                class="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 hover:underline transition-colors"
+                v-tooltip="'See every processing step, what it produced, and what it is waiting for'"
+              >
+                <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+                </svg>
+                Pipeline
+              </RouterLink>
             </div>
             <div class="flex items-center mt-0.5">
               <!-- Manuscript ID or placeholder -->
@@ -262,7 +280,7 @@ async function downloadCurrentKRT(round) {
               <button
                 v-else
                 class="text-xs text-gray-400 italic hover:text-primary-600 hover:underline transition-colors"
-                title="Click to add manuscript ID"
+                v-tooltip="'Click to add manuscript ID'"
                 @click="openEditModal"
               >
                 Manuscript ID not specified
@@ -275,7 +293,7 @@ async function downloadCurrentKRT(round) {
               <button
                 v-if="latestFiles?.krt"
                 class="inline-flex items-center text-xs text-green-600 hover:text-green-700 transition-colors"
-                title="Download current KRT data (CSV)"
+                v-tooltip="'Download current KRT data (CSV)'"
                 @click="downloadCurrentKRT()"
               >
                 <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -283,7 +301,7 @@ async function downloadCurrentKRT(round) {
                 </svg>
                 KRT<span class="text-green-400 ml-0.5">(v{{ submission?.currentRound || 1 }}.{{ latestFiles?.krt?.version || 1 }})</span>
               </button>
-              <span v-else class="inline-flex items-center text-xs text-gray-300 cursor-not-allowed" title="No KRT file uploaded">
+              <span v-else class="inline-flex items-center text-xs text-gray-300 cursor-not-allowed" v-tooltip="'No KRT file uploaded'">
                 <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
@@ -296,7 +314,7 @@ async function downloadCurrentKRT(round) {
               <button
                 v-if="latestFiles?.pdf"
                 class="inline-flex items-center text-xs text-red-600 hover:text-red-700 transition-colors"
-                title="Download PDF file"
+                v-tooltip="'Download PDF file'"
                 @click="downloadLatestFile('pdf')"
               >
                 <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -304,7 +322,7 @@ async function downloadCurrentKRT(round) {
                 </svg>
                 PDF<span class="text-red-400 ml-0.5">(v{{ submission?.currentRound || 1 }}.{{ latestFiles?.pdf?.version || 1 }})</span>
               </button>
-              <span v-else class="inline-flex items-center text-xs text-gray-300 cursor-not-allowed" title="No PDF file uploaded">
+              <span v-else class="inline-flex items-center text-xs text-gray-300 cursor-not-allowed" v-tooltip="'No PDF file uploaded'">
                 <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
                 </svg>
@@ -314,7 +332,7 @@ async function downloadCurrentKRT(round) {
               <!-- More info button -->
               <button
                 class="ml-1.5 inline-flex items-center justify-center w-4 h-4 text-xs text-gray-400 hover:text-primary-600 border border-gray-300 hover:border-primary-400 rounded-full transition-colors"
-                title="View all files"
+                v-tooltip="'View all files'"
                 @click="openFilesModal"
               >
                 ?
@@ -394,7 +412,7 @@ async function downloadCurrentKRT(round) {
             v-if="helpItems.length > 0"
             class="help-toggle-btn"
             :class="{ 'help-toggle-active': showHelp }"
-            title="Show step guide"
+            v-tooltip="'Show step guide'"
             @click="showHelp = !showHelp"
           >
             <span>Instructions</span>

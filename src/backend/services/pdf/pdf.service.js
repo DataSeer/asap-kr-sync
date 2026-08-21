@@ -10,8 +10,10 @@
 const { sequelize, File, ChangeLog, KRTData, ValidationResult, Submission, SubmissionJob } = require('../../models');
 const s3Service = require('../storage/s3.service');
 const dasExtractionService = require('./das-extraction.service');
+const { repoPath } = require('../detection/repo-path');
+const runInputs = require('../queue/run-inputs.service');
+const { NO_DAS_SENTINEL } = require('../das-suggestions/das-suggestions.service');
 const dasExtractionConfig = require('../../config/das-extraction-api');
-const jobQueue = require('../queue/job-queue.service');
 const { generateS3Key } = require('../../utils/helpers');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
@@ -266,49 +268,44 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
 }
 
 /**
- * Queue PDF for analysis
+ * Re-run the PDF-analysis step for a submission.
+ *
+ * Delegates to the orchestrator so the step is re-run IN the pipeline: its own
+ * row is reused, and it only starts once every detector has finished and the
+ * gates pass. It used to insert a second pdf_analysis row set straight to
+ * `queued`, which ran the consolidation before any detector had produced
+ * anything and left the pipeline's real row stranded in `waiting` — see
+ * orchestrator.requeueStep for what that produced.
+ *
  * @param {string} submissionId
  * @param {string} userId
- * @returns {Promise<object>} Analysis record
+ * @param {number} round
+ * @returns {Promise<object>} the pdf_analysis SubmissionJob row
  */
-async function queueAnalysis(submissionId, userId, round = 1) {
-  // PDF Analysis is the consolidator — no downstream cascade today, but call
-  // for consistency / future extensibility (e.g., DAS suggestions).
+async function queueAnalysis(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PDF_ANALYSIS, round);
 
-  // Create SubmissionJob tracking record
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.PDF_ANALYSIS,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing — requeueStep leaves a re-run at `queued`, so the
+  // returned row cannot distinguish a run we just started from one already
+  // going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.PDF_ANALYSIS, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  // Suggestion Generation reads the Generated KRT this step produces, so it has
+  // to be invalidated with it. Without this the panel reported both steps
+  // complete while the suggestions on screen had been computed against the
+  // PREVIOUS Generated KRT — for ever, because `tryAdvanceStep` only starts a
+  // job that is still `waiting` and this one was `complete`.
+  //
+  // Every other queue function already cascaded; this was the one that did not.
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PDF_ANALYSIS, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.PDF_ANALYSIS, round, userId);
+
+  logger.info('PDF analysis re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
 
-  // Add job to the queue
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.PDF_ANALYSIS,
-    {
-      submissionId,
-      userId,
-      submissionJobId: submissionJob.id
-    },
-    {
-      // retryLimit and expireIn derived from JOB_CONFIG (PDF_ANALYSIS_API_TIMEOUT)
-    }
-  );
-
-  // Store pg-boss job ID
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('PDF analysis queued', {
-    submissionId,
-    submissionJobId: submissionJob.id,
-    jobId
-  });
-
-  return submissionJob;
+  return { job, alreadyInFlight };
 }
 
 /**
@@ -538,7 +535,7 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
   // extraction was attempted. "Not found" doubles as the empty-but-tried
   // sentinel and as the placeholder shown in the UI.
   const das = result.data?.meta?.das || null;
-  const persisted = das || 'Not found';
+  const persisted = das || NO_DAS_SENTINEL;
   submission.extractedDataAvailabilityStatement = persisted;
   submission.dataAvailabilityStatement = persisted;
   await submission.save();
@@ -585,6 +582,13 @@ async function runDasExtractor(submission, jobLogger) {
   jobLogger?.log('das_api_start', 'Calling Gemini for DAS extraction');
   const extracted = await dasExtractionService.extractDAS(markdownText);
   await jobLogger?.saveRawResponse('das-extractor-response', extracted);
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
+    prompt: runInputs.promptRef(repoPath(dasExtractionService.PROMPT_FILE), extracted?.promptDigest || null),
+    // The section name is interpolated into the prompt, so a rebuild needs it.
+    // Without it the digest could not be reproduced from this file alone.
+    meta: { model: dasExtractionConfig.model, section: dasExtractionConfig.section }
+  });
   jobLogger?.log('das_api_done', 'DAS extractor returned', {
     dasLength: extracted?.content?.length || 0,
     partialMatch: !!extracted?.partialMatch,
@@ -599,6 +603,7 @@ async function runDasExtractor(submission, jobLogger) {
       items: [],
       meta: {
         das: null, dasLength: 0,
+        promptFile: repoPath(dasExtractionService.PROMPT_FILE),
         partialMatch: !!extracted?.partialMatch,
         sectionFragmented: !!extracted?.sectionFragmented
       }
@@ -610,6 +615,7 @@ async function runDasExtractor(submission, jobLogger) {
     meta: {
       das: dasContent,
       dasLength: dasContent.length,
+      promptFile: repoPath(dasExtractionService.PROMPT_FILE),
       partialMatch: !!extracted.partialMatch,
       sectionFragmented: !!extracted.sectionFragmented
     }
@@ -617,39 +623,31 @@ async function runDasExtractor(submission, jobLogger) {
 }
 
 /**
- * Queue DAS extraction as a background job
+ * Re-run DAS extraction, in the pipeline.
+ *
+ * Through `requeueStep`, like every other step: the round's own row is reused
+ * rather than a second one being inserted beside it. See the note on
+ * `queueAnalysis` above for what a rival row does to the pipeline.
+ *
  * @param {string} submissionId
- * @returns {Promise<string>} Job ID
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
  */
-async function queueDASExtraction(submissionId, round = 1) {
+async function queueDASExtraction(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.DAS_EXTRACTION, round);
 
-  // Create SubmissionJob tracking record
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.DAS_EXTRACTION,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing — requeueStep leaves a re-run at `queued`.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_EXTRACTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.DAS_EXTRACTION, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.DAS_EXTRACTION, round, userId);
+
+  logger.info('DAS extraction re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.DAS_EXTRACTION,
-    {
-      submissionId,
-      submissionJobId: submissionJob.id
-    },
-    {
-      // retryLimit and expireIn derived from JOB_CONFIG (DAS_EXTRACTION_API_TIMEOUT)
-    }
-  );
-
-  // Store pg-boss job ID
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('DAS extraction queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 module.exports = {

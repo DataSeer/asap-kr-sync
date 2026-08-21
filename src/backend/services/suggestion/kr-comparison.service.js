@@ -16,13 +16,16 @@ const fs = require('fs');
 const path = require('path');
 const { GoogleGenAI } = require('@google/genai');
 const krtComparisonConfig = require('../../config/krt-comparison-api');
-const jobQueue = require('../queue/job-queue.service');
 const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
+const { getPipeline } = require('../../config/pipelines');
 const { generateContentWithRetry } = require('../../utils/gemini');
-const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
+const { cleanReason } = require('../../utils/lm-reason');
+const { repoPath } = require('../detection/repo-path');
+const runInputs = require('../queue/run-inputs.service');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/krt-comparison.txt');
 let _promptCache = null;
@@ -120,20 +123,67 @@ function authorRowDisplay(row) {
   };
 }
 
-const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 /**
- * Strip raw KRT-row ids out of an LM reason — the affected row is now shown
- * directly in the UI, so "(row a3d12…)" / "row a3d12…" is just noise.
+ * Turn `incomplete` grounding outcomes into edit suggestions.
+ *
+ * These are the highest-trust updates the pipeline can make: a candidate that
+ * matched this row by identifier/alias/name actually carried the value, and the
+ * author's cell is empty. Nothing is written — this only proposes.
+ *
+ * `not_detected` outcomes deliberately produce NO suggestion. "The manuscript
+ * never mentions this" is not an action to take on the author's table; it is a
+ * tag, surfaced separately via `groundings` so the editor can badge the row.
+ * The author's data is right even when we cannot find it.
+ *
+ * @param {object} ctx - { groundingOutcomes, byId, suggestions, decisions, seen }
  */
-function cleanReason(reason) {
-  if (!reason) return '';
-  return String(reason)
-    .replace(/\(\s*(?:row\s+)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*\)/gi, '')
-    .replace(/\brow\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'the matching author row')
-    .replace(UUID_RE, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+([.,;:])/g, '$1')
-    .trim();
+function appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decisions, seen }) {
+  for (const outcome of Array.isArray(groundingOutcomes) ? groundingOutcomes : []) {
+    if (outcome?.outcome !== 'incomplete') continue;
+    const row = byId.get(outcome.krtRowId);
+    if (!row) continue;
+
+    const dedupKey = computeDedupKey(row);
+    const changeMap = {};
+
+    for (const column of UPDATABLE_COLUMNS) {
+      const newValue = outcome.foundValues?.[column];
+      if (newValue == null || String(newValue).trim() === '') continue;
+      const oldValue = row[column] || '';
+      // Grounding only ever proposes for an EMPTY author cell; this re-checks
+      // that here so a stale outcome can never overwrite curated data.
+      if (String(oldValue).trim() !== '') continue;
+
+      const id = `edit:${dedupKey}:${column}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      changeMap[column] = { old: oldValue, new: String(newValue) };
+
+      suggestions.push({
+        id, type: 'edit', action: 'edit', status: 'pending',
+        source: 'krt_grounding',
+        title: `Update ${COLUMN_LABEL[column]} of ${row.resourceName || row.identifier || ''}`.trim(),
+        description: `${COLUMN_LABEL[column]}: "${oldValue || '(empty)'}" → "${newValue}"`,
+        reason: outcome.reason || null,
+        dedupKey, confidence: 0.9, existsInKRT: 'update', matchedKrtRowId: row.id,
+        mergedFrom: ['krt_grounding'],
+        evidence: outcome.evidence || null,
+        data: {
+          rowId: row.id, column, columnLabel: COLUMN_LABEL[column],
+          oldValue, newValue: String(newValue),
+          resourceType: row.resourceType, resourceName: row.resourceName
+        }
+      });
+    }
+
+    if (Object.keys(changeMap).length > 0) {
+      decisions.push({
+        action: 'update', resourceName: row.resourceName || '',
+        reason: outcome.reason, sources: ['krt_grounding'],
+        authorRow: authorRowDisplay(row), generatedRow: null, changes: changeMap
+      });
+    }
+  }
 }
 
 /**
@@ -145,9 +195,10 @@ function cleanReason(reason) {
  * @param {object[]} authorRows - KRTData rows (need id + current values)
  * @param {object[]} generatedKrt - Generated KRT items (carry dedupKey + detectedBy)
  * @param {object[]} lmDecisions - raw LM decisions [{ action, generatedRef?, authorRowId?, changes?, reason }]
+ * @param {object[]} [groundingOutcomes] - per-author-row verdicts from krt_grounding
  * @returns {{ suggestions: object[], decisions: object[] }}
  */
-function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
+function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, groundingOutcomes = []) {
   if (!Array.isArray(lmDecisions)) return { suggestions: [], decisions: [] };
   const byId = new Map((authorRows || []).map(r => [r.id, r]));
   const gen = Array.isArray(generatedKrt) ? generatedKrt : [];
@@ -155,6 +206,12 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
   const suggestions = [];
   const decisions = [];
   const seen = new Set();
+
+  // Grounding-derived fills go FIRST. They are deterministic (a real candidate
+  // carried the value, matched by identifier/alias/name) so they should win the
+  // `seen` race against an LM proposal for the same row+column, which is then
+  // skipped by the existing dedupe rather than duplicated.
+  appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decisions, seen });
 
   for (const d of lmDecisions) {
     const action = String(d?.action || '').toLowerCase();
@@ -187,6 +244,11 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
         dedupKey, confidence: g.confidence || 0.8, existsInKRT: 'false', matchedKrtRowId: null,
         ...addTier(g), // issue #2: confident vs needs_verification (identifier-less)
         mergedFrom: g.detectedBy || [], // 2b: real detection-module origin
+        // Where in the manuscript this came from: the quote, its section, and
+        // the surrounding paragraph with offsets so the UI can show a sentence
+        // collapsed and the paragraph expanded. Lets a curator judge an `add`
+        // without opening the PDF.
+        evidence: g.evidence || null,
         data: {
           resourceType: g.resourceType || '', resourceName: g.resourceName || '',
           source: g.sourceUrl || '', identifier: g.identifier || '',
@@ -289,22 +351,6 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions) {
   return { suggestions, decisions };
 }
 
-function extractJsonBlock(text) {
-  if (typeof text !== 'string') return '';
-  const fenced = [...text.matchAll(/```json\s*\n?([\s\S]*?)```/g)];
-  if (fenced.length) return fenced[fenced.length - 1][1].trim();
-  const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
-  if (plain.length) return plain[plain.length - 1][1].trim();
-  // An UNTERMINATED fence. Both patterns above require a closing fence,
-  // which a response truncated at the token limit never has — so the raw
-  // text came back still carrying its opener and JSON.parse died on the
-  // backtick. Take everything after the opener so the salvage below can
-  // recover the decisions that completed before the cut.
-  const opener = text.match(/```(?:json)?\s*\n?/);
-  if (opener) return text.slice(opener.index + opener[0].length).trim();
-  return text.trim();
-}
-
 function parseLMResponse(text) {
   const block = extractJsonBlock(text);
   try {
@@ -340,18 +386,25 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
     generated_krt: generatedKrt.map((g, i) => generatedRowForPrompt(g, i))
   };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
+  const promptDigest = { sha256: runInputs.sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
       model: krtComparisonConfig.model,
       contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
-      // This call had NO generation config, so it ran on the model's default
-      // token budget while demanding one decision per generated row. The
-      // biggest tables — the ones whose curators most need help — truncated
-      // first, the parse failed, and the user got an EMPTY suggestions panel.
+      // This call had NO generation config at all, so it ran on the model's
+      // default token budget while the prompt demands one decision per
+      // generated row and shouts "COMPLETENESS IS MANDATORY" — a paragraph that
+      // exists precisely because the response was being truncated.
       //
-      // thinkingBudget 0 for the same reason as the detectors: gemini-2.5-flash
-      // thinks by default and that thinking comes out of the same budget.
+      // The biggest tables, whose curators most need the help, truncated first:
+      // the parse failed and the user got an EMPTY suggestions panel with
+      // nothing to say anything had gone wrong.
+      //
+      //   - responseMimeType → complete, valid JSON instead of fenced prose
+      //   - maxOutputTokens  → headroom for a long decision list
+      //   - thinkingBudget 0 → gemini-2.5-flash thinks by default, and that
+      //                        thinking comes out of the same budget
       config: {
         responseMimeType: 'application/json',
         maxOutputTokens: 65536,
@@ -365,8 +418,15 @@ async function callGeminiForComparison(authorRows, generatedKrt, promptOverride)
       // suggestion for this submission.
       validate: (res) => generatedKrt.length === 0 || parseLMResponse(res?.text || '').length > 0
     });
+    if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+      // Surfaced explicitly: a truncated body silently loses decisions, and the
+      // `unreviewed` safety net downstream would otherwise be the only clue.
+      logger.warn('Gemini response truncated (kr-comparison) — output hit maxOutputTokens', {
+        generatedCount: generatedKrt.length
+      });
+    }
     const text = response.text || '';
-    return { lmDecisions: parseLMResponse(text), rawResponse: text };
+    return { lmDecisions: parseLMResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for KRT comparison', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
@@ -403,18 +463,34 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
     return { data: { suggestions: [] }, status: 'done', source: null, meta: { skipped: true, reason: 'lm_not_configured', totalMs: Date.now() - startTime } };
   }
 
-  const [authorRows, generatedKrt] = await Promise.all([
+  const { getGroundingResult } = require('../krt-grounding/krt-grounding.service');
+  const [authorRows, generatedKrt, grounding] = await Promise.all([
     KRTData.findAll({ where: { submissionId, round } }),
-    getGeneratedKrt(submissionId, round)
+    getGeneratedKrt(submissionId, round),
+    getGroundingResult(submissionId, round)
   ]);
+  const groundingOutcomes = grounding?.outcomes || [];
 
   jobLogger?.log('comparison_start', 'Comparing author KRT vs Generated KRT', {
-    authorCount: authorRows.length, generatedCount: generatedKrt.length
+    authorCount: authorRows.length, generatedCount: generatedKrt.length,
+    groundedRowCount: groundingOutcomes.length
   });
-  const { lmDecisions, rawResponse } = await callGeminiForComparison(authorRows, generatedKrt);
+  const { lmDecisions, rawResponse, promptDigest } = await callGeminiForComparison(authorRows, generatedKrt);
   await jobLogger?.saveRawResponse('krt-comparison', rawResponse || lmDecisions);
+  // Both tables as this run saw them: the author's is edited constantly, and the
+  // Generated one is replaced by any re-run of consolidation.
+  await runInputs.saveRunInputs(jobLogger, {
+    frozen: { authorRows, generatedKrt, groundingOutcomes },
+    prompt: runInputs.promptRef(repoPath(PROMPT_FILE), promptDigest || null),
+    meta: {
+      model: krtComparisonConfig.model,
+      authorCount: authorRows.length,
+      generatedCount: generatedKrt.length,
+      groundedRowCount: groundingOutcomes.length
+    }
+  });
 
-  const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions);
+  const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, groundingOutcomes);
   const unreviewedCount = decisions.filter(d => d.action === 'unreviewed').length;
   if (unreviewedCount) {
     logger.warn('KRT comparison left some generated resources unreviewed', {
@@ -425,8 +501,54 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
     decisionCount: decisions.length, suggestionCount: suggestions.length, unreviewedCount
   });
 
+  // `groundings` is a per-author-row TAG list, not an action list: the editor
+  // badges a row that the manuscript never mentions. It deliberately carries no
+  // suggestion — the author's KRT is authoritative even when detection cannot
+  // corroborate it, so there is nothing here for the user to accept or reject.
+  // Which halves of grounding this pipeline is allowed to show.
+  //
+  // `presence` — the manuscript searched directly for the row — travels in
+  // every pipeline: it never consults the candidate pool, so seeding cannot
+  // affect it.
+  //
+  // Everything derived from candidate MATCHING is withheld under a seeded
+  // pipeline. There the pool contains the model's echo of the author's own
+  // rows, so `confirmed` can mean "it repeated what we handed it" and the
+  // output cannot tell that from a real find. Withholding it here rather than
+  // hiding it in the editor means the unusable verdict never leaves the server.
+  const { Submission } = require('../../models');
+  const submission = await Submission.findByPk(submissionId);
+  const policy = getPipeline(submission?.pipelineId).grounding;
+
+  const groundings = groundingOutcomes.map((outcome) => ({
+    krtRowId: outcome.krtRowId,
+    // Honest in every pipeline.
+    presence: outcome.presence || null,
+    identifier: outcome.identifier || '',
+    source: outcome.source || '',
+    newReuse: outcome.newReuse || '',
+    // Conflicts drive the "Incoherence" verdict, so they travel in every
+    // pipeline — a disagreement between the author's row and the manuscript is
+    // worth surfacing even when candidate MATCHING is not.
+    conflicts: outcome.conflicts || [],
+    ...(policy.surfaceValues ? {
+      outcome: outcome.outcome,
+      matchedBy: outcome.matchedBy || null,
+      evidence: outcome.evidence || null,
+      // Disagreements between the row and the manuscript. Carried as a TAG, not
+      // a suggestion: the author's value stands and a curator decides.
+      conflicts: outcome.conflicts || [],
+      reason: outcome.reason || null
+    } : {})
+  }));
+  // Counted from PRESENCE, not from the matcher: "not in the text" is a claim
+  // about the manuscript, and matching through candidates gets it wrong roughly
+  // three times out of four (55-60% located against 92% by direct search).
+  const notDetectedCount = groundings.filter((g) => g.presence && !g.presence.found).length;
+  const conflictCount = groundings.reduce((n, g) => n + (g.conflicts?.length || 0), 0);
+
   return {
-    data: { suggestions, decisions },
+    data: { suggestions, decisions, groundings, groundingPolicy: policy },
     status: 'done',
     source: 'external',
     meta: {
@@ -435,29 +557,49 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
       decisionCount: decisions.length,
       suggestionCount: suggestions.length,
       unreviewedCount,
+      groundedRowCount: groundings.length,
+      notDetectedCount,
+      conflictCount,
       totalMs: Date.now() - startTime,
-      model: krtComparisonConfig.model
+      model: krtComparisonConfig.model,
+      promptFile: repoPath(PROMPT_FILE)
     }
   };
 }
 
-/** Queue (or re-queue) suggestion generation as a background job. */
-async function queueSuggestionGeneration(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+/**
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
+ */
+async function queueSuggestionGeneration(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId, jobType: JOB_TYPES.SUGGESTION_GENERATION, status: 'queued', round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round, userId);
+
+  logger.info('Suggestion generation re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.SUGGESTION_GENERATION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-  logger.info('Suggestion generation queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 /** Worker entry point. Persists the suggestion list on the SubmissionJob. */
@@ -471,7 +613,9 @@ async function processSuggestionGeneration(submissionId, jobLogger = null /*, op
 
   const job = await SubmissionJob.getLatest(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: result.data, meta: result.meta };
+    // meta goes INSIDE data, which is where every other module puts it and
+    // where the UI reads it from.
+    job.result = { ...(job.result || {}), data: { ...result.data, meta: result.meta } };
     job.changed('result', true);
     await job.save();
   }
@@ -485,12 +629,38 @@ async function getPersistedSuggestions(submissionId, round) {
   return job?.result?.data?.suggestions || [];
 }
 
+/**
+ * The per-author-row grounding tags persisted alongside the suggestions.
+ *
+ * Separate from the suggestion list on purpose: these are verdicts ABOUT the
+ * author's rows, not proposals to change them, so they must never enter the
+ * accept/reject flow.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @returns {Promise<object[]>}
+ */
+async function getPersistedGroundings(submissionId, round) {
+  const { SubmissionJob } = require('../../models');
+  const job = await SubmissionJob.getLatest(submissionId, JOB_TYPES.SUGGESTION_GENERATION, round);
+  return job?.result?.data?.groundings || [];
+}
+
 module.exports = {
+  // Exported for the audit verifier: it rebuilds this prompt through the same
+  // shaping the pipeline uses, rather than a copy that could drift.
+  authorRowForPrompt,
+  generatedRowForPrompt,
   queueSuggestionGeneration,
   processSuggestionGeneration,
   generateSuggestions,
   getPersistedSuggestions,
+  getPersistedGroundings,
   compareKrts,
+  // Exported so an offline harness can reproduce the REAL suggestion path —
+  // buildSuggestionsFromLM WITH grounding outcomes. compareKrts alone omits the
+  // grounding-derived updates, which would under-report what the pipeline does.
+  callGeminiForComparison,
   // Pure helpers (exported for tests)
   buildSuggestionsFromLM
 };

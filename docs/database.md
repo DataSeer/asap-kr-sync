@@ -28,9 +28,27 @@ SSL can be enabled in production via `DATABASE_SSL`.
 | `auth0_sub` | VARCHAR(255) | Auth0 subject ID, unique, nullable |
 | `name` | VARCHAR(100) | Display name, 2-100 chars |
 | `role` | ENUM | `author`, `asap_pm`, `ds_annotator`, `admin` (default `author`) |
+| `deleted` | BOOLEAN | Default `false` — an anonymised account (see below) |
+| `deleted_at` | TIMESTAMPTZ | When it was anonymised; NULL otherwise |
 | `created_at` / `updated_at` | TIMESTAMPTZ | Auto-managed |
 
 Team membership lives in the `user_teams` junction table — there is no per-user `team` column.
+
+**A user row is never deleted.** `submissions.user_id` and `change_logs.user_id`
+are both `ON DELETE CASCADE`, so a real `DELETE` takes the person's manuscripts
+with them *and* erases their edits to everyone else's — silently, and with no
+tombstone to explain the gap. `DELETE /api/users/:id` therefore anonymises:
+random non-routable email, name `Deleted user`, `password_hash` and `auth0_sub`
+nulled, `deleted = true`, team memberships removed, live refresh tokens revoked
+with reason `account_deleted`.
+
+The flag is not the security boundary — the erased credentials are. `deleted` is
+a display and listing concern, and is enforced at exactly two doors that must
+stay closed: `middleware/auth.middleware.fetchUserWithTeams` (every
+authenticated request, local and Auth0 alike) and the refresh path in
+`auth.service`. Adding a third lookup path for users means adding the filter
+there too. Pinned by `controllers/users.delete-anonymises.test.js` and
+`middleware/auth.middleware.test.js`.
 
 **Associations**: has many `UserTeam`, `Submission`, `ChangeLog`, `UserHiddenSubmission`, `RefreshToken`
 
@@ -180,6 +198,7 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 | `retry_count` | INTEGER | Default 0 |
 | `round` | INTEGER | Default 1 |
 | `logs` | JSONB | Structured log entries from job execution (`[]` default) |
+| `triggered_by_user_id` | UUID (FK, nullable) | Who asked for this step to run — **not** the submission's owner. `ON DELETE SET NULL`, though accounts are anonymised rather than deleted so it should never fire. NULL means the row predates the column or no user was involved. |
 | `started_at` / `completed_at` | TIMESTAMPTZ | |
 
 ### Supporting Tables

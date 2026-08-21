@@ -6,11 +6,12 @@ A full-stack web application for managing Key Resources Tables (KRT) in academic
 
 - **KRT Management** — Upload, validate, and edit Key Resources Tables (CSV, XLSX)
 - **AI-Powered PDF Analysis** — Consolidate every detection's findings into a Generated KRT, then surface diff-based suggestions for the user to accept or reject
-- **Software Detection** — Detect software mentions via the Softcite API with reference list enrichment
+- **Software Detection** — Detect software/code via two engines unioned: the Softcite NER service (tool names in prose) plus an optional Gemini pass that catches what a name recogniser cannot — `RRID:SCR_` tokens, GitHub/PyPI/CRAN links, and custom code promised in a data-availability statement
 - **Datasets Detection** — Identify dataset mentions in manuscripts using Google Gemini with structured relevance scoring (two-pass: langextract signal extraction + Gemini consolidation)
-- **Materials Detection** — Identify lab materials/reagents in manuscripts using Google Gemini with KRT suggestion generation. Seeded from the author's KRT material rows, so it only runs once a KRT has been validated
+- **Materials Detection** — Identify lab materials/reagents in manuscripts using Google Gemini, cue-driven (antibodies, plasmids, cell lines, organisms, reagents). Runs on every submission, with or without an author KRT
 - **Protocols Detection** — Identify protocol mentions in manuscripts using Google Gemini with KRT suggestion generation
 - **Identifier Detection** — Scan the converted manuscript markdown against the curated enrichment lists to recover identifier-based matches (DOIs, RRIDs, accessions, catalog numbers) across every KRT resource category in a single pass, plus a list-free sweep that recognizes published-protocol venues (protocols.io, Nature Protocols, JoVE, Bio-protocol, …) from the identifier shape alone
+- **KRT Grounding** — Reconcile the author's KRT against everything detection found: per author row, `confirmed` / `incomplete` / `partial` / `not_detected`, each backed by a verified manuscript quote. Deterministic matching (identifier → alias → name → partial name) plus a targeted LM search over the rows nothing matched. `partial` covers the case where the author writes a packaged construct (`AAV5.CaMKII.GCaMP6f.WPRE.SV40`) and the paper names the component (`GCaMP6f`) — located, but never used to propose a value. Never modifies the author's data — a row the manuscript never mentions is tagged, not changed
 - **ORCID Extraction** — Identify authors and ORCIDs from PDFs using GROBID, OpenAlex, and the ORCID API
 - **Enrichment Lists** — Curated reference lists for all KRT resource types (software, datasets, materials, protocols) with standardized KRT columns, CSV import/export, and admin management pages
 - **Report Generation** — Export results as Excel spreadsheets (Google Sheets export is reserved but not yet implemented)
@@ -89,26 +90,42 @@ When a PDF is uploaded, background jobs run in parallel:
 
 ```
 PDF Upload
-  ├── Software Detection     (immediate)
   ├── ORCID Extraction       (immediate)
   └── Markdown Convert       (immediate)
+        ├── Software Detection    (after markdown convert)
         ├── DAS Extraction        (after markdown convert)
         ├── Identifier Detection  (after markdown convert)
-        ├── Datasets Detection    (after markdown convert; waits for KRT validation)
-        ├── Materials Detection   (after markdown convert; waits for KRT validation)
-        └── Protocols Detection   (after markdown convert; waits for KRT validation)
+        ├── Datasets Detection    (after markdown convert)
+        ├── Materials Detection   (after markdown convert)
+        └── Protocols Detection   (after markdown convert)
+                                       ↓
+                              KRT Grounding
+                              (after every detector; waits for KRT validation)
                                        ↓
                               PDF Analysis (consolidator)
                               (after DAS + Software + Datasets +
-                               Materials + Protocols + Identifier;
-                               auto-advances if DAS was detected,
-                               otherwise waits for user input)
+                               Materials + Protocols + Identifier +
+                               Grounding; auto-advances if DAS was
+                               detected, otherwise waits for user input)
 ```
 
-Datasets, Materials, and Protocols detection are seeded with the author's KRT
-rows, so they wait for the KRT to be validated (submission status past
-`step_krt`) before running, then advance automatically. See
-[Background Jobs](./docs/background-jobs.md) for the full gating rules.
+**Two detection pipelines**, chosen per submission. `seeded-v1` is the default:
+the datasets, materials and protocols prompts carry the author's rows as seeds.
+`blind-v1` is admin-only and gives the detectors nothing but the manuscript —
+it exists so detection can be measured without the author's table leaking into
+the answer.
+
+**Every detector waits for the table to be validated** (`krt_curated`, i.e.
+submission status past `step_krt`), because under the default pipeline the
+prompts are seeded from it, and starting earlier would seed from a table the
+author is still editing.
+
+Either way the author's rows are reconciled against the manuscript afterwards,
+at **KRT Grounding**, as a query rather than a seed — which is what makes "did
+we actually find this row in the PDF?" answerable, and it is deliberately the
+only place that question is answered. See
+[Background Jobs](./docs/background-jobs.md) for the full gating rules and
+[Background Modules](./docs/background-modules.md) for the pipelines.
 
 PDF Analysis is an in-app step (no external API) that merges the
 items produced by every detection into the Generated KRT — feeding
@@ -123,6 +140,9 @@ asap-kr-sync/
 ├── deploy/                 Deployment files (systemd, entrypoint)
 ├── docs/                   Documentation
 ├── migrations/             Sequelize database migrations
+├── scripts/                Operational tools — run against a real instance
+│   ├── dev/                Localhost-only: feature development & quality evaluation
+│   └── lib/                Shared helpers (spreadsheets, author KRT, report shapes)
 ├── seeders/                Database seed data
 ├── src/
 │   ├── backend/
@@ -135,7 +155,7 @@ asap-kr-sync/
 │   └── frontend/
 │       └── src/
 │           ├── components/  Vue components (layout, krt, submission, common)
-│           ├── composables/ Reusable logic (useJobPoller, useAsyncAction, etc.)
+│           ├── composables/ Reusable logic (useJobPoller, useColumnResize)
 │           ├── router/      Vue Router with auth guards
 │           ├── services/    API client services
 │           ├── stores/      Pinia state management

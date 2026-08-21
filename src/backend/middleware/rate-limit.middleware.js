@@ -83,6 +83,49 @@ const lmApiLimiter = createRateLimiter({
 });
 
 /**
+ * The DAILY budget for starting analysis work, per user and per role.
+ *
+ * The per-minute limiter above stops bursts; this one is the actual policy.
+ * Re-running a module is available to everyone who can reach the submission —
+ * an author who can see a wrong result is exactly the person who should be able
+ * to ask for it again — so what separates the roles is a budget, not a button.
+ *
+ *   author        10 runs/day    their own manuscripts
+ *   asap_pm       50 runs/day    a lab's worth
+ *   ds_annotator  unlimited      curation is the job
+ *   admin         unlimited
+ *
+ * **One request is one run.** Starting the whole pipeline and re-running a
+ * single module both cost 1: the first queues eleven jobs from one request, so
+ * counting requests is generous to the common case and simple to explain. A
+ * limit a user cannot predict is a limit they experience as a fault.
+ *
+ * `max: 0` means unlimited here — express-rate-limit treats 0 as "block
+ * everything", so those roles are skipped outright instead.
+ *
+ * Configured in `conf/rate-limits.json` under `lmApiDaily`.
+ */
+const DAILY_LIMITS = RATE_LIMITS.lmApiDaily?.max || {};
+
+/** The role's daily allowance, or 0 for unlimited. */
+function dailyLimitFor(req) {
+  const role = req.user?.role;
+  return Number(DAILY_LIMITS[role] ?? 0);
+}
+
+const lmApiDailyLimiter = createRateLimiter({
+  windowMs: RATE_LIMITS.lmApiDaily?.windowMs ?? 24 * 60 * 60 * 1000,
+  message: RATE_LIMITS.lmApiDaily?.message
+    || 'You have reached your daily limit for starting analyses.',
+  // Per role, read at request time — a promotion takes effect immediately
+  // rather than at the next restart.
+  max: (req) => dailyLimitFor(req) || Number.MAX_SAFE_INTEGER,
+  // Unlimited roles are not merely given a huge number: skipping keeps their
+  // requests out of the store entirely.
+  skip: (req) => dailyLimitFor(req) === 0
+});
+
+/**
  * Token refresh rate limiter - more lenient than login/register
  * Allows automatic token refresh without blocking legitimate users
  */
@@ -97,5 +140,7 @@ module.exports = {
   authLimiter,
   refreshLimiter,
   uploadLimiter,
-  lmApiLimiter
+  lmApiLimiter,
+  lmApiDailyLimiter,
+  dailyLimitFor
 };

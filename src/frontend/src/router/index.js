@@ -20,6 +20,7 @@ const ProjectsView = () => import('@/views/admin/ProjectsView.vue')
 const ResourceTypesView = () => import('@/views/admin/ResourceTypesView.vue')
 const AppConfigView = () => import('@/views/admin/AppConfigView.vue')
 const EnrichmentListView = () => import('@/views/admin/EnrichmentListView.vue')
+const JobsView = () => import('@/views/admin/JobsView.vue')
 const ProfileView = () => import('@/views/profile/ProfileView.vue')
 const AppLayout = () => import('@/components/layout/AppLayout.vue')
 
@@ -94,6 +95,31 @@ const routes = [
         meta: { title: 'Step 4: Edit manuscript', isSubmissionPage: true }
       },
       {
+        // The pipeline as a graph: every step, what it waits for, what it
+        // produced.
+        path: 'submissions/:id/pipeline',
+        name: 'submission-pipeline',
+        component: () => import('@/views/submissions/PipelineView.vue'),
+        // Same reason as the module route below: everything this page shows
+        // belongs to `:id`, and it loads all of it on mount. Without the key,
+        // moving between two submissions' pipelines in one tab would leave the
+        // first one's jobs and title under the second one's URL.
+        meta: { requiresAuth: true, remountOnRouteChange: true }
+      },
+      {
+        // One step's results, nested under the pipeline it belongs to. A real
+        // route rather than a modal so it opens in a second tab beside the KRT
+        // editor — which is what resolving a conflict actually requires — and
+        // so a result can be linked to.
+        path: 'submissions/:id/pipeline/:type',
+        name: 'submission-module',
+        component: () => import('@/views/submissions/ModuleResultsView.vue'),
+        // The whole page IS the `:type` param, so moving between modules with
+        // the step strip must produce a fresh component rather than reuse this
+        // one with a new param. See the RouterView in AppLayout.
+        meta: { requiresAuth: true, remountOnRouteChange: true }
+      },
+      {
         path: 'submissions/:id/report',
         name: 'submission-report',
         component: ReportView,
@@ -116,6 +142,14 @@ const routes = [
         name: 'admin-team-emails',
         component: TeamEmailsView,
         meta: { roles: ['admin', 'ds_annotator', 'asap_pm'], title: 'Team Email Assignment' }
+      },
+      {
+        // Admin-only: this page lists and deletes jobs across every
+        // submission, including ones the viewer does not own.
+        path: 'admin/jobs',
+        name: 'admin-jobs',
+        component: JobsView,
+        meta: { roles: ['admin'], title: 'Processing Jobs' }
       },
       {
         path: 'admin/projects',

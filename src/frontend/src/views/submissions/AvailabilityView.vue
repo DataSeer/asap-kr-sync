@@ -6,6 +6,8 @@ import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import dasSuggestionsService from '@/services/das-suggestions.service'
 
 const route = useRoute()
@@ -62,7 +64,16 @@ async function saveDAS() {
 // poll its status: while it runs we show a loader and block Continue; when it
 // finishes we render its per-rule verdicts. If the LM is disabled or failed we
 // fall back to the legacy in-browser rules (see `allRules` below).
+// Statuses that mean "a run is happening, wait for it". `gated` is deliberately
+// NOT one: the check has been accepted but is held behind its pipeline gate, so
+// nothing is running and there is nothing to wait for. Treating that as running
+// blocked Continue for ever — the fail-open that unblocks it lives in the
+// poller, and the gated branch never started the poller.
 const RUNNING_STATUSES = ['waiting', 'queued', 'processing']
+// What is worth keeping an eye on. Wider than RUNNING_STATUSES: a gated step
+// starts on its own once the statement is saved — which happens on this page —
+// so it is watched without being waited for.
+const POLLABLE_STATUSES = [...RUNNING_STATUSES, 'gated']
 const dasJobStatus = ref('none')
 const lmSuggestions = ref([])
 // The booleans the LM was handed as KRT ground truth, and the run metadata
@@ -75,10 +86,24 @@ let pollTimer = null
 const isGeneratingSuggestions = computed(() => RUNNING_STATUSES.includes(dasJobStatus.value))
 const usingLmSuggestions = computed(() => dasJobStatus.value === 'complete' && lmSuggestions.value.length > 0)
 
+// The page falls back to the built-in browser rules whenever the LM check did
+// not produce verdicts. That fallback is fine — but silent, it is a lie by
+// omission: a weaker set of checks presented in the same green-and-amber cards
+// as the model's, with no way to tell which one you are reading. Say so.
+const lmCheckFailed = computed(() =>
+  ['failed', 'cancelled'].includes(dasJobStatus.value) ||
+  (dasJobStatus.value === 'complete' && lmSuggestions.value.length === 0)
+)
+
+// Accepted, but held behind its gate — it needs a saved statement to read.
+const lmCheckGated = computed(() => dasJobStatus.value === 'gated')
+
 async function fetchDasSuggestions() {
   try {
     const data = await dasSuggestionsService.get(route.params.id)
-    dasJobStatus.value = data.status || 'none'
+    // A gated step is accepted but not running — see the note on
+    // RUNNING_STATUSES. Collapsed into one status the rest of the view reads.
+    dasJobStatus.value = data.gated ? 'gated' : (data.status || 'none')
     lmSuggestions.value = Array.isArray(data.suggestions) ? data.suggestions : []
     lmSignals.value = data.signals || null
     lmMeta.value = data.meta || null
@@ -148,13 +173,26 @@ function startPolling() {
       return
     }
     await fetchDasSuggestions()
-    if (!RUNNING_STATUSES.includes(dasJobStatus.value)) stopPolling()
+    if (!POLLABLE_STATUSES.includes(dasJobStatus.value)) stopPolling()
   }, 3000)
 }
 
 async function regenerateDasSuggestions() {
   try {
-    await dasSuggestionsService.regenerate(route.params.id)
+    const result = await dasSuggestionsService.regenerate(route.params.id)
+
+    // Three answers, not two. The check is a pipeline step gated to this step,
+    // so it can be accepted-but-waiting — and polling for a job that is not
+    // going to start would leave a loader spinning for ever.
+    if (result?.queued === false) {
+      dasJobStatus.value = result.pending ? 'gated' : 'none'
+      // Poll anyway when it is gated: the gate opens on the statement being
+      // saved, and this is the page that saves it. The poller's own time cap
+      // stops it if that never happens.
+      if (result.pending) startPolling()
+      return
+    }
+
     dasJobStatus.value = 'queued'
     lmSuggestions.value = []
     startPolling()
@@ -179,18 +217,45 @@ const helpItems = computed(() => [
   }
 ])
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its usual content — which reads as a statement about the
+// manuscript rather than as a page that never received it.
+const loadError = ref(null)
+
+onMounted(loadPage)
+
+async function loadPage() {
+  loadError.value = null
   krtStore.clearKRT()
-  await submissionStore.fetchSubmission(route.params.id)
-  await krtStore.fetchKRT(route.params.id)
-  await fetchDasSuggestions()
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    // The built-in rules are computed from the KRT and the statement. With
+    // neither loaded they would report a clean statement over nothing at all.
+    loadError.value = describeLoadError(err)
+    return
+  }
+  // The KRT and the suggestions are the rest of the answer, and they fail the
+  // same way. Left outside this guard, a rejected fetchKRT threw out of the
+  // mounted hook: the DAS check never ran, polling never started, and the page
+  // showed a clean statement over data it had not loaded.
+  try {
+    await krtStore.fetchKRT(route.params.id)
+    await fetchDasSuggestions()
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
+
   if (dasJobStatus.value === 'none') {
     // First arrival (the user just finished review) → run the DAS check now.
     await regenerateDasSuggestions()
-  } else if (RUNNING_STATUSES.includes(dasJobStatus.value)) {
+  } else if (POLLABLE_STATUSES.includes(dasJobStatus.value)) {
     startPolling()
   }
-})
+}
 
 onUnmounted(stopPolling)
 
@@ -425,14 +490,22 @@ async function handleBack() {
       @go-next="handleNext"
     />
 
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
     <!-- Original extracted DAS (shown when user has modified it) -->
-    <div v-if="dasWasModified" class="card extracted-das-card">
+    <div v-if="!loadError && dasWasModified" class="card extracted-das-card">
       <div class="text-xs font-semibold uppercase text-gray-500 mb-1">Original extracted text</div>
       <div class="extracted-das-text">{{ extractedDAS }}</div>
     </div>
 
     <!-- AS Text Display -->
-    <div class="card">
+    <div v-if="!loadError" class="card">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">Data/Code Availability Statement</h2>
         <button
@@ -475,7 +548,7 @@ async function handleBack() {
     </div>
 
     <!-- Suggestions -->
-    <div class="card">
+    <div v-if="!loadError" class="card">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">
           Suggestions
@@ -489,7 +562,7 @@ async function handleBack() {
           <div class="view-mode-switch">
             <button
               :class="['view-mode-btn', viewMode === 'list' ? 'view-mode-active' : '']"
-              title="List view"
+              v-tooltip="'List view'"
               @click="viewMode = 'list'"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -499,7 +572,7 @@ async function handleBack() {
             </button>
             <button
               :class="['view-mode-btn', viewMode === 'carousel' ? 'view-mode-active' : '']"
-              title="Single view"
+              v-tooltip="'Single view'"
               @click="viewMode = 'carousel'"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -546,6 +619,34 @@ async function handleBack() {
         </div>
       </div>
 
+      <!-- Accepted but waiting on a statement to read -->
+      <div v-if="lmCheckGated" class="das-fallback-notice">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div>
+          <p class="das-fallback-title">The AI check is waiting for your statement</p>
+          <p class="das-fallback-sub">
+            Save an Availability Statement above and it runs on its own. The checks below are the built-in ones
+            in the meantime — you are not blocked from continuing.
+          </p>
+        </div>
+      </div>
+
+      <!-- The AI check did not produce verdicts — say which rules are on screen -->
+      <div v-if="lmCheckFailed && !isGeneratingSuggestions" class="das-fallback-notice">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+        </svg>
+        <div>
+          <p class="das-fallback-title">The AI check did not run — these are the built-in checks</p>
+          <p class="das-fallback-sub">
+            They are simpler than the model's and will not catch everything it would.
+            <button type="button" class="das-fallback-retry" @click="regenerateDasSuggestions">Try the AI check again</button>
+          </p>
+        </div>
+      </div>
+
       <!-- Loader while the LM check runs -->
       <div v-if="isGeneratingSuggestions" class="das-loader">
         <svg class="animate-spin h-6 w-6 text-primary-600" fill="none" viewBox="0 0 24 24">
@@ -585,7 +686,7 @@ async function handleBack() {
               <span class="recommended-value">{{ suggestion.recommendedText }}</span>
               <button
                 class="copy-btn"
-                title="Copy to clipboard"
+                v-tooltip="'Copy to clipboard'"
                 @click="copyText(suggestion.recommendedText)"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -633,7 +734,7 @@ async function handleBack() {
               <span class="recommended-value">{{ currentSuggestion.recommendedText }}</span>
               <button
                 class="copy-btn"
-                title="Copy to clipboard"
+                v-tooltip="'Copy to clipboard'"
                 @click="copyText(currentSuggestion.recommendedText)"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -677,7 +778,7 @@ async function handleBack() {
                 'carousel-dot-applicable': index !== currentSuggestionIndex && suggestion.applies,
                 'carousel-dot-na': index !== currentSuggestionIndex && !suggestion.applies
               }"
-              :title="`${suggestion.title} (${suggestion.applies ? suggestion.severity : 'N/A'})`"
+              v-tooltip="`${suggestion.title} (${suggestion.applies ? suggestion.severity : 'N/A'})`"
               @click="goToSuggestion(index)"
             />
           </div>
@@ -1177,6 +1278,19 @@ async function handleBack() {
   font-size: 0.75rem;
   color: #6b7280;
   line-height: 1.5;
+}
+
+.das-fallback-notice {
+  @apply flex items-start gap-3 p-4 mb-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800;
+}
+.das-fallback-title {
+  @apply text-sm font-semibold;
+}
+.das-fallback-sub {
+  @apply text-sm mt-0.5;
+}
+.das-fallback-retry {
+  @apply underline font-medium hover:text-amber-900;
 }
 
 .das-loader {

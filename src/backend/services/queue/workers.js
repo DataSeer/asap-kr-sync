@@ -83,6 +83,13 @@ const SERVICE_CFG = {
     isExternalEnabled: () => true,
     isDemoEnabled: () => false
   },
+  // Grounding's deterministic matcher always runs and has no demo path, so the
+  // module is permanently 'on'; the LM second look only enriches it. Without
+  // this entry the snapshot would read 'off' after the very first run.
+  krt_grounding: {
+    isExternalEnabled: () => true,
+    isDemoEnabled: () => false
+  },
   // LM comparison (author KRT vs Generated KRT) → suggestions. LM-only, so no
   // demo path: when the comparison API isn't configured the module reads 'off'.
   suggestion_generation: {
@@ -134,6 +141,26 @@ function buildServiceSnapshot(jobType, helperResult) {
 function isFinalAttemptFor(queueName, pgBossJob) {
   const retryLimit = jobQueue.JOB_CONFIG?.[queueName]?.retryLimit ?? 0;
   return helperIsFinalAttempt(pgBossJob, retryLimit);
+}
+
+/**
+ * Record a worker error on the SubmissionJob row.
+ *
+ * The distinction that matters is whether pg-boss is going to try again.
+ * `failed` is terminal to every reader of these rows — including the
+ * orchestrator, which treats a `failed` dependency as done — so using it for an
+ * error that is about to be retried let a reconciler sweep in the backoff window
+ * park the dependents in `pending_input`, permanently. See
+ * `SubmissionJob.markRetrying`.
+ *
+ * @param {object|null} submissionJob
+ * @param {Error} error
+ * @param {boolean} isFinalAttempt
+ */
+async function recordFailure(submissionJob, error, isFinalAttempt) {
+  if (!submissionJob) return;
+  if (isFinalAttempt) await submissionJob.markFailed(error.message);
+  else await submissionJob.markRetrying(error.message);
 }
 
 /**
@@ -215,7 +242,10 @@ async function initializeWorkers() {
     jobQueue.QUEUES.PDF_ANALYSIS,
     async (data, pgBossJob) => {
       const { processAnalysis } = require('../pdf-analysis/pdf-analysis.service');
-      const { submissionId, userId, submissionJobId } = data;
+      // `userId` is in the payload but deliberately not read here — see
+      // buildJobData. Destructuring it made it look consumed, which is what
+      // made every advance that omits it look like a bug.
+      const { submissionId, submissionJobId } = data;
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
@@ -249,18 +279,18 @@ async function initializeWorkers() {
           timing: { totalMs: m.totalMs || 0 }
         });
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'pdf_analysis', round, userId);
+        await advancePipeline(submissionId, 'pdf_analysis', round);
         return { success: true, submissionJobId };
       } catch (error) {
         jobLogger?.log('error', `PDF analysis failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // Only propagate to the pipeline once pg-boss has truly given up. On
         // non-final attempts the retry will overwrite this failure, so
         // signalling dependents now would unblock them prematurely (see
         // DAS_EXTRACTION / pdf_analysis pending_input bug).
         if (isFinalAttempt) {
-          await advancePipeline(submissionId, 'pdf_analysis', round, userId);
+          await advancePipeline(submissionId, 'pdf_analysis', round);
         }
         throw error;
       }
@@ -291,14 +321,19 @@ async function initializeWorkers() {
         await submissionJob?.markComplete({
           status: { detected: isProductive(result) },
           service: buildServiceSnapshot('das_extraction', result),
-          data: { das: result.data?.meta?.das || null }
+          // Everything the run recorded about itself EXCEPT the statement,
+          // which is the `das` field — storing it twice helps nobody.
+          data: {
+            das: result.data?.meta?.das || null,
+            meta: (({ das, ...rest }) => rest)(result.data?.meta || {})
+          }
         });
         await jobLogger?.flush();
         await advancePipeline(submissionId, 'das_extraction', round);
         return { success: true, submissionId, status: result.status };
       } catch (error) {
         jobLogger?.log('error', `DAS extraction failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // Only propagate once pg-boss has truly given up. Advancing here on a
         // transient failure marked DAS as terminal-failed, and pdf_analysis's
@@ -323,6 +358,7 @@ async function initializeWorkers() {
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.REPORT_GENERATION, pgBossJob);
 
       try {
         jobLogger?.log('start', 'Starting report generation', { type });
@@ -334,7 +370,7 @@ async function initializeWorkers() {
         return { success: true, reportId: report.id };
       } catch (error) {
         jobLogger?.log('error', `Report generation failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         throw error;
       }
@@ -380,7 +416,7 @@ async function initializeWorkers() {
         return { success: true, submissionId, status: result.status };
       } catch (error) {
         jobLogger?.log('error', `Software detection failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // See DAS_EXTRACTION worker — only advance on the final attempt so
         // dependents don't observe a transient failure as terminal.
@@ -425,7 +461,7 @@ async function initializeWorkers() {
         return { success: true, submissionId, status: result.status };
       } catch (error) {
         jobLogger?.log('error', `ORCID extraction failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // See DAS_EXTRACTION worker — only advance on the final attempt so
         // dependents don't observe a transient failure as terminal.
@@ -470,7 +506,7 @@ async function initializeWorkers() {
         return { success: true, submissionId, status: result.status };
       } catch (error) {
         jobLogger?.log('error', `Markdown conversion failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // See DAS_EXTRACTION worker — only advance on the final attempt so
         // dependents don't observe a transient failure as terminal.
@@ -523,7 +559,7 @@ async function initializeWorkers() {
         return { success: true, submissionId, status: result.status };
       } catch (error) {
         jobLogger?.log('error', `Datasets detection failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // See DAS_EXTRACTION worker — only advance on the final attempt so
         // dependents don't observe a transient failure as terminal.
@@ -574,7 +610,7 @@ async function initializeWorkers() {
         return { success: true, submissionId, status: result.status };
       } catch (error) {
         jobLogger?.log('error', `Materials detection failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // See DAS_EXTRACTION worker — only advance on the final attempt so
         // dependents don't observe a transient failure as terminal.
@@ -584,7 +620,11 @@ async function initializeWorkers() {
         throw error;
       }
     },
-    { concurrency: 1 }
+    // 2, matching the other Gemini-backed detectors. This module used to return
+    // instantly for any submission whose author listed no materials, so a
+    // single worker was plenty; now it always makes a real LM call (20-120s on
+    // a large manuscript) and one worker made the queue drain serially.
+    { concurrency: 2 }
   );
 
   // Protocols Detection Worker
@@ -625,7 +665,7 @@ async function initializeWorkers() {
         return { success: true, submissionId, status: result.status };
       } catch (error) {
         jobLogger?.log('error', `Protocols detection failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // See DAS_EXTRACTION worker — only advance on the final attempt so
         // dependents don't observe a transient failure as terminal.
@@ -683,12 +723,77 @@ async function initializeWorkers() {
         return { success: true, submissionId, status: result.status };
       } catch (error) {
         jobLogger?.log('error', `Identifier detection failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         // See DAS_EXTRACTION worker — only advance on the final attempt so
         // dependents don't observe a transient failure as terminal.
         if (isFinalAttempt) {
           await advancePipeline(submissionId, 'identifier_detection', round);
+        }
+        throw error;
+      }
+    },
+    { concurrency: 2 }
+  );
+
+  // KRT Grounding: reconcile the author's KRT against the candidate pool.
+  await jobQueue.registerHandler(
+    jobQueue.QUEUES.KRT_GROUNDING,
+    async (data, pgBossJob) => {
+      const { processKrtGrounding } = require('../krt-grounding/krt-grounding.service');
+      const { submissionId, submissionJobId } = data;
+      const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
+      const { manuscriptId, round } = await loadSubmission(submissionId);
+      const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
+      const isFinalAttempt = isFinalAttemptFor(jobQueue.QUEUES.KRT_GROUNDING, pgBossJob);
+
+      try {
+        jobLogger?.log('start', 'Starting KRT grounding', { isFinalAttempt });
+
+        const result = await processKrtGrounding(submissionId, jobLogger);
+        const m = result.data?.meta || {};
+        jobLogger?.log('grounding_complete', 'KRT grounding complete', {
+          mode: m.mode,
+          authorRows: m.authorRows || 0,
+          confirmed: m.confirmed || 0,
+          incomplete: m.incomplete || 0,
+          notDetected: m.notDetected || 0,
+          unmatchedCandidates: m.unmatchedCandidates || 0,
+          conflicts: m.conflicts || 0
+        });
+
+        await submissionJob?.markComplete({
+          // "Detected" here means the step produced a reconciliation, which it
+          // always does — including in no-KRT mode, where zero author rows is
+          // the correct answer rather than a failure.
+          status: { detected: true, mode: m.mode },
+          service: buildServiceSnapshot('krt_grounding', { status: 'done', source: 'internal' }),
+          counts: {
+            authorRows: m.authorRows || 0,
+            confirmed: m.confirmed || 0,
+            incomplete: m.incomplete || 0,
+            notDetected: m.notDetected || 0,
+            unmatchedCandidates: m.unmatchedCandidates || 0,
+            conflicts: m.conflicts || 0,
+            // From the direct search of the manuscript, not from candidate
+            // matching — the same measure the editor's badge uses, so the card
+            // and the modal cannot disagree about how many rows were found.
+            present: m.presence?.present || 0,
+            absent: m.presence?.absent || 0
+          },
+          timing: { totalMs: m.totalMs || 0 }
+        });
+        await jobLogger?.flush();
+        await advancePipeline(submissionId, 'krt_grounding', round);
+        return { success: true, submissionId, status: result.status };
+      } catch (error) {
+        jobLogger?.log('error', `KRT grounding failed: ${error.message}`);
+        await recordFailure(submissionJob, error, isFinalAttempt);
+        await jobLogger?.flush();
+        // See DAS_EXTRACTION worker — only advance on the final attempt so
+        // dependents don't observe a transient failure as terminal.
+        if (isFinalAttempt) {
+          await advancePipeline(submissionId, 'krt_grounding', round);
         }
         throw error;
       }
@@ -723,7 +828,7 @@ async function initializeWorkers() {
         return { success: true, submissionId, count };
       } catch (error) {
         jobLogger?.log('error', `Suggestion generation failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         if (isFinalAttempt) await advancePipeline(submissionId, 'suggestion_generation', round);
         throw error;
@@ -759,7 +864,7 @@ async function initializeWorkers() {
         return { success: true, submissionId, applicable };
       } catch (error) {
         jobLogger?.log('error', `DAS suggestions failed: ${error.message}`);
-        if (submissionJob) await submissionJob.markFailed(error.message);
+        await recordFailure(submissionJob, error, isFinalAttempt);
         await jobLogger?.flush();
         if (isFinalAttempt) await advancePipeline(submissionId, 'das_suggestions', round);
         throw error;

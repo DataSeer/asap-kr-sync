@@ -73,7 +73,16 @@ Create a user. **admin, ds_annotator only.** Non-admins cannot create admin-role
 Update a user. **admin, ds_annotator only.** Body accepts any of `name, role, password, teams[]` (at least one required). Non-admins cannot edit existing admin users or promote anyone to admin. Replaces the full team list when `teams` is provided.
 
 ### `DELETE /api/users/:id`
-Delete a user. **admin only.** Self-deletion is blocked (400).
+Delete a user. **admin only.** Self-deletion is blocked (400); an
+already-deleted user is a 409.
+
+**This anonymises rather than removes.** The row survives so that the user's
+submissions and their edits to other people's submissions survive with it
+(both FKs cascade). The identity does not: the email is replaced with a random
+`@deleted.invalid` address, the name becomes `Deleted user`, the password hash
+and Auth0 link are nulled, team memberships are dropped and live refresh tokens
+are revoked, all in one transaction. The account is then absent from
+`GET /api/users`, and `GET`/`PATCH /api/users/:id` return 404 for it.
 
 ---
 
@@ -100,7 +109,9 @@ Create a team.
 Update a team. **Body**: any of `{ code, name, active }` (at least one).
 
 ### `DELETE /api/teams/:id`
-Delete a team.
+Delete a team. Refused with a 400 while the team still has members — that is the
+only thing attaching anything to a team, since a submission carries a *project*
+and an owner, and team visibility is derived from the owner's memberships.
 
 ### `GET /api/teams/export`
 Download all teams as CSV (`code,name,active`), re-importable via import.
@@ -336,10 +347,23 @@ Get the current PDF Analysis (Generated-KRT builder) job status.
 Get the unified suggestions list once PDF Analysis is complete.
 
 ### `POST /api/submissions/:id/pdf/analyze`
-Re-trigger PDF Analysis (the Generated-KRT builder: rule-based merge → LM consolidation). Rate-limited via `lmApiLimiter` (10 / min / user).
+Re-run the PDF Analysis step (the Generated-KRT builder: rule-based merge → LM
+consolidation). Rate-limited via `lmApiLimiter` (10 / min / user).
+
+Re-runs it **in the pipeline**: the round's existing `pdf_analysis` row is
+reused, and it only starts once every detector has finished and the gates pass —
+otherwise it stays `waiting` for the orchestrator to advance. It does not create
+a second job row, and it cannot jump ahead of the detectors it consolidates.
 
 ### `POST /api/submissions/:id/pdf/extract-das`
-Re-trigger DAS extraction from the latest PDF.
+Re-run DAS extraction **as a pipeline step**, and return immediately (202).
+- **Returns**: `{ message, status, submissionJobId }`
+- It used to run the extraction inside the request. That worked, but left the
+  pipeline untouched: the `das_extraction` job row kept the previous run's
+  status, result, frozen inputs and prompt — so the module page described a run
+  that was no longer the latest — and nothing downstream re-ran, so
+  consolidation and the Availability check kept answers built from a statement
+  that had just been replaced.
 
 ---
 
@@ -555,8 +579,23 @@ Trigger identifier detection (re-run). Cascade-restarts PDF Analysis.
 
 ## Markdown Convert
 
+### `GET /api/submissions/:id/markdown`
+The converted manuscript text for the current round. Returns `{ content, fileName, length, version, round }`.
+404 when conversion has not produced a file yet.
+
+Served through the API rather than as a presigned S3 link because the Markdown Convert module page *displays*
+it: a cross-origin fetch of a presigned URL depends on the bucket's CORS policy, which a view should not be
+hostage to. The presigned download still exists via `GET /api/submissions/:id/files/:fileId/download`.
+
 ### `POST /api/submissions/:id/markdown/convert`
-Re-trigger PDF → Markdown conversion. Cascade-restarts Datasets / Protocols / Identifier Detection / PDF Analysis.
+Re-trigger PDF → Markdown conversion. Cascade-restarts every step that reads the
+manuscript, then re-queues conversion through the orchestrator.
+- **Returns**: `{ message, status }` — `status` is the step's job status. A
+  re-run asked for while a conversion is already in flight is a no-op, and the
+  message says so instead of reporting a queued run that will never start.
+  The distinction is read **before** re-queueing: `requeueStep` leaves a re-run
+  at `queued`, so deciding from the returned row made every re-run report
+  "already running", including ones started that instant.
 
 ---
 
@@ -567,7 +606,9 @@ Get extracted authors with ORCIDs.
 - **Returns**: `{ authors: [...], meta }`
 
 ### `POST /api/submissions/:id/authors/extract`
-Trigger ORCID extraction (re-run).
+Trigger ORCID extraction (re-run). Same contract as the conversion re-run above:
+goes through the orchestrator, reuses the round's row, and returns
+`{ message, status }`.
 
 ---
 
@@ -594,7 +635,7 @@ All job endpoints support an optional `?round=N` query parameter. When omitted, 
 
 ### `GET /api/submissions/:id/jobs?round=N`
 Get all background job statuses for a submission.
-- **Returns**: `{ round, jobs: [...] }` — each job includes `logs`, `rawResponses`, `result`, `config`
+- **Returns**: `{ round, jobs: [...] }` — each job includes `logs`, `files`, `result`, `config`
 - A `waiting` job that is held by a submission-state gate (datasets/materials/protocols before KRT validation)
   carries `waitingReason: 'krt_validation'`, so the UI can show *"Waiting for the Key Resources Table to be
   validated."* These advance automatically once the KRT is validated — no `advance` call is needed (that is only
@@ -613,6 +654,19 @@ Get a presigned S3 download URL for a job's raw API response file.
 ---
 
 ## Configuration (Public)
+
+### `GET /api/submissions/:id/jobs/:jobType/prompts`
+The prompt(s) a run used, read back from its own frozen inputs. **Staff only**
+(same audience as the rest of the job internals).
+- **Returns**: `{ prompts: [{ key, file, text, sha256, bytes, attachments: [{ file, text, sha256, bytes }] }] }`
+- Served from the run's **stored copy** — never from the file on disk, and never
+  as a link to GitHub: a deployment is not always at the head of its branch, so
+  a link can show a prompt that is not the one that ran.
+- Not folded into `GET /jobs`: that payload is polled every few seconds, and a
+  template per module would add tens of kilobytes to every poll for something
+  read only when the Technical detail panel is opened.
+- A run with no stored inputs returns `{ prompts: [], reason: 'no_inputs_artefact' }`
+  rather than a 404 — a skipped or fallback run legitimately has none.
 
 ### `GET /api/config/krt-template`
 Get the KRT template URL. Returns `{ url }`.

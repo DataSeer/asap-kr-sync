@@ -23,6 +23,7 @@ const QUEUES = {
   MATERIALS_DETECTION: 'materials-detection',
   PROTOCOLS_DETECTION: 'protocols-detection',
   IDENTIFIER_DETECTION: 'identifier-detection',
+  KRT_GROUNDING: 'krt-grounding',
   SUGGESTION_GENERATION: 'suggestion-generation',
   DAS_SUGGESTIONS: 'das-suggestions',
   EMAIL_NOTIFICATION: 'email-notification'
@@ -136,6 +137,15 @@ const JOB_CONFIG = {
     retryLimit: 1,
     retryDelay: 30
   },
+  // Deterministic matching plus one batched LM pass over the author rows that
+  // matched nothing, so the timeout tracks the grounding LM call.
+  [QUEUES.KRT_GROUNDING]: {
+    apiTimeoutMs: Number(process.env.KRT_GROUNDING_API_TIMEOUT) || 180000,
+    get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 20,
+    retryLimit: 2,
+    retryDelay: 30
+  },
   // LM comparison of author KRT vs Generated KRT → suggestions.
   [QUEUES.SUGGESTION_GENERATION]: {
     apiTimeoutMs: parseInt(process.env.KRT_COMPARISON_API_TIMEOUT, 10) || 300000,
@@ -244,6 +254,37 @@ async function addJob(queueName, data, options = {}) {
 }
 
 /**
+ * Translate this codebase's worker options into pg-boss's.
+ *
+ * `concurrency` has to set BOTH of pg-boss's numbers. `teamSize` is how many
+ * jobs are fetched; `teamConcurrency` is how many of them run at once. With
+ * teamConcurrency pinned at 1, every worker declaring `{ concurrency: 2 }`
+ * fetched two jobs and then worked through them one at a time — the setting
+ * read as if it did something and did nothing.
+ *
+ * `concurrency` is our name for the pair, not a pg-boss option, so it is not
+ * passed through. An explicit `teamConcurrency` still wins: fetch a batch, run
+ * fewer of them is a legitimate combination.
+ *
+ * `includeMetadata` is required for `job.retrycount` to be populated on the job
+ * object the handler receives. Without it pg-boss only sends
+ * { id, name, data }, so retry counters always read 0 — which makes the UI's
+ * "Attempt N/3" indicator stick at 1/3 across retries.
+ *
+ * @param {{concurrency?: number, teamConcurrency?: number}} options
+ * @returns {object} pg-boss work() options
+ */
+function buildWorkerOptions(options = {}) {
+  const { concurrency, ...passThrough } = options;
+  return {
+    teamSize: concurrency || 1,
+    teamConcurrency: options.teamConcurrency || concurrency || 1,
+    includeMetadata: true,
+    ...passThrough
+  };
+}
+
+/**
  * Register a job handler for a queue
  * @param {string} queueName - Queue name from QUEUES
  * @param {function} handler - Async function to process jobs
@@ -252,16 +293,7 @@ async function addJob(queueName, data, options = {}) {
 async function registerHandler(queueName, handler, options = {}) {
   const instance = getInstance();
 
-  // includeMetadata is required for `job.retrycount` to be populated on the
-  // job object the handler receives. Without it pg-boss only sends
-  // { id, name, data }, so retry counters always read 0 — which makes the
-  // UI's "Attempt N/3" indicator stuck at 1/3 across retries.
-  const workerOptions = {
-    teamSize: options.concurrency || 1,
-    teamConcurrency: options.teamConcurrency || 1,
-    includeMetadata: true,
-    ...options
-  };
+  const workerOptions = buildWorkerOptions(options);
 
   await instance.work(queueName, workerOptions, async (job) => {
     logger.info('Processing job', {
@@ -282,6 +314,18 @@ async function registerHandler(queueName, handler, options = {}) {
         retryCount: job.retrycount || 0,
         error: error.message
       });
+
+      // Retry-skip on a deleted submission. The submission (or its job row) is
+      // gone — pg-boss has no foreign key to our tables, so its queue entry
+      // outlived them. Retrying cannot help: nothing will bring the row back.
+      // Swallow it so the failure is terminal on the first attempt instead of
+      // logging the same "Submission not found" three times per orphan.
+      if (await isOrphanedByDeletion(job, error)) {
+        logger.info('Job error suppressed — its submission no longer exists, no retry', {
+          queue: queueName, jobId: job.id
+        });
+        return { orphaned: true };
+      }
 
       // Retry-skip on user cancel: if the run was cancelled while this module
       // was mid-flight, its failure is a consequence of the cancel. The handler
@@ -327,6 +371,42 @@ async function getJobStatus(jobId) {
  * @param {string} jobId - Job ID
  * @returns {Promise<boolean>}
  */
+/**
+ * Did this job fail only because its submission was deleted underneath it?
+ *
+ * A deleted submission cascades away its `submission_jobs` rows, but pg-boss
+ * keeps its own table with no foreign key to ours, so the queue entry survives
+ * and fails on every attempt. That is permanent, not transient — retrying it
+ * just triples the log noise.
+ *
+ * Deliberately narrow: only a not-found error, and only when the submission is
+ * genuinely absent from the database. A transient DB outage that produced a
+ * different error still retries normally.
+ *
+ * @param {object} job - the pg-boss job ({ data })
+ * @param {Error} error - the error the handler threw
+ * @returns {Promise<boolean>}
+ */
+async function isOrphanedByDeletion(job, error) {
+  const looksNotFound = error?.code === 'NOT_FOUND'
+    || error?.statusCode === 404
+    || /not found/i.test(error?.message || '');
+  if (!looksNotFound) return false;
+
+  const submissionId = job?.data?.submissionId;
+  if (!submissionId) return false;
+
+  try {
+    const { Submission } = require('../../models');
+    const submission = await Submission.findByPk(submissionId, { attributes: ['id'] });
+    return !submission;
+  } catch {
+    // Can't confirm — fall through to the normal retry path rather than
+    // silently swallowing a real failure.
+    return false;
+  }
+}
+
 async function cancelJob(queueName, jobId) {
   const instance = getInstance();
   return instance.cancel(queueName, jobId);
@@ -362,6 +442,7 @@ module.exports = {
   getInstance,
   addJob,
   registerHandler,
+  buildWorkerOptions,
   getJobStatus,
   cancelJob,
   getQueueStats,

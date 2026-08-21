@@ -167,7 +167,9 @@ function fixList(file) {
     if (ch) { r[idCol] = value; changed++; }
   }
   if (changed) {
-    fs.copyFileSync(file, file + '.bak');
+    // Guarded: a second --fix run must not copy the patched file over the
+    // pristine backup.
+    if (!fs.existsSync(file + '.bak')) fs.copyFileSync(file, file + '.bak');
     fs.writeFileSync(file, Papa.unparse(parsed.data, { columns: fields, newline: '\n' }) + '\n');
   }
   return changed;

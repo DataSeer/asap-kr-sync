@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useKRTStore } from '@/stores/krt.store'
@@ -9,7 +9,9 @@ import api from '@/services/api'
 import pdfService from '@/services/pdf.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
-import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
+import { useJobPoller } from '@/composables'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,9 +29,24 @@ const krtTemplateUrl = ref('')
 const submission = computed(() => submissionStore.currentSubmission)
 const latestFiles = computed(() => submissionStore.latestFiles)
 
-// Shared BackgroundProcesses wrapper handles the job poller, service status
-// fetch, and the inject contract — KRTView and PDFView use it identically.
-const bgProcessesRef = ref(null)
+/**
+ * The poller WITHOUT the panel.
+ *
+ * This step no longer shows module statuses — they live on the PDF step and the
+ * pipeline page. But the page still has to REACT to the pipeline: the curator
+ * edits their table here while analysis runs, and the suggestions and the
+ * header's statement should appear when it finishes rather than on a refresh.
+ *
+ * So the poller is used directly. What was removed is the display, not the
+ * behaviour.
+ */
+const { jobs, onJobComplete, onJobFailed, onJobPendingInput, refresh: refreshJobs } = useJobPoller(
+  computed(() => route.params.id)
+)
+
+// Step 2's copy of the DAS banner — see the note in PDFView. The poller above
+// already runs; `jobs` is just no longer thrown away.
+provide('submissionJobs', jobs)
 
 const krtRows = computed(() => krtStore.rows)
 const summary = computed(() => krtStore.summary)
@@ -249,25 +266,21 @@ const proceedBlockedReason = computed(() => {
 const showAckModal = ref(false)
 
 /**
- * Wire job-completion side-effects into the shared BackgroundProcesses
- * wrapper. Mirrors PDFView::registerJobCallbacks — the user can sit on
- * Step 2 while the background pipeline runs, and suggestions should
- * populate automatically the moment pdf_analysis finishes. Without
- * this, the curator has to refresh the page to see anything
- * (the empty-state hint stays put even after "8/8 done").
+ * Wire job-completion side-effects into the poller. Mirrors
+ * PDFView::registerJobCallbacks — the curator sits on this step editing their
+ * table while the background pipeline runs, and suggestions should populate the
+ * moment pdf_analysis finishes. Without this they have to refresh the page to
+ * see anything.
  */
 function registerJobCallbacks() {
-  const bg = bgProcessesRef.value
-  if (!bg) return
-
-  bg.onJobComplete('pdf_analysis', async () => {
+  onJobComplete('pdf_analysis', async () => {
     await krtStore.fetchAiSuggestions(route.params.id)
     notificationStore.success('AI suggestions ready')
   })
-  bg.onJobFailed('pdf_analysis', () => {
+  onJobFailed('pdf_analysis', () => {
     notificationStore.error('Manuscript analysis failed — suggestions unavailable')
   })
-  bg.onJobPendingInput('pdf_analysis', () => {
+  onJobPendingInput('pdf_analysis', () => {
     notificationStore.info(
       'Availability Statement not found — please enter it manually, then start the analysis.',
       30000
@@ -276,13 +289,23 @@ function registerJobCallbacks() {
   // DAS extraction updates submission.dataAvailabilityStatement; refresh
   // the cached submission so the header (and any "DAS detected" pill)
   // picks up the new text without requiring a navigation away and back.
-  bg.onJobComplete('das_extraction', async () => {
+  onJobComplete('das_extraction', async () => {
     await submissionStore.fetchSubmission(route.params.id)
   })
 }
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its usual content — which reads as a statement about the
+// manuscript rather than as a page that never received it.
+const loadError = ref(null)
+
+onMounted(loadPage)
+
+async function loadPage() {
   // Reset local state for new submission
+  loadError.value = null
   uploading.value = false
   applyingFix.value = false
   showBatchFixModal.value = false
@@ -292,17 +315,29 @@ onMounted(async () => {
   // Clear previous KRT data before loading new submission
   krtStore.clearKRT()
 
-  // BackgroundProcesses child mounts before the parent, so its ref is
-  // bound by the time we get here — wire our callbacks into the shared
-  // poller now so we don't miss any job-completion events that fire
-  // before the initial fetch settles.
+  // Registered before the first fetch settles, so no completion is missed.
   registerJobCallbacks()
 
-  await submissionStore.fetchSubmission(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
+  // Inside the guard with the fetch above it. The endpoint answers an empty
+  // table for a submission that has no KRT yet, so a rejection here is a real
+  // failure — and left unguarded it threw out of the mounted hook, skipping
+  // the template and resource-type fetches below and leaving an empty editor
+  // that looks like an empty table.
   if (submission.value && submission.value.status !== 'draft') {
-    await krtStore.fetchKRT(route.params.id)
-    // Also fetch AI suggestions if analysis was completed
-    await krtStore.fetchAiSuggestions(route.params.id)
+    try {
+      await krtStore.fetchKRT(route.params.id)
+      // Also fetch AI suggestions if analysis was completed
+      await krtStore.fetchAiSuggestions(route.params.id)
+    } catch (err) {
+      loadError.value = describeLoadError(err)
+      return
+    }
   }
   // Fetch KRT template URL
   try {
@@ -318,7 +353,7 @@ onMounted(async () => {
   } catch (e) {
     // Resource types are optional, ignore errors
   }
-})
+}
 
 // Update page title with the submission title (manuscriptId is optional, so
 // gate on either identifier — otherwise submissions without a manuscript id
@@ -378,8 +413,8 @@ async function handlePdfUpload(event) {
   uploadingPdf.value = true
   try {
     await pdfService.upload(route.params.id, file)
-    // Refresh the background processes panel so the new job set is visible.
-    bgProcessesRef.value?.refresh?.()
+    // Pick up the new job set, so the callbacks above fire for this run.
+    refreshJobs()
     notificationStore.success('PDF replaced — analysis restarted')
   } catch (error) {
     notificationStore.error(error.response?.data?.error || 'Failed to replace PDF')
@@ -576,7 +611,7 @@ function scrollToFirstWarning() {
       :submission="submission"
       :latest-files="latestFiles"
       step-title="Step 2: Fix the Key Resources Table"
-      step-description="Review and fix your Key Resources Table while background processes run"
+      step-description="Review and fix your Key Resources Table — the analysis runs in the background and needs nothing from you here"
       :help-items="helpItems"
       :show-navigation="true"
       :can-go-back="false"
@@ -607,7 +642,7 @@ function scrollToFirstWarning() {
           target="_blank"
           rel="noopener noreferrer"
           class="btn-secondary text-sm inline-flex items-center"
-          title="Open Key Resources Table Template in Google Sheets"
+          v-tooltip="'Open Key Resources Table Template in Google Sheets'"
         >
           <svg class="w-4 h-4 mr-1" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1.99 6H13V7h4.01v2zm0 4H13v-2h4.01v2zm0 4H13v-2h4.01v2zM7 7h4v2H7V7zm0 4h4v2H7v-2zm0 4h4v2H7v-2z" />
@@ -620,7 +655,7 @@ function scrollToFirstWarning() {
         <button
           :disabled="uploadingPdf"
           class="btn-secondary text-sm inline-flex items-center"
-          title="Upload a new manuscript PDF; the analysis pipeline restarts automatically"
+          v-tooltip="'Upload a new manuscript PDF; the analysis pipeline restarts automatically'"
           @click="triggerPdfUpload"
         >
           <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -645,16 +680,16 @@ function scrollToFirstWarning() {
       </template>
     </SubmissionHeader>
 
-    <!-- Background processes panel — embeds the wait-time ETA in its header
-         and exposes a "More details" toggle that reveals the per-job grid.
-         Same component used on step 3 so the UX is consistent. -->
-    <BackgroundProcesses
-      ref="bgProcessesRef"
-      :submission-id="route.params.id"
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
     />
 
     <!-- Quick Fixes Section - Carousel Navigation -->
-    <div v-if="allQuickFixes.length > 0 || krtStore.validating" class="card">
+    <div v-if="!loadError && (allQuickFixes.length > 0 || krtStore.validating)" class="card">
       <div class="flex items-center justify-between" :class="showQuickFixes ? 'mb-3' : 'mb-0'">
         <div class="flex items-center gap-2">
           <h3 class="text-sm font-medium text-gray-700">Quick Fixes</h3>
@@ -666,7 +701,7 @@ function scrollToFirstWarning() {
              table (which already highlights every flagged cell) more room. -->
         <button
           class="text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1"
-          :title="showQuickFixes ? 'Hide quick fixes to enlarge the table' : 'Show quick fixes'"
+          v-tooltip="showQuickFixes ? 'Hide quick fixes to enlarge the table' : 'Show quick fixes'"
           @click="showQuickFixes = !showQuickFixes"
         >
           <svg class="w-4 h-4 transition-transform" :class="{ '-rotate-90': !showQuickFixes }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -706,7 +741,7 @@ function scrollToFirstWarning() {
             <!-- View in KRT button -->
             <button
               class="p-1.5 text-gray-500 hover:text-primary-600 hover:bg-gray-100 rounded-md transition-colors"
-              title="View in KRT Editor"
+              v-tooltip="'View in KRT Editor'"
               @click="scrollToFixRow(currentFix)"
             >
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -749,7 +784,7 @@ function scrollToFirstWarning() {
             <!-- View in KRT button -->
             <button
               class="p-1.5 text-gray-500 hover:text-primary-600 hover:bg-gray-100 rounded-md transition-colors"
-              title="View in KRT Editor"
+              v-tooltip="'View in KRT Editor'"
               @click="scrollToFixRow(currentFix)"
             >
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -789,7 +824,7 @@ function scrollToFirstWarning() {
             :key="index"
             class="w-2 h-2 rounded-full transition-colors"
             :class="index === currentFixIndex ? 'bg-primary-600' : 'bg-gray-300 hover:bg-gray-400'"
-            :title="`Fix ${index + 1}`"
+            v-tooltip="`Fix ${index + 1}`"
             @click="goToFix(index)"
           />
         </div>

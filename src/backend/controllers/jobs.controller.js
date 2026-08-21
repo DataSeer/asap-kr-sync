@@ -6,7 +6,7 @@
  * When omitted, defaults to the submission's current round.
  */
 
-const { SubmissionJob } = require('../models');
+const { SubmissionJob, User } = require('../models');
 const jobQueue = require('../services/queue/job-queue.service');
 const { JOB_CONFIG, JOB_TYPE_TO_QUEUE } = jobQueue;
 const orchestrator = require('../services/queue/orchestrator.service');
@@ -37,11 +37,40 @@ function resolveRound(req) {
  * queue config). Other roles (PM, ds_annotator, admin) get the full technical
  * details so they can debug pipeline behavior.
  */
+/**
+ * Gate name → the reason the UI shows. Named separately because the gate is an
+ * implementation detail of the pipeline table and the reason is a contract with
+ * the frontend: renaming a gate must not silently change what users read.
+ */
+const WAITING_REASONS = {
+  krt_curated: 'krt_validation',
+  markdown_ready: 'markdown_missing',
+  // Not a stall: this step belongs to a later stage of the submission. The
+  // client uses this to keep it out of "all processes finished" — a step the
+  // user has not reached is not outstanding work for the step they are on.
+  availability_ready: 'availability_step'
+};
+
 async function getJobs(req, res, next) {
   try {
     const round = resolveRound(req);
     const jobs = await SubmissionJob.getForSubmission(req.params.id, round);
     const includeInternals = req.user?.role !== ROLES.AUTHOR;
+
+    // Who asked for each step. One extra query rather than an include on
+    // getForSubmission: that method is also the orchestrator's hot path on
+    // every advance, and it has no use for a join it would pay for each time.
+    // An anonymised account still resolves — the row survives deletion with
+    // the name 'Deleted user' — so a name is either real or an honest
+    // tombstone, never a dangling id.
+    const triggerIds = [...new Set(jobs.map((j) => j.triggeredByUserId).filter(Boolean))];
+    const triggers = triggerIds.length
+      ? await User.findAll({ where: { id: triggerIds }, attributes: ['id', 'name'], raw: true })
+      : [];
+    const triggerById = new Map(triggers.map((u) => [u.id, u.name]));
+    // Gates can read a dependency's result — "is there any converted text?" —
+    // so they need the run, not just the submission.
+    const jobsByType = new Map(jobs.map(j => [j.jobType, j]));
 
     res.json({
       round,
@@ -70,12 +99,17 @@ async function getJobs(req, res, next) {
           status: job.status,
           // Explains a `waiting` status the dependency graph can't: the step
           // is gated on submission state (e.g. KRT not yet validated).
-          waitingReason: job.status === 'waiting' && orchestrator.isGateBlocked(job.jobType, req.submission)
-            ? 'krt_validation'
+          waitingReason: job.status === 'waiting'
+            ? WAITING_REASONS[orchestrator.isGateBlocked(job.jobType, req.submission, jobsByType)] || null
             : null,
           referenceId: job.referenceId,
           result: safeResult,
           errorMessage: job.errorMessage,
+          // null for a step no user asked for by hand, or a row older than the
+          // column. The UI says "automatically" rather than inventing a name.
+          triggeredBy: job.triggeredByUserId
+            ? { id: job.triggeredByUserId, name: triggerById.get(job.triggeredByUserId) || null }
+            : null,
           retryCount: job.retryCount || 0,
           round: job.round,
           startedAt: job.startedAt,
@@ -229,13 +263,93 @@ async function getJobResponse(req, res, next) {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    const s3Key = job.result?.files?.[responseName];
-    if (!s3Key) {
+    // hasOwnProperty, not a bare lookup: `files` is a plain object, so
+    // `.../responses/constructor` returned an inherited function, sailed past a
+    // truthiness check, and blew up in the S3 client with a TypeError — a 500
+    // where a 404 belongs.
+    const files = job.result?.files;
+    const s3Key = files && Object.prototype.hasOwnProperty.call(files, responseName)
+      ? files[responseName]
+      : null;
+    if (typeof s3Key !== 'string' || !s3Key) {
       return res.status(404).json({ error: 'Response not found' });
     }
 
     const url = await s3Service.getPresignedDownloadUrl(s3Key);
+
+    // `?redirect=1` sends the caller to the file itself. Without it the caller
+    // gets JSON and has to open the url in a second step, which cannot be a
+    // plain link — so ctrl-click, middle-click and "open in new tab" all stop
+    // working on something that is, to a reader, just a file.
+    if (req.query.redirect !== undefined && req.query.redirect !== 'false') {
+      return res.redirect(302, url);
+    }
     res.json({ url, name: responseName, s3Key, round: job.round });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * The prompt(s) this run actually used, read back from its frozen inputs.
+ * GET /api/submissions/:id/jobs/:jobType/prompts?round=N
+ *
+ * Served from the run's own stored copy, never from the file on disk and never
+ * as a link to GitHub. A deployment is not always at the head of its branch,
+ * and prompt files get edited, renamed and deleted — so a link showed a reader
+ * a prompt that may not be the one that ran, silently and with no way to tell.
+ * The run froze its copy; this hands that copy back.
+ *
+ * Not folded into GET /jobs: that payload is polled every few seconds, and a
+ * prompt template per module would add tens of kilobytes to every poll for
+ * something read only when a panel is opened.
+ */
+async function getJobPrompts(req, res, next) {
+  try {
+    const submission = req.submission;
+    const { jobType } = req.params;
+    const round = resolveRound(req);
+
+    const job = await SubmissionJob.getLatest(submission.id, jobType, round);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const s3Key = job.result?.files?.inputs;
+    if (typeof s3Key !== 'string' || !s3Key) {
+      // A run that stored no inputs artefact. Not an error — a skipped or
+      // fallback run has none — so the caller gets an empty list and can say
+      // "this run recorded no prompt" rather than showing a spinner for ever.
+      return res.json({ prompts: [], round: job.round, reason: 'no_inputs_artefact' });
+    }
+
+    let inputs;
+    try {
+      inputs = JSON.parse((await s3Service.downloadFile(s3Key)).toString('utf-8'));
+    } catch (error) {
+      logger.warn('Could not read a run\'s frozen inputs', { jobType, s3Key, error: error.message });
+      return res.json({ prompts: [], round: job.round, reason: 'inputs_unreadable' });
+    }
+
+    // Every prompt a run recorded, whatever the module called it. Datasets
+    // records two (detection and signal extraction), so this reads the shape
+    // rather than a fixed list of names.
+    const prompts = Object.entries(inputs)
+      .filter(([, v]) => v && typeof v === 'object' && typeof v.promptFile === 'string')
+      .map(([key, v]) => ({
+        key,
+        file: v.promptFile,
+        text: v.templateText ?? null,
+        sha256: v.templateSha256 ?? null,
+        bytes: v.templateBytes ?? null,
+        // Files the prompt cannot work without — LangExtract's few-shot
+        // examples JSON. It is passed to the extractor as a separate argument
+        // and never enters the prompt text, so showing the template alone
+        // would show only part of what the run was given.
+        attachments: Array.isArray(v.attachments) ? v.attachments : []
+      }));
+
+    res.json({ prompts, round: job.round });
   } catch (error) {
     next(error);
   }
@@ -246,5 +360,6 @@ module.exports = {
   runProcesses,
   advanceJob,
   cancelProcessing,
-  getJobResponse
+  getJobResponse,
+  getJobPrompts
 };

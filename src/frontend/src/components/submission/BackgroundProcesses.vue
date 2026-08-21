@@ -30,6 +30,7 @@ import datasetsService from '@/services/datasets.service'
 import materialsService from '@/services/materials.service'
 import protocolsService from '@/services/protocols.service'
 import identifierDetectionService from '@/services/identifier-detection.service'
+import krtGroundingService from '@/services/krt-grounding.service'
 import markdownService from '@/services/markdown.service'
 import suggestionService from '@/services/suggestion.service'
 import JobStatusPanel from './JobStatusPanel.vue'
@@ -45,6 +46,7 @@ const notificationStore = useNotificationStore()
 // ── Job poller — provided to JobStatusPanel via inject ───────────────
 const {
   jobs,
+  fetchError,
   isAnyRunning,
   getJob,
   onJobComplete,
@@ -54,6 +56,9 @@ const {
 } = useJobPoller(computed(() => props.submissionId))
 
 provide('submissionJobs', jobs)
+// So the panel can say "could not be read" instead of listing every step as
+// "Not started" — which is what an unreachable server looked like.
+provide('jobsFetchError', fetchError)
 
 // ── Cancel-processing action (#15) — provided to JobStatusPanel's button ──
 async function cancelProcessing() {
@@ -90,55 +95,35 @@ function reveal() {
 }
 
 // ── Restart-job dispatcher ───────────────────────────────────────────
-// Wired into JobStatusPanel via inject('restartJob'). Maps job types to
-// the right "trigger" service call and refreshes the poller afterwards.
+// Wired into JobStatusPanel via inject('restartJob').
+//
+// The server decides what actually happened: a re-run asked for while the step
+// is already in flight is deliberately a no-op, and it answers "… is already
+// running" rather than "… queued". This used to announce its own cheerful
+// "re-started" either way, so a user who clicked twice was told a second run
+// had started and then waited for a result that was never coming. Show what
+// the server said; fall back to our own wording only if it said nothing.
+const RESTART_ACTIONS = {
+  das_extraction: [(id) => pdfService.extractDAS(id), 'DAS extraction'],
+  pdf_analysis: [(id) => pdfService.triggerAnalysis(id), 'PDF analysis'],
+  software_detection: [(id) => softwareService.triggerDetection(id), 'Software detection'],
+  orcid_extraction: [(id) => orcidService.triggerExtraction(id), 'ORCID extraction'],
+  markdown_convert: [(id) => markdownService.triggerConvert(id), 'Markdown conversion'],
+  datasets_detection: [(id) => datasetsService.triggerDetection(id), 'Datasets detection'],
+  materials_detection: [(id) => materialsService.triggerDetection(id), 'Materials detection'],
+  protocols_detection: [(id) => protocolsService.triggerDetection(id), 'Protocols detection'],
+  identifier_detection: [(id) => identifierDetectionService.triggerDetection(id), 'Identifier detection'],
+  krt_grounding: [(id) => krtGroundingService.triggerGrounding(id), 'KRT grounding'],
+  suggestion_generation: [(id) => suggestionService.regenerate(id), 'AI suggestion generation']
+}
+
 provide('restartJob', async (jobType) => {
-  const id = props.submissionId
+  const action = RESTART_ACTIONS[jobType]
+  if (!action) return
+  const [trigger, label] = action
   try {
-    switch (jobType) {
-      case 'das_extraction':
-        await pdfService.extractDAS(id)
-        notificationStore.info('DAS extraction re-started')
-        break
-      case 'pdf_analysis':
-        await pdfService.triggerAnalysis(id)
-        notificationStore.info('PDF analysis re-started')
-        break
-      case 'software_detection':
-        await softwareService.triggerDetection(id)
-        notificationStore.info('Software detection re-started')
-        break
-      case 'orcid_extraction':
-        await orcidService.triggerExtraction(id)
-        notificationStore.info('ORCID extraction re-started')
-        break
-      case 'markdown_convert':
-        await markdownService.triggerConvert(id)
-        notificationStore.info('Markdown conversion re-started')
-        break
-      case 'datasets_detection':
-        await datasetsService.triggerDetection(id)
-        notificationStore.info('Datasets detection re-started')
-        break
-      case 'materials_detection':
-        await materialsService.triggerDetection(id)
-        notificationStore.info('Materials detection re-started')
-        break
-      case 'protocols_detection':
-        await protocolsService.triggerDetection(id)
-        notificationStore.info('Protocols detection re-started')
-        break
-      case 'identifier_detection':
-        await identifierDetectionService.triggerDetection(id)
-        notificationStore.info('Identifier detection re-started')
-        break
-      case 'suggestion_generation':
-        await suggestionService.regenerate(id)
-        notificationStore.info('AI suggestion generation re-started')
-        break
-      default:
-        return
-    }
+    const result = await trigger(props.submissionId)
+    notificationStore.info(result?.message || `${label} re-started`)
     await refresh()
   } catch (err) {
     notificationStore.error(err.response?.data?.error || `Failed to restart ${jobType}`)

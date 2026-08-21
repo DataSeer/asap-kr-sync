@@ -316,7 +316,7 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 - **On complete:** Shows "X material(s) detected (Y high relevance)"
 
 #### Protocols Detection
-- Detects protocol mentions in the manuscript via Google Gemini, **seeded with the author's protocol rows as "Section 0"**
+- Detects protocol mentions in the manuscript via Google Gemini, seeded with the author's protocol rows under the default pipeline ("Section 0"); `blind-v1` removes the seeds
 - **Depends on:** Markdown Convert (uses the markdown text as input, not the PDF)
 - **Gated on:** `krt_curated` — waits until the author validates the KRT, then advances automatically (see Datasets Detection)
 - **Prompt fixes:** don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations; exclude analyses; better new/reuse classification
@@ -332,7 +332,7 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 **Job controls:**
 - Failed jobs show an error message and a "Restart" button
 - `pending_input` jobs show an "Advance" button
-- Admin/ds_annotator roles see additional details: timestamps, retry counts, timeout configuration
+- Everyone except authors sees additional details: timestamps, retry counts, timeout configuration
 
 ### Proceeding to Step 3
 
@@ -446,7 +446,8 @@ that source, so a reviewer can isolate (for example) only the AI-driven changes.
 
 ### Availability Statement Recommendations (DAS Suggestions)
 
-The DAS is checked against the **ASAP rulebook** by the standalone **`das_suggestions`** background job — a Google
+The DAS is checked against the **ASAP rulebook** by the **`das_suggestions`** background job — a pipeline step
+gated to this step (see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) — a Google
 Gemini call that judges the statement **semantically** (not by literal keyword matching). It runs on first arrival
 at this step (once review is done, so the DAS is extracted and the KRT is final) and re-runs whenever the DAS is
 edited. While it runs, the panel shows a **loader** and **Continue is blocked**. When the LM is disabled or fails,

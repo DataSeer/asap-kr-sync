@@ -10,10 +10,13 @@
 
 const { GoogleGenAI } = require('@google/genai');
 const krtGenConfig = require('../../config/krt-generation-api');
+const { pickBestEvidence } = require('./evidence.service');
 const { computeDedupKey } = require('./identifier-normalize.service');
+const { mergeAdditionalInfo } = require('./merge-detections.service');
 const logger = require('../../utils/logger');
 const { generateContentWithRetry } = require('../../utils/gemini');
-const { sanitizeJsonEscapes, salvageTruncatedObjects } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
+const { cleanReason } = require('../../utils/lm-reason');
 
 function isConfigured() {
   return krtGenConfig.isConfigured();
@@ -42,30 +45,15 @@ function sourcesOf(c) {
     : [];
 }
 
-/**
- * Scrub internal candidate `ref` numbers out of an LM reason so the curator
- * never sees "merged refs 0 and 4" — the refs are an implementation detail.
- */
-function cleanReason(reason) {
-  if (!reason) return '';
-  return String(reason)
-    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+([.,;:])/g, '$1')
-    .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')
-    .trim();
-}
-
-/** Union the detectedBy provenance of several candidates (deduped by source). */
+/** Union the detectedBy provenance of several candidates (every contributor, including repeats from one module). */
 function unionDetectedBy(candidates) {
+  // Every contributor is kept, including two from the same module: each carries
+  // its own originalItem, and that is what the Generated KRT shows as the
+  // working behind a merged row. (This used to keep a `seen` set that both
+  // branches ignored, and a docstring promising a dedupe that never happened.)
   const out = [];
-  const seen = new Set();
   for (const c of candidates) {
-    for (const d of (c.detectedBy || [])) {
-      const key = d.source || '';
-      if (!seen.has(key)) { seen.add(key); out.push(d); }
-      else out.push(d); // keep all originalItems, even same source
-    }
+    for (const d of (c.detectedBy || [])) out.push(d);
   }
   return out;
 }
@@ -95,6 +83,16 @@ function buildKrtFromLM(candidates, lmOutput) {
     const refCandidates = refs.map(n => candidates[n]);
     const detectedBy = unionDetectedBy(refCandidates);
     const confidence = Math.max(0, ...refCandidates.map(c => c.confidence || 0));
+    // ADDITIONAL INFORMATION is a KRT column like any other, and `mergeDetections`
+    // does real work to build it (each contributor's context, de-duplicated line
+    // by line). Leaving it out of `base` dropped it from every item the LM placed
+    // — while the safety-net path below kept it, so one output table carried two
+    // different item shapes. Downstream, `makeAddSuggestion` reads it as the
+    // suggestion's `context`, so its absence emptied that hint in the UI.
+    const mergedInfo = refCandidates
+      .map((c) => c.additionalInformation)
+      .reduce((acc, info) => mergeAdditionalInfo(acc, info), '');
+
     const base = {
       resourceType: r.resourceType ?? refCandidates[0].resourceType ?? '',
       resourceName: r.resourceName ?? refCandidates[0].resourceName ?? '',
@@ -108,15 +106,21 @@ function buildKrtFromLM(candidates, lmOutput) {
       // one output table carried two different item shapes. Downstream,
       // makeAddSuggestion reads it as the suggestion's `context`, so its
       // absence emptied that hint in the UI on every LM-placed row.
-      additionalInformation: r.additionalInformation
-        ?? refCandidates.map((c) => c.additionalInformation).filter(Boolean).join('; ')
-        ?? ''
+      //
+      // The LM's own value wins when it supplied one; otherwise keep what the
+      // detectors observed, merged line by line rather than concatenated, so a
+      // blurb two detectors both recorded is not repeated.
+      additionalInformation: r.additionalInformation ?? mergedInfo ?? ''
     };
     items.push({
       ...base,
       dedupKey: computeDedupKey(base),
       detectedBy,
       confidence,
+      // The LM returns only the curated fields, so anything not named here is
+      // lost. `evidence` was — which emptied the manuscript context out of every
+      // suggestion, since suggestions are built from this table.
+      evidence: pickBestEvidence(refCandidates.map(c => c.evidence)),
       reason: cleanReason(r.reason) || 'kept'
     });
   }
@@ -139,28 +143,18 @@ function buildKrtFromLM(candidates, lmOutput) {
   }
 
   // Safety net: keep any candidate the LM forgot to place.
+  //
+  // `evidence` is normalised rather than merely spread: the LM-placed path
+  // above always emits the key (possibly null), so a candidate that arrived
+  // without one would produce a row missing a field its neighbours have — one
+  // table with two shapes, which is the defect this file has already suffered
+  // twice.
   candidates.forEach((c, n) => {
     if (used.has(n)) return;
-    items.push({ ...c, reason: cleanReason(c.reason) || 'kept' });
+    items.push({ evidence: null, ...c, reason: cleanReason(c.reason) || 'kept' });
   });
 
   return { items, dropped };
-}
-
-function extractJsonBlock(text) {
-  if (typeof text !== 'string') return '';
-  const fenced = [...text.matchAll(/```json\s*\n?([\s\S]*?)```/g)];
-  if (fenced.length) return fenced[fenced.length - 1][1].trim();
-  const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
-  if (plain.length) return plain[plain.length - 1][1].trim();
-  // An UNTERMINATED fence. Both patterns above require a closing fence, which
-  // a response truncated at the token limit never has — so the raw text came
-  // back still carrying its opener and JSON.parse died on the backtick. Take
-  // everything after the opener and let the salvage below recover whatever
-  // objects completed before the cut.
-  const opener = text.match(/```(?:json)?\s*\n?/);
-  if (opener) return text.slice(opener.index + opener[0].length).trim();
-  return text.trim();
 }
 
 function parseLMResponse(text) {
@@ -172,29 +166,39 @@ function parseLMResponse(text) {
     return { resources: parsed.resources || [], dropped: parsed.dropped || [] };
   } catch (err) {
     // Truncation is the common failure, and returning nothing here is worse
-    // than it looks: buildKrtFromLM then places no resource, its safety net
-    // keeps every candidate, and the Generated KRT silently ships
-    // UNCONSOLIDATED — no dedup, no non-resource filtering — with only a log
-    // line to say so. The detection modules already salvage; this did not.
-    const salvaged = salvageTruncatedObjects(block);
-    if (salvaged.length > 0) {
-      logger.warn('KRT generation JSON was truncated — salvaged completed resources', {
-        error: err.message, salvaged: salvaged.length
+    // than it looks: `buildKrtFromLM` then places no resource, its safety net
+    // keeps every candidate, and the Generated KRT silently ships UNCONSOLIDATED
+    // — no dedup, no non-resource filtering — with only a log line to say so.
+    // The four detection modules already salvage; this one did not.
+    //
+    // Both lists have to be recovered BY NAME. Salvaging the body as one flat
+    // stream put the `dropped` entries — the candidates the model explicitly
+    // rejected — into `resources`, where they shipped in the Generated KRT
+    // labelled "kept", while the dropped-candidates table rendered empty.
+    const resources = salvageTruncatedObjects(block, 'resources');
+    const dropped = salvageTruncatedObjects(block, 'dropped');
+    if (resources.length > 0 || dropped.length > 0) {
+      logger.warn('KRT generation JSON was truncated — salvaged completed entries', {
+        error: err.message, resources: resources.length, dropped: dropped.length
       });
-      return { resources: salvaged, dropped: [] };
+      return { resources, dropped };
     }
     logger.error('Failed to parse KRT generation JSON', { error: err.message });
     return { resources: [], dropped: [] };
   }
 }
 
+/** The consolidation prompt, named once so a run can report which file it used. */
+const PROMPT_FILE = require('path').join(__dirname, '../../data/prompts/pdf-analysis-krt.txt');
+
 async function callGeminiForKrt(candidates) {
   const fs = require('fs');
-  const path = require('path');
   const ai = new GoogleGenAI({ apiKey: krtGenConfig.apiKey });
-  const prompt = fs.readFileSync(path.join(__dirname, '../../data/prompts/pdf-analysis-krt.txt'), 'utf-8').trim();
+  const prompt = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   const payload = { candidates: candidates.map((c, i) => candidateForPrompt(c, i)) };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
+  const { sha256 } = require('../queue/run-inputs.service');
+  const promptDigest = { sha256: sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
   const response = await generateContentWithRetry(ai, {
     model: krtGenConfig.model,
     contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
@@ -223,7 +227,7 @@ async function callGeminiForKrt(candidates) {
       return resources.length > 0 || dropped.length > 0;
     }
   });
-  return { lmOutput: parseLMResponse(response.text || ''), rawResponse: response.text || '' };
+  return { lmOutput: parseLMResponse(response.text || ''), rawResponse: response.text || '', promptDigest };
 }
 
 /**
@@ -236,10 +240,10 @@ async function consolidateWithLM(candidates, jobLogger = null) {
     return { items: candidates.map(c => ({ ...c, reason: 'kept (rule-based merge)' })), dropped: [], usedLM: false };
   }
   try {
-    const { lmOutput, rawResponse } = await callGeminiForKrt(candidates);
+    const { lmOutput, rawResponse, promptDigest } = await callGeminiForKrt(candidates);
     const { items, dropped } = buildKrtFromLM(candidates, lmOutput);
     jobLogger?.log('krt_llm_done', 'LM consolidation complete', { kept: items.length, dropped: dropped.length });
-    return { items, dropped, usedLM: true, rawResponse };
+    return { items, dropped, usedLM: true, rawResponse, promptDigest };
   } catch (err) {
     logger.error('KRT generation LM failed — falling back to rule-based merge', { error: err.message });
     jobLogger?.log('krt_llm_failed', 'LM consolidation failed; using rule-based merge', { error: err.message });
@@ -248,6 +252,11 @@ async function consolidateWithLM(candidates, jobLogger = null) {
 }
 
 module.exports = {
+  PROMPT_FILE,
+  // Exported so the audit verifier can rebuild this module's prompt through the
+  // same shaping the pipeline uses. A reimplementation there would drift and
+  // start passing for the wrong reason.
+  candidateForPrompt,
   isConfigured,
   consolidateWithLM,
   // Pure helper (exported for tests)

@@ -17,8 +17,12 @@ module.exports = {
   rules: {
     'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
     'vue/multi-word-component-names': 'off',
-    // The codebase has zero v-html; keep it that way (XSS surface). If a
-    // genuine need appears, sanitize with DOMPurify and disable per-line.
+    // v-html is an XSS surface, so it stays an error and is disabled per-line
+    // with a reason. Exactly one place does that today: MarkdownViewer, whose
+    // renderer (components/modules/markdown-render.js) escapes its input BEFORE
+    // any rule runs and emits only tags it wrote itself — so there is no raw
+    // HTML passthrough to sanitise. Anything else needs the same argument or
+    // DOMPurify.
     'vue/no-v-html': 'error',
     'vue/require-default-prop': 'off',
     'vue/max-attributes-per-line': 'off',

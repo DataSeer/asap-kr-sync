@@ -15,16 +15,21 @@ const markdownController = require('../controllers/markdown.controller');
 const materialsController = require('../controllers/materials.controller');
 const protocolsController = require('../controllers/protocols.controller');
 const identifierDetectionController = require('../controllers/identifier-detection.controller');
+const krtGroundingController = require('../controllers/krt-grounding.controller');
 const suggestionController = require('../controllers/suggestion.controller');
 const dasSuggestionsController = require('../controllers/das-suggestions.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { canCreateSubmission, requireRole } = require('../middleware/role.middleware');
 const { ROLES } = require('../config/constants');
 const { canAccessSubmission, attachSubmissionFilter } = require('../middleware/team.middleware');
-const { canViewJobInternals, canManageJobs } = require('../middleware/feature-access.middleware');
+const { canViewJobInternals } = require('../middleware/feature-access.middleware');
 const { validateBody, validateQuery } = require('../middleware/validation.middleware');
 const { uploadKRT, uploadPDF, handleMulterError } = require('../middleware/upload.middleware');
-const { uploadLimiter, lmApiLimiter } = require('../middleware/rate-limit.middleware');
+// Two budgets on every route that starts analysis work: `lmApiLimiter` stops
+// bursts (per minute), `lmApiDailyLimiter` is the actual policy (per day, per
+// role). Re-running is available to anyone who can reach the submission, so
+// what separates the roles is the budget, not the button.
+const { uploadLimiter, lmApiLimiter, lmApiDailyLimiter } = require('../middleware/rate-limit.middleware');
 
 const router = express.Router();
 
@@ -88,7 +93,12 @@ router.get('/:id/das-suggestions',
 
 // POST /api/submissions/:id/das-suggestions/regenerate - re-run the DAS check
 router.post('/:id/das-suggestions/regenerate',
+  // Access first, THEN the budget — see the note on the limiters above. A
+  // request for someone else's submission must not spend the caller's daily
+  // allowance on a 403.
   canAccessSubmission,
+  lmApiLimiter,
+  lmApiDailyLimiter,
   dasSuggestionsController.regenerate
 );
 
@@ -108,8 +118,12 @@ router.delete('/:id',
 );
 
 // POST /api/submissions/:id/new-round - Start a new round (process new version)
+// Re-runs the whole processing chain, so it belongs on the LM budget rather
+// than only the generous per-IP baseline.
 router.post('/:id/new-round',
   canAccessSubmission,
+  lmApiLimiter,
+  lmApiDailyLimiter,
   validateBody('processNewVersion'),
   submissionsController.processNewVersion
 );
@@ -117,12 +131,17 @@ router.post('/:id/new-round',
 // ===== Hide/Unhide Operations =====
 
 // POST /api/submissions/:id/hide - Hide submission for current user
+// Guarded like every other /:id route: without it these were an existence
+// oracle (200 vs 404) over other labs' documents, and wrote hidden-rows
+// pointing at them.
 router.post('/:id/hide',
+  canAccessSubmission,
   submissionsController.hideSubmission
 );
 
 // POST /api/submissions/:id/unhide - Unhide submission for current user
 router.post('/:id/unhide',
+  canAccessSubmission,
   submissionsController.unhideSubmission
 );
 
@@ -244,6 +263,7 @@ router.get('/:id/pdf/findings',
 router.post('/:id/pdf/analyze',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   pdfController.triggerAnalysis
 );
 
@@ -251,6 +271,7 @@ router.post('/:id/pdf/analyze',
 router.post('/:id/pdf/extract-das',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   pdfController.extractDAS
 );
 
@@ -259,6 +280,8 @@ router.post('/:id/pdf/extract-das',
 // POST /api/submissions/:id/reports/generate - Generate report
 router.post('/:id/reports/generate',
   canAccessSubmission,
+  lmApiLimiter,
+  lmApiDailyLimiter,
   validateBody('generateReport'),
   reportsController.generate
 );
@@ -293,6 +316,7 @@ router.get('/:id/suggestions',
 router.post('/:id/suggestions/regenerate',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   suggestionController.regenerateSuggestions
 );
 
@@ -336,6 +360,7 @@ router.get('/:id/software',
 router.post('/:id/software/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   softwareController.triggerDetection
 );
 
@@ -351,6 +376,7 @@ router.get('/:id/authors',
 router.post('/:id/authors/extract',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   orcidController.triggerExtraction
 );
 
@@ -366,15 +392,23 @@ router.get('/:id/datasets',
 router.post('/:id/datasets/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   datasetsController.triggerDetection
 );
 
 // ===== Markdown Convert =====
 
+// GET /api/submissions/:id/markdown - Read the converted manuscript text
+router.get('/:id/markdown',
+  canAccessSubmission,
+  markdownController.getMarkdown
+);
+
 // POST /api/submissions/:id/markdown/convert - Trigger markdown conversion
 router.post('/:id/markdown/convert',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   markdownController.triggerConvert
 );
 
@@ -390,6 +424,7 @@ router.get('/:id/materials',
 router.post('/:id/materials/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   materialsController.triggerDetection
 );
 
@@ -405,6 +440,7 @@ router.get('/:id/protocols',
 router.post('/:id/protocols/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   protocolsController.triggerDetection
 );
 
@@ -420,7 +456,24 @@ router.get('/:id/identifiers',
 router.post('/:id/identifiers/detect',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   identifierDetectionController.triggerDetection
+);
+
+// ===== KRT Grounding =====
+
+// GET /api/submissions/:id/grounding - Per-author-row reconciliation outcomes
+router.get('/:id/grounding',
+  canAccessSubmission,
+  krtGroundingController.getGrounding
+);
+
+// POST /api/submissions/:id/grounding/regenerate - Re-run grounding
+router.post('/:id/grounding/regenerate',
+  canAccessSubmission,
+  lmApiLimiter,
+  lmApiDailyLimiter,
+  krtGroundingController.triggerGrounding
 );
 
 // ===== Background Jobs =====
@@ -435,6 +488,7 @@ router.get('/:id/jobs',
 router.post('/:id/processes/run',
   canAccessSubmission,
   lmApiLimiter,
+  lmApiDailyLimiter,
   jobsController.runProcesses
 );
 
@@ -444,10 +498,23 @@ router.post('/:id/processes/cancel',
   jobsController.cancelProcessing
 );
 
-// POST /api/submissions/:id/jobs/:jobType/advance - Manually advance a pending_input job (staff only)
+// POST /api/submissions/:id/jobs/:jobType/advance - Start a job parked on the user's own input
+//
+// Deliberately NOT behind canManageJobs. Advancing is not job management: the
+// orchestrator refuses any job whose status is not 'pending_input', so the only
+// thing this endpoint can do is start a job the pipeline parked waiting for the
+// user — the "trigger first-time analysis" that canManageJobs' own docstring
+// grants to authors and PMs. Restart, retry and force-run remain staff-only.
+//
+// It was gated, and the gate stalled the pipeline: when no Availability
+// Statement is found, pdf_analysis parks at pending_input and the PDF page tells
+// every user "enter it manually, then come back and start the analysis" — but an
+// author or PM pressing that button got 403, and the submission could never
+// finish. canAccessSubmission still scopes this to documents they may see.
 router.post('/:id/jobs/:jobType/advance',
   canAccessSubmission,
-  canManageJobs,
+  lmApiLimiter,
+  lmApiDailyLimiter,
   jobsController.advanceJob
 );
 
@@ -456,6 +523,14 @@ router.get('/:id/jobs/:jobType/responses/:responseName',
   canAccessSubmission,
   canViewJobInternals,
   jobsController.getJobResponse
+);
+
+// GET /api/submissions/:id/jobs/:jobType/prompts - The prompt(s) this run used,
+// read from its own frozen inputs. Same audience as the rest of the internals.
+router.get('/:id/jobs/:jobType/prompts',
+  canAccessSubmission,
+  canViewJobInternals,
+  jobsController.getJobPrompts
 );
 
 // ===== Change History =====

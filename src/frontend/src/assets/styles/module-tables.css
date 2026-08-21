@@ -1,0 +1,108 @@
+/**
+ * How every table on a module page draws its rows.
+ *
+ * All five show the same thing structurally — a list of items, each of which
+ * occupies one row or several — but each had grown its own borders, and the
+ * Generated KRT drew a thin blue line above a merged group, which read as
+ * decoration rather than as "this is where the next item starts".
+ *
+ * An item is a BLOCK. Rows inside it sit flush together; between blocks there
+ * is a heavy rule and extra breathing room. Blocks alternate a faint tint, so
+ * the eye can follow one across a wide table without counting borders.
+ *
+ * Two kinds of item, both handled here:
+ *   single — one row, columns only
+ *   double — one row of columns plus a full-width row underneath carrying the
+ *            sentence it came from
+ *
+ * Classes to put on a <tr>:
+ *   .mt-row        every row of an item
+ *   .mt-row-start  its first row  (heavy rule above, extra top padding)
+ *   .mt-row-end    its last row   (extra bottom padding)
+ *   .mt-row-alt    every row of every other item (the tint)
+ *   .mt-row-span   a full-width continuation row (the sentence, an expansion)
+ */
+
+.mtable {
+  width: 100%;
+  font-size: 0.8rem;
+  border-collapse: collapse;
+}
+
+.mtable--fixed { table-layout: fixed; }
+
+.mtable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f9fafb;
+  text-align: left;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid #e5e7eb;
+  white-space: nowrap;
+}
+
+.mtable td {
+  padding: 0.4rem 0.6rem;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  background: #fff;
+}
+
+/* ── where one item ends and the next begins ─────────────────────────── */
+/* Heavy, and the same colour as the table's own frame: a separator should
+   look structural, not like an annotation on the row below it. */
+.mtable .mt-row-start > td {
+  border-top: 2px solid #94a3b8;
+  padding-top: 0.7rem;
+}
+.mtable .mt-row-end > td { padding-bottom: 0.7rem; }
+/* The first item needs no rule — the header already bounds it. */
+.mtable tbody tr.mt-row-start:first-child > td { border-top: 0; }
+
+/* Alternating tint, per ITEM rather than per row, so a two-row item reads as
+   one thing — and dark enough to actually be seen. The first attempt used
+   slate-50, which is very nearly white and did nothing at all. */
+.mtable .mt-row-alt > td { background: #f1f5f9; }
+
+/* A continuation row belongs to the row above it: no rule, and its text is
+   indented so the block still reads top-down. */
+.mtable .mt-row-span > td {
+  padding-top: 0.1rem;
+  color: #4b5563;
+  line-height: 1.45;
+}
+
+/* Column resize handle, on the sticky header. */
+.mtable-col-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+}
+.mtable-col-resize:hover { background: #bfdbfe; }
+
+/* The frame every one of these tables scrolls inside. */
+.mtable-frame {
+  max-height: min(60vh, 40rem);
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+.mtable-empty {
+  padding: 1.5rem;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 0.85rem;
+}

@@ -23,5 +23,15 @@
     "windowMs": 60000,
     "max": 10,
     "message": "Too many analysis requests, please try again later"
+  },
+  "lmApiDaily": {
+    "windowMs": 86400000,
+    "max": {
+      "author": 10,
+      "asap_pm": 50,
+      "ds_annotator": 0,
+      "admin": 0
+    },
+    "message": "You have reached your daily limit for starting analyses. It resets 24 hours after your first run today."
   }
 }

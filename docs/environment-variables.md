@@ -1,6 +1,11 @@
 # Environment Variables
 
-All environment variables are documented below, organized by category. The single source of truth is `.env.example` at the repo root — this doc tracks what each variable means and the code-side defaults; if it ever drifts, trust `.env.example`.
+Environment variables by category. **The single source of truth is `.env.example`** at the repo root — this doc
+tracks what each variable means and the code-side defaults, and it is not exhaustive: the KRT Grounding block
+(`KRT_GROUNDING_*`), the software-detection LM block (`SOFTWARE_DETECTION_LM_ENABLED`,
+`SOFTWARE_DETECTION_GEMINI_*`, `SOFTWARE_DETECTION_API_TIMEOUT`) and the per-bucket rate-limit overrides
+(`RATE_LIMIT_<BUCKET>_MAX` / `_WINDOW_MS`) are in `.env.example` but not below. If the two ever disagree, trust
+`.env.example`.
 
 The application loads `.env` via dotenv at startup. Cascading load order is defined in `src/backend/server.js` (look there for the precedence if you maintain multiple env files locally). For most setups one `.env` file is enough.
 
@@ -30,7 +35,7 @@ The application loads `.env` via dotenv at startup. Cascading load order is defi
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `JWT_SECRET` | Secret key for signing local JWT tokens | — | Yes |
-| `JWT_EXPIRES_IN` | Access-token lifetime. Short by design — the SPA silent-refreshes on 401. Shortening this also tightens the window before Auth0 block actions propagate. | `1h` (in `.env.example`); code falls back to `15m` if unset | No |
+| `JWT_EXPIRES_IN` | Access-token lifetime. Short by design — the SPA silent-refreshes on 401. Shortening this also tightens the window before Auth0 block actions propagate. | `15m` (in `.env.example` and in code) | No |
 | `JWT_REFRESH_EXPIRES_IN` | Refresh-token lifetime — also the cookie max-age for `asap_kr_refresh`. | `7d` | No |
 
 Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=Strict` cookies, never in the response body or URL hash. The frontend never sees the raw tokens. See `docs/auth0-integration.md` for the cookie layout.
@@ -51,7 +56,7 @@ Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=St
 | `AUTH0_CLIENT_ID` | Auth0 application client ID | — | If `AUTH0_ENABLED=true` |
 | `AUTH0_CLIENT_SECRET` | Auth0 application client secret | — | If `AUTH0_ENABLED=true` |
 | `AUTH0_SECRET_ID` | AWS Secrets Manager secret ID. When set (production / staging EC2), the four `AUTH0_*` credentials above are loaded from Secrets Manager and override any `.env` values. | — | No |
-| `AUTH0_VERIFY_ON_REFRESH` | Re-check Auth0 user status (blocked/deleted) on every token refresh so disable actions propagate within ~1h (one access-token cycle since Phase 6). Adds 100-300 ms per refresh. | `true` | No |
+| `AUTH0_VERIFY_ON_REFRESH` | Re-check Auth0 user status (blocked/deleted) on every token refresh so disable actions propagate within ~15 min (one access-token cycle, matching `JWT_EXPIRES_IN`). Adds 100-300 ms per refresh. | `true` | No |
 | `AUTH0_DEBUG_CLAIMS` | When `true`, logs verified Auth0 ID-token claim **names + values with PII masked** (email/name/sub/etc. redacted; custom/namespaced claims like a role claim shown in full). Use to discover which claim carries the role and its shape. Safe to enable temporarily in any env; keep off in normal operation. | `false` | No |
 
 ## AWS S3 Storage
@@ -228,7 +233,7 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `LOG_LEVEL` | Winston log level (`error`, `warn`, `info`, `http`, `debug`) | `info` | No |
+| `LOG_LEVEL` | Winston log level (`error`, `warn`, `info`, `http`, `verbose`, `debug`) | `http` | No |
 | `LOG_FILE` | Log file path | `logs/app.log` | No |
 
 ## KRT

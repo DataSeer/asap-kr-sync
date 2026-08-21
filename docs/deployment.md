@@ -4,20 +4,32 @@
 
 ### Multi-Stage Build
 
-The `Dockerfile` uses a two-stage build:
+The `Dockerfile` uses a **three-stage** build, all on `node:20-slim`:
 
-**Stage 1 — Frontend build:**
-- Base: `node:20-alpine`
-- Installs frontend dependencies and runs `npm run build`
-- Produces static assets in `dist/`
+**Stage 1 (`deps`)** — installs the workspace dependencies with `npm ci`.
 
-**Stage 2 — Production runtime:**
-- Base: `node:20-alpine`
-- Installs `postgresql-client` (for migrations in entrypoint)
-- Installs backend dependencies with native build tools (`python3`, `make`, `g++`), then removes build tools
-- Copies built frontend from Stage 1
-- Copies backend source, config, migrations, seeders, and scripts
-- Sets `NODE_ENV=production`, exposes port `3000`
+**Stage 2 (`build`)** — builds the frontend into `dist/`.
+
+**Stage 3 (runtime)** — copies the installed tree and the built assets, adds
+the backend source, config, migrations, seeders and scripts, creates a system
+`app` user and runs as it (`USER app`), and exposes port `3000`.
+
+> **`NODE_ENV` is NOT set in the image.** One image serves both the dev and prod
+> systemd units, so the environment comes from the unit's `--env-file` on the
+> host. That matters more than it looks: `src/backend/server.js` only enforces
+> its production guards (a `JWT_SECRET` of at least 32 characters, an `https`
+> `FRONTEND_URL`) when `NODE_ENV=production`, and `error.middleware.js` only
+> collapses unknown errors to "Internal server error" in that mode — otherwise
+> the raw message reaches the client. `utils/logger.js` likewise adds its file
+> transports only in production. If the host env file is missing the line, all
+> three degrade silently.
+>
+> One deliberate mitigation: the `Secure` cookie flag does not depend on it —
+> `auth.controller.js` also accepts an `https` `FRONTEND_URL`.
+
+**Note on devDependencies:** the runtime stage installs the full tree, not
+`--omit=dev`, because the same image must be able to run `npm run dev` for the
+dev unit. The build toolchain is therefore present in the production image.
 
 **Entrypoint** (`deploy/docker-entrypoint.sh`):
 1. Waits for PostgreSQL to be ready (polls `pg_isready` every 2 seconds)
@@ -148,3 +160,72 @@ The production server serves both the API and the built frontend:
 ## Static Configuration
 
 `conf/rate-limits.json` defines rate-limit rules loaded at startup. See [Authentication](./authentication.md) for details.
+
+## Dependencies and `npm audit`
+
+Third-party pins live in **one place**: the root `package.json`. Transitive
+versions are steered by `overrides`, and the version each one points at is held
+by a matching entry in the root `devDependencies` (`"protobufjs":
+"$protobufjs"` means "whatever the root devDependency says"). Bumping the
+devDependency is therefore how you move a transitive package — editing the
+override alone does nothing, and a stale devDependency silently makes an
+override that reads as deliberate hold a vulnerable version. That is exactly
+what had happened to `protobufjs`.
+
+Run `npm audit --omit=dev` before a release: the dev tree matters far less than
+what ships in the image.
+
+**Known residue**, so it is not rediscovered as new:
+
+| | |
+|---|---|
+| `brace-expansion@1.1.15` (high, DoS) | Reached only as `exceljs → archiver → glob@7 → minimatch@3`. Not fixable by an override on npm 11 — every selector form (`@1`, `@1.x`, `@<2`, `@<=1.1.17`, the requested-range `@^1.1.7`, and a nested override under `minimatch@3`) leaves the resolution at 1.1.15, and `npm audit fix` reports "up to date". It is a denial-of-service in brace expansion over glob patterns the **application** constructs, never a user, so it is not reachable. It clears when `exceljs` moves off `archiver@5`. |
+| ~~`xlsx@0.18.5`~~ | **Removed.** It had no fix on npm at all — SheetJS moved distribution off the registry, so `npm audit fix` could never resolve it. The three scripts that used it were ported to `exceljs`, which the runtime already used, and the dependency is gone. `exceljs` is now the only spreadsheet library in the tree. |
+| `js-yaml`, `shell-quote` | Dev tree only (tooling), not in the image. |
+
+## `scripts/` — what ships and what does not
+
+| | |
+|---|---|
+| `scripts/*.js` | **Operational.** Run against a real instance: `create-user`, `init-db`, `generate-jwt-secret`, `import-user-teams`, `purge-orphaned-jobs`, `verify-run-audit`, `upload-documents`, the enrichment-list tools, and the demo-corpus generators (the demo data ships with the app). These are copied into the image. |
+| `scripts/dev/*.js` | **Localhost only.** Feature development and quality evaluation: the gold linkage, the scoring harness, the A/B prompt arms, the benchmark and the dev-vs-branch comparisons. Excluded from the image via `.dockerignore` — they never run against a deployed instance. |
+| `scripts/lib/*.js` | Shared helpers for both. |
+
+### Taking a copy of the data
+
+```bash
+node scripts/dump-data.js --out /path/to/dump          # database/ and s3/
+node scripts/dump-data.js --out /path/to/dump --dry-run
+```
+
+Two folders and a manifest:
+
+```
+<out>/database/<table>.json   every row of every table, column names intact
+<out>/s3/<key…>               every stored object, path mirroring its key
+<out>/DUMP.json               row counts, object count, total bytes, timestamp
+```
+
+It is **read-only** — it never deletes and never writes to the database or S3 —
+and it is deliberately **not** a restorable backup: no ordering, no foreign-key
+handling, no import path. It exists so submissions can be kept and processed
+elsewhere before they are removed.
+
+One implementation note worth keeping: the table list is read from
+`information_schema` with `table_name::text`. Those columns are Postgres's
+`name` type, and this driver returns such rows as **arrays** rather than
+objects, so without the cast the script asks for a relation called "undefined".
+Selects against the app's own tables are unaffected, which is why the dump keeps
+its column names.
+
+The split is enforced by `.dockerignore`, not by convention: a script that needs
+to run on a host belongs in `scripts/`, and putting it in `dev/` means it will
+not be there.
+
+`scripts/.eslintrc.js` covers all of them. Before it existed the folder was
+checked by nothing but `node --check` — syntax only, which does not notice a
+`require` of a module that has been renamed away. Two had: `generate-demo-data`
+and `dev/benchmark-detections` both still called
+`pdf-das-extractor-client.service`, removed when DAS extraction moved to reading
+the converted markdown, so both threw `MODULE_NOT_FOUND` on their first line of
+real work.

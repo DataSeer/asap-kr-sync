@@ -9,7 +9,8 @@ const { extractProjectFromManuscriptId, parsePagination, buildPaginationMeta, st
 const s3Service = require('../services/storage/s3.service');
 const parserService = require('../services/krt/parser.service');
 const krtService = require('../services/krt/krt.service');
-const { KRT_COLUMNS } = require('../config/constants');
+const jobAdminService = require('../services/queue/job-admin.service');
+const { KRT_COLUMNS, SUBMISSION_STATUSES } = require('../config/constants');
 const logger = require('../utils/logger');
 
 /**
@@ -32,6 +33,13 @@ async function list(req, res, next) {
     // Add optional status filter (supports comma-separated values)
     if (req.query.status) {
       const statuses = req.query.status.split(',').map(s => s.trim()).filter(Boolean);
+      // Allowlisted against the ENUM: an unknown value reached Postgres and came
+      // back as a 500 for what is a caller's typo. The sort column next to this
+      // was already allowlisted; the filter had been missed.
+      const unknown = statuses.filter((st) => !SUBMISSION_STATUSES.includes(st));
+      if (unknown.length > 0) {
+        throw new ValidationError(`Unknown status: ${unknown.join(', ')}`);
+      }
       if (statuses.length === 1) {
         filter.status = statuses[0];
       } else if (statuses.length > 1) {
@@ -450,12 +458,28 @@ async function deleteSubmission(req, res, next) {
       });
     }
 
+    // Cancel any queued work BEFORE the cascade removes the job rows.
+    // `submission_jobs.submission_id` is ON DELETE CASCADE, but pg-boss keeps
+    // its own table with no foreign key to ours — so without this the queue
+    // entries outlive the submission, get picked up by a worker, fail with
+    // "Submission not found", and retry. Best-effort: a stranded queue entry is
+    // noisy, a half-deleted submission is not recoverable.
+    let cancelledJobs = 0;
+    try {
+      cancelledJobs = await jobAdminService.cancelQueuedJobsForSubmission(submission.id);
+    } catch (queueError) {
+      logger.error('Queue cleanup failed during submission delete', {
+        submissionId: submission.id, error: queueError.message
+      });
+    }
+
     await submission.destroy();
 
     logger.info('Submission deleted', {
       submissionId: req.params.id,
       userId: req.userId,
-      s3ObjectsDeleted: s3DeletedCount
+      s3ObjectsDeleted: s3DeletedCount,
+      cancelledJobs
     });
 
     res.json({ message: 'Submission deleted successfully' });

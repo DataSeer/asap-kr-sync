@@ -69,7 +69,9 @@ function createJobLogger(submissionJob, manuscriptId, round) {
       const ext = options.extension || '.json';
       const mime = options.mimeType || 'application/json';
       const fileName = `${name}${ext}`;
-      const s3Key = generateJobS3Key(manuscriptId, submissionJob.submissionId, round, jobType, fileName);
+      const s3Key = generateJobS3Key(
+        manuscriptId, submissionJob.submissionId, round, jobType, fileName, submissionJob.id
+      );
       const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 
       try {

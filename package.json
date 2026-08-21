@@ -19,19 +19,22 @@
     "migrate": "cd src/backend && npm run migrate",
     "migrate:undo": "cd src/backend && npm run migrate:undo",
     "seed": "cd src/backend && npm run seed",
+    "pretest": "npm run lint:check",
     "test": "npm run test:backend && npm run test:frontend",
     "test:backend": "cd src/backend && npm test",
+    "test:backend:noenv": "cd src/backend && node --require ../../scripts/dev/no-dotenv.js --test services controllers middleware utils",
     "test:frontend": "cd src/frontend && npm test",
     "build": "npm run build:frontend",
     "build:frontend": "cd src/frontend && npm run build",
     "lint": "npm run lint:backend && npm run lint:frontend",
+    "lint:check": "eslint --quiet src/backend scripts && cd src/frontend && eslint --quiet src --ext .vue,.js",
     "lint:backend": "cd src/backend && npm run lint",
     "lint:frontend": "cd src/frontend && npm run lint",
-    "benchmark": "node scripts/benchmark-detections.js"
+    "benchmark": "node scripts/dev/benchmark-detections.js"
   },
   "devDependencies": {
     "ajv": "^6.14.0",
-    "brace-expansion": "^2.0.3",
+    "brace-expansion": "^2.1.4",
     "concurrently": "^8.2.2",
     "dottie": "^2.0.7",
     "editorconfig": "^3.0.2",
@@ -41,12 +44,11 @@
     "minimatch": "^9.0.7",
     "path-to-regexp": "^0.1.13",
     "picomatch": "^4.0.4",
-    "protobufjs": "^7.5.5",
+    "protobufjs": "^7.6.5",
     "rollup": "^4.59.0",
     "underscore": "^1.13.8",
     "uuid": "^11.1.1",
-    "vite": "^8.0.10",
-    "xlsx": "^0.18.5"
+    "vite": "^8.0.10"
   },
   "overrides": {
     "protobufjs": "$protobufjs",
@@ -62,9 +64,10 @@
     "js-yaml@<=4.1.1": "^4.2.0",
     "path-to-regexp@<0.2.0": "^0.1.13",
     "ajv@<6.14.0": "^6.14.0",
-    "brace-expansion@2.0.0 - 2.0.2": "^2.0.3",
     "dottie@2.0.4 - 2.0.6": "^2.0.7",
-    "follow-redirects@<=1.15.11": "^1.15.12"
+    "follow-redirects@<=1.15.11": "^1.15.12",
+    "brace-expansion@2": "$brace-expansion",
+    "brace-expansion@3 - 5.0.8": "^5.0.9"
   },
   "engines": {
     "node": ">=20.0.0"

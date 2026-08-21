@@ -25,6 +25,11 @@ export const useKRTStore = defineStore('krt', () => {
   const rows = ref([])
   const validationErrors = ref({})
   const aiSuggestions = ref([]) // AI suggestions from PDF analysis
+  // Per-author-row grounding verdicts from the krt_grounding module:
+  // confirmed | incomplete | not_detected. These are tags ABOUT the author's
+  // rows, never proposals to change them, so they are kept out of aiSuggestions
+  // and out of the accept/reject flow entirely.
+  const groundings = ref([])
   const editingCell = ref(null)
   const hasUnsavedChanges = ref(false)
   const loading = ref(false)
@@ -40,6 +45,14 @@ export const useKRTStore = defineStore('krt', () => {
   const rowCount = computed(() => rows.value.length)
 
   const hasErrors = computed(() => summary.value.totalErrors > 0)
+  /** Grounding verdict per author KRT row id, for O(1) lookup while rendering. */
+  const groundingByRowId = computed(() => {
+    const map = {}
+    for (const g of groundings.value) {
+      if (g?.krtRowId) map[g.krtRowId] = g
+    }
+    return map
+  })
 
   const getRowErrors = computed(() => (rowId) =>
     validationErrors.value[rowId] || []
@@ -484,6 +497,7 @@ export const useKRTStore = defineStore('krt', () => {
   // Clear all suggestions
   function clearAiSuggestions() {
     aiSuggestions.value = []
+    groundings.value = []
     summary.value.totalSuggestions = 0
   }
 
@@ -496,6 +510,9 @@ export const useKRTStore = defineStore('krt', () => {
     try {
       const result = await suggestionService.getSuggestions(submissionId)
       setAiSuggestions(result.suggestions || [])
+      // Per-author-row grounding verdicts. NOT suggestions — they are tags the
+      // editor renders on the row, with nothing to accept or reject.
+      groundings.value = result.groundings || []
       return result.suggestions || []
     } catch (err) {
       // No suggestions yet - not an error condition
@@ -508,6 +525,8 @@ export const useKRTStore = defineStore('krt', () => {
     rows,
     validationErrors,
     aiSuggestions,
+    groundings,
+    groundingByRowId,
     editingCell,
     hasUnsavedChanges,
     loading,

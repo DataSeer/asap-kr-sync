@@ -11,6 +11,23 @@ const MAX_POLL_DURATION_MS = 20 * 60 * 1000 // 20 minutes — stop polling after
 export function isCancelledJob(job) {
   return job?.status === 'cancelled'
 }
+/**
+ * Waiting reasons that mean "this belongs to a later step", not "this is stuck".
+ *
+ * A step the submission has not reached is not outstanding work for the step
+ * the user is on — it has not been asked to run yet. Counting it would hold the
+ * KRT and PDF steps' "all processes finished" gate shut for the whole session,
+ * which is why the DAS check used to be kept out of the pipeline altogether.
+ * The server names the reason, so the distinction is made where it is known
+ * rather than guessed from the job type.
+ */
+export const FUTURE_STEP_REASONS = new Set(['availability_step'])
+
+/** Is this job merely queued behind a step the user has not reached? */
+export function isFutureStepJob(job) {
+  return job?.status === 'waiting' && FUTURE_STEP_REASONS.has(job?.waitingReason)
+}
+
 // Terminal statuses: a job that will not change further.
 export function isTerminalStatus(status) {
   return status === 'complete' || status === 'failed' || status === 'cancelled'
@@ -27,6 +44,7 @@ export function isTerminalStatus(status) {
 export function useJobPoller(submissionId) {
   const jobs = ref({})
   const isAnyRunning = ref(false)
+  const fetchError = ref(null)
 
   let pollTimer = null
   let currentIntervalMs = INITIAL_POLL_MS
@@ -82,13 +100,9 @@ export function useJobPoller(submissionId) {
 
     try {
       const data = await jobService.getJobs(id)
+      fetchError.value = null
       const jobMap = {}
       for (const job of data.jobs) {
-        // `das_suggestions` is a standalone job owned by the /availability step
-        // (its own loader + poll). It must not enter the pipeline poller, or a
-        // queued/processing DAS check would count toward the KRT/PDF steps'
-        // "all processes finished" gate and block their Continue button.
-        if (job.jobType === 'das_suggestions') continue
         jobMap[job.jobType] = job
       }
 
@@ -121,9 +135,11 @@ export function useJobPoller(submissionId) {
       isFirstFetch = false
       jobs.value = jobMap
 
-      // Check if any jobs are still running
+      // Check if any jobs are still running. A job parked behind a step the
+      // submission has not reached does not count — see isFutureStepJob.
       const running = Object.values(jobMap).some(
-        j => j.status === 'waiting' || j.status === 'queued' || j.status === 'processing'
+        j => !isFutureStepJob(j)
+          && (j.status === 'waiting' || j.status === 'queued' || j.status === 'processing')
       )
       isAnyRunning.value = running
 
@@ -140,6 +156,13 @@ export function useJobPoller(submissionId) {
         stopPolling()
       }
     } catch (error) {
+      // Swallowed for the poll loop's sake — a transient failure mid-run must
+      // not stop the polling — but recorded, because `jobs` then stays `{}`
+      // and every consumer renders twelve steps as "not started". That is the
+      // same sentence the panel shows for a submission whose pipeline has
+      // genuinely never run, so the panel reads as a fact about the
+      // submission rather than as a page that could not reach the server.
+      fetchError.value = error
       console.warn('[useJobPoller] Fetch error:', error?.message || error)
     }
   }
@@ -154,6 +177,14 @@ export function useJobPoller(submissionId) {
   function scheduleNextPoll() {
     pollTimer = setTimeout(async () => {
       await fetchJobs()
+      // `fetchJobs` may have called stopPolling() — on the duration cap, or
+      // because nothing is running any more. Re-arming on `isAnyRunning` alone
+      // ignored that: the cap logged its warning, cleared the timer, and this
+      // callback immediately set a new one. Worse, stopPolling() nulls
+      // pollStartTime, and startPolling (the only thing that sets it) is gated
+      // on !pollTimer — so the cap could never fire again and a wedged job
+      // polled for ever.
+      if (pollTimer === null) return
       // If still running, schedule next poll with backoff
       if (isAnyRunning.value) {
         currentIntervalMs = Math.min(currentIntervalMs * BACKOFF_FACTOR, MAX_POLL_MS)
@@ -190,6 +221,8 @@ export function useJobPoller(submissionId) {
 
   return {
     jobs,
+    /** The last poll's failure, or null. Cleared by the next success. */
+    fetchError,
     isAnyRunning,
     getJob,
     onJobComplete,

@@ -66,7 +66,7 @@ function clearViewAs() {
         <div v-if="viewAsRole" class="flex items-center space-x-2 bg-yellow-100 border border-yellow-300 rounded-lg px-3 py-1">
           <span class="text-xs text-yellow-800">Viewing as:</span>
           <span class="badge-warning text-xs">{{ viewAsRole }}</span>
-          <button class="text-yellow-600 hover:text-yellow-800 ml-1" title="Exit view mode" @click="clearViewAs">
+          <button class="text-yellow-600 hover:text-yellow-800 ml-1" v-tooltip="'Exit view mode'" @click="clearViewAs">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -77,7 +77,7 @@ function clearViewAs() {
         <div v-if="isRealAdmin" class="relative">
           <button
             class="role-button flex items-center space-x-1 text-sm text-gray-500 hover:text-gray-700 border border-gray-300 rounded px-2 py-1"
-            title="View UI as different role (debug)"
+            v-tooltip="'View UI as different role (debug)'"
             @click="showRoleSwitcher = !showRoleSwitcher"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

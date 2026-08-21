@@ -29,7 +29,6 @@
 // Sequelize models are lazy-loaded inside the worker functions below — see
 // the matching comment in protocols.service.js for the rationale.
 const s3Service = require('../storage/s3.service');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
@@ -38,8 +37,10 @@ const knownIdentifierScanner = require('./known-identifier-scanner.service');
 const publishedProtocolScanner = require('./published-protocol-scanner.service');
 const identifierConfig = require('../../config/identifier-detection-api');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
+const runInputs = require('../queue/run-inputs.service');
 
 // Confidence floor we hand to merge-detections for tiebreaking. Identifier
 // matches are usually high-precision so even MEDIUM is decent.
@@ -60,32 +61,38 @@ const CATEGORY_FALLBACK_TYPE = {
 };
 
 /**
- * Queue an identifier-detection job for a submission. Same shape as the
- * other queueX functions so the orchestrator's cascade-restart works without
- * special-casing.
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
  */
-async function queueIdentifierDetection(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+async function queueIdentifierDetection(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.IDENTIFIER_DETECTION,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round, userId);
+
+  logger.info('Identifier detection re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.IDENTIFIER_DETECTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Identifier detection queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 /**
@@ -177,6 +184,15 @@ function buildKrtItemsIdentifier(matches, markdownText) {
       // ADDITIONAL INFORMATION. It's stored on detectorMeta.context for
       // internal review only.
       additionalInformation: '',
+      // Grounded by construction: the scanner matched this identifier at a
+      // known offset in the markdown, so the evidence is already resolved and
+      // attachEvidence only fills in the section.
+      evidence: {
+        quote: snippetAt(markdownText, m.position, 80),
+        offset: m.position,
+        section: '',
+        match: 'exact'
+      },
       detectorMeta: {
         relevance: m.relevance,
         matchedTypes: m.types,
@@ -215,6 +231,12 @@ function buildKrtItemsPublishedProtocol(matches, markdownText) {
     // Allowlist-only venue match — as high-precision as an enrichment-list hit.
     confidence: RELEVANCE_TO_CONFIDENCE.HIGH,
     additionalInformation: '',
+    evidence: {
+      quote: snippetAt(markdownText, m.position, 80),
+      offset: m.position,
+      section: '',
+      match: 'exact'
+    },
     detectorMeta: {
       relevance: 'HIGH',
       matchedTypes: [m.type],
@@ -291,6 +313,23 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     durationMs: scanMs
   });
 
+  // No model here, so the curated list is the whole variable input — it is
+  // edited between runs, and a match that appears or vanishes is explained by
+  // its size and digest rather than by anything in the manuscript.
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
+    // The index is three maps, not one — `index.size` was always undefined, so
+    // the audit record stored null for the very thing it says it is recording.
+    frozen: {
+      enrichmentIndex: {
+        byIdentifier: index?.byIdentifier?.size ?? null,
+        byCatalog: index?.byCatalog?.size ?? null,
+        catalogTokens: index?.catalogTokens?.size ?? null
+      }
+    },
+    meta: { engine: 'local-scan', scannedLength, referencesCutoff }
+  });
+
   // Persist raw scan output for forensics.
   await jobLogger?.saveRawResponse('identifier-scan', {
     matchCount: matches.length,
@@ -331,7 +370,17 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
   const krtItems = buildKrtItemsIdentifier(matches, markdownText);
   const { enriched } = enrichIdentifiers(krtItems);
   const protocolItems = buildKrtItemsPublishedProtocol(protocolMatches, markdownText);
-  const items = dedupeKrtItems([...enriched, ...protocolItems], 'identifier-scan');
+
+  // These items are grounded by construction (the scanner matched at a real
+  // offset), so nothing can be dropped here — the pass only resolves the
+  // heading path for each hit, which downstream uses to tell an authors' own
+  // accession in Methods/Data-Availability from one cited in the Discussion.
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems } = attachEvidence([...enriched, ...protocolItems], evidenceIndex, {
+    drop: false,
+    label: 'identifier-scan'
+  });
+  const items = dedupeKrtItems(groundedItems, 'identifier-scan');
 
   // Stats by relevance + category for the worker's job-summary panel.
   // Read from detectorMeta (canonical shape).

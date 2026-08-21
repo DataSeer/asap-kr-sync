@@ -18,7 +18,7 @@ const logger = require('../../utils/logger');
 
 const SCRIPT_PATH = path.join(__dirname, '../../python/datasets/extract-signals.py');
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
-const PROMPT_FILE = path.join(PROMPTS_DIR, 'datasets-signals-extraction.txt');
+const PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'datasets-signals-extraction.txt');
 const EXAMPLES_FILE = path.join(PROMPTS_DIR, 'datasets-signals-examples.json');
 
 // Default configuration — can be overridden via per-process env vars
