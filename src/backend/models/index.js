@@ -33,6 +33,7 @@ const UserHiddenSubmission = require('./UserHiddenSubmission')(sequelize);
 const ResourceType = require('./ResourceType')(sequelize);
 const AppConfig = require('./AppConfig')(sequelize);
 const SubmissionJob = require('./SubmissionJob')(sequelize);
+const SubmissionJobRun = require('./SubmissionJobRun')(sequelize);
 const EnrichmentListEntry = require('./EnrichmentListEntry')(sequelize);
 const RefreshToken = require('./RefreshToken')(sequelize);
 const RejectedResource = require('./RejectedResource')(sequelize);
@@ -98,6 +99,15 @@ SubmissionJob.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submissio
 User.hasMany(SubmissionJob, { foreignKey: 'triggeredByUserId', as: 'triggeredJobs' });
 SubmissionJob.belongsTo(User, { foreignKey: 'triggeredByUserId', as: 'triggeredBy' });
 
+// SubmissionJob -> its history. The job row is the CURRENT run; these are every
+// run that has ever been started, including the ones that produced nothing.
+SubmissionJob.hasMany(SubmissionJobRun, { foreignKey: 'submissionJobId', as: 'runs' });
+SubmissionJobRun.belongsTo(SubmissionJob, { foreignKey: 'submissionJobId', as: 'job' });
+Submission.hasMany(SubmissionJobRun, { foreignKey: 'submissionId', as: 'jobRuns' });
+SubmissionJobRun.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submission' });
+User.hasMany(SubmissionJobRun, { foreignKey: 'triggeredByUserId', as: 'triggeredRuns' });
+SubmissionJobRun.belongsTo(User, { foreignKey: 'triggeredByUserId', as: 'triggeredBy' });
+
 // (Suggestion model + associations removed — suggestions are now derived
 // at read time as the diff between the Generated KRT and krt_data; only
 // rejections are persisted, in rejected_resources.)
@@ -133,6 +143,7 @@ module.exports = {
   ResourceType,
   AppConfig,
   SubmissionJob,
+  SubmissionJobRun,
   EnrichmentListEntry,
   RefreshToken,
   RejectedResource,

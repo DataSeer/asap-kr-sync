@@ -76,7 +76,8 @@ async function uploadAndProcess(submissionId, file, userId, round = 1) {
       mimeType: file.mimetype,
       size: file.size,
       version: newVersion,
-      round
+      round,
+      uploadedByUserId: userId || null
     }, { transaction: t });
 
     // ValidationResult rows are re-built by validateSubmission below, so we
@@ -104,6 +105,9 @@ async function uploadAndProcess(submissionId, file, userId, round = 1) {
       action: 'upload',
       step: 1,
       round,
+      // The exact version this entry describes. Without it the narrative and
+      // the file could only be matched by timestamp.
+      fileId: fr.id,
       description: `Uploaded KRT file: ${file.originalname} (v${newVersion})`
     }, { transaction: t });
 

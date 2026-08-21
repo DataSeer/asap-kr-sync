@@ -13,6 +13,7 @@ const { NotFoundError, ConflictError, ValidationError } = require('../../utils/e
 const { NO_DAS_SENTINEL } = require('../das-suggestions/das-suggestions.service');
 const jobQueue = require('./job-queue.service');
 const logger = require('../../utils/logger');
+const runHistory = require('./run-history.service');
 
 // Jobs younger than this are left alone by the reconciler — their dependencies
 // may simply still be running, and we don't want to race a checkAndAdvance that
@@ -310,6 +311,9 @@ async function runAllProcesses(submissionId, userId, round) {
       const pgBossJobId = await jobQueue.addJob(queueName, jobData);
       submissionJob.pgBossJobId = pgBossJobId;
       await submissionJob.save();
+      // A run begins here, at the enqueue — not when data appears. Starting the
+      // round is a manual act; the steps this later releases are 'pipeline'.
+      await runHistory.openRun(submissionJob, { userId, triggerKind: 'manual' });
     }
 
     jobs.push(submissionJob);
@@ -474,6 +478,14 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     const pgBossJobId = await jobQueue.addJob(queueName, jobData);
     job.pgBossJobId = pgBossJobId;
     await job.save();
+    // Opened only once the enqueue has actually succeeded: a run that was
+    // never queued is not a run. `triggeredBy` carries the provenance —
+    // 'manual' when a person asked for this step by name, the completed job
+    // type when a worker released it, 'reconciler' for the sweep.
+    await runHistory.openRun(job, {
+      userId: isManual ? userId : null,
+      triggerKind: isManual ? 'manual' : (triggeredBy === 'reconciler' ? 'reconciler' : 'pipeline')
+    });
   } catch (err) {
     // Nothing is going to run this row: put the claim back rather than leave
     // it `queued` with no queue job behind it, which no reconciler heals — it
@@ -678,6 +690,7 @@ async function advanceJob(submissionId, jobType, round, userId) {
   // released the step, whoever started the round.
   if (userId) job.triggeredByUserId = userId;
   await job.save();
+  await runHistory.openRun(job, { userId, triggerKind: 'manual' });
 
   logger.info('Pipeline advanced manually: job enqueued', {
     submissionId,

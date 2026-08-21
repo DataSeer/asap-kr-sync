@@ -5,6 +5,13 @@
 
 const { DataTypes, Op } = require('sequelize');
 
+/**
+ * Lazily required: the history service requires the models back, and resolving
+ * that at module load is a cycle. Every call is wrapped so a history failure
+ * logs and lets the run continue — see run-history.service.
+ */
+const runHistory = () => require('../services/queue/run-history.service');
+
 module.exports = (sequelize) => {
   const SubmissionJob = sequelize.define('SubmissionJob', {
     id: {
@@ -79,6 +86,21 @@ module.exports = (sequelize) => {
       defaultValue: 0,
       field: 'retry_count'
     },
+    /**
+     * How many times this step has been run in this round.
+     *
+     * Denormalised from `submission_job_runs` so the panel and the jobs list can
+     * say "run 3" without an aggregate on a table polled every few seconds.
+     * Written by run-history's openRun — which silently did nothing until this
+     * attribute existed, because Sequelize drops unknown fields from `update`
+     * and the history writes are deliberately guarded.
+     */
+    runCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 1,
+      field: 'run_count'
+    },
     round: {
       type: DataTypes.INTEGER,
       allowNull: false,
@@ -136,7 +158,9 @@ module.exports = (sequelize) => {
     this.startedAt = new Date();
     this.retryCount = retryCount;
     this.errorMessage = null; // Clear previous error on retry
-    return this.save();
+    const saved = await this.save();
+    await runHistory().touchRun(this, { status: 'processing', startedAt: this.startedAt, retryCount });
+    return saved;
   };
 
   /**
@@ -157,7 +181,9 @@ module.exports = (sequelize) => {
     }
     this.changed('result', true);
     this.completedAt = new Date();
-    return this.save();
+    const saved = await this.save();
+    await runHistory().closeRun(this);
+    return saved;
   };
 
   /**
@@ -180,7 +206,9 @@ module.exports = (sequelize) => {
     this.status = 'failed';
     this.errorMessage = errorMessage;
     this.completedAt = new Date();
-    return this.save();
+    const saved = await this.save();
+    await runHistory().closeRun(this);
+    return saved;
   };
 
   /**
@@ -207,7 +235,11 @@ module.exports = (sequelize) => {
     this.status = 'processing';
     this.errorMessage = errorMessage;
     this.completedAt = null;
-    return this.save();
+    const saved = await this.save();
+    // The SAME run, one attempt further in. Opening a new run here would count
+    // a pg-boss retry as a user-visible re-run, which it is not.
+    await runHistory().touchRun(this, { retryCount: this.retryCount ?? 0, externalError: errorMessage });
+    return saved;
   };
 
   /**
@@ -218,7 +250,11 @@ module.exports = (sequelize) => {
   SubmissionJob.prototype.markCancelled = async function() {
     this.status = 'cancelled';
     this.completedAt = new Date();
-    return this.save();
+    const saved = await this.save();
+    // A cancelled run is still a run: "this was attempted and stopped" is
+    // exactly the kind of thing an audit asks about.
+    await runHistory().closeRun(this);
+    return saved;
   };
 
   /**

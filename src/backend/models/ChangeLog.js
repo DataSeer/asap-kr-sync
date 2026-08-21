@@ -80,6 +80,18 @@ module.exports = (sequelize) => {
       type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 1
+    },
+    /**
+     * The file this entry is about, when it is about one.
+     *
+     * The upload entries carried only a free-text description, so the narrative
+     * could not be tied to the exact version it described.
+     */
+    fileId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'file_id',
+      references: { model: 'files', key: 'id' }
     }
   }, {
     tableName: 'change_logs',

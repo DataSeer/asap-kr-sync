@@ -154,7 +154,8 @@ async function uploadPDF(submissionId, file, userId, round = 1) {
       mimeType: pdfMimeType,
       size: pdfSize,
       version: origVersion,
-      round
+      round,
+      uploadedByUserId: userId || null
     }, { transaction: t });
 
     const fr = await File.create({
@@ -165,7 +166,8 @@ async function uploadPDF(submissionId, file, userId, round = 1) {
       mimeType: pdfMimeType,
       size: workingSize,
       version: pdfVersion,
-      round
+      round,
+      uploadedByUserId: userId || null
     }, { transaction: t });
 
     await ChangeLog.create({
@@ -174,6 +176,7 @@ async function uploadPDF(submissionId, file, userId, round = 1) {
       action: 'upload',
       step: 2,
       round,
+      fileId: fr.id,
       description
     }, { transaction: t });
 
@@ -214,8 +217,9 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
     mimeType: file.mimetype,
     size: file.size,
     version: origVersion,
-    round
-  });
+    round,
+    uploadedByUserId: userId || null
+    });
 
   // --- Get or convert to PDF ---
   let pdfBuffer = file.buffer;
@@ -245,8 +249,9 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
     mimeType: pdfMimeType,
     size: pdfSize,
     version: pdfVersion,
-    round
-  });
+    round,
+    uploadedByUserId: userId || null
+    });
 
   await ChangeLog.create({
     submissionId,
@@ -254,6 +259,7 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
     action: 'upload',
     step: 1,
     round,
+    fileId: suppPdfRecord.id,
     description: `Uploaded supplemental methods file: ${file.originalname}${ext !== '.pdf' ? ' (converted to PDF)' : ''}`
   });
 
