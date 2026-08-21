@@ -15,6 +15,10 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import { describeJobStatus } from '@/utils/job-status'
+import { formatDateTime } from '@/utils/format-date'
+import jobService from '@/services/job.service'
+import { useAuthStore } from '@/stores/auth.store'
+import { useNotificationStore } from '@/stores/notification.store'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import DetectionsTable from '@/components/modules/DetectionsTable.vue'
@@ -49,6 +53,9 @@ const jobType = computed(() => route.params.type)
 const resourceTypesStore = useResourceTypesStore()
 const submissionStore = useSubmissionStore()
 
+const authStore = useAuthStore()
+const notificationStore = useNotificationStore()
+
 const { jobs } = useJobPoller(submissionId)
 
 /**
@@ -60,11 +67,85 @@ const { jobs } = useJobPoller(submissionId)
  * reader infers, and infers wrong. One line under the title removes the
  * guessing.
  */
-const runStatus = computed(() => describeJobStatus((jobs.value || {})[jobType.value] || null))
+const runStatus = computed(() => describeJobStatus(job.value))
 
 
-const job = computed(() => (jobs.value || {})[jobType.value] || null)
+/**
+ * Which run this page is showing.
+ *
+ * `null` means the latest, served straight from the poller — the normal case,
+ * and it costs no extra request. Anything else is a past run fetched on demand.
+ *
+ * Everything on this page renders from `job.result.data.*`, so swapping what
+ * `job` resolves to swaps the whole page: tables, counts, evidence, the status
+ * line and the METADATA column all follow. That is why the endpoint returns a
+ * run already shaped like a job — one rendering path, not two.
+ */
+const selectedRunNumber = ref(null)
+const selectedRun = ref(null)
+const runs = ref([])
+const runsState = ref('idle')   // idle | loading | ready | error
+
+const liveJob = computed(() => (jobs.value || {})[jobType.value] || null)
+const job = computed(() => selectedRun.value || liveJob.value)
+
+/** True while the page is showing something other than the current run. */
+const viewingPastRun = computed(() => !!selectedRun.value && selectedRun.value.isLatest === false)
+
+/**
+ * Authors read the latest run and nothing else — the same audience rule the
+ * run endpoints enforce. Hiding the control without the server gate would be
+ * decoration; both exist.
+ */
+const canBrowseRuns = computed(() => authStore.canViewJobInternals)
+
+/** How many runs this step has had, from whichever source is loaded. */
+const runCount = computed(() => runs.value.length || liveJob.value?.runCount || 1)
+
+async function loadRuns() {
+  if (!canBrowseRuns.value) return
+  runsState.value = 'loading'
+  try {
+    const data = await jobService.getRuns(submissionId.value, jobType.value)
+    runs.value = data.runs || []
+    runsState.value = 'ready'
+  } catch {
+    // Not fatal: the page still shows the current run, which is what it showed
+    // before this control existed.
+    runs.value = []
+    runsState.value = 'error'
+  }
+}
+
+async function showRun(runNumber) {
+  // Selecting the latest returns to the live job, so the page keeps polling and
+  // keeps updating — a frozen copy of the current run would go stale on screen.
+  if (!runNumber || runNumber === runCount.value) {
+    selectedRunNumber.value = null
+    selectedRun.value = null
+    return
+  }
+  selectedRunNumber.value = runNumber
+  try {
+    const { run } = await jobService.getRun(submissionId.value, jobType.value, runNumber)
+    selectedRun.value = run
+  } catch {
+    selectedRunNumber.value = null
+    selectedRun.value = null
+    notificationStore.error('That run could not be loaded')
+  }
+}
 const explainer = computed(() => explainerFor(jobType.value))
+
+// The step strip navigates between modules without remounting the parent, and
+// "run 2" means something different for each step — so a change of step drops
+// the selection and reloads the list rather than carrying a stale run across.
+watch(jobType, () => {
+  selectedRunNumber.value = null
+  selectedRun.value = null
+  runs.value = []
+  loadRuns()
+})
 
 /**
  * Every step, in pipeline order, so the tab strip shows the whole shape rather
@@ -93,6 +174,7 @@ onMounted(async () => {
   // lands in one tab. The panel loads them because its parent view does; a page
   // opened directly, which is the whole point of these being pages, does not.
   resourceTypesStore.fetchResourceTypeNames().catch(() => {})
+  loadRuns()
   try {
     steps.value = (await configService.getPipeline()).nodes
   } catch {
@@ -476,12 +558,43 @@ const tabConflicts = computed(() => {
       <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
         ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
       </span>
+      <!-- Which run is on screen. Only from the second run onward: a selector
+           offering one option is furniture. Hidden from authors entirely — they
+           read the latest run, which is also what the endpoint behind this
+           enforces. -->
+      <label v-if="canBrowseRuns && runs.length > 1" class="mrv-runs">
+        <span class="mrv-runs-label">Run</span>
+        <select
+          class="mrv-runs-select"
+          :value="selectedRunNumber ?? runCount"
+          @change="showRun(Number($event.target.value))"
+        >
+          <option v-for="r in runs" :key="r.runNumber" :value="r.runNumber">
+            {{ r.runNumber }} of {{ runCount }}{{ r.isLatest ? ' — latest' : '' }}
+            · {{ formatDateTime(r.completedAt || r.startedAt) }}
+          </option>
+        </select>
+      </label>
+
       <!-- The two documents every result on this page is a claim about. -->
       <SubmissionFileLinks
         class="mrv-files-links"
         :submission-id="submissionId"
         :files="latestFiles"
       />
+    </div>
+
+    <!-- Selecting a past run must never look like restoring it. This sits above
+         the status line, stays put while the run is open, and offers the way
+         back — otherwise someone picks run 2, sees it render, and reasonably
+         concludes the pipeline is now using it. -->
+    <div v-if="viewingPastRun" class="mrv-past" role="status">
+      <span class="mrv-past-badge">Past run</span>
+      <span class="mrv-past-text">
+        Viewing run {{ selectedRun.runNumber }} of {{ runCount }} — <strong>this is not the
+        current result</strong>. It is kept exactly as this run produced it.
+      </span>
+      <button type="button" class="mrv-past-btn" @click="showRun(null)">Back to the latest run</button>
     </div>
 
     <!-- Directly under the title, before anything that could be mistaken for a
@@ -721,6 +834,75 @@ const tabConflicts = computed(() => {
 .mrv { padding: 1.25rem 1.5rem 3rem; max-width: 100%; }
 .mrv-files { margin-bottom: 0.5rem; }
 .mrv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+
+
+.mrv-runs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-left: 0.75rem;
+}
+
+.mrv-runs-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7280;
+}
+
+.mrv-runs-select {
+  font-size: 0.8125rem;
+  padding: 0.125rem 0.375rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  background: #fff;
+  color: #374151;
+  max-width: 20rem;
+}
+
+/* Amber, and it stays on screen for as long as a past run is open. The colour
+   the app already uses for "this needs your attention". */
+.mrv-past {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0 0 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #fcd34d;
+  border-radius: 0.5rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.mrv-past-badge {
+  flex: none;
+  padding: 0.0625rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.mrv-past-text { flex: 1; }
+
+.mrv-past-btn {
+  flex: none;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid #92400e;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: #92400e;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mrv-past-btn:hover { background: rgba(146, 64, 14, 0.08); }
 
 .mrv-status {
   display: flex;

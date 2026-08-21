@@ -88,5 +88,30 @@ export default {
     const params = round ? { round } : {}
     const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/prompts`, { params })
     return response.data
+  },
+
+  /**
+   * Every run of one step, newest first — metadata only, no payloads.
+   *
+   * Gated to non-authors, like the rest of the job internals.
+   *
+   * @returns {Promise<{round, jobType, runCount, runs: Array}>}
+   */
+  async getRuns(submissionId, jobType, round = null) {
+    const params = round ? { round } : {}
+    const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/runs`, { params })
+    return response.data
+  },
+
+  /**
+   * One past run, in full — shaped like a job, so the page renders it through
+   * the same path it uses for the current one.
+   *
+   * @returns {Promise<{run: object}>}
+   */
+  async getRun(submissionId, jobType, runNumber, round = null) {
+    const params = round ? { round } : {}
+    const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/runs/${runNumber}`, { params })
+    return response.data
   }
 }
