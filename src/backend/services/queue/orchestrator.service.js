@@ -331,10 +331,11 @@ async function runAllProcesses(submissionId, userId, round) {
  * @param {string} submissionId
  * @param {string} completedJobType - The job type that just finished
  * @param {number} round
- * @param {string} [userId] - Attribution, threaded to buildJobData. Absent for
- *   the ~20 worker-driven advances (a finished worker knows the submission, not
- *   who asked), and nothing in the pipeline currently reads it — see the note on
- *   buildJobData. Passed where it IS known so that stays true by construction.
+ * @param {string} [userId] - Who asked, when anybody did. Absent for the ~20
+ *   worker-driven advances: a finished worker knows the submission, not a
+ *   person. Note that HAVING a userId is not sufficient to be credited for the
+ *   step — the reconciler is handed the submission's owner and must not be —
+ *   see the claim in tryAdvanceStep.
  */
 async function checkAndAdvance(submissionId, completedJobType, round, userId) {
   // Find pipeline steps that depend on the completed job type
@@ -438,12 +439,21 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   //
   // Postgres serialises the UPDATE, so exactly one caller sees a row count of
   // 1. The loser stops here.
-  // The step is credited to whoever asked for it, when there is such a person.
-  // Most advances have none — a worker finishing its own step knows the
-  // submission, not a user — and those keep whoever started the round rather
-  // than nulling it, which is why this is conditional rather than a plain set.
+  // The step is credited only to a person who ASKED for it — which is not the
+  // same as "there is a userId in scope".
+  //
+  // `triggeredBy` is the provenance: 'manual' means requeueStep, i.e. somebody
+  // clicked; 'reconciler' is the periodic sweep; anything else is the jobType
+  // of the worker that just finished. Only the first is a decision.
+  //
+  // The reconciler is the trap. `reconcileStuckJobs` hands it the SUBMISSION'S
+  // OWNER as `userId`, so gating on `userId` alone would credit the author for
+  // a re-drive they never asked for — and, because the sweep runs on a timer,
+  // would quietly overwrite the curator who did. A worker-driven advance
+  // carries no user at all and keeps whatever is already there.
   const claim = { status: 'queued' };
-  if (userId) claim.triggeredByUserId = userId;
+  const isManual = triggeredBy === 'manual';
+  if (userId && isManual) claim.triggeredByUserId = userId;
   const [claimed] = await SubmissionJob.update(
     claim,
     { where: { id: job.id, status: 'waiting' } }
@@ -455,7 +465,7 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
   job.status = 'queued';
-  if (userId) job.triggeredByUserId = userId;
+  if (userId && isManual) job.triggeredByUserId = userId;
 
   const queueName = JOB_TYPE_TO_QUEUE[step.jobType];
   const jobData = buildJobData(step.jobType, submissionId, userId, job);
@@ -690,11 +700,12 @@ function buildJobData(jobType, submissionId, userId, submissionJob) {
   const base = { submissionId, submissionJobId: submissionJob.id };
 
   switch (jobType) {
-    // The only step carrying userId, and nothing reads it: the handler
-    // destructures it and calls processAnalysis without it. Kept because it is
-    // the one step a user triggers by hand, so it is where attribution would
-    // land — but it is not load-bearing, and an advance that omits it (any of
-    // the worker-driven ones) is not a bug.
+    // The only step whose PAYLOAD carries userId, and its handler still does
+    // not read it. Attribution no longer depends on this: it lives on the row,
+    // in `triggered_by_user_id`, written by the orchestrator. This is a
+    // leftover the worker could stop being sent — kept only because removing a
+    // payload field is a change to what the queue carries, and it earns
+    // nothing.
     case JOB_TYPES.PDF_ANALYSIS:
       return { ...base, userId };
     case JOB_TYPES.DAS_EXTRACTION:

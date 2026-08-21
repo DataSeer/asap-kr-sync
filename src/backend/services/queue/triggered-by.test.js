@@ -27,6 +27,7 @@ const { JOB_TYPES } = require('../../config/constants');
 
 const STARTER = 'user-who-started';
 const CURATOR = 'user-who-restarted';
+const OWNER = 'user-who-owns-the-submission';
 
 function row(jobType, over = {}) {
   return {
@@ -217,4 +218,23 @@ test('a manual advance of a parked step credits whoever released it', async (t) 
 
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).triggeredByUserId, CURATOR,
     'typing the missing statement is what released it');
+});
+
+test('the reconciler credits nobody, least of all the submission owner', async (t) => {
+  // reconcileStuckJobs hands reconcileSubmission the SUBMISSION'S OWNER as
+  // `userId` — it needs a user for the job payload — and the sweep is then
+  // indistinguishable from a person clicking. Crediting it is wrong twice
+  // over: the owner did not ask for the re-drive, and the sweep runs on a
+  // timer, so it would silently overwrite the curator who actually did.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.triggeredByUserId = CURATOR;
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  mockDb(t, rows);
+
+  const advanced = await orchestrator.reconcileSubmission('sub-1', 1, OWNER);
+
+  assert.ok(advanced > 0, 'the sweep must actually re-drive something for this to mean anything');
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).triggeredByUserId, CURATOR,
+    'an automatic re-drive must not take the credit from whoever caused the run');
 });

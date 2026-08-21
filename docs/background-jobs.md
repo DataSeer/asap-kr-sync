@@ -270,7 +270,21 @@ retrying would restart the very external work the user asked to stop.
   person who clicked. A step the cascade *skips* (in-flight, or cancelled) is
   not re-credited, because its stored result is still the older run's.
 
-  The rule that makes the column trustworthy is that an
+  **Only a step somebody asked for is credited.** Not "every advance that has a
+  userId in scope" — the periodic reconciler is handed the *submission's owner*
+  (it needs a user for the job payload), so gating on the id alone credited the
+  author for a re-drive they never asked for and, because the sweep runs on a
+  timer, silently overwrote the curator who did. `tryAdvanceStep` credits only
+  when its `triggeredBy` is `'manual'` (i.e. `requeueStep`); `'reconciler'` and
+  a worker's own jobType do not.
+
+  Via HTTP the id is always present: every trigger route sits behind
+  `authenticate` and passes `req.userId`. A NULL therefore means one of three
+  things — the row predates the column, a script drove the service layer
+  directly (`tmp/run-pipeline-test.js` and friends), or the orchestrator
+  advanced the step itself.
+
+  The remaining rule is that an
   advance carrying **no** user never overwrites it: `checkAndAdvance` fires on
   every worker completion with no user attached, so a plain assignment would
   blank the attribution seconds after the pipeline recorded it and leave every

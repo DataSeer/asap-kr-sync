@@ -46,10 +46,14 @@ module.exports = (sequelize) => {
      *
      * NOT the submission's owner — a curator re-running one detector on an
      * author's manuscript is the trigger, not the owner. Set when the pipeline
-     * is started, when a step is re-queued, and when a parked step is advanced
-     * by hand; a step the orchestrator advances on its own keeps whoever
-     * started the round. NULL means no user was involved, or the row predates
-     * the column.
+     * is started, when a step is re-queued (and on everything downstream that
+     * re-run restarts), and when a parked step is advanced by hand. A step the
+     * orchestrator advances on its own — a worker finishing, or the periodic
+     * reconciler — keeps the credit already there.
+     *
+     * Every HTTP route that starts work is authenticated and passes its
+     * `req.userId`, so NULL means the row predates this column, a script drove
+     * the service layer directly, or no user was ever involved.
      */
     triggeredByUserId: {
       type: DataTypes.UUID,
