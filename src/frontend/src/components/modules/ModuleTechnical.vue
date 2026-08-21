@@ -221,6 +221,25 @@ const TRIGGER_LABEL = {
 const artefactsNotOwn = computed(() =>
   props.job?.isLatest === false && props.job?.artefactsAreOwn === false)
 
+/**
+ * What a stored prompt actually is.
+ *
+ * The TEXT below is this run's copy, frozen when the run started. The PATH is
+ * where that file lives in the repository — today. Printing them together as
+ * "src/backend/data/prompts/das-suggestions.txt · 3874 bytes" read as though the
+ * panel were showing you the file, so a prompt edited since the run looked like
+ * the prompt this run used. Prompts are edited exactly as often as results are
+ * re-read, which is what makes the confusion worth a sentence.
+ *
+ * @param {object} p - the prompt or attachment record
+ * @returns {string}
+ */
+function promptProvenance(p) {
+  const when = props.job?.startedAt ? ` on ${formatDateTime(props.job.startedAt)}` : ''
+  const size = p.bytes ? ` · ${p.bytes} bytes` : ''
+  return `Copy of ${p.file} as it was${when}${size}. The file may have changed since.`
+}
+
 const metadata = computed(() => {
   const job = props.job || {}
   const svc = job.result?.service || {}
@@ -494,7 +513,7 @@ const responseUrl = (name) =>
             </button>
             <span class="mt-files-note">{{ p.label }}</span>
             <div v-if="openPrompt === p.file" class="mt-prompt">
-              <p class="mt-prompt-path">{{ p.file }}<span v-if="p.bytes"> · {{ p.bytes }} bytes</span></p>
+              <p class="mt-prompt-path">{{ promptProvenance(p) }}</p>
               <pre v-if="p.text" class="mt-prompt-text">{{ p.text }}</pre>
               <p v-else class="mt-files-note">This run did not store the prompt text.</p>
               <!-- Files the prompt cannot work without. LangExtract's few-shot
@@ -502,7 +521,7 @@ const responseUrl = (name) =>
                    enter the prompt text, so the template alone would show only
                    part of what the run was given. -->
               <div v-for="a in p.attachments || []" :key="a.file" class="mt-prompt-attachment">
-                <p class="mt-prompt-path">{{ a.file }}<span v-if="a.bytes"> · {{ a.bytes }} bytes</span></p>
+                <p class="mt-prompt-path">{{ promptProvenance(a) }}</p>
                 <pre v-if="a.text" class="mt-prompt-text">{{ a.text }}</pre>
               </div>
             </div>
@@ -524,7 +543,7 @@ const responseUrl = (name) =>
           when the two disagree, the frozen record is what happened.
         </p>
       </div>
-      <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-full">
+      <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
         <h3>Module outputs</h3>
         <p v-if="artefactsNotOwn" class="mt-note mt-note-warn">
           This run's stored files were not kept separately from later runs of the same
@@ -602,37 +621,36 @@ const responseUrl = (name) =>
 .mt-body {
   padding: 0 0.9rem 0.9rem 2rem;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 1.5rem 2rem;
   align-items: start;
 }
 .mt-block { min-width: 0; }
-/* THE ROW MUST ADD UP. Three narrow blocks plus Module inputs is
-   1 + 1 + 1 + 3 = 6, exactly the track count above.
-   
+/* THE ROW MUST ADD UP: every block sits on ONE row, and the spans total the
+   track count.
+
+     Metadata 1 + Configuration 1 + Statistics 1 + inputs 2 + outputs 2 = 7
+
    It stopped adding up when Metadata was added as a fourth short list and the
-   spans were left alone: 1+1+1+2 = 5 left an empty track on the right, and
-   Module outputs — 2 wide — could not fit in the 1 that remained, so it wrapped
-   to a row of its own anyway. The result read as a ragged half-empty row rather
-   than as a layout.
-   
+   spans were left alone — 1+1+1+2+2 = 7 in a six-track grid, so Module outputs
+   could not fit in the one track that remained and wrapped to a row of its own,
+   leaving the row above ragged and half empty. The grid grew a track rather
+   than the blocks losing one: the five headings are five columns, and they
+   should read as five columns.
+
    `module-technical-grid.test.js` re-does this arithmetic, because the next
    block anyone adds will break it the same way and it is invisible until
    someone opens the section on a wide screen.
-   
+
    Metadata, Configuration and Statistics: short label/value lists. */
 .mt-narrow { grid-column: span 1; }
-/* Module inputs: lines of links with an explanatory note under them, which is
-   what was wrapping while the short lists sat half empty. Takes what the three
-   narrow blocks leave. */
-.mt-wide { grid-column: span 3; }
-/* Module outputs: its own row. It is the record of what the run produced rather
-   than a column of the run's description, and giving it the full width means
-   the row above always adds up on its own. */
-.mt-full { grid-column: 1 / -1; }
+/* Module inputs and outputs: lines of links with an explanatory note under
+   them, so they need more room than a label/value list. */
+.mt-wide { grid-column: span 2; }
 
-/* Below the six-column width each track would be narrower than a file name, so
-   drop to two: the short lists side by side, each wide block on its own row. */
+/* Below the seven-column width each track would be narrower than a file name,
+   so drop to two: the short lists side by side, each wide block on its own
+   row. */
 @media (max-width: 1099px) {
   .mt-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mt-wide { grid-column: span 2; }

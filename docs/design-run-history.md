@@ -280,7 +280,7 @@ naming convention is risk with no user-visible gain.
 | Detections / grounding / DAS tables | run's `result` ✓ | unchanged |
 | Prompt | run's frozen copy ✓ | unchanged |
 | Raw responses | run's S3 folder ✓ | unchanged, keyed by run |
-| Prompt | latest run's ✗ | **done** — `?run=N`, so the prompt is the one THAT run used |
+| Prompt | latest run's ✗ | **done** — `?run=N`, so the prompt is the one THAT run used, and the panel says so: *"Copy of src/… as it was on 21 Aug 2026, 23:21 · 3874 bytes. The file may have changed since."* It used to print the path and size alone, which read as though the panel were showing you the file — so a prompt edited since the run looked like the prompt the run had used. |
 | Raw responses / artefacts | shared per job row ✗ | **done** — keyed `run-{n}`; a run that cannot prove ownership shows none |
 | Module config (on/demo/off) | captured ✓, displayed live | **done** — pipeline page and METADATA read the run's snapshot |
 | "as at" line | absent | **done** — on every module page, latest included |
