@@ -525,6 +525,25 @@ router.get('/:id/jobs/:jobType/responses/:responseName',
   jobsController.getJobResponse
 );
 
+// GET /api/submissions/:id/jobs/:jobType/runs - Every run of this step, newest
+// first, metadata only. Same audience as the rest of the internals: an author
+// reads the latest run and nothing else, which is why the selector that uses
+// this is not rendered for them either.
+router.get('/:id/jobs/:jobType/runs',
+  canAccessSubmission,
+  canViewJobInternals,
+  jobsController.listRuns
+);
+
+// GET /api/submissions/:id/jobs/:jobType/runs/:runNumber - One run in full.
+// Shaped like a job, so the module page renders a past run through exactly the
+// same path as the current one.
+router.get('/:id/jobs/:jobType/runs/:runNumber',
+  canAccessSubmission,
+  canViewJobInternals,
+  jobsController.getRun
+);
+
 // GET /api/submissions/:id/jobs/:jobType/prompts - The prompt(s) this run used,
 // read from its own frozen inputs. Same audience as the rest of the internals.
 router.get('/:id/jobs/:jobType/prompts',

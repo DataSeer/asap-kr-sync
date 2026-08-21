@@ -6,7 +6,9 @@
  * When omitted, defaults to the submission's current round.
  */
 
-const { SubmissionJob, User } = require('../models');
+const { SubmissionJob, SubmissionJobRun, User } = require('../models');
+const { JOB_TYPES } = require('../config/constants');
+const { ValidationError, NotFoundError } = require('../utils/errors');
 const jobQueue = require('../services/queue/job-queue.service');
 const { JOB_CONFIG, JOB_TYPE_TO_QUEUE } = jobQueue;
 const orchestrator = require('../services/queue/orchestrator.service');
@@ -361,11 +363,146 @@ async function getJobPrompts(req, res, next) {
   }
 }
 
+/**
+ * Shape a run record the way the module page already reads a job.
+ *
+ * The page renders from `job.result.data.*`, `job.triggeredBy`, `job.status`
+ * and the timestamps. Returning a run in that shape means a past run renders
+ * through exactly the same path as the current one — no second rendering
+ * branch, and no chance of the two drifting.
+ *
+ * @param {object} run - a SubmissionJobRun
+ * @param {object} extras - `runCount`, `triggeredBy`, `isLatest`
+ */
+function shapeRun(run, { runCount, triggeredBy, isLatest }) {
+  return {
+    jobType: run.jobType,
+    round: run.round,
+    runNumber: run.runNumber,
+    runCount,
+    isLatest,
+    status: run.status,
+    result: run.result,
+    logs: run.logs || [],
+    files: run.result?.files || {},
+    inputs: run.inputs || null,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    elapsedMs: run.durationMs,
+    retryCount: run.retryCount || 0,
+    triggeredBy,
+    triggerKind: run.triggerKind,
+    s3Prefix: run.s3Prefix
+  };
+}
+
+/** The person who asked for a run, or null. */
+async function resolveTrigger(userId) {
+  if (!userId) return null;
+  const user = await User.findByPk(userId, { attributes: ['id', 'name'] });
+  return { id: userId, name: user ? user.name : null };
+}
+
+/**
+ * Reject a job type the pipeline does not have, before it reaches a query.
+ * A typo in a URL is the caller's mistake, not a server error.
+ */
+function assertKnownJobType(jobType) {
+  if (!Object.values(JOB_TYPES).includes(jobType)) {
+    throw new ValidationError(
+      `Unknown step: "${jobType}". Expected one of: ${Object.values(JOB_TYPES).join(', ')}`
+    );
+  }
+}
+
+/**
+ * Every run of one step, newest first.
+ * GET /api/submissions/:id/jobs/:jobType/runs
+ */
+async function listRuns(req, res, next) {
+  try {
+    const { jobType } = req.params;
+    assertKnownJobType(jobType);
+    const round = resolveRound(req);
+
+    // Metadata only: the payloads are megabytes and a list shows none of them.
+    const runs = await SubmissionJobRun.listForStep(req.params.id, jobType, round, { metadataOnly: true });
+
+    const names = new Map();
+    for (const id of new Set(runs.map((r) => r.triggeredByUserId).filter(Boolean))) {
+      names.set(id, await resolveTrigger(id));
+    }
+
+    res.json({
+      round,
+      jobType,
+      runCount: runs.length,
+      runs: runs.map((run, index) => ({
+        runNumber: run.runNumber,
+        // The list is newest-first, so the first entry is the current run.
+        isLatest: index === 0,
+        status: run.status,
+        outcomeState: run.outcomeState,
+        outcomeSource: run.outcomeSource,
+        failReason: run.failReason,
+        externalError: run.externalError,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+        durationMs: run.durationMs,
+        retryCount: run.retryCount,
+        counts: run.counts,
+        triggerKind: run.triggerKind,
+        triggeredBy: names.get(run.triggeredByUserId) || null
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * One run, in full.
+ * GET /api/submissions/:id/jobs/:jobType/runs/:runNumber
+ */
+async function getRun(req, res, next) {
+  try {
+    const { jobType } = req.params;
+    assertKnownJobType(jobType);
+
+    const runNumber = Number.parseInt(req.params.runNumber, 10);
+    if (!Number.isInteger(runNumber) || runNumber < 1) {
+      throw new ValidationError(`Not a run number: "${req.params.runNumber}"`);
+    }
+    const round = resolveRound(req);
+
+    const runs = await SubmissionJobRun.listForStep(req.params.id, jobType, round, { metadataOnly: true });
+    if (runs.length === 0) throw new NotFoundError(`Runs for ${jobType}`);
+
+    const run = await SubmissionJobRun.findOne({
+      where: { submissionId: req.params.id, jobType, round, runNumber }
+    });
+    if (!run) throw new NotFoundError(`Run ${runNumber} of ${jobType}`);
+
+    res.json({
+      run: shapeRun(run, {
+        runCount: runs.length,
+        triggeredBy: await resolveTrigger(run.triggeredByUserId),
+        // Newest-first, so the highest number is the current run.
+        isLatest: run.runNumber === runs[0].runNumber
+      })
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   getJobs,
   runProcesses,
   advanceJob,
   cancelProcessing,
   getJobResponse,
-  getJobPrompts
+  getJobPrompts,
+  listRuns,
+  getRun
 };
