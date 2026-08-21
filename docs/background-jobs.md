@@ -352,6 +352,35 @@ On the pipeline page the card is itself a link, so the button's click is both
 stopped AND prevented: without both, restarting a step also navigates away from
 the page you wanted to watch it from.
 
+#### Restarting several steps at once
+
+Every pipeline card also carries a **pick** box. Ticking several and pressing
+*Restart them* is ONE restart, not a loop of single ones — and the difference
+costs money:
+
+> Restart the software detector. Everything downstream is reset and software
+> runs. If it finishes before the second restart is issued, grounding finds
+> every dependency terminal — materials is still `complete` from the previous
+> round — and starts. The second restart then resets it, so grounding runs twice
+> and both runs are paid for. The first is invisible rather than harmless,
+> because the second answer is the one that sticks.
+
+`orchestrator.restartSteps` therefore resets **every** selected step's
+downstream before enqueueing **any** of them. Between those two loops nothing is
+running that could release a downstream step, because each is `waiting` on a
+selected step that has not started. Freezes are released once, over the union —
+a larger set than any single step would compute, which is why `requeueStep`
+takes `{ releaseFreezes: false }` when a batch is driving.
+
+The other half of the point is what is **not** picked: restarting two detectors
+keeps the other three's results, where "restart from here" on their shared
+consumer would have re-run all five.
+
+`POST /api/submissions/:id/processes/restart  { jobTypes: [...] }`, behind the LM
+budget like `run` — a selection of five detectors is five detectors' worth of
+model work. An unknown step is refused before anything is touched: half a
+restart is worse than none, because the caller has to work out which half ran.
+
 **The processes panel has no modal any more.** A tile used to lead to one of two
 places: the module page if the step was `complete`, a modal otherwise. So the
 same click showed one thing for a finished module and another for a failed one —

@@ -34,15 +34,37 @@ defineEmits(['confirm', 'cancel'])
           Restart from {{ plan.stepName }}?
         </h3>
 
+        <!-- A selection is named, not counted. "Restart 3 steps?" leaves the
+             reader to remember which three they ticked, on the one screen where
+             being sure matters. -->
+        <template v-if="plan.selectedNames.length > 1">
+          <p class="restart-line">These steps run again:</p>
+          <ul class="restart-list">
+            <li v-for="name in plan.selectedNames" :key="name">{{ name }}</li>
+          </ul>
+        </template>
+
         <p v-if="!plan.alsoReruns.length" class="restart-line">
-          This runs <strong>{{ plan.stepName }}</strong> again. Nothing else is affected.
+          <template v-if="plan.selectedNames.length > 1">Nothing else is affected.</template>
+          <template v-else>
+            This runs <strong>{{ plan.stepName }}</strong> again. Nothing else is affected.
+          </template>
         </p>
         <template v-else>
           <p class="restart-line">
-            This runs <strong>{{ plan.stepName }}</strong> again, and
-            <strong>{{ plan.alsoReruns.length }}</strong>
-            {{ plan.alsoReruns.length === 1 ? 'step that depends on it' : 'steps that depend on it' }}.
-            Their current results are replaced:
+            <template v-if="plan.selectedNames.length > 1">
+              They share
+              <strong>{{ plan.alsoReruns.length }}</strong>
+              {{ plan.alsoReruns.length === 1 ? 'later step' : 'later steps' }}, which
+              {{ plan.alsoReruns.length === 1 ? 'runs' : 'run' }}
+              <strong>once</strong> after all of them finish. Current results replaced:
+            </template>
+            <template v-else>
+              This runs <strong>{{ plan.stepName }}</strong> again, and
+              <strong>{{ plan.alsoReruns.length }}</strong>
+              {{ plan.alsoReruns.length === 1 ? 'step that depends on it' : 'steps that depend on it' }}.
+              Their current results are replaced:
+            </template>
           </p>
           <ul class="restart-list">
             <li v-for="name in plan.alsoReruns" :key="name">{{ name }}</li>
@@ -62,7 +84,7 @@ defineEmits(['confirm', 'cancel'])
           {{ plan.keptInputs.join(', ') }} — the steps that are not re-running were built from it.
         </p>
 
-        <p v-if="plan.jobType === 'das_extraction'" class="restart-warn">
+        <p v-if="plan.jobTypes.includes('das_extraction')" class="restart-warn">
           Your Availability Statement will be cleared and read again from the manuscript.
           Anything typed there by hand is lost.
         </p>

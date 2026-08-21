@@ -500,6 +500,16 @@ router.post('/:id/processes/run',
   jobsController.runProcesses
 );
 
+// POST /api/submissions/:id/processes/restart - Re-run a chosen set of steps as
+// ONE restart. Behind the LM budget like `run`: it starts real model work, and
+// a selection of five detectors is five detectors' worth of it.
+router.post('/:id/processes/restart',
+  canAccessSubmission,
+  lmApiLimiter,
+  lmApiDailyLimiter,
+  jobsController.restartProcesses
+);
+
 // POST /api/submissions/:id/processes/cancel - Cancel all in-flight processing (#15)
 router.post('/:id/processes/cancel',
   canAccessSubmission,

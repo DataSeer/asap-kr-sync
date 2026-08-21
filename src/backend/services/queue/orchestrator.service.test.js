@@ -500,6 +500,144 @@ test('a reset that throws does not stop the run the user asked for', async (t) =
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// restartSteps — several steps as ONE restart
+//
+// A loop over requeueStep is not the same thing, and the difference costs money.
+// Restart the software detector: everything downstream is reset, and software
+// runs. If it finishes before the SECOND restart is issued, grounding finds
+// every dependency terminal — materials is still `complete` from the previous
+// round — and starts. The second restart then resets it, so grounding runs twice
+// and both runs are paid for. The first is invisible rather than harmless,
+// because the second answer is the one that sticks.
+//
+// So: reset every selected step's downstream FIRST, then enqueue.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TWO_DETECTORS = [JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.MATERIALS_DETECTION];
+
+/**
+ * Every row complete, as after a finished round, with the seams a batch restart
+ * touches: `findOne` and a transaction, both used by cascadeRestart.
+ */
+function finishedRound(t, submission = { id: 'sub-1', status: 'step_as' }) {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  // The detectors are gated on there being converted text; without a length the
+  // gate holds them at `waiting` and the restart looks like it did nothing.
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 64925 } };
+  mockDb(t, rows, submission);
+  t.mock.method(SubmissionJob, 'findOne', async ({ where }) => rows.get(where.jobType) || null);
+  t.mock.method(require('../../models').sequelize, 'transaction',
+    async (fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }));
+  return rows;
+}
+
+test('nothing is enqueued until every downstream step has been reset', async (t) => {
+  // Asserted on the CONSEQUENCE rather than the call order: at the moment the
+  // first job is enqueued, grounding must already be `waiting`. If it were
+  // still `complete`, a detector finishing could release it into a run the next
+  // reset would throw away.
+  const rows = finishedRound(t);
+
+  const groundingAtEnqueue = [];
+  t.mock.method(jobQueue, 'addJob', async (queueName) => {
+    groundingAtEnqueue.push([queueName, rows.get(JOB_TYPES.KRT_GROUNDING).status]);
+    return 'pgboss-1';
+  });
+
+  await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-1');
+
+  assert.ok(groundingAtEnqueue.length > 0, 'something must have been enqueued');
+  for (const [queueName, groundingStatus] of groundingAtEnqueue) {
+    assert.notEqual(groundingStatus, 'complete',
+      `grounding was still complete when ${queueName} was enqueued`);
+  }
+});
+
+test('both selected steps are queued, and the shared downstream waits once', async (t) => {
+  const rows = finishedRound(t);
+
+  const { restarted, reset } = await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-1');
+
+  assert.deepEqual(restarted, TWO_DETECTORS);
+  for (const jobType of TWO_DETECTORS) {
+    assert.equal(rows.get(jobType).status, 'queued', `${jobType} runs again`);
+  }
+  assert.equal(rows.get(JOB_TYPES.KRT_GROUNDING).status, 'waiting',
+    'it depends on both, so it waits for both — one run, not two');
+  assert.ok(reset.includes(JOB_TYPES.KRT_GROUNDING));
+});
+
+test('a detector NOT selected keeps its result', async (t) => {
+  // The point of choosing: re-running two detectors must not throw away the
+  // other three, which is what "restart from here" on their shared consumer
+  // would have done.
+  const rows = finishedRound(t);
+
+  await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.PROTOCOLS_DETECTION).status, 'complete');
+  assert.equal(rows.get(JOB_TYPES.DATASETS_DETECTION).status, 'complete');
+});
+
+test('a step named twice runs once', async (t) => {
+  // A UI can send a duplicate; paying for the model twice should not be the
+  // consequence.
+  const rows = finishedRound(t);
+
+  const { restarted } = await orchestrator.restartSteps(
+    'sub-1', [JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.SOFTWARE_DETECTION], 1, 'user-1'
+  );
+
+  assert.deepEqual(restarted, [JOB_TYPES.SOFTWARE_DETECTION]);
+  assert.equal(enqueued.filter((q) => q === jobQueue.QUEUES.SOFTWARE_DETECTION).length, 1);
+});
+
+test('a selected step is not also reported as debris', async (t) => {
+  // Grounding is downstream of the detectors. Selecting it too must not put it
+  // in `reset` as well as `restarted` — two categories that mean opposite
+  // things.
+  const rows = finishedRound(t);
+
+  const { restarted, reset } = await orchestrator.restartSteps(
+    'sub-1', [...TWO_DETECTORS, JOB_TYPES.KRT_GROUNDING], 1, 'user-1'
+  );
+
+  assert.ok(restarted.includes(JOB_TYPES.KRT_GROUNDING));
+  assert.ok(!reset.includes(JOB_TYPES.KRT_GROUNDING));
+});
+
+test('every run it starts is credited to whoever asked', async (t) => {
+  const rows = finishedRound(t);
+
+  await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-7');
+
+  for (const jobType of TWO_DETECTORS) {
+    assert.equal(rows.get(jobType).triggeredByUserId, 'user-7');
+  }
+});
+
+test('an unknown step is refused, and nothing is touched', async (t) => {
+  // Half a restart is worse than none: the caller would have to work out which
+  // half ran.
+  const rows = finishedRound(t);
+
+  await assert.rejects(
+    () => orchestrator.restartSteps('sub-1', [JOB_TYPES.SOFTWARE_DETECTION, 'not_a_step'], 1, 'user-1'),
+    /Unknown pipeline step/
+  );
+  assert.equal(rows.get(JOB_TYPES.SOFTWARE_DETECTION).status, 'complete');
+  assert.equal(enqueued.length, 0);
+});
+
+test('an empty selection is refused', async (t) => {
+  const rows = finishedRound(t);
+
+  await assert.rejects(() => orchestrator.restartSteps('sub-1', [], 1, 'user-1'), /No steps/);
+  assert.equal(enqueued.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // cascadeRestart — invalidating what a re-run makes stale
 // ─────────────────────────────────────────────────────────────────────────────
 

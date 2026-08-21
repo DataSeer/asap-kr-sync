@@ -14,6 +14,23 @@ export default {
    * @param {number} [round] - Optional round number (defaults to current round)
    * @returns {Promise<Object>} - { round, jobs: [...] }
    */
+  /**
+   * Re-run a chosen set of steps as ONE restart.
+   *
+   * One request even for a single step. Restarting them one at a time is not
+   * the same thing: the first to finish releases the work they share — grounding,
+   * the consolidator — which then runs and is thrown away by the next reset, and
+   * both runs are paid for.
+   *
+   * @param {string} submissionId
+   * @param {string[]} jobTypes
+   * @returns {Promise<{message: string, restarted: string[], reset: string[]}>}
+   */
+  async restartProcesses(submissionId, jobTypes) {
+    const response = await api.post(`/submissions/${submissionId}/processes/restart`, { jobTypes })
+    return response.data
+  },
+
   async getJobs(submissionId, round = null) {
     const params = round ? { round } : {}
     const response = await api.get(`/submissions/${submissionId}/jobs`, { params })

@@ -87,21 +87,43 @@ export function inputsAffected(nodes, restarting) {
 /**
  * The whole plan, ready to render.
  *
+ * Takes one step or several. Several is not a loop over one: the steps share
+ * downstream work — five detectors all feed grounding — so the union is what
+ * gets replaced, and it is smaller than the sum. Told step by step, a user
+ * restarting three detectors would read "grounding will re-run" three times and
+ * reasonably conclude it runs three times.
+ *
  * @param {Array<object>} nodes - the pipeline graph
- * @param {string} jobType - the step being restarted
+ * @param {string|string[]} jobTypes - the step(s) being restarted
  * @param {(jobType: string) => string} label - job type → display name
  * @returns {object}
  */
-export function restartPlan(nodes, jobType, label = (t) => t) {
-  const downstream = downstreamOf(nodes, jobType)
-  const restarting = [jobType, ...downstream]
+export function restartPlan(nodes, jobTypes, label = (t) => t) {
+  const selected = [...new Set(Array.isArray(jobTypes) ? jobTypes : [jobTypes])]
+  const selectedSet = new Set(selected)
+
+  // The union of what they carry, minus the selection itself — those are being
+  // run, not discarded, and listing them as replaced would say the opposite.
+  const downstream = new Set()
+  for (const jobType of selected) {
+    for (const dep of downstreamOf(nodes, jobType)) {
+      if (!selectedSet.has(dep)) downstream.add(dep)
+    }
+  }
+
+  const restarting = [...selected, ...downstream]
   const { refreshed, kept } = inputsAffected(nodes, restarting)
 
   return {
-    jobType,
-    stepName: label(jobType),
+    /** The single step, when there is one — the dialog words itself differently. */
+    jobType: selected.length === 1 ? selected[0] : null,
+    jobTypes: selected,
+    stepName: selected.length === 1
+      ? label(selected[0])
+      : `${selected.length} steps`,
     /** Named so the user can see exactly whose results are being discarded. */
-    alsoReruns: downstream.map(label),
+    selectedNames: selected.map(label),
+    alsoReruns: [...downstream].map(label),
     rerunCount: restarting.length,
     /** Documents this restart will take fresh copies of. */
     refreshedInputs: refreshed.map((kind) => INPUT_LABELS[kind] || kind),

@@ -19,6 +19,7 @@ import { useRoute } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import { outcomeStateOf } from '@/utils/job-status'
 import configService from '@/services/config.service'
+import jobService from '@/services/job.service'
 import { labelFor, purposeFor, stageLabel, hasModulePage } from '@/components/modules/module-meta'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import LoadError from '@/components/common/LoadError.vue'
@@ -28,7 +29,7 @@ import { setSubmissionTitle } from '@/router'
 import { useAuthStore } from '@/stores/auth.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { restartPlan } from '@/utils/restart-plan'
-import { RESTART_ACTIONS, canRestartType } from '@/utils/restart-actions'
+import { canRestartType } from '@/utils/restart-actions'
 import RestartFromHereDialog from '@/components/submission/RestartFromHereDialog.vue'
 
 const route = useRoute()
@@ -112,19 +113,52 @@ function askToRestart(jobType) {
   pendingRestart.value = restartPlan(graph.value.nodes, jobType, labelFor)
 }
 
+// ── Choosing several ────────────────────────────────────────────────────────
+// Restarting the five detectors one at a time is not the same as restarting
+// them together, and it costs more: the first to finish releases grounding,
+// which then runs and is thrown away by the next reset. Selecting them makes it
+// one restart — the shared work runs once, after all of them.
+//
+// The other half of the point is what is NOT selected. "Restart from here" on
+// their shared consumer would re-run every detector; picking two keeps the
+// other three's results.
+const selected = ref(new Set())
+
+const selectedCount = computed(() => selected.value.size)
+
+function toggleSelected(jobType) {
+  // Replaced rather than mutated: a Set mutated in place is the same object, and
+  // computeds reading it would not re-evaluate.
+  const next = new Set(selected.value)
+  if (next.has(jobType)) next.delete(jobType)
+  else next.add(jobType)
+  selected.value = next
+}
+
+const clearSelection = () => { selected.value = new Set() }
+
+function askToRestartSelected() {
+  if (!selected.value.size) return
+  pendingRestart.value = restartPlan(graph.value.nodes, [...selected.value], labelFor)
+}
+
 async function confirmRestart() {
-  const type = pendingRestart.value?.jobType
-  if (!type) return
-  const [trigger, actionLabel] = RESTART_ACTIONS[type]
+  const jobTypes = pendingRestart.value?.jobTypes || []
+  if (!jobTypes.length) return
   restarting.value = true
   try {
-    const result = await trigger(submissionId.value)
-    // What the SERVER said: a restart asked for while the step is already
-    // running is deliberately a no-op, and it answers "… is already running".
-    notificationStore.info(result?.message || `${actionLabel} re-started`)
+    // One request for the whole selection, even when it is one step. The server
+    // resets every selected step's downstream BEFORE enqueueing any of them —
+    // which a loop of single restarts cannot do, because the first step can
+    // finish and release the shared work before the second request arrives.
+    const result = await jobService.restartProcesses(submissionId.value, jobTypes)
+    // What the SERVER said: a restart asked for while a step is already running
+    // is deliberately a no-op, and it says so rather than claiming a new run.
+    notificationStore.info(result?.message || 'Re-started')
     pendingRestart.value = null
+    clearSelection()
   } catch (err) {
-    notificationStore.error(err.response?.data?.error || `Could not restart ${actionLabel}`)
+    notificationStore.error(err.response?.data?.error || 'Could not restart those steps')
   } finally {
     restarting.value = false
   }
@@ -354,6 +388,21 @@ const activeStage = computed(() => {
       </div>
     </div>
 
+    <!-- What the selection will do, while it is being built. Sticky, because
+         the steps being picked are spread down a long page and a count you have
+         to scroll to find is a count you stop trusting. -->
+    <div v-if="selectedCount" class="pv-selbar" role="status">
+      <span class="pv-selbar-count">
+        <strong>{{ selectedCount }}</strong>
+        {{ selectedCount === 1 ? 'step selected' : 'steps selected' }}
+      </span>
+      <span class="pv-selbar-hint">their shared later steps run once, after all of them</span>
+      <button type="button" class="pv-selbar-clear" @click="clearSelection">Clear</button>
+      <button type="button" class="pv-selbar-go" @click="askToRestartSelected">
+        ⟳ Restart {{ selectedCount === 1 ? 'it' : 'them' }}
+      </button>
+    </div>
+
     <!-- Where the pipeline is right now, before any of the detail. -->
     <div v-if="graph.nodes.length" class="pv-state">
       <span class="pv-state-item"><b>{{ state.done }}</b> of {{ state.total }} done</span>
@@ -461,6 +510,18 @@ const activeStage = computed(() => {
                   >
                     ⟳ Restart from here
                   </button>
+                  <!-- Ticking is not restarting: it builds a selection that one
+                       button then restarts together. Same click-swallowing as
+                       the button — the card is a link. -->
+                  <label
+                    v-if="canRestart && canRestartType(node.jobType)"
+                    class="pv-pick"
+                    v-tooltip="'Include this step in a restart of several'"
+                    @click.stop.prevent="toggleSelected(node.jobType)"
+                  >
+                    <input type="checkbox" :checked="selected.has(node.jobType)" tabindex="-1" />
+                    <span>pick</span>
+                  </label>
                 </div>
               </component>
             </div>
@@ -628,4 +689,48 @@ const activeStage = computed(() => {
   white-space: nowrap;
 }
 .pv-restart:hover { border-color: #93c5fd; color: #1d4ed8; background: #eff6ff; }
+
+/* Pick + selection bar */
+.pv-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: #fff;
+  color: #6b7280;
+  font-size: 0.62rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pv-pick:hover { border-color: #93c5fd; color: #1d4ed8; }
+.pv-pick input { width: 0.7rem; height: 0.7rem; pointer-events: none; }
+
+.pv-selbar {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.5rem;
+  background: #eff6ff;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.1);
+}
+.pv-selbar-count { font-size: 0.85rem; color: #1e3a8a; }
+.pv-selbar-hint { flex: 1; min-width: 0; font-size: 0.78rem; color: #3b82f6; }
+.pv-selbar-clear {
+  padding: 0.25rem 0.6rem; border-radius: 0.3rem;
+  border: 1px solid #bfdbfe; background: #fff; color: #1d4ed8;
+  font-size: 0.78rem; font-weight: 500;
+}
+.pv-selbar-go {
+  padding: 0.25rem 0.7rem; border-radius: 0.3rem;
+  background: #2563eb; color: #fff; font-size: 0.78rem; font-weight: 600;
+}
+.pv-selbar-go:hover { background: #1d4ed8; }
 </style>

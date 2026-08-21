@@ -975,7 +975,68 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
  * @param {string} userId
  * @returns {Promise<object>} the step's SubmissionJob row
  */
-async function requeueStep(submissionId, jobType, round, userId) {
+/**
+ * Restart several steps as ONE restart.
+ *
+ * Not a loop over `requeueStep`, and the difference is not cosmetic. Restarting
+ * the software detector resets everything downstream of it — grounding, the
+ * consolidator, the suggestions — and then software runs. If it finishes before
+ * the SECOND restart is issued, grounding finds every dependency terminal
+ * (materials is still `complete` from the previous round) and starts. The
+ * second restart then resets it again, so grounding runs twice and both runs
+ * are paid for. The second answer is the right one, which makes the first
+ * invisible rather than harmless.
+ *
+ * So the order is: reset every selected step's downstream FIRST, then enqueue.
+ * Between the two loops nothing is running that could release a downstream
+ * step, because every one of them is `waiting` on a selected step that has not
+ * started.
+ *
+ * Freezes are released once, over the union — a larger set than any single step
+ * would compute, and the reason `requeueStep` is told to skip its own release.
+ * Five detectors restarting together may re-read the markdown; one of them
+ * alone must not.
+ *
+ * @param {string} submissionId
+ * @param {string[]} jobTypes - the steps to run again
+ * @param {number} round
+ * @param {string} [userId] - credited with every run this starts
+ * @returns {Promise<{restarted: string[], reset: string[]}>}
+ */
+async function restartSteps(submissionId, jobTypes, round, userId) {
+  const selected = [...new Set(jobTypes)];
+  const unknown = selected.filter((t) => !PIPELINE.some((s) => s.jobType === t));
+  if (unknown.length) throw new ValidationError(`Unknown pipeline step(s): ${unknown.join(', ')}`);
+  if (!selected.length) throw new ValidationError('No steps to restart');
+
+  // The union of everything the selection carries with it, minus the selection
+  // itself — those are enqueued explicitly and must not be treated as debris.
+  const downstream = new Set();
+  for (const jobType of selected) {
+    for (const dep of computeDownstreamSet(jobType)) downstream.add(dep);
+  }
+  for (const jobType of selected) downstream.delete(jobType);
+
+  await releaseInputFreezes(submissionId, round, [...selected, ...downstream]);
+
+  // Reset first, every one of them, before anything is enqueued.
+  for (const jobType of selected) {
+    await cascadeRestart(submissionId, jobType, round, userId);
+  }
+
+  const restarted = [];
+  for (const jobType of selected) {
+    await requeueStep(submissionId, jobType, round, userId, { releaseFreezes: false });
+    restarted.push(jobType);
+  }
+
+  logger.info('Batch restart', {
+    submissionId, round, restarted, reset: [...downstream], userId
+  });
+  return { restarted, reset: [...downstream] };
+}
+
+async function requeueStep(submissionId, jobType, round, userId, { releaseFreezes = true } = {}) {
   const step = PIPELINE.find((s) => s.jobType === jobType);
   if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
 
@@ -1017,7 +1078,15 @@ async function requeueStep(submissionId, jobType, round, userId) {
   // step already `processing` is deliberately left alone by cascadeRestart, so
   // it finishes against the input the round was using while the restart takes a
   // newer one. Its own run record still says which document it read.
-  await releaseInputFreezes(submissionId, round, [jobType, ...computeDownstreamSet(jobType)]);
+  //
+  // Skipped when a BATCH restart is driving: it has already released over the
+  // union of every selected step, which is a larger set than any one of them
+  // would compute. Releasing per step would under-release — five detectors
+  // restarting together may re-read the markdown, while one of them alone must
+  // not.
+  if (releaseFreezes) {
+    await releaseInputFreezes(submissionId, round, [jobType, ...computeDownstreamSet(jobType)]);
+  }
 
   // A step may need to clear what its previous run produced before running
   // again — otherwise "re-run this module" is a button that appears to do
@@ -1056,6 +1125,7 @@ module.exports = {
   PIPELINE,
   runAllProcesses,
   requeueStep,
+  restartSteps,
   failStrandedProcessingJobs,
   checkAndAdvance,
   reconcileSubmission,

@@ -9,6 +9,12 @@
 const { SubmissionJob, SubmissionJobRun, User } = require('../models');
 const { JOB_TYPES } = require('../config/constants');
 const { ValidationError, NotFoundError } = require('../utils/errors');
+
+/**
+ * The pipeline is twelve steps. A longer selection is a caller bug, and
+ * answering it would be twelve restarts' worth of work for one request.
+ */
+const PIPELINE_STEP_LIMIT = 20;
 const jobQueue = require('../services/queue/job-queue.service');
 const { JOB_CONFIG, JOB_TYPE_TO_QUEUE } = jobQueue;
 const orchestrator = require('../services/queue/orchestrator.service');
@@ -182,6 +188,47 @@ async function runProcesses(req, res, next) {
     res.json({
       message: 'All processes started',
       jobs: jobs.map(j => ({ jobType: j.jobType, status: j.status }))
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Restart several steps as ONE restart.
+ *
+ * POST /api/submissions/:id/processes/restart  { jobTypes: [...] }
+ *
+ * Restarting them one at a time is not the same thing and costs more: the first
+ * detector finishes, grounding finds every dependency terminal and starts, and
+ * the next restart resets it — so grounding runs twice and both runs are paid
+ * for. The orchestrator resets the whole union before enqueueing anything.
+ */
+async function restartProcesses(req, res, next) {
+  try {
+    const submission = req.submission;
+    const { jobTypes } = req.body || {};
+    if (!Array.isArray(jobTypes) || !jobTypes.length) {
+      throw new ValidationError('jobTypes must be a non-empty array of pipeline step names');
+    }
+    if (jobTypes.length > PIPELINE_STEP_LIMIT) {
+      // The pipeline has twelve steps; a longer list is a caller bug, and
+      // answering it would be twelve restarts' worth of work per request.
+      throw new ValidationError(`At most ${PIPELINE_STEP_LIMIT} steps can be restarted at once`);
+    }
+
+    const { restarted, reset } = await orchestrator.restartSteps(
+      submission.id, jobTypes, submission.currentRound, req.userId
+    );
+
+    res.json({
+      message: restarted.length === 1
+        ? `${restarted[0]} re-started`
+        : `${restarted.length} steps re-started`,
+      restarted,
+      // What the restart carried with it. The UI already told the user, but the
+      // reply is what a script or a log has to go on.
+      reset
     });
   } catch (error) {
     next(error);
@@ -550,6 +597,7 @@ async function getRun(req, res, next) {
 module.exports = {
   getJobs,
   runProcesses,
+  restartProcesses,
   advanceJob,
   cancelProcessing,
   getJobResponse,
