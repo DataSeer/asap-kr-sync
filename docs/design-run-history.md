@@ -378,60 +378,90 @@ it there, the chain is complete and answerable in one query:
 
 That sentence is the point of the whole design.
 
-### 7.4 Deletion — soft by default, hard by an administrator
+### 7.4 Putting a submission aside: hidden, soft-deleted, hard-deleted
 
-A record the subject can erase is a weak record, so deletion splits in two:
+Three states, three different intentions. They are **not** degrees of the same
+thing, and conflating them is the way this goes wrong:
 
-| | Who | Effect |
+| State | What the user means | Still a "real" submission? |
 |---|---|---|
-| **Soft delete** | anyone who can access the submission | `submissions.deleted = true`. Nothing is removed: rows, runs, change logs and S3 objects all stay. Reversible. |
-| **Hard delete** | **administrator only** | today's behaviour — cascade the DB rows, clear the S3 prefix, cancel queued work. Irreversible. |
+| **Hidden** | *"I won't work on this again — put it aside."* | **Yes.** Counted, processed, listed under the dashboard's Hidden section. A per-user preference (`user_hidden_submissions`), not a property of the submission. |
+| **Soft-deleted** | *"This was a mistake. Stop treating it as real — but I'm not an admin."* | **No.** `submissions.deleted = true`. Nothing is removed. |
+| **Hard-deleted** | *"This was a mistake or a test, and I'm an admin, so I know what erasing it means."* | **Gone.** DB rows cascaded, S3 prefix cleared, work stopped instantly. |
 
-Soft delete is the everyday action; hard delete is the exception, and the only
-one that frees storage.
+#### Who can do what
 
-**Four things this has to get right.**
+Authorisation is **two gates in order**: `canAccessSubmission` first, then role.
+Access is never implied by role — an admin who cannot access a submission cannot
+delete it either.
 
-1. **"Anyone" means anyone who can *access* the submission — never merely anyone
-   signed in.** Note this is a **widening** of today's rule: deletion is
-   currently `requireRole(ADMIN, DS_ANNOTATOR)`, so an author cannot delete even
-   their own submission. Soft delete moves to `canAccessSubmission`, which gives
-   an author their own and a PM their team's. Deliberate, and worth being
-   explicit about because access-control changes should never be a side effect.
+| Action | Gate 1 | Gate 2 |
+|---|---|---|
+| Hide | `canAccessSubmission` | any role |
+| Soft delete | `canAccessSubmission` | any role |
+| Hard delete | `canAccessSubmission` | `admin` |
+| Restore | `canAccessSubmission` | `admin` — see below |
 
-2. **`deleted` is not the existing `hidden`.** `user_hidden_submissions` is a
-   *per-user* preference, and the dashboard already offers Visible / Hidden /
-   All. Deleted is a *submission-level* state, and the two must stay distinct in
-   both the data and the wording — a filter that blurs them would let a user
-   believe they had removed something they had only hidden from themselves.
+This **widens** deletion: today the route is
+`requireRole(ADMIN, DS_ANNOTATOR)`, so an author cannot delete even their own
+submission. Recorded as a deliberate change, not a side effect.
 
-3. **A soft delete must still stop the work.** Queued and processing jobs are
-   cancelled exactly as hard delete does today. Otherwise workers keep spending
-   real money on a submission the user believes is gone.
+#### Visibility
 
-4. **The deletion itself is audited — especially the hard one.** If an
-   administrator erases a submission, the record of that erasure must survive
-   the erasure. That cannot live in `change_logs`, whose `submission_id` is
-   `ON DELETE CASCADE` and which the hard delete therefore destroys. It needs a
-   retained table holding plain values rather than foreign keys:
+A soft-deleted submission is invisible to `author`, `asap_pm` and `ds_annotator`
+— which leaves **admins as the only role that can see it**. That follows from
+the intent ("the app must stop considering it real") and it has one consequence
+worth stating plainly:
 
-   ```
-   submission_deletions(
-     id, submission_id (value, not FK), manuscript_id, title,
-     kind ('soft' | 'hard' | 'restore'),
-     performed_by_user_id, performed_at, reason
-   )
-   ```
+> **Restore is effectively admin-only.** The author who soft-deletes by mistake
+> cannot see it afterwards, so they cannot undo it themselves — they must ask an
+> admin.
 
-   Without this, the most destructive action in the system is the least
-   accounted for — which is the opposite of what §1.2 asks for.
+That is defensible, but it makes soft delete feel final to the person doing it.
+It therefore needs a **confirmation step that says so** ("only an administrator
+can undo this"), or users will treat it as reversible and be surprised.
 
-**Restore** is the inverse of soft delete, available to the same people, and
-recorded as its own event.
+Everywhere else — lists, counts, filters, the reconciler, the pipeline — a
+soft-deleted submission is simply absent.
 
-**Everywhere else** — lists, counts, filters, the pipeline, the reconciler — a
-soft-deleted submission is absent by default. It stays reachable by direct link
-for staff, so an audit can still read it.
+#### The admin purge
+
+Soft delete is, in practice, *queued for erasure*. Admins get a periodic sweep —
+"hard-delete everything soft-deleted more than N days ago" — following the shape
+the Jobs admin page already uses for stale jobs (a filter, a count, an explicit
+confirm, and a re-classification at call time so a submission restored since the
+page loaded is skipped).
+
+#### Hard delete stops everything, immediately
+
+Queued and processing work is cancelled and the queue entries dropped before the
+rows go, exactly as the current delete endpoint does. A soft delete cancels the
+queued work too — otherwise workers keep spending real money on a submission the
+user believes is gone.
+
+#### The deletion is itself recorded
+
+If an administrator erases a submission, the record of the erasure must survive
+the erasure. That cannot live in `change_logs`, whose `submission_id` is
+`ON DELETE CASCADE` and which the hard delete destroys. It needs a retained
+table holding **plain values rather than foreign keys**:
+
+```
+submission_deletions(
+  id,
+  submission_id,        -- a value, deliberately NOT a foreign key
+  manuscript_id, title, owner_user_id,
+  kind,                 -- 'soft' | 'hard' | 'restore'
+  performed_by_user_id, -- FK to users, ON DELETE SET NULL
+  performed_at,
+  reason,               -- optional, free text
+  counts                -- what was destroyed: runs, files, KRT rows, S3 objects
+)
+```
+
+`counts` matters for a hard delete: after the fact it is the only remaining
+statement of what was there. Without this table the most destructive action in
+the system would be the least accounted for, which is the inverse of §1.2.
 
 ---
 
@@ -466,10 +496,11 @@ One migration:
 4. add `files.uploaded_by_user_id` and `change_logs.file_id` (§7.2), both
    nullable, both backfilling to NULL — file provenance starts now rather than
    being invented retrospectively;
-5. add `submissions.deleted` (boolean, default false, indexed) and the
-   `submission_deletions` ledger (§7.4). Existing submissions backfill to
-   `false`, and the ledger starts empty — a deletion that happened before the
-   ledger existed cannot be invented.
+5. add `submissions.deleted` (boolean, default false, indexed) and
+   `submissions.deleted_at` (so the admin purge can select "soft-deleted more
+   than N days ago"), plus the `submission_deletions` ledger (§7.4). Existing
+   submissions backfill to `false`/NULL, and the ledger starts empty — a
+   deletion that happened before the ledger existed cannot be invented.
 
 History therefore starts complete rather than empty, with every existing run
 presented as run 1.
@@ -536,7 +567,9 @@ nothing (§6.1).
 | `run_number` duplication under the advance race | allocation inside the atomic claim + UNIQUE backstop (§4.1) |
 | Storage growth | accepted (S3 + DB can grow); payload/record split leaves pruning open (§3.4) |
 | Orphaned artefacts | hard delete already removes the whole S3 prefix; soft delete keeps it deliberately |
-| Soft delete mistaken for the existing per-user "hidden" | distinct wording and a distinct filter value (§7.4) |
+| Soft delete mistaken for the existing per-user "hidden" | three distinct states with distinct wording, and Hidden keeps its own dashboard section (§7.4) |
+| A user soft-deleting and expecting to undo it | only admins can see soft-deleted submissions, so the confirmation must say "only an administrator can undo this" (§7.4) |
+| The purge erasing something restored since the page loaded | re-classify at call time, as the Jobs admin cleanup already does (§7.4) |
 | A soft-deleted submission still consuming LM budget | its queued work is cancelled, exactly as hard delete does (§7.4) |
 | A hard delete leaving no trace of itself | the `submission_deletions` ledger holds plain values, not foreign keys, so it survives the cascade (§7.4) |
 
@@ -578,7 +611,7 @@ paths); 2 and 3 are additive reads.
 4. ~~**Does deleting a submission erase its audit trail?**~~ **Decided
    2026-08-21** — soft delete by default (anyone with access, nothing removed),
    hard delete by an administrator only. See §7.4. The remaining sub-question is
-   whether a hard delete should be blocked, rather than merely recorded, while a
-   submission is under review; left open.
+   whether a hard delete should be blocked while a submission is under review —
+   **decided: no.** A hard delete stops everything and removes it instantly.
    (User *deletion* was already safe: accounts are anonymised, not removed, so
    attribution survives as "Deleted user".)
