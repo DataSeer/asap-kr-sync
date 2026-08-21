@@ -147,3 +147,39 @@ test('a step with no runs at all is a 404, not an empty run', async (t) => {
 
   assert.equal(error?.statusCode, 404);
 });
+
+/**
+ * A past run must not offer another run's artefacts.
+ *
+ * Artefacts are keyed by run number now, but runs recorded before that shared
+ * one folder per job row — the last to write won. An earlier run's links then
+ * resolve to a later run's data, which is worse than showing nothing: they look
+ * like this run's evidence and are not. The run-scoped prefix is the proof.
+ */
+test('a run with its own artefact folder says so', async (t) => {
+  const { json } = await run(controller.getRun, { jobType: 'identifier_detection', runNumber: '2' }, t, {
+    runs: [RUN({ runNumber: 2 })],
+    one: RUN({ runNumber: 2, s3Prefix: 'jobs/identifier_detection/run-2' })
+  });
+
+  assert.equal(json.run.artefactsAreOwn, true);
+});
+
+test('a run from before artefacts were keyed by run does not', async (t) => {
+  const { json } = await run(controller.getRun, { jobType: 'identifier_detection', runNumber: '1' }, t, {
+    runs: [RUN({ runNumber: 2 }), RUN({ runNumber: 1 })],
+    // The backfilled shape: keyed by the job row id, shared with every other run
+    // of that step.
+    one: RUN({ runNumber: 1, s3Prefix: 'jobs/identifier_detection/9b2fca04-4584-41fb-813d-a5e4fadbd709' })
+  });
+
+  assert.equal(json.run.artefactsAreOwn, false, 'the page hides its outputs rather than showing a later run\'s');
+});
+
+test('a run with no recorded prefix does not either', async (t) => {
+  const { json } = await run(controller.getRun, { jobType: 'identifier_detection', runNumber: '1' }, t, {
+    runs: [RUN({ runNumber: 1 })], one: RUN({ runNumber: 1, s3Prefix: null })
+  });
+
+  assert.equal(json.run.artefactsAreOwn, false);
+});

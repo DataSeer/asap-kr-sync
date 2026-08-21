@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { tooltip } from '@/directives/tooltip'
+import { useAuthStore } from '@/stores/auth.store'
 
 vi.mock('vue-router', async (importOriginal) => ({
   ...(await importOriginal()),
@@ -119,5 +120,53 @@ describe('counts owned by the failed engine', () => {
 
     // A real zero from an engine that DID answer is information, and stays.
     expect(wrapper.text()).toMatch(/Total\s*0/)
+  })
+})
+
+describe('a past run whose artefacts were not kept apart', () => {
+  const pastRun = (over) => ({
+    ...job({ state: 'done', source: 'external' }),
+    isLatest: false,
+    runNumber: 1,
+    runCount: 3,
+    result: {
+      ...job({ state: 'done', source: 'external' }).result,
+      files: { 'gemini-software': 'some/key.json' }
+    },
+    ...over
+  })
+
+  async function mountRun(over) {
+    // The outputs block is gated on canViewJobInternals, and so is the caveat
+    // inside it — an author sees no outputs, so there is nothing to caveat.
+    useAuthStore().user = { id: 'u1', role: 'ds_annotator', name: 'Curator' }
+    const wrapper = mount(ModuleTechnical, {
+      props: { job: pastRun(over), jobType: 'software_detection', submissionId: 'sub-1', jobs: {} },
+      global: { directives: { tooltip }, stubs: { RouterLink: { template: '<a><slot /></a>' } } }
+    })
+    await wrapper.find('button.mt-toggle').trigger('click')
+    return wrapper
+  }
+
+  it('says why its outputs are missing, rather than showing a later run\'s', async () => {
+    const wrapper = await mountRun({ artefactsAreOwn: false })
+
+    expect(wrapper.find('.mt-note-warn').exists()).toBe(true)
+    expect(wrapper.find('.mt-note-warn').text()).toMatch(/not kept separately/)
+    expect(wrapper.text()).not.toContain('gemini-software ↗')
+  })
+
+  it('shows them when the run does own them', async () => {
+    const wrapper = await mountRun({ artefactsAreOwn: true })
+
+    expect(wrapper.find('.mt-note-warn').exists()).toBe(false)
+  })
+
+  it('never suppresses the latest run\'s outputs — it wrote last', async () => {
+    // Whatever is in a shared folder IS the latest run's, so the caveat would be
+    // false there.
+    const wrapper = await mountRun({ isLatest: true, artefactsAreOwn: false })
+
+    expect(wrapper.find('.mt-note-warn').exists()).toBe(false)
   })
 })

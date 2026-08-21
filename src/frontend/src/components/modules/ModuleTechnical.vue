@@ -76,13 +76,25 @@ const PROMPT_LABELS = {
  */
 const prompts = ref([])
 const promptsState = ref('idle') // idle | loading | ready | error
+
+// Switching run must re-read the prompt, not keep the previous one on screen.
+watch(() => props.job?.runNumber, () => {
+  promptsState.value = 'idle'
+  prompts.value = []
+  if (open.value) loadPrompts()
+})
 const openPrompt = ref(null)
 
 async function loadPrompts() {
   if (promptsState.value !== 'idle') return
   promptsState.value = 'loading'
   try {
-    const data = await jobService.getJobPrompts(props.submissionId, props.jobType, props.job?.round)
+    // The prompt must be the one THIS run used. Asking without the run number
+    // answers for the latest, which put run 3's prompt beside run 1's results.
+    const data = await jobService.getJobPrompts(
+      props.submissionId, props.jobType, props.job?.round,
+      props.job?.isLatest === false ? props.job?.runNumber : null
+    )
     prompts.value = (data.prompts || []).map((p) => ({
       ...p,
       label: PROMPT_LABELS[p.key] || PROMPT_LABELS[props.jobType] || 'Detection prompt',
@@ -199,6 +211,15 @@ const TRIGGER_LABEL = {
   pipeline: 'started by the pipeline',
   reconciler: 'recovered by the reconciler'
 }
+
+/**
+ * A PAST run whose artefacts were not kept apart from later runs.
+ *
+ * Only past runs: the latest run wrote last, so whatever is in the shared
+ * folder is genuinely its own.
+ */
+const artefactsNotOwn = computed(() =>
+  props.job?.isLatest === false && props.job?.artefactsAreOwn === false)
 
 const metadata = computed(() => {
   const job = props.job || {}
@@ -505,17 +526,22 @@ const responseUrl = (name) =>
       </div>
       <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
         <h3>Module outputs</h3>
+        <p v-if="artefactsNotOwn" class="mt-note mt-note-warn">
+          This run's stored files were not kept separately from later runs of the same
+          step, so they are not shown — they would be a later run's evidence wearing this
+          run's timestamp. Runs from here on keep their own.
+        </p>
         <!-- What the module produced and stored. A slot rather than a prop:
              only the caller knows what its module kept and how to hand it over. -->
         <slot name="files" />
         <!-- Real links: ctrl-click opens one in a tab like anything else, and
              the browser handles the download rather than a click handler. -->
-        <ul v-if="canViewInternals && artefacts.length" class="mt-files">
+        <ul v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-files">
           <li v-for="name in artefacts" :key="name">
             <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
           </li>
         </ul>
-        <p v-if="canViewInternals && artefacts.length" class="mt-note">
+        <p v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-note">
           These are what the module sent to, or received from, the external service — the
           unedited record of this run.
         </p>
@@ -525,6 +551,14 @@ const responseUrl = (name) =>
 </template>
 
 <style scoped>
+.mt-note-warn {
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.625rem;
+}
+
 .mt-degraded {
   margin-bottom: 0.875rem;
   padding: 0.625rem 0.75rem;

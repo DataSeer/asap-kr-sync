@@ -84,8 +84,8 @@ export default {
    * @param {number} [round]
    * @returns {Promise<{prompts: Array<{key, file, text, sha256, bytes, attachments}>, reason?: string}>}
    */
-  async getJobPrompts(submissionId, jobType, round = null) {
-    const params = round ? { round } : {}
+  async getJobPrompts(submissionId, jobType, round = null, runNumber = null) {
+    const params = { ...(round ? { round } : {}), ...(runNumber ? { run: runNumber } : {}) }
     const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/prompts`, { params })
     return response.data
   },

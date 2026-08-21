@@ -318,9 +318,19 @@ async function getJobPrompts(req, res, next) {
     const { jobType } = req.params;
     const round = resolveRound(req);
 
-    const job = await SubmissionJob.getLatest(submission.id, jobType, round);
+    // `?run=N` asks for a PAST run's prompt. Without it this always answered
+    // for the latest run, so selecting run 1 on the module page showed run 3's
+    // prompt beside run 1's results — the page contradicting itself.
+    const wanted = req.query.run ? Number.parseInt(req.query.run, 10) : null;
+    if (req.query.run && (!Number.isInteger(wanted) || wanted < 1)) {
+      throw new ValidationError(`Not a run number: "${req.query.run}"`);
+    }
+
+    const job = wanted
+      ? await SubmissionJobRun.findOne({ where: { submissionId: submission.id, jobType, round, runNumber: wanted } })
+      : await SubmissionJob.getLatest(submission.id, jobType, round);
     if (!job) {
-      return res.status(404).json({ error: 'Job not found' });
+      return res.status(404).json({ error: wanted ? `Run ${wanted} not found` : 'Job not found' });
     }
 
     const s3Key = job.result?.files?.inputs;
@@ -392,7 +402,17 @@ function shapeRun(run, { runCount, triggeredBy, isLatest }) {
     retryCount: run.retryCount || 0,
     triggeredBy,
     triggerKind: run.triggerKind,
-    s3Prefix: run.s3Prefix
+    s3Prefix: run.s3Prefix,
+    /**
+     * Whether this run's stored artefacts are *its own*.
+     *
+     * Artefacts are keyed by run number now, but runs recorded before that
+     * shared one folder per job row — so the last run to write won, and an
+     * earlier run's links resolve to a later run's data. Showing them would be
+     * worse than showing nothing: they look like this run's evidence and are
+     * not. A run-scoped prefix is the proof that they are.
+     */
+    artefactsAreOwn: typeof run.s3Prefix === 'string' && run.s3Prefix.includes('/run-')
   };
 }
 
