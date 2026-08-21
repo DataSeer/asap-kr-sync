@@ -29,7 +29,6 @@ import { setSubmissionTitle } from '@/router'
 import { useAuthStore } from '@/stores/auth.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { restartPlan } from '@/utils/restart-plan'
-import { canRestartType } from '@/utils/restart-actions'
 import RestartFromHereDialog from '@/components/submission/RestartFromHereDialog.vue'
 
 const route = useRoute()
@@ -108,8 +107,11 @@ const restarting = ref(false)
 
 const canRestart = computed(() => authStore.canRestartJobs)
 
+// Every step in the graph can be restarted — the graph IS the pipeline, and the
+// server validates the names again. There was a per-module map of trigger
+// functions here; the batch endpoint replaced it, and with it eleven service
+// imports that existed only to be looked up by job type.
 function askToRestart(jobType) {
-  if (!canRestartType(jobType)) return
   pendingRestart.value = restartPlan(graph.value.nodes, jobType, labelFor)
 }
 
@@ -502,7 +504,7 @@ const activeStage = computed(() => {
                        also navigates away from the page you wanted to watch it
                        from. -->
                   <button
-                    v-if="canRestart && canRestartType(node.jobType)"
+                    v-if="canRestart"
                     type="button"
                     class="pv-restart"
                     v-tooltip="'Run this step again — and everything that depends on it'"
@@ -514,7 +516,7 @@ const activeStage = computed(() => {
                        button then restarts together. Same click-swallowing as
                        the button — the card is a link. -->
                   <label
-                    v-if="canRestart && canRestartType(node.jobType)"
+                    v-if="canRestart"
                     class="pv-pick"
                     v-tooltip="'Include this step in a restart of several'"
                     @click.stop.prevent="toggleSelected(node.jobType)"

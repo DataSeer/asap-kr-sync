@@ -236,6 +236,33 @@ async function restartProcesses(req, res, next) {
 }
 
 /**
+ * Run a failed step again, and change nothing else.
+ *
+ * POST /api/submissions/:id/jobs/:jobType/retry?round=N
+ *
+ * For the case that comes up after an external service is fixed: the pipeline is
+ * stuck behind one failure, and what is wanted is to unblock it rather than
+ * re-run the round. Refused once anything downstream has run since — retrying
+ * alone would leave those results built on the failure, which is a restart's job.
+ */
+async function retryJob(req, res, next) {
+  try {
+    const submission = req.submission;
+    const job = await orchestrator.retryStep(
+      submission.id, req.params.jobType, resolveRound(req), req.userId
+    );
+
+    res.json({
+      message: `${req.params.jobType} is running again`,
+      jobType: job.jobType,
+      status: job.status
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Manually advance a pending_input job to queued
  * POST /api/submissions/:id/jobs/:jobType/advance?round=N
  */
@@ -598,6 +625,7 @@ module.exports = {
   getJobs,
   runProcesses,
   restartProcesses,
+  retryJob,
   advanceJob,
   cancelProcessing,
   getJobResponse,

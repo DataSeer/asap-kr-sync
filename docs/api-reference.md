@@ -708,6 +708,20 @@ Re-run a **chosen set** of steps as one restart.
 - Behind the LM budget: a selection of five detectors is five detectors' worth of
   model work.
 
+### `POST /api/submissions/:id/jobs/:jobType/retry?round=N`
+Run a **failed** step again, and change nothing else.
+
+- **Returns**: `{ message, jobType, status }`
+- **400** unless the step failed **and nothing downstream has run since**. The
+  message names the step that already ran and points at the restart that would
+  work — "cannot retry" with no way forward is a dead end.
+- Deliberately does **not** release the round's input freezes, cascade, or run
+  `onManualRestart`. Each of those would make it a restart wearing a smaller
+  name; in particular a retry of DAS extraction must not clear a statement the
+  author typed while the service was down.
+- `retryCount` is reset with the row — those attempts belonged to the run that
+  failed.
+
 ### `POST /api/submissions/:id/jobs/:jobType/advance?round=N`
 Manually advance a `pending_input` job to `queued`.
 

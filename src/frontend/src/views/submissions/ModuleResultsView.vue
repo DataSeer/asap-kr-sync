@@ -19,9 +19,7 @@ import { formatDateTime } from '@/utils/format-date'
 import jobService from '@/services/job.service'
 import { useAuthStore } from '@/stores/auth.store'
 import { useNotificationStore } from '@/stores/notification.store'
-import { restartPlan } from '@/utils/restart-plan'
-import { RESTART_ACTIONS, canRestartType } from '@/utils/restart-actions'
-import RestartFromHereDialog from '@/components/submission/RestartFromHereDialog.vue'
+import { downstreamOf } from '@/utils/restart-plan'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import DetectionsTable from '@/components/modules/DetectionsTable.vue'
@@ -223,45 +221,57 @@ onMounted(async () => {
 
 const label = computed(() => labelFor(jobType.value))
 
-// ── Restart from here ───────────────────────────────────────────────────────
-// This page is where someone reads a result and decides it needs running again,
-// and until now there was nowhere to say so: the processes panel navigates HERE
-// for a completed module rather than offering its restart, so a finished step
-// could not be re-run from the interface at all.
+// ── Retry ───────────────────────────────────────────────────────────────────
+// Not a restart. A restart re-runs this step AND everything built on it, and
+// lives on the pipeline page where several steps can be chosen together. This is
+// the narrower thing that comes up after an external service is fixed: the
+// pipeline is stuck behind one failure, and what is wanted is to unblock it.
 //
-// It is always a restart from a point, never just "this one": the steps
-// downstream were built from this step's output, so they go too. The dialog
-// says which, and which documents come along.
-const pendingRestart = ref(null)
-const restarting = ref(false)
+// Offered only while nothing downstream has run since. That is what makes
+// running this step alone safe — nothing was built on its absence, so nothing is
+// left stale afterwards. Once a later step HAS run, retrying alone would leave
+// its result built on the failure, and the button says so rather than hiding.
+const retrying = ref(false)
 
-const canRestart = computed(() =>
-  authStore.canRestartJobs && canRestartType(jobType.value) && !viewingPastRun.value
-)
+/** Every step that depends on this one, directly or through another. */
+const downstreamTypes = computed(() => downstreamOf(steps.value, jobType.value))
 
-function askToRestart() {
-  pendingRestart.value = restartPlan(steps.value, jobType.value, labelFor)
-}
+const retryState = computed(() => {
+  if (!authStore.canRestartJobs) return { show: false }
+  const current = (jobs.value || {})[jobType.value]
+  if (current?.status !== 'failed' || viewingPastRun.value) return { show: false }
 
-async function confirmRestart() {
-  const type = pendingRestart.value?.jobType
-  if (!type) return
-  const [trigger, actionLabel] = RESTART_ACTIONS[type]
-  restarting.value = true
+  const ran = downstreamTypes.value.filter((t) => {
+    const d = (jobs.value || {})[t]
+    return d && d.status !== 'waiting'
+  })
+
+  return ran.length
+    ? {
+      show: true,
+      enabled: false,
+      reason: `${ran.map(labelFor).join(', ')} already ran after this failed, so their `
+        + 'results are built on it. Restart this step from the pipeline page, which re-runs them too.'
+    }
+    : {
+      show: true,
+      enabled: true,
+      reason: 'Run this step again. Nothing else changes — it reads the same documents '
+        + 'this round has been using.'
+    }
+})
+
+async function retry() {
+  if (!retryState.value.enabled || retrying.value) return
+  retrying.value = true
   try {
-    const result = await trigger(submissionId.value)
-    // What the SERVER said: a restart asked for while the step is already
-    // running is deliberately a no-op, and it answers "… is already running".
-    // Announcing our own cheerful "re-started" either way told a user who
-    // clicked twice that a second run had begun, and they waited for a result
-    // that was never coming.
-    notificationStore.info(result?.message || `${actionLabel} re-started`)
-    pendingRestart.value = null
+    const result = await jobService.retryJob(submissionId.value, jobType.value)
+    notificationStore.info(result?.message || 'Running again')
     await refreshJobs()
   } catch (err) {
-    notificationStore.error(err.response?.data?.error || `Could not restart ${actionLabel}`)
+    notificationStore.error(err.response?.data?.error || 'Could not retry this step')
   } finally {
-    restarting.value = false
+    retrying.value = false
   }
 }
 
@@ -681,16 +691,23 @@ const tabConflicts = computed(() => {
         </select>
       </label>
 
+      <!-- Shown only on a failure, and enabled only while nothing downstream
+           has run since. Disabled-with-a-reason rather than hidden: "why can I
+           not retry this" is the question, and hiding the control answers it
+           with silence. -->
       <button
-        v-if="canRestart"
+        v-if="retryState.show"
         type="button"
-        class="mrv-restart"
-        @click="askToRestart"
+        class="mrv-retry"
+        :class="{ 'mrv-retry-off': !retryState.enabled }"
+        :disabled="!retryState.enabled || retrying"
+        v-tooltip="retryState.reason"
+        @click="retry"
       >
-        <svg class="mrv-restart-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+        <svg class="mrv-retry-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
         </svg>
-        Restart from here
+        {{ retrying ? 'Starting…' : 'Retry' }}
       </button>
 
       <!-- The two documents every result on this page is a claim about. -->
@@ -948,13 +965,6 @@ const tabConflicts = computed(() => {
       A dedicated view for this module is not built yet — open it from the processes panel for now.
     </p>
   </div>
-
-    <RestartFromHereDialog
-      :plan="pendingRestart"
-      :busy="restarting"
-      @confirm="confirmRestart"
-      @cancel="pendingRestart = null"
-    />
 </template>
 
 <style scoped>
@@ -1163,8 +1173,8 @@ const tabConflicts = computed(() => {
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: min(60vh, 40rem); overflow: auto;
 }
 
-/* Restart, beside the title — this page is where the decision is made. */
-.mrv-restart {
+/* Retry, beside the title — the one action this page offers. */
+.mrv-retry {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -1176,6 +1186,7 @@ const tabConflicts = computed(() => {
   font-size: 0.8rem;
   font-weight: 500;
 }
-.mrv-restart:hover { background: #f9fafb; border-color: #9ca3af; }
-.mrv-restart-icon { width: 0.9rem; height: 0.9rem; }
+.mrv-retry:hover:not(:disabled) { background: #f9fafb; border-color: #9ca3af; }
+.mrv-retry-icon { width: 0.9rem; height: 0.9rem; }
+.mrv-retry-off, .mrv-retry:disabled { opacity: 0.55; cursor: not-allowed; }
 </style>

@@ -31,6 +31,23 @@ export default {
     return response.data
   },
 
+  /**
+   * Run a failed step again, and change nothing else.
+   *
+   * The narrow sibling of `restartProcesses`, for a pipeline stuck behind one
+   * failure after the service it needed came back. The server refuses it once
+   * anything downstream has run since — retrying alone would leave those results
+   * built on the failure.
+   *
+   * @param {string} submissionId
+   * @param {string} jobType
+   * @returns {Promise<{message: string, jobType: string, status: string}>}
+   */
+  async retryJob(submissionId, jobType) {
+    const response = await api.post(`/submissions/${submissionId}/jobs/${jobType}/retry`)
+    return response.data
+  },
+
   async getJobs(submissionId, round = null) {
     const params = round ? { round } : {}
     const response = await api.get(`/submissions/${submissionId}/jobs`, { params })

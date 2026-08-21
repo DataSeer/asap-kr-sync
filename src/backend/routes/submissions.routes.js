@@ -500,6 +500,16 @@ router.post('/:id/processes/run',
   jobsController.runProcesses
 );
 
+// POST /api/submissions/:id/jobs/:jobType/retry - Run a failed step again and
+// change nothing else. Behind the LM budget like the restarts: it starts real
+// model work, even though it starts only one step's worth.
+router.post('/:id/jobs/:jobType/retry',
+  canAccessSubmission,
+  lmApiLimiter,
+  lmApiDailyLimiter,
+  jobsController.retryJob
+);
+
 // POST /api/submissions/:id/processes/restart - Re-run a chosen set of steps as
 // ONE restart. Behind the LM budget like `run`: it starts real model work, and
 // a selection of five detectors is five detectors' worth of it.

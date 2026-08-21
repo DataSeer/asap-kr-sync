@@ -343,14 +343,56 @@ graph, so it is readable and testable on its own; `RestartFromHereDialog.vue`
 renders it. Never a native `confirm()`: this app has none, and a native dialog
 cannot show a list.
 
-**The button appears in three places**, all driving the same dialog: a module's
-own results page (where someone reads a result and decides it needs running
-again), every card on the pipeline page (the map is where you see a failed step
-in context), and — no longer — the processes panel, whose modal is gone.
+**Restarts live on the pipeline page**, and only there. That is where the whole
+graph is visible, where several steps can be picked at once, and where the
+consequences of a restart are consequences you can see.
 
 On the pipeline page the card is itself a link, so the button's click is both
 stopped AND prevented: without both, restarting a step also navigates away from
 the page you wanted to watch it from.
+
+#### Retry — the narrow one
+
+A module's own page offers **Retry**, not a restart. Different thing, different
+rule:
+
+| | Restart from here | Retry |
+|---|---|---|
+| Runs | the step **and everything built on it** | that step, alone |
+| Releases input freezes | yes, when every reader re-runs | **never** |
+| Runs `onManualRestart` | yes | no |
+| Available when | any time | the step **failed** and nothing downstream has run since |
+| Lives on | the pipeline page | the module's page |
+
+It is for the case that comes up after an external service is fixed, or a patch
+is deployed: the pipeline is stuck behind one failure and what is wanted is to
+unblock it, not to re-run the round.
+
+**The condition is not "did it fail" but "has anything consumed the failure
+yet".** While everything downstream is still `waiting`, nothing was built on its
+absence, so running it alone leaves nothing stale — which is exactly the state a
+blocked pipeline is in when `markdown_convert` fails and every detector sits
+behind the `markdown_ready` gate. Once a later step HAS run, retrying alone
+would leave that step's result built on the failure while this one's is not;
+the button is **disabled with the reason**, naming the step that ran and pointing
+at the restart that would work. Hiding it would answer "why can I not retry
+this?" with silence.
+
+Three things a retry deliberately does not do, each of which would make it a
+restart wearing a smaller name:
+
+- **release the input freezes** — the round is mid-flight and the steps that did
+  run read the frozen documents. A retry taking fresh ones would split the round,
+  which is the failure the freeze exists to prevent, arriving through the repair
+  path;
+- **cascade** — there is nothing downstream to reset. That is the precondition,
+  checked rather than assumed;
+- **run `onManualRestart`** — a retry of DAS extraction must not clear a
+  statement the author typed while the service was down.
+
+`POST /api/submissions/:id/jobs/:jobType/retry`. `retryCount` is reset with the
+row: those attempts belonged to the run that failed, and left in place the panel
+would show a fresh run already on its third try.
 
 #### Restarting several steps at once
 

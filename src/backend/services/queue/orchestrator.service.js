@@ -975,6 +975,110 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
  * @param {string} userId
  * @returns {Promise<object>} the step's SubmissionJob row
  */
+/** Why a retry was refused, in words the UI can show as-is. */
+const RETRY_REFUSALS = {
+  never_run: 'This step has not run yet, so there is nothing to retry.',
+  not_failed: 'Only a step that failed can be retried.',
+  downstream_already_ran:
+    'Later steps have already run since this one failed, so retrying it alone '
+    + 'would leave their results built on the failure. Restart it from the '
+    + 'pipeline page instead, which re-runs them too.'
+};
+
+/**
+ * Is this failure safe to retry on its own?
+ *
+ * The condition is not "did it fail" but "has anything consumed the failure
+ * yet". A step that failed while everything downstream is still `waiting` can be
+ * run again alone: nothing was built on its absence, so nothing is left stale
+ * afterwards. That is the case a blocked pipeline is in — `markdown_convert`
+ * fails and every detector sits behind the `markdown_ready` gate, waiting for
+ * text that never arrived.
+ *
+ * Once a downstream step HAS run, retrying alone would leave its results built
+ * on the failure while this step's are not. That needs a restart, which resets
+ * them too — a different, more expensive thing, and the caller is told to use it.
+ *
+ * A step with no downstream is trivially safe: there is nothing to leave stale.
+ *
+ * @param {string} jobType
+ * @param {Map<string, object>} jobsByType
+ * @returns {{retryable: boolean, reason: string|null}}
+ */
+function describeRetry(jobType, jobsByType) {
+  const job = jobsByType.get(jobType);
+  if (!job) return { retryable: false, reason: 'never_run' };
+  if (job.status !== 'failed') return { retryable: false, reason: 'not_failed' };
+
+  const consumed = [...computeDownstreamSet(jobType)].filter((t) => {
+    const d = jobsByType.get(t);
+    // `waiting` is the only state that means "has not run since". `cancelled`
+    // counts as run-and-stopped: un-cancelling it is a restart's job, not a
+    // retry's, or the retry would leave a cancelled step behind a running one.
+    return d && d.status !== 'waiting';
+  });
+
+  if (consumed.length) return { retryable: false, reason: 'downstream_already_ran' };
+  return { retryable: true, reason: null };
+}
+
+/**
+ * Run a failed step again, and change nothing else.
+ *
+ * The narrow sibling of `restartSteps`, for the case that comes up after an
+ * external service has been fixed: the pipeline is stuck behind one failure, and
+ * what is wanted is to unblock it, not to re-run the round.
+ *
+ * Three things it deliberately does NOT do:
+ *
+ *   - **release the input freezes.** The round is mid-flight and the steps that
+ *     did run read the frozen documents. A retry that took fresh ones would
+ *     split the round — the failure this whole freeze mechanism exists to
+ *     prevent, arriving through the repair path.
+ *   - **cascade.** There is nothing downstream to reset; that is the
+ *     precondition, checked rather than assumed.
+ *   - **run `onManualRestart`.** Asking for a fresh reading is what a restart
+ *     means. A retry of DAS extraction must not clear a statement the author
+ *     typed while the service was down.
+ *
+ * @param {string} submissionId
+ * @param {string} jobType
+ * @param {number} round
+ * @param {string} [userId] - credited with the run
+ * @returns {Promise<object>} the job row
+ */
+async function retryStep(submissionId, jobType, round, userId) {
+  const step = PIPELINE.find((s) => s.jobType === jobType);
+  if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
+
+  const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
+  const jobsByType = new Map(allJobs.map((j) => [j.jobType, j]));
+  const { retryable, reason } = describeRetry(jobType, jobsByType);
+
+  if (!retryable) {
+    throw new ValidationError(RETRY_REFUSALS[reason] || 'This step cannot be retried.');
+  }
+
+  const job = jobsByType.get(jobType);
+  job.status = 'waiting';
+  job.pgBossJobId = null;
+  job.result = null;
+  job.errorMessage = null;
+  // The attempts belong to the run that failed. Left in place, the panel would
+  // show a fresh run already on its third try.
+  job.retryCount = 0;
+  if (userId) job.triggeredByUserId = userId;
+  await job.save();
+
+  const submission = await Submission.findByPk(submissionId, {
+    attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
+  });
+  await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, 'manual');
+
+  logger.info('Retried a blocked step', { submissionId, jobType, round, status: job.status, userId });
+  return job;
+}
+
 /**
  * Restart several steps as ONE restart.
  *
@@ -1126,6 +1230,8 @@ module.exports = {
   runAllProcesses,
   requeueStep,
   restartSteps,
+  retryStep,
+  describeRetry,
   failStrandedProcessingJobs,
   checkAndAdvance,
   reconcileSubmission,

@@ -638,6 +638,170 @@ test('an empty selection is refused', async (t) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// retryStep — unblocking one failure, changing nothing else
+//
+// After an external service is fixed, what is wanted is to unblock the pipeline,
+// not to re-run the round. The condition that makes that legitimate is not "did
+// it fail" but "has anything consumed the failure yet": while everything
+// downstream is still `waiting`, nothing was built on its absence, so running it
+// alone leaves nothing stale.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a failure nothing has run past is retryable', async (t) => {
+  // Markdown Convert failed and every detector is behind the markdown gate.
+  // This is the case a blocked pipeline is in.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  const { retryable } = orchestrator.describeRetry(JOB_TYPES.MARKDOWN_CONVERT, rows);
+
+  assert.equal(retryable, true);
+});
+
+test('a failure something HAS run past is not', async (t) => {
+  // Retrying alone would leave grounding's result built on the failure while
+  // this step's is not. That needs a restart, which resets it too.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SOFTWARE_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.KRT_GROUNDING).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  const { retryable, reason } = orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows);
+
+  assert.equal(retryable, false);
+  assert.equal(reason, 'downstream_already_ran');
+});
+
+test('a step with no downstream is retryable — there is nothing to leave stale', async (t) => {
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SUGGESTION_GENERATION).status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SUGGESTION_GENERATION, rows).retryable, true);
+});
+
+test('a step that did not fail is not retryable', async (t) => {
+  // Including a `complete` one: "run it again" is a restart, and it is offered
+  // where restarts are.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SOFTWARE_DETECTION).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows).reason, 'not_failed');
+});
+
+test('a cancelled downstream step blocks a retry', async (t) => {
+  // Cancelled is run-and-stopped, not never-run. Retrying past it would leave a
+  // cancelled step sitting behind a running one, which nothing revisits.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SOFTWARE_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.KRT_GROUNDING).status = 'cancelled';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows).retryable, false);
+});
+
+test('retrying resets the row and runs it', async (t) => {
+  const rows = pipelineRows();
+  const job = rows.get(JOB_TYPES.MARKDOWN_CONVERT);
+  Object.assign(job, {
+    status: 'failed',
+    errorMessage: 'Converter 503',
+    result: { status: { detected: false } },
+    retryCount: 3,
+    pgBossJobId: 'old-job'
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-3');
+
+  assert.equal(job.status, 'queued');
+  assert.equal(job.errorMessage, null, 'the previous failure must not show against the new run');
+  assert.equal(job.result, null);
+  assert.equal(job.retryCount, 0, 'the attempts belonged to the run that failed');
+  assert.equal(job.triggeredByUserId, 'user-3');
+});
+
+test('a retry does NOT release the round\'s input freezes', async (t) => {
+  // The round is mid-flight and the steps that did run read the frozen
+  // documents. A retry taking fresh ones would split the round — the failure the
+  // freeze exists to prevent, arriving through the repair path.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+  const released = [];
+  t.mock.method(require('./input-freeze.service'), 'releaseForRestart', async (...args) => {
+    released.push(args);
+    return [];
+  });
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-3');
+
+  assert.deepEqual(released, []);
+});
+
+test('a retry does not reset anything downstream', async (t) => {
+  // There is nothing to reset — that is the precondition — and touching a
+  // downstream row would make a retry a restart wearing a smaller name.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).status = 'failed';
+  rows.get(JOB_TYPES.ORCID_EXTRACTION).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-3');
+
+  assert.equal(rows.get(JOB_TYPES.ORCID_EXTRACTION).status, 'complete',
+    'an unrelated finished step is left alone');
+});
+
+test('retrying DAS extraction keeps the statement', async (t) => {
+  // `onManualRestart` clears it, because asking for a fresh reading is what a
+  // RESTART means. A retry after the service came back must not throw away a
+  // statement the author typed while it was down.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'failed';
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'All data are in the supplement.',
+    dasConfirmedAt: new Date('2026-08-20T09:00:00Z'),
+    save: async () => {}
+  };
+  mockDb(t, rows, submission);
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.DAS_EXTRACTION, 1, 'user-3');
+
+  assert.equal(submission.dataAvailabilityStatement, 'All data are in the supplement.');
+  assert.ok(submission.dasConfirmedAt, 'and its confirmation');
+});
+
+test('a refused retry says what to do instead', async (t) => {
+  // "Cannot retry" with no way forward is a dead end; the restart that WOULD
+  // work is on another page and the user has to be told which.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SOFTWARE_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.KRT_GROUNDING).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await assert.rejects(
+    () => orchestrator.retryStep('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-3'),
+    /Restart it from the pipeline page/
+  );
+  assert.equal(rows.get(JOB_TYPES.SOFTWARE_DETECTION).status, 'failed', 'and changes nothing');
+});
+
+test('an unknown step is refused', async (t) => {
+  const rows = pipelineRows();
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await assert.rejects(
+    () => orchestrator.retryStep('sub-1', 'not_a_step', 1, 'user-3'),
+    /Unknown pipeline step/
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // cascadeRestart — invalidating what a re-run makes stale
 // ─────────────────────────────────────────────────────────────────────────────
 
