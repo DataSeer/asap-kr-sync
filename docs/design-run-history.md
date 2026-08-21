@@ -417,9 +417,19 @@ worth stating plainly:
 > cannot see it afterwards, so they cannot undo it themselves — they must ask an
 > admin.
 
-That is defensible, but it makes soft delete feel final to the person doing it.
-It therefore needs a **confirmation step that says so** ("only an administrator
-can undo this"), or users will treat it as reversible and be surprised.
+That is defensible, and the UI resolves it by **matching the vocabulary to what
+each role can actually do**:
+
+- **A non-admin sees one action: "Delete."** Soft delete is simply what delete
+  *means* for them, so there is no second option to explain and no jargon to
+  learn. The confirmation is honest about the consequence:
+  *"Confirm you want to delete this submission (only an admin can revert it)."*
+- **An admin sees two buttons**, each with its own message explaining what that
+  kind of delete does and does not remove.
+
+This is better than exposing both to everyone and greying one out: a user is
+never shown a capability they do not have, and the person who *can* erase data
+is the only one asked to choose.
 
 Everywhere else — lists, counts, filters, the reconciler, the pipeline — a
 soft-deleted submission is simply absent.
