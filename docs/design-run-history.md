@@ -378,6 +378,61 @@ it there, the chain is complete and answerable in one query:
 
 That sentence is the point of the whole design.
 
+### 7.4 Deletion — soft by default, hard by an administrator
+
+A record the subject can erase is a weak record, so deletion splits in two:
+
+| | Who | Effect |
+|---|---|---|
+| **Soft delete** | anyone who can access the submission | `submissions.deleted = true`. Nothing is removed: rows, runs, change logs and S3 objects all stay. Reversible. |
+| **Hard delete** | **administrator only** | today's behaviour — cascade the DB rows, clear the S3 prefix, cancel queued work. Irreversible. |
+
+Soft delete is the everyday action; hard delete is the exception, and the only
+one that frees storage.
+
+**Four things this has to get right.**
+
+1. **"Anyone" means anyone who can *access* the submission — never merely anyone
+   signed in.** Note this is a **widening** of today's rule: deletion is
+   currently `requireRole(ADMIN, DS_ANNOTATOR)`, so an author cannot delete even
+   their own submission. Soft delete moves to `canAccessSubmission`, which gives
+   an author their own and a PM their team's. Deliberate, and worth being
+   explicit about because access-control changes should never be a side effect.
+
+2. **`deleted` is not the existing `hidden`.** `user_hidden_submissions` is a
+   *per-user* preference, and the dashboard already offers Visible / Hidden /
+   All. Deleted is a *submission-level* state, and the two must stay distinct in
+   both the data and the wording — a filter that blurs them would let a user
+   believe they had removed something they had only hidden from themselves.
+
+3. **A soft delete must still stop the work.** Queued and processing jobs are
+   cancelled exactly as hard delete does today. Otherwise workers keep spending
+   real money on a submission the user believes is gone.
+
+4. **The deletion itself is audited — especially the hard one.** If an
+   administrator erases a submission, the record of that erasure must survive
+   the erasure. That cannot live in `change_logs`, whose `submission_id` is
+   `ON DELETE CASCADE` and which the hard delete therefore destroys. It needs a
+   retained table holding plain values rather than foreign keys:
+
+   ```
+   submission_deletions(
+     id, submission_id (value, not FK), manuscript_id, title,
+     kind ('soft' | 'hard' | 'restore'),
+     performed_by_user_id, performed_at, reason
+   )
+   ```
+
+   Without this, the most destructive action in the system is the least
+   accounted for — which is the opposite of what §1.2 asks for.
+
+**Restore** is the inverse of soft delete, available to the same people, and
+recorded as its own event.
+
+**Everywhere else** — lists, counts, filters, the pipeline, the reconciler — a
+soft-deleted submission is absent by default. It stays reachable by direct link
+for staff, so an audit can still read it.
+
 ---
 
 ## 8. API
@@ -410,7 +465,11 @@ One migration:
    and the jobs list need no aggregate query;
 4. add `files.uploaded_by_user_id` and `change_logs.file_id` (§7.2), both
    nullable, both backfilling to NULL — file provenance starts now rather than
-   being invented retrospectively.
+   being invented retrospectively;
+5. add `submissions.deleted` (boolean, default false, indexed) and the
+   `submission_deletions` ledger (§7.4). Existing submissions backfill to
+   `false`, and the ledger starts empty — a deletion that happened before the
+   ledger existed cannot be invented.
 
 History therefore starts complete rather than empty, with every existing run
 presented as run 1.
@@ -476,7 +535,10 @@ nothing (§6.1).
 | A history write failing a good run | wrapped; logs and continues (§4.3) |
 | `run_number` duplication under the advance race | allocation inside the atomic claim + UNIQUE backstop (§4.1) |
 | Storage growth | accepted (S3 + DB can grow); payload/record split leaves pruning open (§3.4) |
-| Orphaned artefacts | submission delete already removes the whole S3 prefix |
+| Orphaned artefacts | hard delete already removes the whole S3 prefix; soft delete keeps it deliberately |
+| Soft delete mistaken for the existing per-user "hidden" | distinct wording and a distinct filter value (§7.4) |
+| A soft-deleted submission still consuming LM budget | its queued work is cancelled, exactly as hard delete does (§7.4) |
+| A hard delete leaving no trace of itself | the `submission_deletions` ledger holds plain values, not foreign keys, so it survives the cascade (§7.4) |
 
 ---
 
@@ -494,6 +556,11 @@ nothing (§6.1).
    display only, the data is already captured), the resource-type vocabulary
    (§6.2), and the "as at" line — plus S3 keyed by run number.
 
+4. **Deletion policy.** `submissions.deleted`, the role split, the
+   `submission_deletions` ledger, and the list/filter changes (§7.4).
+   Independent of 1–3 and shippable at any point — but it only *means* anything
+   once there is history worth preserving, which is why it sits after them.
+
 Each phase is independently shippable, and phase 1 carries the risk (write
 paths); 2 and 3 are additive reads.
 
@@ -508,11 +575,10 @@ paths); 2 and 3 are additive reads.
    work in ticket 0046.
 3. **Round-level view.** "Show me every run of round 1, across all steps" is a
    natural pipeline-page feature once the data exists.
-4. **Does deleting a submission erase its audit trail?** Today it does:
-   `submission_jobs` and `change_logs` are `ON DELETE CASCADE`, and the delete
-   endpoint clears the whole S3 prefix. If the record exists for accountability,
-   a record the subject can delete is a weak one. Options: soft-delete the
-   submission, or copy the ledger to a retained table on delete. Worth a
-   decision — it is a policy question, not a technical one.
-   (User *deletion* is already safe: accounts are anonymised, not removed, so
+4. ~~**Does deleting a submission erase its audit trail?**~~ **Decided
+   2026-08-21** — soft delete by default (anyone with access, nothing removed),
+   hard delete by an administrator only. See §7.4. The remaining sub-question is
+   whether a hard delete should be blocked, rather than merely recorded, while a
+   submission is under review; left open.
+   (User *deletion* was already safe: accounts are anonymised, not removed, so
    attribution survives as "Deleted user".)
