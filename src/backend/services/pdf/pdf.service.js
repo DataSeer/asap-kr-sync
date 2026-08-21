@@ -298,7 +298,7 @@ async function queueAnalysis(submissionId, round = 1, userId = null) {
   // job that is still `waiting` and this one was `complete`.
   //
   // Every other queue function already cascaded; this was the one that did not.
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PDF_ANALYSIS, round);
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PDF_ANALYSIS, round, userId);
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.PDF_ANALYSIS, round, userId);
 
   logger.info('PDF analysis re-queued', {
@@ -641,7 +641,7 @@ async function queueDASExtraction(submissionId, round = 1, userId = null) {
   const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_EXTRACTION, round);
   const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
 
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.DAS_EXTRACTION, round);
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.DAS_EXTRACTION, round, userId);
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.DAS_EXTRACTION, round, userId);
 
   logger.info('DAS extraction re-queued', {

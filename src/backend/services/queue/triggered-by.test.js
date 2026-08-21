@@ -20,7 +20,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { SubmissionJob, Submission } = require('../../models');
+const { SubmissionJob, Submission, sequelize } = require('../../models');
 const orchestrator = require('./orchestrator.service');
 const jobQueue = require('./job-queue.service');
 const { JOB_TYPES } = require('../../config/constants');
@@ -71,6 +71,11 @@ function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAva
   });
   t.mock.method(Submission, 'findByPk', async () => submission);
   t.mock.method(jobQueue, 'addJob', async () => 'pgboss-1');
+  // cascadeRestart reads each downstream row through findOne, inside a real
+  // transaction with a row lock. Both have to be answered or the call reaches
+  // Postgres and the test fails on a hostname rather than on behaviour.
+  t.mock.method(SubmissionJob, 'findOne', async ({ where }) => rows.get(where.jobType) || null);
+  t.mock.method(sequelize, 'transaction', async (fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }));
   return rows;
 }
 
@@ -131,8 +136,58 @@ test('re-running one step credits the caller, not the round starter', async (t) 
   await orchestrator.requeueStep('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, CURATOR);
 
   assert.equal(rows.get(JOB_TYPES.MATERIALS_DETECTION).triggeredByUserId, CURATOR);
+  assert.equal(rows.get(JOB_TYPES.SOFTWARE_DETECTION).triggeredByUserId, STARTER,
+    'a step that is neither re-run nor downstream keeps its original credit');
+});
+
+test('a cascade is credited to whoever set it off', async (t) => {
+  // Asking for one step to re-run is asking for everything downstream of it to
+  // re-run too. Those are real model calls, really paid for, and the person who
+  // caused them is the one who clicked — not whoever happened to start the
+  // round hours earlier.
+  const rows = pipelineRows();
+  for (const r of rows.values()) { r.triggeredByUserId = STARTER; r.status = 'complete'; }
+  mockDb(t, rows);
+
+  const reset = await orchestrator.cascadeRestart('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, CURATOR);
+
+  assert.ok(reset.includes(JOB_TYPES.PDF_ANALYSIS), 'the consolidator is downstream of a detector');
+  for (const jobType of reset) {
+    assert.equal(rows.get(jobType).triggeredByUserId, CURATOR,
+      `${jobType} was re-run because of the curator, so it is credited to them`);
+  }
+  assert.equal(rows.get(JOB_TYPES.SOFTWARE_DETECTION).triggeredByUserId, STARTER,
+    'a sibling detector is not downstream and must not be re-credited');
+});
+
+test('a cascade with no user attached re-credits nobody', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) { r.triggeredByUserId = STARTER; r.status = 'complete'; }
+  mockDb(t, rows);
+
+  await orchestrator.cascadeRestart('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1);
+
+  assert.ok([...rows.values()].every((r) => r.triggeredByUserId === STARTER),
+    'the same no-overwrite rule as every other write path');
+});
+
+test('a cascade does not credit a step it left alone', async (t) => {
+  // In-flight and cancelled rows are deliberately skipped by the reset. A row
+  // this cascade did not touch must not be attributed to it either — otherwise
+  // the credit says someone re-ran a result that is in fact the older run's.
+  const rows = pipelineRows();
+  for (const r of rows.values()) { r.triggeredByUserId = STARTER; r.status = 'complete'; }
+  rows.get(JOB_TYPES.PDF_ANALYSIS).status = 'processing';
+  rows.get(JOB_TYPES.SUGGESTION_GENERATION).status = 'cancelled';
+  mockDb(t, rows);
+
+  const reset = await orchestrator.cascadeRestart('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, CURATOR);
+
+  assert.ok(!reset.includes(JOB_TYPES.PDF_ANALYSIS));
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).triggeredByUserId, STARTER,
-    'a step nobody re-ran keeps its original credit');
+    'a running step keeps its own run\'s credit');
+  assert.equal(rows.get(JOB_TYPES.SUGGESTION_GENERATION).triggeredByUserId, STARTER,
+    'a cancelled step is not revived, so it is not re-credited');
 });
 
 test('an automatic advance keeps the credit it already had', async (t) => {

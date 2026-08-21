@@ -121,7 +121,7 @@ async function queueProtocolsDetection(submissionId, round = 1, userId = null) {
   const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round);
   const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
 
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round);
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round, userId);
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round, userId);
 
   logger.info('Protocols detection re-queued', {

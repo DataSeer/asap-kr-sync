@@ -755,9 +755,14 @@ function computeDownstreamSet(rootJobType) {
  * @param {string} submissionId
  * @param {string} restartedJobType - The jobType being re-run.
  * @param {number} round
+ * @param {string} [userId] - Who caused the cascade. Credited on every row it
+ *   resets: asking for one step to re-run is asking for everything downstream
+ *   of it to re-run too, and that is real work — and real spend — that this
+ *   person set going. Omitted for an internal caller, in which case each row
+ *   keeps the credit it already had.
  * @returns {Promise<string[]>} List of jobTypes that were reset.
  */
-async function cascadeRestart(submissionId, restartedJobType, round) {
+async function cascadeRestart(submissionId, restartedJobType, round, userId) {
   const downstream = computeDownstreamSet(restartedJobType);
   if (downstream.size === 0) return [];
 
@@ -792,6 +797,7 @@ async function cascadeRestart(submissionId, restartedJobType, round) {
       // re-run had already reset it.
       job.result = null;
       job.errorMessage = null;
+      if (userId) job.triggeredByUserId = userId;
       await job.save({ transaction: t });
       reset.push(jobType);
     }

@@ -260,8 +260,17 @@ retrying would restart the very external work the user asked to stop.
 - After any job completes or fails, the orchestrator checks dependent jobs
 - **Every step records who asked for it** in `triggered_by_user_id`, written by
   `runAllProcesses` (whoever started the round), `requeueStep` (whoever re-ran
-  that one step), and `advanceJob` (whoever released a step parked on
-  `pending_input`). The rule that makes the column trustworthy is that an
+  that one step), `advanceJob` (whoever released a step parked on
+  `pending_input`), and `cascadeRestart` (**every step downstream of a re-run**).
+
+  That last one is deliberate: asking for one step to re-run is asking for
+  everything below it to re-run too, and those are real model calls really paid
+  for. Re-running `identifier_detection` re-runs `krt_grounding`,
+  `pdf_analysis` and `suggestion_generation` — all four are credited to the
+  person who clicked. A step the cascade *skips* (in-flight, or cancelled) is
+  not re-credited, because its stored result is still the older run's.
+
+  The rule that makes the column trustworthy is that an
   advance carrying **no** user never overwrites it: `checkAndAdvance` fires on
   every worker completion with no user attached, so a plain assignment would
   blank the attribution seconds after the pipeline recorded it and leave every

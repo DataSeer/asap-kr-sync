@@ -48,7 +48,7 @@ async function queueMarkdownConvert(submissionId, round = 1, userId = null) {
   const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round);
   const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
 
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round);
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round, userId);
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round, userId);
 
   logger.info('Markdown conversion re-queued', {

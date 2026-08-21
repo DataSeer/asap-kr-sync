@@ -264,7 +264,7 @@ async function queueOrcidExtraction(submissionId, round = 1, userId = null) {
   const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.ORCID_EXTRACTION, round);
   const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
 
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.ORCID_EXTRACTION, round);
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.ORCID_EXTRACTION, round, userId);
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.ORCID_EXTRACTION, round, userId);
 
   logger.info('ORCID extraction re-queued', {

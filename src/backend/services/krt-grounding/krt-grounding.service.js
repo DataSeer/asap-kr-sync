@@ -121,7 +121,7 @@ async function queueKrtGrounding(submissionId, round = 1, userId = null) {
   const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.KRT_GROUNDING, round);
   const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
 
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.KRT_GROUNDING, round);
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.KRT_GROUNDING, round, userId);
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.KRT_GROUNDING, round, userId);
 
   logger.info('KRT grounding re-queued', {
