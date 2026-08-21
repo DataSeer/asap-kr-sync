@@ -524,7 +524,7 @@ const responseUrl = (name) =>
           when the two disagree, the frozen record is what happened.
         </p>
       </div>
-      <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
+      <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-full">
         <h3>Module outputs</h3>
         <p v-if="artefactsNotOwn" class="mt-note mt-note-warn">
           This run's stored files were not kept separately from later runs of the same
@@ -607,11 +607,29 @@ const responseUrl = (name) =>
   align-items: start;
 }
 .mt-block { min-width: 0; }
-/* Configuration and Statistics: short label/value lists. */
+/* THE ROW MUST ADD UP. Three narrow blocks plus Module inputs is
+   1 + 1 + 1 + 3 = 6, exactly the track count above.
+   
+   It stopped adding up when Metadata was added as a fourth short list and the
+   spans were left alone: 1+1+1+2 = 5 left an empty track on the right, and
+   Module outputs — 2 wide — could not fit in the 1 that remained, so it wrapped
+   to a row of its own anyway. The result read as a ragged half-empty row rather
+   than as a layout.
+   
+   `module-technical-grid.test.js` re-does this arithmetic, because the next
+   block anyone adds will break it the same way and it is invisible until
+   someone opens the section on a wide screen.
+   
+   Metadata, Configuration and Statistics: short label/value lists. */
 .mt-narrow { grid-column: span 1; }
-/* Module inputs and outputs: lines of links with an explanatory note under
-   them, which is what was wrapping while the two lists sat half empty. */
-.mt-wide { grid-column: span 2; }
+/* Module inputs: lines of links with an explanatory note under them, which is
+   what was wrapping while the short lists sat half empty. Takes what the three
+   narrow blocks leave. */
+.mt-wide { grid-column: span 3; }
+/* Module outputs: its own row. It is the record of what the run produced rather
+   than a column of the run's description, and giving it the full width means
+   the row above always adds up on its own. */
+.mt-full { grid-column: 1 / -1; }
 
 /* Below the six-column width each track would be narrower than a file name, so
    drop to two: the short lists side by side, each wide block on its own row. */
