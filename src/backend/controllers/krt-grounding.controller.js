@@ -8,6 +8,7 @@
 
 const krtGroundingService = require('../services/krt-grounding/krt-grounding.service');
 const logger = require('../utils/logger');
+const { describeQueueOutcome } = require('../utils/queue-message');
 
 /**
  * Get the grounding outcomes for a submission.
@@ -38,7 +39,7 @@ async function triggerGrounding(req, res, next) {
     );
     logger.info('KRT grounding queued', { submissionId: submission.id, status: job.status });
     res.json({
-      message: alreadyInFlight ? 'KRT grounding is already running' : 'KRT grounding queued',
+      message: describeQueueOutcome('KRT grounding', job, alreadyInFlight),
       status: job.status
     });
   } catch (error) {

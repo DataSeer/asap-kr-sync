@@ -9,6 +9,8 @@ import submissionService from '@/services/submission.service'
 import SubmissionCard from '@/components/submission/SubmissionCard.vue'
 import DeleteConfirmModal from '@/components/submission/DeleteConfirmModal.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 
 const router = useRouter()
 const submissionStore = useSubmissionStore()
@@ -216,6 +218,18 @@ async function fetchFilterOptions() {
   }
 }
 
+/**
+ * A failed list must not read as an empty one. The store rethrows, so this
+ * rejected out of the mounted hook and out of every filter watcher, leaving
+ * `submissions` at [] behind the empty state: "No submissions found. Get
+ * started by creating a new submission." — told to a user whose work is all
+ * still there and whose session or server had simply failed.
+ *
+ * Handled here rather than at each call site because there are nine of them
+ * (mount, five filter watchers, pagination, delete, restore).
+ */
+const loadError = ref(null)
+
 async function fetchSubmissions() {
   const params = {
     page: currentPage.value,
@@ -238,7 +252,12 @@ async function fetchSubmissions() {
     params.title = titleFilter.value.trim()
   }
 
-  await submissionStore.fetchSubmissions(params)
+  try {
+    loadError.value = null
+    await submissionStore.fetchSubmissions(params)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+  }
 }
 
 // Watch filters and refetch
@@ -650,6 +669,15 @@ const activeFilterCount = computed(() => {
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
       </svg>
     </div>
+
+    <LoadError
+      v-else-if="loadError"
+      title="Your submissions could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      note="This is not an empty list — the page never received one."
+      @retry="fetchSubmissions"
+    />
 
     <!-- Empty state -->
     <div v-else-if="submissions.length === 0" class="card text-center py-12">

@@ -14,9 +14,41 @@ const logger = require('../utils/logger');
  * List jobs with staleness annotations.
  * GET /api/admin/jobs
  */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Reject a filter value the database cannot be asked about.
+ *
+ * `status` is a Postgres enum and `submissionId` is a uuid, so a typo in the
+ * admin URL reached the driver and came back as
+ * `invalid input value for enum enum_submission_jobs_status: "nope"` — a 500,
+ * with the database's error text, for what is plainly a bad request.
+ *
+ * @throws {ValidationError} listing the values that would have worked
+ */
+function assertAllowed(name, value, allowed) {
+  if (value === undefined) return;
+  if (!allowed.includes(value)) {
+    throw new ValidationError(
+      `Unknown ${name}: "${value}". Expected one of: ${allowed.join(', ')}`
+    );
+  }
+}
+
 async function listJobs(req, res, next) {
   try {
     const { status, jobType, submissionId, staleReason, limit, offset } = req.query;
+
+    assertAllowed('status', status || undefined, jobAdminService.JOB_STATUSES);
+    assertAllowed('jobType', jobType || undefined, Object.values(jobAdminService.JOB_TYPES));
+    // Keys, not values: STALE_REASONS maps a token to the sentence the UI
+    // shows. 'any' means "stale for whatever reason" and is not in the map.
+    assertAllowed('staleReason', staleReason || undefined,
+      ['any', ...Object.keys(jobAdminService.STALE_REASONS)]);
+    if (submissionId && !UUID_RE.test(submissionId)) {
+      throw new ValidationError(`Not a submission id: "${submissionId}"`);
+    }
+
     const result = await jobAdminService.listJobs({
       status: status || undefined,
       jobType: jobType || undefined,

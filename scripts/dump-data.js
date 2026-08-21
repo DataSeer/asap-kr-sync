@@ -13,6 +13,13 @@
  *   <out>/s3/<key…>                 every stored object, path mirroring its key
  *   <out>/DUMP.json                 what was written, and when
  *
+ * EVERY row means every row: `users` carries bcrypt password hashes and
+ * `refresh_tokens` carries live session tokens. A dump is therefore as
+ * sensitive as the database it came from — anyone holding it holds every
+ * session. It is written 0700/0600 and the script says so on the way out;
+ * keep it off shared storage and delete it when the archive is no longer
+ * needed.
+ *
  * Usage:
  *   node scripts/dump-data.js --out DIR
  *   node scripts/dump-data.js --out DIR --dry-run
@@ -22,6 +29,13 @@
 
 const fs = require('fs');
 const path = require('path');
+
+/** Tables whose contents are credentials, called out in the summary. */
+const SENSITIVE_TABLES = ['users', 'refresh_tokens'];
+
+/** Owner-only, for a file nobody else has any business reading. */
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
 
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
@@ -62,16 +76,25 @@ async function tables() {
 
 async function dumpDatabase() {
   const dir = path.join(OUT, 'database');
-  if (!DRY_RUN) fs.mkdirSync(dir, { recursive: true });
+  if (!DRY_RUN) {
+    fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+    // mkdir's mode is masked by the process umask, and the directory may
+    // already exist from an earlier run. chmod is not.
+    fs.chmodSync(OUT, DIR_MODE);
+    fs.chmodSync(dir, DIR_MODE);
+  }
 
   const counts = {};
   for (const table of await tables()) {
     const rows = await sequelize.query(`SELECT * FROM "${table}"`, { type: QueryTypes.SELECT });
     counts[table] = rows.length;
     if (!DRY_RUN) {
-      fs.writeFileSync(path.join(dir, `${table}.json`), JSON.stringify(rows, null, 2));
+      const file = path.join(dir, `${table}.json`);
+      fs.writeFileSync(file, JSON.stringify(rows, null, 2), { mode: FILE_MODE });
+      fs.chmodSync(file, FILE_MODE);
     }
-    console.log(`  ${table.padEnd(28)} ${rows.length} row(s)`);
+    const note = SENSITIVE_TABLES.includes(table) ? '  ← credentials' : '';
+    console.log(`  ${table.padEnd(28)} ${rows.length} row(s)${note}`);
   }
   return counts;
 }
@@ -99,7 +122,10 @@ async function dumpS3() {
   });
 
   const dir = path.join(OUT, 's3');
-  if (!DRY_RUN) fs.mkdirSync(dir, { recursive: true });
+  if (!DRY_RUN) {
+    fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+    fs.chmodSync(dir, DIR_MODE);
+  }
 
   let token;
   let objects = 0;
@@ -119,7 +145,7 @@ async function dumpS3() {
         const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: obj.Key }));
         const chunks = [];
         for await (const chunk of res.Body) chunks.push(chunk);
-        fs.writeFileSync(dest, Buffer.concat(chunks));
+        fs.writeFileSync(dest, Buffer.concat(chunks), { mode: FILE_MODE });
       } catch (error) {
         // Reported and skipped: a dump that stops halfway is worse than one
         // that says which object it could not read.
@@ -147,9 +173,17 @@ async function dumpS3() {
     fs.writeFileSync(path.join(OUT, 'DUMP.json'), JSON.stringify({
       generatedAt: new Date().toISOString(),
       note: 'Raw dump. Rows as stored, plus the S3 objects. Not a restorable backup.',
+      warning: 'Contains bcrypt password hashes (users) and live session tokens '
+        + '(refresh_tokens). Treat this folder as you would the database itself.',
       database: counts,
       s3
-    }, null, 2));
+    }, null, 2), { mode: FILE_MODE });
+  }
+
+  const dumped = SENSITIVE_TABLES.filter((t) => counts[t] > 0);
+  if (dumped.length && !DRY_RUN) {
+    console.log(`\n  !  ${dumped.join(' and ')} are in this dump: password hashes and live`);
+    console.log('     session tokens. Written 0700/0600 — keep it off shared storage.');
   }
 
   console.log('\nDone. Nothing was deleted.');

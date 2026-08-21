@@ -22,11 +22,24 @@ const { SubmissionJob } = require('./index');
 
 const at = (iso) => new Date(iso);
 
-/** Rows as findAll returns them: newest first, since the query orders DESC. */
+/**
+ * Rows as findAll returns them: newest first, since the query orders DESC.
+ *
+ * `getForSubmission` queries twice — an id/type/createdAt index over the
+ * submission, then the winning ids — so the fake answers both shapes. A fake
+ * that ignored `where.id` would hand back every row to the second query and
+ * quietly re-introduce the duplicate these tests exist to pin.
+ */
 function mockFindAll(t, rows) {
   t.mock.method(SubmissionJob, 'findAll', async ({ where } = {}) => {
-    let out = rows.filter((r) => r.submissionId === where.submissionId);
-    if (where.round !== undefined) out = out.filter((r) => r.round === where.round);
+    let out = rows;
+    if (where.id !== undefined) {
+      const wanted = new Set(Array.isArray(where.id) ? where.id : [where.id]);
+      out = out.filter((r) => wanted.has(r.id));
+    } else {
+      out = out.filter((r) => r.submissionId === where.submissionId);
+      if (where.round !== undefined) out = out.filter((r) => r.round === where.round);
+    }
     return [...out].sort((a, b) => b.createdAt - a.createdAt);
   });
 }
@@ -153,6 +166,7 @@ function instance(over = {}) {
     status: 'processing', errorMessage: null, completedAt: null,
     saves: 0,
     async save() { this.saves++; return this; },
+    async reload() { return this; },   // the guards reload before checking
     ...over
   };
   r.markFailed = SubmissionJob.prototype.markFailed.bind(r);

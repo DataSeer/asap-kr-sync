@@ -18,9 +18,11 @@ import jobService from '@/services/job.service'
 import { useNotificationStore } from '@/stores/notification.store'
 import { statusToStep } from '@/utils/submission'
 
-// Optional injection — present on step 2 and step 3 (provided by KRTView /
-// PDFView's useJobPoller). Other views render the header without it, so the
-// banner stays hidden.
+// Optional injection — provided by KRTView (step 2) and PDFView (step 3), the
+// two views that poll jobs. Other views render the header without it and the
+// banner stays hidden. NOTE: it must be provided by the VIEW, not by
+// BackgroundProcesses — that component is this one's sibling, so its provide()
+// does not reach here.
 const injectedJobs = inject('submissionJobs', ref({}))
 
 const pdfAnalysisPendingInput = computed(() => {

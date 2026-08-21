@@ -22,6 +22,14 @@ const route = useRoute()
 const submissionId = computed(() => route.params.id)
 
 const jobs = inject('submissionJobs', ref({}))
+// A failed poll leaves `jobs` empty, and an empty map renders as twelve steps
+// that have "Not started" — indistinguishable from a pipeline that genuinely
+// has not run. Only shown while there is nothing to show: once a poll has
+// succeeded, the panel keeps displaying the last known state rather than
+// throwing it away over one transient failure.
+const jobsFetchError = inject('jobsFetchError', ref(null))
+const statusUnreadable = computed(() =>
+  !!jobsFetchError.value && Object.keys(jobs.value || {}).length === 0)
 
 /**
  * Is the analysis parked on the KRT step?
@@ -1156,6 +1164,11 @@ async function downloadMarkdownFile(fileId) {
     class="job-status-wrapper job-status-card"
     :class="{ 'job-status-card-blocked': blockedOnMarkdown }"
   >
+    <p v-if="statusUnreadable" class="job-status-unreadable" role="status">
+      The status of these steps could not be read — the page did not reach the
+      server. This is not a report that nothing has run.
+    </p>
+
     <!-- ETA header — always visible. The status summary pills (running /
          waiting / failed / done) sit on the right of the title row no matter
          what, so the user always sees pipeline progress even when the
@@ -1520,6 +1533,17 @@ async function downloadMarkdownFile(fileId) {
 </template>
 
 <style scoped>
+.job-status-unreadable {
+  margin: 0 0 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
 .job-status-wrapper {
   margin-top: 0.5rem;
   background: #f9fafb;

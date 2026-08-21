@@ -4,6 +4,7 @@
 
 const protocolsService = require('../services/protocols/protocols.service');
 const logger = require('../utils/logger');
+const { describeQueueOutcome } = require('../utils/queue-message');
 
 /**
  * Get protocols mentions for a submission
@@ -38,11 +39,13 @@ async function triggerDetection(req, res, next) {
 
     logger.info('Protocols detection queued', { submissionId: submission.id, status: job.status });
 
-    // Say which of the two happened. A re-run asked for while the step is in
-    // flight is deliberately a no-op; reporting it as "queued" would leave the
-    // user waiting for a second run that is never going to start.
+    // Say what actually happened — see describeQueueOutcome. There are more
+    // than two outcomes: a re-run asked for while the step is in flight is a
+    // deliberate no-op, and a step whose dependencies are not done is left
+    // waiting. Reporting either as "queued" leaves the user waiting for a run
+    // that is not going to start.
     res.json({
-      message: alreadyInFlight ? 'Protocols detection is already running' : 'Protocols detection queued',
+      message: describeQueueOutcome('Protocols detection', job, alreadyInFlight),
       status: job.status
     });
   } catch (error) {

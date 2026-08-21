@@ -7,6 +7,7 @@ import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import dasSuggestionsService from '@/services/das-suggestions.service'
 
 const route = useRoute()
@@ -222,12 +223,6 @@ const helpItems = computed(() => [
 // through to its usual content — which reads as a statement about the
 // manuscript rather than as a page that never received it.
 const loadError = ref(null)
-function describeLoadError(err) {
-  const status = err?.response?.status
-  if (status === 403) return { message: 'You do not have access to this submission.', retryable: false }
-  if (status === 404) return { message: 'This submission no longer exists.', retryable: false }
-  return { message: err?.response?.data?.error || err?.message || 'The server did not respond.', retryable: true }
-}
 
 onMounted(loadPage)
 
@@ -242,8 +237,18 @@ async function loadPage() {
     loadError.value = describeLoadError(err)
     return
   }
-  await krtStore.fetchKRT(route.params.id)
-  await fetchDasSuggestions()
+  // The KRT and the suggestions are the rest of the answer, and they fail the
+  // same way. Left outside this guard, a rejected fetchKRT threw out of the
+  // mounted hook: the DAS check never ran, polling never started, and the page
+  // showed a clean statement over data it had not loaded.
+  try {
+    await krtStore.fetchKRT(route.params.id)
+    await fetchDasSuggestions()
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
+
   if (dasJobStatus.value === 'none') {
     // First arrival (the user just finished review) → run the DAS check now.
     await regenerateDasSuggestions()
@@ -500,7 +505,7 @@ async function handleBack() {
     </div>
 
     <!-- AS Text Display -->
-    <div class="card">
+    <div v-if="!loadError" class="card">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">Data/Code Availability Statement</h2>
         <button
@@ -543,7 +548,7 @@ async function handleBack() {
     </div>
 
     <!-- Suggestions -->
-    <div class="card">
+    <div v-if="!loadError" class="card">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">
           Suggestions

@@ -56,9 +56,12 @@ const canManageUsers = computed(() => authStore.canManageUsers)
 const isAdmin = computed(() => authStore.isAdmin)
 
 onMounted(async () => {
+  // fetchUsers handles its own failure. The team codes only populate a filter
+  // dropdown, but inside Promise.all their rejection took the whole hook down
+  // as an unhandled rejection — nothing rendered, nothing logged for the user.
   await Promise.all([
     fetchUsers(),
-    teamsStore.fetchTeamCodes()
+    teamsStore.fetchTeamCodes().catch(() => { /* the filter falls back to free text */ })
   ])
 })
 

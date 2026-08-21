@@ -39,6 +39,9 @@ function row(over = {}) {
     completedAt: null,
     ...over
   };
+  // markFailed reloads before deciding — that is how its cancelled guard sees a
+  // cancel written by another instance. Here the stub is the row.
+  r.reload = async () => r;
   r.markFailed = SubmissionJob.prototype.markFailed.bind(r);
   r.save = async () => r;
   return r;

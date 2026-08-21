@@ -18,6 +18,7 @@ import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
 import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isFutureStepJob } from '@/composables'
@@ -82,6 +83,16 @@ function getJob(type) {
 // which in turn keeps the "Suggestions will be automatically populated"
 // empty-state visible even after every job has hit 'complete'.
 const jobs = computed(() => bgProcessesRef.value?.jobs || {})
+
+// SubmissionHeader injects this to know whether pdf_analysis is parked on
+// `pending_input`, which is what makes saving a DAS advance the pipeline.
+// BackgroundProcesses provides the same key, but it is the header's SIBLING
+// here — provide only travels DOWN, so without this line the header falls back
+// to its `ref({})` default, the banner never shows and saving a DAS never
+// releases the step. Declared after `jobs` on purpose: provide() runs at setup,
+// and referencing the computed above its declaration is a TDZ throw that takes
+// the whole page down.
+provide('submissionJobs', jobs)
 
 // Derive analyzing state from job poller
 const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))
@@ -331,12 +342,6 @@ const rejectionReason = ref('')
 // through to its empty state — which reads as a fact about the manuscript
 // rather than as a page that never received it.
 const loadError = ref(null)
-function describeLoadError(err) {
-  const status = err?.response?.status
-  if (status === 403) return { message: 'You do not have access to this submission.', retryable: false }
-  if (status === 404) return { message: 'This submission no longer exists.', retryable: false }
-  return { message: err?.response?.data?.error || err?.message || 'The server did not respond.', retryable: true }
-}
 
 onMounted(loadPage)
 
@@ -367,7 +372,18 @@ async function loadPage() {
     loadError.value = describeLoadError(err)
     return
   }
-  await krtStore.fetchKRT(route.params.id)
+  // The KRT is what every suggestion on this page is compared against, so a
+  // failure to read it is a failed page, not a page with no suggestions. The
+  // six loaders after it each swallow their own errors (a module that has not
+  // run yet is normal), but they were unreachable while this call was
+  // unguarded: one rejection aborted the mounted hook and the page settled on
+  // its empty state.
+  try {
+    await krtStore.fetchKRT(route.params.id)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
   await checkAnalysisStatus()
   await loadSoftwareMentions()
   await loadAuthors()

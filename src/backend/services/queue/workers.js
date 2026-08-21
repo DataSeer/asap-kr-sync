@@ -242,7 +242,10 @@ async function initializeWorkers() {
     jobQueue.QUEUES.PDF_ANALYSIS,
     async (data, pgBossJob) => {
       const { processAnalysis } = require('../pdf-analysis/pdf-analysis.service');
-      const { submissionId, userId, submissionJobId } = data;
+      // `userId` is in the payload but deliberately not read here — see
+      // buildJobData. Destructuring it made it look consumed, which is what
+      // made every advance that omits it look like a bug.
+      const { submissionId, submissionJobId } = data;
       const submissionJob = await getSubmissionJob(submissionJobId, pgBossJob);
       const { manuscriptId, round } = await loadSubmission(submissionId);
       const jobLogger = submissionJob ? createJobLogger(submissionJob, manuscriptId, round) : null;
@@ -276,7 +279,7 @@ async function initializeWorkers() {
           timing: { totalMs: m.totalMs || 0 }
         });
         await jobLogger?.flush();
-        await advancePipeline(submissionId, 'pdf_analysis', round, userId);
+        await advancePipeline(submissionId, 'pdf_analysis', round);
         return { success: true, submissionJobId };
       } catch (error) {
         jobLogger?.log('error', `PDF analysis failed: ${error.message}`);
@@ -287,7 +290,7 @@ async function initializeWorkers() {
         // signalling dependents now would unblock them prematurely (see
         // DAS_EXTRACTION / pdf_analysis pending_input bug).
         if (isFinalAttempt) {
-          await advancePipeline(submissionId, 'pdf_analysis', round, userId);
+          await advancePipeline(submissionId, 'pdf_analysis', round);
         }
         throw error;
       }

@@ -68,7 +68,21 @@ const A_STATEMENT = 'Data are available at Zenodo.';
 
 function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: A_STATEMENT }) {
   t.mock.method(SubmissionJob, 'getForSubmission', async () => [...rows.values()]);
+  // runAllProcesses reads the round's existing rows before deciding whether to
+  // create any, so this has to answer too.
+  t.mock.method(SubmissionJob, 'findAll', async () => [...rows.values()]);
   t.mock.method(SubmissionJob, 'getLatest', async (_sub, jobType) => rows.get(jobType) || null);
+  // The conditional claim tryAdvanceStep uses to take a step out of `waiting`
+  // exactly once. Modelled faithfully — a fake that ignored `where.status` and
+  // always answered [1] would let both racers through and pass whatever the
+  // code did.
+  t.mock.method(SubmissionJob, 'update', async (values, { where } = {}) => {
+    const target = [...rows.values()].find((r) => r.id === where.id);
+    if (!target) return [0];
+    if (where.status !== undefined && target.status !== where.status) return [0];
+    Object.assign(target, values);
+    return [1];
+  });
   t.mock.method(SubmissionJob, 'create', async (attrs) => {
     const created = row(attrs.jobType, attrs);
     rows.set(attrs.jobType, created);
@@ -623,19 +637,39 @@ test('a found Availability Statement lets the consolidator run', async (t) => {
 test('starting a pipeline seeds a row for the DAS check, waiting', async (t) => {
   // Without a row there is nothing for the gate to release later: tryAdvanceStep
   // only ever acts on a row that already exists.
-  const rows = pipelineRows();
+  //
+  // Asserted on the OUTCOME — a row exists, and it is waiting — rather than on
+  // `create` having been called. runAllProcesses reuses the round's rows when
+  // they are already there, so counting inserts would test the implementation
+  // and fail for a submission that already has its set.
+  const rows = new Map();          // nothing seeded yet
   mockDb(t, rows);
-  const created = [];
   t.mock.method(SubmissionJob, 'create', async (attrs) => {
     const r = row(attrs.jobType, attrs);
-    created.push(attrs.jobType);
+    rows.set(attrs.jobType, r);
     return r;
   });
 
   await orchestrator.runAllProcesses('sub-1', 'user-1', 1);
 
-  assert.ok(created.includes(JOB_TYPES.DAS_SUGGESTIONS),
-    'the pipeline must create the row it will later release');
+  const dasRow = rows.get(JOB_TYPES.DAS_SUGGESTIONS);
+  assert.ok(dasRow, 'the pipeline must have a row for the step it will later release');
+  assert.equal(dasRow.status, 'waiting', 'held until the Availability step');
+});
+
+test('re-starting a pipeline that already has rows does not add a second set', async (t) => {
+  // The rival-row failure, twelve rows at a time. runAllProcesses runs on every
+  // PDF upload and from POST /processes/run, and used to INSERT unconditionally.
+  const rows = pipelineRows();
+  for (const r of rows.values()) { r.status = 'complete'; r.result = { data: {} }; }
+  mockDb(t, rows);
+  const created = [];
+  t.mock.method(SubmissionJob, 'create', async (attrs) => { created.push(attrs.jobType); return row(attrs.jobType, attrs); });
+
+  await orchestrator.runAllProcesses('sub-1', 'user-1', 1);
+
+  assert.deepEqual(created, [], 'every step already had a row — none may be inserted');
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).result, null, 'and the previous run is cleared');
 });
 
 test('finishing DAS extraction does NOT start the check before the Availability step', async (t) => {
@@ -699,4 +733,108 @@ test('nothing downstream waits for it', async (t) => {
     assert.ok(!step.dependsOn.includes(JOB_TYPES.DAS_SUGGESTIONS),
       `${step.jobType} must not depend on the DAS check`);
   }
+});
+
+/**
+ * checkAndAdvance runs on every worker completion. pdf_analysis sits behind
+ * eight detections that finish within milliseconds of each other, so two
+ * completions genuinely overlap: both read the row as `waiting`, both found
+ * every dependency terminal, and both enqueued it. Two pg-boss jobs for one
+ * row means the same model call runs twice, is paid for twice, and both
+ * results are written over the same row.
+ */
+/**
+ * A barrier that releases only once `parties` callers have reached it.
+ *
+ * Without one, this test does not test anything: the fakes resolve in a single
+ * microtask, so the first caller finishes its whole advance before the second
+ * starts, and the second is turned away by the `status !== 'waiting'` guard at
+ * the top of tryAdvanceStep rather than by the claim. Holding both callers
+ * until each has read the jobs map reproduces the real interleaving — two
+ * advances that have both seen `waiting`.
+ */
+function barrier(parties) {
+  let arrived = 0;
+  let release;
+  const open = new Promise((resolve) => { release = resolve; });
+  return async () => {
+    arrived++;
+    if (arrived >= parties) release();
+    return open;
+  };
+}
+
+test('two dependencies finishing at once enqueue the step exactly once', async (t) => {
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  mockDb(t, rows);
+  enqueued.length = 0;
+
+  // Each advance gets its OWN row objects, as two requests loading the same
+  // row from Postgres would. Sharing one object per type — which is what the
+  // shared fake does — lets the first advance's `job.status = 'queued'` be
+  // seen by the second through the same reference, so the in-memory guard
+  // turns it away and the race can never be observed.
+  const canonical = rows;
+  t.mock.method(SubmissionJob, 'getForSubmission', async () => (
+    [...canonical.values()].map((r) => ({
+      ...r,
+      async save() {
+        Object.assign(canonical.get(this.jobType), {
+          status: this.status, pgBossJobId: this.pgBossJobId
+        });
+        return this;
+      }
+    }))
+  ));
+
+  // Both advances read the jobs map, THEN both are let go.
+  const bothHaveRead = barrier(2);
+  t.mock.method(Submission, 'findByPk', async () => {
+    await bothHaveRead();
+    return { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: A_STATEMENT };
+  });
+
+  await Promise.all([
+    orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1),
+    orchestrator.checkAndAdvance('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1)
+  ]);
+
+  const analysisEnqueues = enqueued.filter((q) => q === jobQueue.QUEUES.PDF_ANALYSIS);
+  assert.equal(analysisEnqueues.length, 1,
+    `pdf_analysis was enqueued ${analysisEnqueues.length} times — two workers each ` +
+    'paid for the same model call and wrote over one row');
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+});
+
+test('a step already past waiting is never re-claimed by a concurrent advance', async (t) => {
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  rows.get(JOB_TYPES.PDF_ANALYSIS).status = 'processing';   // a worker has it
+  mockDb(t, rows);
+  enqueued.length = 0;
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1);
+
+  assert.equal(enqueued.filter((q) => q === jobQueue.QUEUES.PDF_ANALYSIS).length, 0);
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'processing',
+    'a running step must not be dragged back to queued');
+});
+
+test('a failed enqueue puts the claim back instead of stranding the row', async (t) => {
+  // `queued` with no pgBossJobId is the one state no reconciler heals: it
+  // watches `processing` and `waiting`.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  mockDb(t, rows);
+  t.mock.method(jobQueue, 'addJob', async () => { throw new Error('queue unreachable'); });
+
+  await assert.rejects(
+    () => orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1),
+    /queue unreachable/
+  );
+
+  const analysis = rows.get(JOB_TYPES.PDF_ANALYSIS);
+  assert.equal(analysis.status, 'waiting', 'the claim must be released');
+  assert.equal(analysis.pgBossJobId, null);
 });

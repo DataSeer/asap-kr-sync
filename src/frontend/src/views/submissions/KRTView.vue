@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useKRTStore } from '@/stores/krt.store'
@@ -10,6 +10,7 @@ import pdfService from '@/services/pdf.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import { useJobPoller } from '@/composables'
 
 const route = useRoute()
@@ -39,9 +40,13 @@ const latestFiles = computed(() => submissionStore.latestFiles)
  * So the poller is used directly. What was removed is the display, not the
  * behaviour.
  */
-const { onJobComplete, onJobFailed, onJobPendingInput, refresh: refreshJobs } = useJobPoller(
+const { jobs, onJobComplete, onJobFailed, onJobPendingInput, refresh: refreshJobs } = useJobPoller(
   computed(() => route.params.id)
 )
+
+// Step 2's copy of the DAS banner — see the note in PDFView. The poller above
+// already runs; `jobs` is just no longer thrown away.
+provide('submissionJobs', jobs)
 
 const krtRows = computed(() => krtStore.rows)
 const summary = computed(() => krtStore.summary)
@@ -295,12 +300,6 @@ function registerJobCallbacks() {
 // through to its usual content — which reads as a statement about the
 // manuscript rather than as a page that never received it.
 const loadError = ref(null)
-function describeLoadError(err) {
-  const status = err?.response?.status
-  if (status === 403) return { message: 'You do not have access to this submission.', retryable: false }
-  if (status === 404) return { message: 'This submission no longer exists.', retryable: false }
-  return { message: err?.response?.data?.error || err?.message || 'The server did not respond.', retryable: true }
-}
 
 onMounted(loadPage)
 
@@ -325,10 +324,20 @@ async function loadPage() {
     loadError.value = describeLoadError(err)
     return
   }
+  // Inside the guard with the fetch above it. The endpoint answers an empty
+  // table for a submission that has no KRT yet, so a rejection here is a real
+  // failure — and left unguarded it threw out of the mounted hook, skipping
+  // the template and resource-type fetches below and leaving an empty editor
+  // that looks like an empty table.
   if (submission.value && submission.value.status !== 'draft') {
-    await krtStore.fetchKRT(route.params.id)
-    // Also fetch AI suggestions if analysis was completed
-    await krtStore.fetchAiSuggestions(route.params.id)
+    try {
+      await krtStore.fetchKRT(route.params.id)
+      // Also fetch AI suggestions if analysis was completed
+      await krtStore.fetchAiSuggestions(route.params.id)
+    } catch (err) {
+      loadError.value = describeLoadError(err)
+      return
+    }
   }
   // Fetch KRT template URL
   try {

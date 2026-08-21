@@ -44,6 +44,7 @@ export function isTerminalStatus(status) {
 export function useJobPoller(submissionId) {
   const jobs = ref({})
   const isAnyRunning = ref(false)
+  const fetchError = ref(null)
 
   let pollTimer = null
   let currentIntervalMs = INITIAL_POLL_MS
@@ -99,6 +100,7 @@ export function useJobPoller(submissionId) {
 
     try {
       const data = await jobService.getJobs(id)
+      fetchError.value = null
       const jobMap = {}
       for (const job of data.jobs) {
         jobMap[job.jobType] = job
@@ -154,6 +156,13 @@ export function useJobPoller(submissionId) {
         stopPolling()
       }
     } catch (error) {
+      // Swallowed for the poll loop's sake — a transient failure mid-run must
+      // not stop the polling — but recorded, because `jobs` then stays `{}`
+      // and every consumer renders twelve steps as "not started". That is the
+      // same sentence the panel shows for a submission whose pipeline has
+      // genuinely never run, so the panel reads as a fact about the
+      // submission rather than as a page that could not reach the server.
+      fetchError.value = error
       console.warn('[useJobPoller] Fetch error:', error?.message || error)
     }
   }
@@ -212,6 +221,8 @@ export function useJobPoller(submissionId) {
 
   return {
     jobs,
+    /** The last poll's failure, or null. Cleared by the next success. */
+    fetchError,
     isAnyRunning,
     getJob,
     onJobComplete,

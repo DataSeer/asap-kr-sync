@@ -4,6 +4,7 @@
 
 const materialsService = require('../services/materials/materials.service');
 const logger = require('../utils/logger');
+const { describeQueueOutcome } = require('../utils/queue-message');
 
 /**
  * Get materials mentions for a submission
@@ -38,11 +39,13 @@ async function triggerDetection(req, res, next) {
 
     logger.info('Materials detection queued', { submissionId: submission.id, status: job.status });
 
-    // Say which of the two happened. A re-run asked for while the step is in
-    // flight is deliberately a no-op; reporting it as "queued" would leave the
-    // user waiting for a second run that is never going to start.
+    // Say what actually happened — see describeQueueOutcome. There are more
+    // than two outcomes: a re-run asked for while the step is in flight is a
+    // deliberate no-op, and a step whose dependencies are not done is left
+    // waiting. Reporting either as "queued" leaves the user waiting for a run
+    // that is not going to start.
     res.json({
-      message: alreadyInFlight ? 'Materials detection is already running' : 'Materials detection queued',
+      message: describeQueueOutcome('Materials detection', job, alreadyInFlight),
       status: job.status
     });
   } catch (error) {

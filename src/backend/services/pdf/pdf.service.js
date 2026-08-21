@@ -282,7 +282,7 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
  * @param {number} round
  * @returns {Promise<object>} the pdf_analysis SubmissionJob row
  */
-async function queueAnalysis(submissionId, userId, round = 1) {
+async function queueAnalysis(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
 
   // Read BEFORE re-queueing — requeueStep leaves a re-run at `queued`, so the
@@ -291,6 +291,14 @@ async function queueAnalysis(submissionId, userId, round = 1) {
   const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.PDF_ANALYSIS, round);
   const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
 
+  // Suggestion Generation reads the Generated KRT this step produces, so it has
+  // to be invalidated with it. Without this the panel reported both steps
+  // complete while the suggestions on screen had been computed against the
+  // PREVIOUS Generated KRT — for ever, because `tryAdvanceStep` only starts a
+  // job that is still `waiting` and this one was `complete`.
+  //
+  // Every other queue function already cascaded; this was the one that did not.
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PDF_ANALYSIS, round);
   const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.PDF_ANALYSIS, round, userId);
 
   logger.info('PDF analysis re-queued', {

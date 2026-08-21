@@ -6,6 +6,7 @@
 const suggestionService = require('../services/suggestion/suggestion.service');
 const { ChangeLog } = require('../models');
 const logger = require('../utils/logger');
+const { describeQueueOutcome } = require('../utils/queue-message');
 
 /**
  * Get all suggestions for a submission
@@ -37,7 +38,7 @@ async function regenerateSuggestions(req, res, next) {
       submissionId: req.params.id, round, status: job.status, alreadyInFlight, userId: req.userId
     });
     res.status(202).json({
-      message: alreadyInFlight ? 'Suggestion generation is already running' : 'Suggestion generation queued',
+      message: describeQueueOutcome('Suggestion generation', job, alreadyInFlight),
       status: job.status
     });
   } catch (error) {

@@ -253,17 +253,49 @@ const { JOB_TYPE_TO_QUEUE } = jobQueue;
 async function runAllProcesses(submissionId, userId, round) {
   const jobs = [];
 
+  // One row per (step, round), reused if it is already there.
+  //
+  // This used to INSERT a fresh set of twelve unconditionally, and it is called
+  // on every PDF upload and by POST /processes/run. A second call in the same
+  // round therefore produced a second full set, and `getForSubmission` keeps
+  // only the newest row per type — so the whole previous set went invisible
+  // while any worker still holding one carried on writing results nobody would
+  // read. That is the same failure the per-step re-runs were fixed for, twelve
+  // rows at a time. Five submissions in the dev database carry two
+  // `pdf_analysis` rows from exactly this.
+  const existing = await SubmissionJob.findAll({ where: { submissionId, round } });
+  const byType = new Map();
+  for (const row of existing) {
+    // Newest wins, matching getForSubmission, so a submission that already has
+    // duplicates converges on one row rather than adding to the pile.
+    const seen = byType.get(row.jobType);
+    if (!seen || row.createdAt > seen.createdAt) byType.set(row.jobType, row);
+  }
+
   for (const step of PIPELINE) {
     const hasDependencies = step.dependsOn.length > 0;
     const initialStatus = hasDependencies ? 'waiting' : 'queued';
 
-    // Create the tracking record
-    const submissionJob = await SubmissionJob.create({
-      submissionId,
-      jobType: step.jobType,
-      status: initialStatus,
-      round
-    });
+    let submissionJob = byType.get(step.jobType);
+    if (submissionJob) {
+      // A re-start of the whole pipeline: the row goes back to its initial
+      // state carrying nothing from the run before it, exactly as requeueStep
+      // does for a single step.
+      submissionJob.status = initialStatus;
+      submissionJob.pgBossJobId = null;
+      submissionJob.result = null;
+      submissionJob.errorMessage = null;
+      submissionJob.startedAt = null;
+      submissionJob.completedAt = null;
+      await submissionJob.save();
+    } else {
+      submissionJob = await SubmissionJob.create({
+        submissionId,
+        jobType: step.jobType,
+        status: initialStatus,
+        round
+      });
+    }
 
     // Only enqueue jobs with no dependencies
     if (!hasDependencies) {
@@ -294,7 +326,10 @@ async function runAllProcesses(submissionId, userId, round) {
  * @param {string} submissionId
  * @param {string} completedJobType - The job type that just finished
  * @param {number} round
- * @param {string} userId - Needed for jobs that require it (e.g., PDF analysis)
+ * @param {string} [userId] - Attribution, threaded to buildJobData. Absent for
+ *   the ~20 worker-driven advances (a finished worker knows the submission, not
+ *   who asked), and nothing in the pipeline currently reads it — see the note on
+ *   buildJobData. Passed where it IS known so that stays true by construction.
  */
 async function checkAndAdvance(submissionId, completedJobType, round, userId) {
   // Find pipeline steps that depend on the completed job type
@@ -386,14 +421,46 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
 
-  // All dependencies met and gate passed — enqueue this job
+  // All dependencies met and gate passed — enqueue this job.
+  //
+  // Claim the row FIRST, with the old status in the WHERE clause, so the
+  // transition out of `waiting` happens exactly once. checkAndAdvance runs on
+  // every worker completion, and a step like pdf_analysis sits behind eight
+  // detections that finish within milliseconds of each other: two of them
+  // completing together both read `waiting`, both found every dependency
+  // terminal, and both enqueued the same row — two pg-boss jobs, two runs of
+  // the same model call, both writing their result to one row.
+  //
+  // Postgres serialises the UPDATE, so exactly one caller sees a row count of
+  // 1. The loser stops here.
+  const [claimed] = await SubmissionJob.update(
+    { status: 'queued' },
+    { where: { id: job.id, status: 'waiting' } }
+  );
+  if (claimed === 0) {
+    logger.debug('Pipeline step already claimed by a concurrent advance', {
+      submissionId, jobType: step.jobType, triggeredBy
+    });
+    return false;
+  }
+  job.status = 'queued';
+
   const queueName = JOB_TYPE_TO_QUEUE[step.jobType];
   const jobData = buildJobData(step.jobType, submissionId, userId, job);
 
-  const pgBossJobId = await jobQueue.addJob(queueName, jobData);
-  job.status = 'queued';
-  job.pgBossJobId = pgBossJobId;
-  await job.save();
+  try {
+    const pgBossJobId = await jobQueue.addJob(queueName, jobData);
+    job.pgBossJobId = pgBossJobId;
+    await job.save();
+  } catch (err) {
+    // Nothing is going to run this row: put the claim back rather than leave
+    // it `queued` with no queue job behind it, which no reconciler heals — it
+    // watches `processing` and `waiting`, not a `queued` row with a null
+    // pgBossJobId.
+    await SubmissionJob.update({ status: 'waiting' }, { where: { id: job.id, status: 'queued' } });
+    job.status = 'waiting';
+    throw err;
+  }
 
   logger.info('Pipeline advanced: job enqueued', {
     submissionId,
@@ -464,7 +531,10 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
 async function failStrandedProcessingJobs(cutoff) {
   const candidates = await SubmissionJob.findAll({
     where: { status: 'processing', startedAt: { [Op.lt]: cutoff } },
-    attributes: ['id', 'submissionId', 'round', 'jobType', 'pgBossJobId']
+    // `status` is in the list because markFailed refuses to touch a cancelled
+    // row — and a guard reading an attribute that was not selected compares
+    // against `undefined` and never fires.
+    attributes: ['id', 'submissionId', 'round', 'jobType', 'pgBossJobId', 'status']
   });
   if (candidates.length === 0) return 0;
 
@@ -507,7 +577,11 @@ async function reconcileStuckJobs({ graceMs = RECONCILE_GRACE_MS } = {}) {
     raw: true
   });
 
-  if (stuck.length === 0) return 0;
+  // Healing a stranded row IS work — it unblocks everything downstream of it.
+  // Returning 0 here reported "the reconciler found nothing" for a run that had
+  // just failed five rows, which is the number that would be watched to decide
+  // whether the reconciler is doing anything at all.
+  if (stuck.length === 0) return stranded;
 
   let advancedTotal = 0;
   for (const { submissionId, round } of stuck) {
@@ -525,13 +599,14 @@ async function reconcileStuckJobs({ graceMs = RECONCILE_GRACE_MS } = {}) {
     }
   }
 
-  if (advancedTotal > 0) {
+  if (advancedTotal > 0 || stranded > 0) {
     logger.warn('Pipeline reconciler re-drove stuck jobs', {
       submissions: stuck.length,
-      advanced: advancedTotal
+      advanced: advancedTotal,
+      stranded
     });
   }
-  return advancedTotal;
+  return advancedTotal + stranded;
 }
 
 /**
@@ -600,6 +675,11 @@ function buildJobData(jobType, submissionId, userId, submissionJob) {
   const base = { submissionId, submissionJobId: submissionJob.id };
 
   switch (jobType) {
+    // The only step carrying userId, and nothing reads it: the handler
+    // destructures it and calls processAnalysis without it. Kept because it is
+    // the one step a user triggers by hand, so it is where attribution would
+    // land — but it is not load-bearing, and an advance that omits it (any of
+    // the worker-driven ones) is not a bug.
     case JOB_TYPES.PDF_ANALYSIS:
       return { ...base, userId };
     case JOB_TYPES.DAS_EXTRACTION:

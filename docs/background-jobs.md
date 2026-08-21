@@ -258,6 +258,20 @@ retrying would restart the very external work the user asked to stop.
   manual advance recovered it. Pinned by `models/SubmissionJob.test.js` and
   `orchestrator.service.test.js`.
 - After any job completes or fails, the orchestrator checks dependent jobs
+- **The move out of `waiting` is atomic.** `tryAdvanceStep` takes the step with
+  a conditional update — `SET status='queued' WHERE id=? AND status='waiting'` —
+  and enqueues only if that update touched a row. `checkAndAdvance` runs on
+  *every* worker completion, and `pdf_analysis` sits behind seven steps that
+  finish within milliseconds of each other; two of them completing together
+  both read `waiting`, both found the dependencies terminal, and both enqueued
+  the same row. Two queue entries on one row means the same model call runs and
+  is paid for twice, with both results written over each other. Postgres
+  serialises the update, so exactly one caller wins and the loser returns
+  quietly. If the enqueue then fails, the claim is **released** back to
+  `waiting` — a `queued` row with a null `pgBossJobId` is the one state no
+  reconciler heals. Pinned by `orchestrator.service.test.js` ("two dependencies
+  finishing at once"), which uses a barrier and per-caller row copies, because
+  a fake that shares one row object per type cannot reproduce the race at all.
 - **Conditional (job-result) gate** — if a job-result gate fails (e.g., DAS not extracted), the dependent job moves to `pending_input` and waits for the user to click **Advance**
 - **Submission-state gate** — a job whose `gate` (e.g. `krt_curated`) is not yet satisfied stays in `waiting` (never `pending_input`). It needs no manual action: the status-change handler re-drives the pipeline on every submission transition, and the periodic reconciler re-checks gated jobs each sweep, so the job advances on its own once the gate opens
 
@@ -367,6 +381,13 @@ other module looked fine. Nothing threw, nothing logged, and the tests passed. T
 
 Returns all jobs for the submission's current round. Each job includes status, result, error message, retry count, timing, and configuration (expiry, retry limit, max total seconds).
 
+`SubmissionJob.getForSubmission` backs this and **queries twice on purpose**: an
+`id`/`jobType`/`createdAt` index over the round, then the winning ids. `result`
+is JSONB holding whole detections — one dev submission carries 2.3 MB across its
+rows — and this endpoint is polled every few seconds by every open tab. Reading
+every row and then dropping all but the newest per type fetched every superseded
+payload on every poll.
+
 ### `POST /api/submissions/:id/processes/run`
 
 Starts (or re-runs) all pipeline processes for a submission. Creates `SubmissionJob` records and enqueues independent jobs.
@@ -398,6 +419,15 @@ already going — deciding after the fact made every re-run endpoint answer
 "already running", including for runs started that instant. The same test
 exercises every queue function against a stubbed orchestrator to check the flag
 is computed rather than merely present.
+
+**What the endpoint tells the user comes from the row's status, not from the
+absence of an exception.** `requeueStep` enqueues only a runnable step, so a
+re-run of a step whose dependencies are unfinished is correctly left `waiting`
+— and all ten endpoints reported that as "queued" anyway, leaving the user
+watching a step that was never going to start. `utils/queue-message.js`
+(`describeQueueOutcome`) maps the resulting status to one sentence: queued,
+already running, waiting on its dependencies, needs input, or blocked by a
+cancelled dependency.
 
 Never insert a second `SubmissionJob` row for a type the pipeline already
 created. `getForSubmission` keeps only the newest row per type, so a rival row
@@ -494,6 +524,23 @@ The `useJobPoller` composable polls job status with exponential backoff:
 - Stops polling when all jobs reach terminal states
 - `refresh()` resets the backoff to poll quickly again
 
+**A failed poll is reported, not swallowed.** The loop keeps polling through a
+transient failure, but records it as `fetchError` — because an empty `jobs` map
+is not a neutral state: the panel renders every step as "Not started", which is
+exactly what it shows for a pipeline that has genuinely never run. The panel
+says so instead ("the status of these steps could not be read"), and only while
+there is nothing to show: once a poll has succeeded, a later failure keeps the
+last known state rather than throwing it away.
+
+**`submissionJobs` must be provided by the VIEW.** `SubmissionHeader` injects it
+to know whether `pdf_analysis` is parked on `pending_input` — which is what
+makes saving an Availability Statement release the step. `BackgroundProcesses`
+provides the same key but is the header's *sibling*, and `provide` only travels
+down, so the header silently fell back to its `ref({})` default: no banner, and
+saving a DAS advanced nothing. KRTView (step 2) and PDFView (step 3) each
+provide it; `components/submission/das-banner-injection.test.js` fails if a view
+that polls jobs and renders the header stops doing so.
+
 **Event callbacks** (fire only on observed status transitions, not on first fetch):
 - `onJobComplete(type, callback)` — when a job transitions to `complete`
 - `onJobFailed(type, callback)` — when a job transitions to `failed`
@@ -511,6 +558,8 @@ The `useJobPoller` composable polls job status with exponential backoff:
 | `src/backend/controllers/jobs.controller.js` | API endpoints for job management |
 | `src/frontend/src/composables/useJobPoller.js` | Frontend polling with backoff |
 | `src/frontend/src/components/submission/JobStatusPanel.vue` | Job status display in UI |
+| `src/backend/utils/queue-message.js` | Turns a re-queued step's status into the sentence the user sees |
+| `src/frontend/src/utils/load-error.js` | Shared "this page could not load" description (was copied into four views) |
 
 
 ---
@@ -557,6 +606,15 @@ propagation rule in the orchestrator).
 | `POST` | `/api/admin/jobs/cleanup` | Delete everything matching a `staleReason` (or `'any'`) — **re-classified at call time**, so a job that started running since the page loaded is skipped |
 | `POST` | `/api/admin/jobs/:id/cancel` | Stop a job, keep the record |
 | `DELETE` | `/api/admin/jobs/:id` | Delete one job (`?force=true` to include a running one) |
+
+Filter values are checked against the vocabulary before the query is built.
+`status` is a Postgres enum and `submissionId` is a `uuid`, so an unknown value
+reached the driver and came back as
+`invalid input value for enum enum_submission_jobs_status: "nope"` — a 500
+carrying the database's own error text to the client, for what is plainly a
+mistyped URL. They are now 400s that list the values that would have worked.
+Note the vocabulary for `staleReason` is the **keys** of `STALE_REASONS` (plus
+`'any'`); the values are the sentences the UI displays.
 
 **Key files:** `services/queue/job-admin.service.js`, `controllers/job-admin.controller.js`,
 `routes/job-admin.routes.js`, frontend `views/admin/JobsView.vue` + `services/job-admin.service.js`.

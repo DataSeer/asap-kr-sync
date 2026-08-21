@@ -8,6 +8,7 @@ import reportService from '@/services/report.service'
 import pdfService from '@/services/pdf.service'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import NewRoundModal from '@/components/submission/NewRoundModal.vue'
 import { formatDateTime as formatDate } from '@/utils/format-date'
 
@@ -64,12 +65,6 @@ const previousRoundsGrouped = computed(() => {
 // through to its usual content — which reads as a statement about the
 // manuscript rather than as a page that never received it.
 const loadError = ref(null)
-function describeLoadError(err) {
-  const status = err?.response?.status
-  if (status === 403) return { message: 'You do not have access to this submission.', retryable: false }
-  if (status === 404) return { message: 'This submission no longer exists.', retryable: false }
-  return { message: err?.response?.data?.error || err?.message || 'The server did not respond.', retryable: true }
-}
 
 onMounted(loadPage)
 

@@ -93,9 +93,12 @@ router.get('/:id/das-suggestions',
 
 // POST /api/submissions/:id/das-suggestions/regenerate - re-run the DAS check
 router.post('/:id/das-suggestions/regenerate',
+  // Access first, THEN the budget — see the note on the limiters above. A
+  // request for someone else's submission must not spend the caller's daily
+  // allowance on a 403.
+  canAccessSubmission,
   lmApiLimiter,
   lmApiDailyLimiter,
-  canAccessSubmission,
   dasSuggestionsController.regenerate
 );
 
@@ -276,9 +279,9 @@ router.post('/:id/pdf/extract-das',
 
 // POST /api/submissions/:id/reports/generate - Generate report
 router.post('/:id/reports/generate',
+  canAccessSubmission,
   lmApiLimiter,
   lmApiDailyLimiter,
-  canAccessSubmission,
   validateBody('generateReport'),
   reportsController.generate
 );

@@ -9,6 +9,8 @@ import { setSubmissionTitle } from '@/router'
 import submissionService from '@/services/submission.service'
 import suggestionService from '@/services/suggestion.service'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 
 const route = useRoute()
 const router = useRouter()
@@ -308,15 +310,33 @@ const hasChanges = computed(() => {
   return changeStats.value.updated > 0 || changeStats.value.added > 0 || changeStats.value.removed > 0
 })
 
-onMounted(async () => {
+/**
+ * A failed load must not read as a finding. This page's empty state is the
+ * sentence "No changes have been made to this KRT" over the original table —
+ * which is a perfectly reassuring thing to be told, and completely wrong when
+ * the truth is that the submission never arrived. The fetches also ran
+ * unguarded, so a rejection aborted the mount chain and left the suggestions
+ * and the change list unfetched behind that same sentence.
+ */
+const loadError = ref(null)
+
+onMounted(loadPage)
+
+async function loadPage() {
+  loadError.value = null
   krtStore.clearKRT()
   allSuggestions.value = []
   resourceTypesStore.fetchResourceTypeNames().catch(() => {})
-  await submissionStore.fetchSubmission(route.params.id)
-  await krtStore.fetchKRT(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+    await krtStore.fetchKRT(route.params.id)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
   await fetchChanges()
   await fetchSuggestions()
-})
+}
 
 async function fetchSuggestions() {
   try {
@@ -492,6 +512,15 @@ function getCellClass(row, columnKey) {
       @go-next="handleApprove"
     />
 
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
+    <template v-else>
     <!-- Already approved notice -->
     <div v-if="isAlreadyApproved" class="card bg-green-50 border-green-200">
       <div class="flex items-center">
@@ -803,7 +832,10 @@ function getCellClass(row, columnKey) {
       </p>
     </div>
 
-    <!-- History Modal -->
+    </template>
+
+    <!-- History Modal — outside the guard: it is opened from the table above,
+         so it can only be showing when there is something to show. -->
     <div v-if="historyModal.show" class="modal-overlay" @click.self="closeHistoryModal">
       <div class="modal-container history-modal">
         <div class="modal-header">

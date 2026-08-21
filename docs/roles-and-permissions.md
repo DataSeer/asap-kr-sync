@@ -99,6 +99,14 @@ Team membership can be auto-assigned from an admin-managed email→team roster
     result was the only one who could not ask for it again. What separates the
     roles is a budget, which is honest about the real constraint (LM spend) and
     which a user can see themselves against.
+  - **Order matters: `canAccessSubmission` comes first, then the limiters.** The
+    daily limiter *is* the policy for re-runs, so counting a request before
+    checking the caller may touch that submission means a 403 spends one of the
+    day's runs — refused and charged, and a mistyped id costs one every time.
+    Two routes had it the other way round (`/das-suggestions/regenerate` and
+    `/reports/generate`); `routes/limiter-ordering.test.js` reads the route
+    declarations and fails if any submission-scoped route rate-limits before it
+    authorises.
   - (`canManageJobs` was removed. It guarded `/jobs/:jobType/advance` only, and
     that route is not job management: the orchestrator refuses any status but
     `pending_input`, so it can only start a job the pipeline parked awaiting the

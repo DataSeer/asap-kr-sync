@@ -101,6 +101,14 @@ module.exports = (sequelize) => {
    * @param {number} retryCount - Current retry attempt (from pg-boss)
    */
   SubmissionJob.prototype.markProcessing = async function(retryCount = 0) {
+    // Same reload-then-check as markComplete, and for the same reason: the
+    // worker's instance was loaded before the handler started, so a cancel that
+    // landed in between is invisible in memory. Without this, a worker that had
+    // already fetched a job wrote `processing` OVER the cancel — and then
+    // markComplete's own guard saw `processing`, not `cancelled`, and completed
+    // the job the user had stopped.
+    await this.reload();
+    if (this.status === 'cancelled') return this;
     this.status = 'processing';
     this.startedAt = new Date();
     this.retryCount = retryCount;
@@ -137,6 +145,14 @@ module.exports = (sequelize) => {
     // A job the user cancelled must stay cancelled even if the worker that was
     // mid-flight ultimately errors — the failure is a consequence of the cancel,
     // not a real error to surface or retry.
+    //
+    // The reload is what makes the guard work. Checking the in-memory status
+    // asks the copy this worker loaded before the handler ran, which still says
+    // `processing`; the row was overwritten with `failed`, the user saw a
+    // failure for something they had cancelled, and — if it was the round's
+    // only cancelled row — `isRoundCancelled` flipped back to false, which
+    // un-suppressed the retry and restarted the external work they had stopped.
+    await this.reload();
     if (this.status === 'cancelled') return this;
     this.status = 'failed';
     this.errorMessage = errorMessage;
@@ -163,6 +179,7 @@ module.exports = (sequelize) => {
    * @param {string} errorMessage
    */
   SubmissionJob.prototype.markRetrying = async function(errorMessage) {
+    await this.reload();   // see markFailed: the in-memory status is stale here
     if (this.status === 'cancelled') return this;
     this.status = 'processing';
     this.errorMessage = errorMessage;
@@ -211,21 +228,35 @@ module.exports = (sequelize) => {
       where.round = round;
     }
 
-    // Get all jobs for this submission/round, ordered newest first
-    const allJobs = await SubmissionJob.findAll({
+    // Two queries on purpose. `result` is JSONB and holds a whole detection —
+    // one submission in dev carries 2.3 MB across its rows — and the jobs
+    // endpoint is polled every few seconds by every open tab. Selecting every
+    // row and then dropping all but the newest per type read (and shipped from
+    // Postgres) every superseded payload on every poll.
+    //
+    // Pass 1 is metadata only, so it stays small no matter what the runs hold.
+    const index = await SubmissionJob.findAll({
       where,
-      order: [['createdAt', 'DESC']]
+      attributes: ['id', 'jobType', 'createdAt'],
+      order: [['createdAt', 'DESC']],
+      raw: true
     });
 
-    // Keep only the latest per job type
-    const latestByType = new Map();
-    for (const job of allJobs) {
-      if (!latestByType.has(job.jobType)) {
-        latestByType.set(job.jobType, job);
+    const latestIdByType = new Map();
+    for (const row of index) {
+      if (!latestIdByType.has(row.jobType)) {
+        latestIdByType.set(row.jobType, row.id);
       }
     }
+    if (latestIdByType.size === 0) return [];
 
-    return Array.from(latestByType.values());
+    // Pass 2 fetches only those rows, as full instances — callers call
+    // markComplete/markFailed on what comes back, so these cannot be `raw`.
+    const jobs = await SubmissionJob.findAll({
+      where: { id: Array.from(latestIdByType.values()) },
+      order: [['createdAt', 'DESC']]
+    });
+    return jobs;
   };
 
   /**

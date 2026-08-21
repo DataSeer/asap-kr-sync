@@ -20,6 +20,8 @@ import { useJobPoller } from '@/composables'
 import configService from '@/services/config.service'
 import { labelFor, purposeFor, stageLabel, hasModulePage } from '@/components/modules/module-meta'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { setSubmissionTitle } from '@/router'
 
@@ -44,7 +46,15 @@ watch(submission, () => {
 }, { immediate: true })
 
 const graph = ref({ nodes: [], stageCount: 0 })
-onMounted(async () => {
+// The page's whole content is the graph. Without it `stages` is empty and the
+// template falls to its placeholder — so a failed request left "Loading the
+// pipeline…" on screen forever, with nothing loading and no way to retry.
+const loadError = ref(null)
+
+onMounted(loadGraph)
+
+async function loadGraph() {
+  loadError.value = null
   submissionStore.fetchSubmission(submissionId.value).then((sub) => {
     submission.value = sub
     latestFiles.value = submissionStore.latestFiles || {}
@@ -52,11 +62,10 @@ onMounted(async () => {
 
   try {
     graph.value = await configService.getPipeline()
-  } catch {
-    // The page degrades to empty rather than erroring; the processes panel on
-    // the submission still works.
+  } catch (err) {
+    loadError.value = describeLoadError(err)
   }
-})
+}
 
 /** Steps grouped into the stages the server computed. */
 const stages = computed(() => {
@@ -236,7 +245,15 @@ const activeStage = computed(() => {
       <span v-if="state.failed" class="pv-state-item st-fail">{{ state.failed }} failed</span>
     </div>
 
-    <div v-if="!stages.length" class="pv-empty">Loading the pipeline…</div>
+    <LoadError
+      v-if="loadError"
+      title="The pipeline could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadGraph"
+    />
+
+    <div v-else-if="!stages.length" class="pv-empty">Loading the pipeline…</div>
 
     <ol v-else class="pv-flow">
       <li

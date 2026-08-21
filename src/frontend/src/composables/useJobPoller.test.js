@@ -403,3 +403,56 @@ describe('isFutureStepJob', () => {
     expect(isFutureStepJob(undefined)).toBe(false)
   })
 })
+
+describe('when the request itself fails', () => {
+  /**
+   * An empty `jobs` map is not a neutral state: the panel renders every step
+   * as "Not started", which is exactly what it shows for a pipeline that has
+   * genuinely never run. The failure has to be visible to the caller or the
+   * page reports a fact about the submission that it never learned.
+   */
+  it('records the failure instead of leaving an empty map to speak for it', async () => {
+    getJobs.mockRejectedValue(new Error('Network Error'))
+    const { api, wrapper } = mountPoller()
+    await settle()
+
+    expect(api.jobs.value).toEqual({})
+    expect(api.fetchError.value).toBeInstanceOf(Error)
+    wrapper.unmount()
+  })
+
+  it('does not throw out of the poll loop', async () => {
+    getJobs.mockRejectedValue(new Error('Network Error'))
+    const { api, wrapper } = mountPoller()
+    await expect(settle()).resolves.toBeUndefined()
+    await expect(api.refresh()).resolves.toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('clears the failure as soon as a poll succeeds again', async () => {
+    getJobs.mockRejectedValueOnce(new Error('Network Error'))
+    const { api, wrapper } = mountPoller()
+    await settle()
+    expect(api.fetchError.value).toBeTruthy()
+
+    getJobs.mockResolvedValue(reply(job('pdf_analysis', 'complete')))
+    await api.refresh()
+
+    expect(api.fetchError.value).toBeNull()
+    expect(api.jobs.value.pdf_analysis.status).toBe('complete')
+    wrapper.unmount()
+  })
+
+  it('keeps the last known state when a later poll fails — one blip is not amnesia', async () => {
+    getJobs.mockResolvedValue(reply(job('pdf_analysis', 'processing')))
+    const { api, wrapper } = mountPoller()
+    await settle()
+
+    getJobs.mockRejectedValue(new Error('Network Error'))
+    await api.refresh()
+
+    expect(api.jobs.value.pdf_analysis.status).toBe('processing')
+    expect(api.fetchError.value).toBeTruthy()
+    wrapper.unmount()
+  })
+})

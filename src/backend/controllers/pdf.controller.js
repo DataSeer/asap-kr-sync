@@ -9,6 +9,7 @@ const suggestionService = require('../services/suggestion/suggestion.service');
 const { JOB_TYPES } = require('../config/constants');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const logger = require('../utils/logger');
+const { describeQueueOutcome } = require('../utils/queue-message');
 
 /**
  * Upload PDF
@@ -217,14 +218,14 @@ async function triggerAnalysis(req, res, next) {
 
     const { job: submissionJob, alreadyInFlight } = await pdfService.queueAnalysis(
       submission.id,
-      req.userId,
-      submission.currentRound
+      submission.currentRound,
+      req.userId
     );
 
     logger.info('PDF analysis queued', { submissionId: submission.id, submissionJobId: submissionJob.id });
 
     res.json({
-      message: alreadyInFlight ? 'Analysis is already running' : 'Analysis queued',
+      message: describeQueueOutcome('Analysis', submissionJob, alreadyInFlight),
       submissionJobId: submissionJob.id,
       status: submissionJob.status
     });

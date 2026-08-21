@@ -67,6 +67,35 @@ function hasPrompt() {
 }
 
 /**
+ * Resolve the detection prompt. An explicit `override` (non-empty string) wins
+ * — used by tuning/experiment scripts to run detection with a custom prompt;
+ * otherwise the committed default file is read once and cached.
+ *
+ * Deleted by accident in 288ac67 (the requeueStep refactor) — it sat directly
+ * above the queue function that commit rewrote, and went with it. Nothing
+ * caught it: the only caller is inside the Gemini call, so every test that
+ * mocks Gemini passes and `node --check` sees a perfectly valid file. What
+ * caught it was `eslint --rule no-undef`, which is the cheap check worth
+ * running on any commit that moves whole functions around.
+ *
+ * @param {string} [override] - optional prompt text to use instead of the file
+ * @returns {string}
+ */
+function getPrompt(override) {
+  if (override != null && String(override).trim()) {
+    return String(override).trim();
+  }
+  if (!_promptCache) {
+    if (!hasPrompt()) {
+      throw new Error(`Prompt file not found: ${PROMPT_FILE} — this prompt is version-controlled; restore it from git to enable protocols detection`);
+    }
+    _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
+    logger.info('Loaded protocols detection prompt', { file: PROMPT_FILE, length: _promptCache.length });
+  }
+  return _promptCache;
+}
+
+/**
  * Re-run this step, in the pipeline.
  *
  * Through `requeueStep`: the round's own row is reused, and the step is only

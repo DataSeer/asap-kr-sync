@@ -16,7 +16,14 @@ defineProps({
   /** The server's message, when there is a usable one. */
   message: { type: String, default: '' },
   /** Hide the retry button for errors retrying cannot fix (e.g. 403). */
-  retryable: { type: Boolean, default: true }
+  retryable: { type: Boolean, default: true },
+  /**
+   * The sentence that stops the page being read as an answer. The default is
+   * written for a submission page; a list page overrides it, because "your
+   * submission" is the wrong noun there and a vague panel is what let the
+   * empty state pass for the truth in the first place.
+   */
+  note: { type: String, default: 'Nothing below is a reading of your submission — the page never received it.' }
 })
 
 defineEmits(['retry'])
@@ -30,9 +37,7 @@ defineEmits(['retry'])
     <div class="flex-1">
       <p class="load-error-title">{{ title }}</p>
       <p v-if="message" class="load-error-message">{{ message }}</p>
-      <p class="load-error-note">
-        Nothing below is a reading of your submission — the page never received it.
-      </p>
+      <p class="load-error-note">{{ note }}</p>
       <button v-if="retryable" type="button" class="btn-secondary mt-3" @click="$emit('retry')">
         Try again
       </button>

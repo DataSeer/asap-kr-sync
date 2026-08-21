@@ -189,3 +189,61 @@ test('the DAS extraction endpoint re-runs the step rather than doing the work it
   assert.equal(ranDirectly, false, 'and must not do the extraction inside the request');
   assert.match(body.message, /queued/i);
 });
+
+// ── Starting the whole pipeline is idempotent too ───────────────────────────
+//
+// `runAllProcesses` is called on every PDF upload and by POST /processes/run.
+// It used to INSERT a fresh set of twelve rows every time, so a second call in
+// the same round produced a second full set and `getForSubmission` — newest
+// wins — made the entire previous set invisible, while any worker still holding
+// one of those rows carried on writing results nobody would read. The same
+// failure the per-step re-runs were fixed for, twelve rows at a time.
+
+test('re-starting the pipeline reuses the round\'s rows instead of adding a set', async (t) => {
+  const { SubmissionJob } = require('../../models');
+  const orchestrator = require('./orchestrator.service');
+  const jobQueue = require('./job-queue.service');
+
+  const rows = orchestrator.PIPELINE.map((step) => ({
+    id: `${step.jobType}-row`,
+    jobType: step.jobType,
+    submissionId: 'sub-1',
+    round: 1,
+    status: 'complete',
+    result: { data: { items: [1] } },
+    errorMessage: 'an old failure',
+    pgBossJobId: 'old-pgboss',
+    startedAt: new Date('2026-08-20T00:00:00Z'),
+    completedAt: new Date('2026-08-20T01:00:00Z'),
+    createdAt: new Date('2026-08-20T00:00:00Z'),
+    async save() { return this; }
+  }));
+
+  const created = [];
+  t.mock.method(SubmissionJob, 'findAll', async () => rows);
+  t.mock.method(SubmissionJob, 'create', async (attrs) => { created.push(attrs.jobType); return { ...attrs, id: 'new', save: async () => {} }; });
+  t.mock.method(jobQueue, 'addJob', async () => 'pgboss-new');
+
+  await orchestrator.runAllProcesses('sub-1', 'user-1', 1);
+
+  assert.deepEqual(created, [], 'no new rows: every step already had one');
+  for (const row of rows) {
+    assert.equal(row.result, null, `${row.jobType} must not keep the previous run's result`);
+    assert.equal(row.errorMessage, null, `${row.jobType} must not keep the previous run's error`);
+  }
+});
+
+test('a submission with no rows yet still gets its full set', async (t) => {
+  const { SubmissionJob } = require('../../models');
+  const orchestrator = require('./orchestrator.service');
+  const jobQueue = require('./job-queue.service');
+
+  const created = [];
+  t.mock.method(SubmissionJob, 'findAll', async () => []);
+  t.mock.method(SubmissionJob, 'create', async (attrs) => { created.push(attrs.jobType); return { ...attrs, id: 'new', save: async () => {} }; });
+  t.mock.method(jobQueue, 'addJob', async () => 'pgboss-new');
+
+  await orchestrator.runAllProcesses('sub-1', 'user-1', 1);
+
+  assert.equal(created.length, orchestrator.PIPELINE.length, 'one row per pipeline step');
+});
