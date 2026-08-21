@@ -4,13 +4,16 @@
 · **Updated:** 2026-08-22
 
 >
-> Phases 1 and 2 are built: the schema and backfill, the run lifecycle, file
-> provenance, the run number and METADATA column, the two run endpoints, and the
-> module-page run selector with its read-only bar (§13).
+> Phases 1 and 2 are built, and phase 3 is **mostly** built: artefacts keyed by
+> run, the prompt following the selected run, the run's configuration on the
+> pipeline page, and the "as at" line.
 >
-> **Phase 3 is not started** — the pipeline and module pages still read some
-> things live, so §6's conversion table describes what they do today, not what
-> they will do. **Phase 4** (the deletion policy, §7.4) is not started either.
+> **Phase 3 is not finished.** Three panels still read live — the header's
+> KRT/PDF links, the markdown viewer and the ORCID author list — because
+> freezing them needs a decision about what a run should record (§6.4), not just
+> wiring. The resource-type vocabulary (§6.2) is untouched.
+>
+> **Phase 4** (the deletion policy, §7.4) is not started.
 **Scope:** `submission_jobs` gains a history sidecar; the pipeline and module pages
 become records of a *run* rather than views of the submission.
 **Prerequisite:** none — additive to `feat/krt-detection-two-modes` as merged.
@@ -277,12 +280,15 @@ naming convention is risk with no user-visible gain.
 | Detections / grounding / DAS tables | run's `result` ✓ | unchanged |
 | Prompt | run's frozen copy ✓ | unchanged |
 | Raw responses | run's S3 folder ✓ | unchanged, keyed by run |
-| KRT / PDF file links | **latest files** | the run's recorded `fileRef`s |
-| Markdown viewer | **live fetch** | the run's recorded markdown `s3Key` |
-| ORCID author list | **live fetch** | stored in the run's `result` |
-| Generated-KRT rows | run's `result` ✓ | unchanged |
-| Module config (on/demo/off) | captured ✓, **displayed live in places** | display the run's captured config — see §6.1 |
-| Resource-type vocabulary (type → tab group) | **live** | stored in the run — see §6.2 |
+| Prompt | latest run's ✗ | **done** — `?run=N`, so the prompt is the one THAT run used |
+| Raw responses / artefacts | shared per job row ✗ | **done** — keyed `run-{n}`; a run that cannot prove ownership shows none |
+| Module config (on/demo/off) | captured ✓, displayed live | **done** — pipeline page and METADATA read the run's snapshot |
+| "as at" line | absent | **done** — on every module page, latest included |
+| Generated-KRT rows, detections, grounding, DAS | run's `result` ✓ | unchanged |
+| KRT / PDF file links | **latest files** | **not done** — see §6.4 |
+| Markdown viewer | **live fetch** | **not done** — see §6.4 |
+| ORCID author list | **live fetch** | **not done** — see §6.4 |
+| Resource-type vocabulary (type → tab group) | **live** | **not done** — see §6.2 |
 
 ### 6.1 Module configuration is already frozen — it just is not always shown
 
@@ -332,6 +338,34 @@ differently on each:
 
 Recorded as a decision rather than an oversight. If strict fidelity is wanted
 for colour too, freezing it costs nothing extra — it rides in the same map.
+
+### 6.4 The documents: a design question, not just plumbing
+
+The three remaining live reads — the header's KRT/PDF links, the markdown
+viewer, the ORCID author list — turn out to need a decision rather than more
+wiring, and it is worth stating before someone picks it up.
+
+**A run freezes what its module READ, not the submission's documents.** Checked
+against real runs: `software_detection` records `documents: { markdown }` and
+nothing else. Detectors never read the KRT or the original PDF, so those refs
+are simply not in the record — and the header's KRT/PDF links are about the
+submission, not about what that step happened to open.
+
+So "show the documents this run was given" has two possible meanings:
+
+- **(a) Only what the module read.** Faithful and already recorded, but the
+  header would show one link on a detector page and none on some others — and
+  says nothing about which KRT version the run was contemporaneous with.
+- **(b) The submission's document set as at the run.** More useful and matches
+  the principle, but it must be recorded, because nothing captures it today.
+  Cheap to add: a `documents` block written when the run opens, holding the
+  current KRT and PDF `fileRef`s. Files are versioned in S3, so the reference
+  stays valid after a replace.
+
+**(b) is the better answer** and the one the principle implies; it is left open
+only because it changes what a run records, which is the user's call rather than
+an implementation detail. Until it is decided, those three panels stay live and
+the "as at" line (§9) is what tells the reader the difference.
 
 ### 6.3 When an input is gone
 
