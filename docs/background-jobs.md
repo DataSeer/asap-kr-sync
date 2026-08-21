@@ -121,8 +121,7 @@ graph TD
     KRTV -.->|gate: krt_curated| ID
     KRTV -.->|gate: krt_curated| KG
 
-    DAS --> PA[PDF Analysis]
-    SW --> PA
+    SW --> PA[PDF Analysis]
     DS --> PA
     MAT --> PA
     PROT --> PA
@@ -131,8 +130,10 @@ graph TD
 
     PA --> SG[Suggestion Generation]
 
-    DAS -.->|status.detected = false| PI{{pending_input}}
-    PI -.->|User advances| PA
+    DAS --> ASC[Availability Check]
+    CONF{{Statement confirmed?}}
+    CONF -.->|no| PI{{pending_input}}
+    CONF -.->|yes| ASC
 
     style PDF fill:#3b82f6,color:#fff
     style DAS fill:#f59e0b,color:#fff
@@ -196,6 +197,18 @@ on nearly every run. This costs nothing end-to-end, because no downstream step
 consumes software output before KRT Grounding, which waits for the
 markdown-dependent detectors anyway.
 
+**PDF Analysis does not depend on DAS Extraction.** It used to, and it parked in
+`pending_input` until a statement existed. That was the wrong step to ask: the
+consolidator merges the KRT detectors' findings and never reads the Availability
+Statement, so a field only the Availability step uses was holding up the entire
+KRT half of the pipeline — in a state nothing revisits, so a run that parked
+there needed a manual advance even after the author supplied one.
+
+The decision moved to the step that actually reads the statement. **DAS
+Suggestions** now advances only once somebody has confirmed the statement, so no
+LM call is spent on a paragraph nobody has read. See
+[The Availability Statement, and who vouches for it](#the-availability-statement-and-who-vouches-for-it).
+
 ORCID Extraction is intentionally **not** an input to PDF Analysis — its output writes to `submission.authors`, not the Generated KRT. **PDF Analysis** depends on KRT Grounding even though it does not read the grounding outcomes itself: **Suggestion Generation** does, and it reaches the grounding results only through PDF Analysis. Ordering it this way is what guarantees the verdicts exist when suggestions are built, and it is how PDF Analysis inherits the `krt_curated` gate.
 
 ### Pipeline Definition
@@ -211,13 +224,75 @@ ORCID Extraction is intentionally **not** an input to PDF Analysis — its outpu
 | Materials Detection | Markdown Convert | `markdown_ready`, `krt_curated` | Always |
 | Protocols Detection | Markdown Convert | `markdown_ready`, `krt_curated` | Always |
 | KRT Grounding | Software + Datasets + Materials + Protocols + Identifier Detection | `markdown_ready`, `krt_curated` | Always |
-| PDF Analysis | DAS + Software + Datasets + Materials + Protocols + Identifier Detection + KRT Grounding | — (inherited transitively) | Only if DAS extraction `result.status.detected === true` |
+| PDF Analysis | Software + Datasets + Materials + Protocols + Identifier Detection + KRT Grounding | — (inherited transitively) | Always |
 | Suggestion Generation | PDF Analysis | — (inherited transitively) | Always (runs last in the pipeline) |
+| DAS Suggestions | DAS Extraction | `availability_ready` | Only if `submission.dasConfirmedAt` is set — **or** the run was asked for by hand |
 
 ### Pipeline Rules
 
 - Jobs with no dependencies and no gate start immediately with status `queued`
 - Jobs with dependencies start as `waiting` until all dependencies reach a terminal state (`complete` or `failed`)
+
+### The Availability Statement, and who vouches for it
+
+The Availability check reports on a paragraph that was pulled out of the
+manuscript automatically, and extraction gets it wrong often enough to matter.
+A check of the wrong paragraph is worse than no check at all, because the report
+presents it as the author's own statement. So the check is the one step in the
+pipeline that will not start on its own.
+
+**Two fields, two meanings.** They are not redundant:
+
+| Field | Means | Written by |
+|---|---|---|
+| `extractedDataAvailabilityStatement` | what the **last extraction** found | every extraction run, always |
+| `dataAvailabilityStatement` | what the submission **stands on** | extraction *only while it is empty*; otherwise a person |
+
+Once the working field holds a statement, it belongs to whoever put it there.
+`applyExtractedDas` (`services/pdf/pdf.service.js`, pure and tested in
+`das-write-rule.test.js`) enforces that. The bug it fixes: extraction wrote the
+working field every time, so an author whose statement the extractor could not
+find typed one by hand — the whole reason the manual path exists — and the next
+extraction replaced it with "Not found". The app undid their work and called it
+an update.
+
+`NO_DAS_SENTINEL` (`"Not found"`) counts as **empty** everywhere. Extraction is
+fail-soft and always persists something, so a first pass that found nothing
+leaves the sentinel in the working field; treating that as occupied would lock
+out every later extraction, including the one that finally succeeds.
+
+**Confirmation is provenance, not ceremony.**
+
+| Event | Confirmation |
+|---|---|
+| Extraction fills an empty field | cleared — extractor-authored text has nobody behind it |
+| A person writes or edits the statement | **set, in their name** — writing it *is* vouching for it |
+| The same text re-saved (no change) | untouched — nothing was decided, and re-stamping would credit the wrong person |
+| The statement is emptied | cleared |
+| `POST /:id/das/confirm` | set, in the caller's name |
+| A new round starts | cleared — it was about the previous manuscript |
+
+Asking someone to confirm a sentence they just typed is the kind of dialog people
+learn to dismiss without reading, so the app does not ask. The prompt appears
+only for text nobody has touched — on the Availability page, and in the metadata
+editor, which is reachable from **every** step so the pipeline can be unblocked
+without navigating to step 5.
+
+**Re-running DAS Extraction by hand clears the working statement** first
+(`onManualRestart` on the step definition). Asking for extraction again is asking
+for a fresh reading, and without the reset the module would run and change
+nothing visible — the working field is only filled while empty. The pipeline
+running extraction as part of a normal round does **not** clear it: only somebody
+asking for a fresh reading gets one.
+
+> ⚠️ A manual re-extraction therefore discards an author-written statement. The
+> "Restart from here" work is where that warning belongs in the UI.
+
+**Editing the statement while extraction is running** is blocked in the editor —
+the field says what is happening and disables itself. The feature is not taken
+away, only the trap: whatever is typed there would be overwritten seconds later,
+or would overwrite the extraction, with no way for the author to tell which.
+
 ### What Cancel does, and deliberately does not do
 
 **A module already talking to an external API is never interrupted.** It
@@ -312,7 +387,7 @@ retrying would restart the very external work the user asked to stop.
   reconciler heals. Pinned by `orchestrator.service.test.js` ("two dependencies
   finishing at once"), which uses a barrier and per-caller row copies, because
   a fake that shares one row object per type cannot reproduce the race at all.
-- **Conditional (job-result) gate** — if a job-result gate fails (e.g., DAS not extracted), the dependent job moves to `pending_input` and waits for the user to click **Advance**
+- **Conditional (`canAutoAdvance`) gate** — a step that needs a human decision moves to `pending_input` and waits for it. Only DAS Suggestions has one. It is **skipped for a manual run**, and the name is the reason: it governs *auto* advancing, and a person clicking the step by name has made the decision by clicking. Applying it anyway would park a job somebody just asked for in a state nothing revisits
 - **Submission-state gate** — a job whose `gate` (e.g. `krt_curated`) is not yet satisfied stays in `waiting` (never `pending_input`). It needs no manual action: the status-change handler re-drives the pipeline on every submission transition, and the periodic reconciler re-checks gated jobs each sweep, so the job advances on its own once the gate opens
 
 ### Every run is recorded

@@ -413,6 +413,93 @@ test('a dependency that has genuinely failed does release its dependents', async
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// onManualRestart — a step clearing what its last run produced
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('re-running DAS extraction by hand clears the statement it will replace', async (t) => {
+  // Otherwise the button appears to do nothing. The working statement is only
+  // filled while it is empty — that is what stops extraction overwriting the
+  // author — so a re-extraction on a submission that already has one would
+  // write to the extracted field alone and leave the page unchanged.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_EXTRACTION);
+  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'complete';
+  const saves = [];
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    dasConfirmedAt: new Date('2026-08-20T09:00:00Z'),
+    dasConfirmedByUserId: 'user-1',
+    save: async () => { saves.push(true); }
+  };
+  mockDb(t, rows, submission);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_EXTRACTION, 1, 'user-2');
+
+  assert.equal(submission.dataAvailabilityStatement, null, 'room is made for the new reading');
+  assert.equal(submission.dasConfirmedAt, null, 'and there is nothing left to have confirmed');
+  assert.equal(submission.dasConfirmedByUserId, null);
+  assert.equal(saves.length, 1, 'the reset has to be persisted, not just held in memory');
+});
+
+test('the pipeline running extraction on its own does NOT clear it', async (t) => {
+  // A normal round must not wipe a statement somebody has already dealt with.
+  // Only somebody asking for a fresh reading gets one.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_EXTRACTION);
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    dasConfirmedAt: new Date('2026-08-20T09:00:00Z'),
+    dasConfirmedByUserId: 'user-1',
+    save: async () => {}
+  };
+  mockDb(t, rows, submission);
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-2');
+
+  assert.equal(submission.dataAvailabilityStatement, 'Data are at Zenodo.');
+  assert.equal(submission.dasConfirmedByUserId, 'user-1');
+});
+
+test('re-running a step with no reset hook leaves the submission alone', async (t) => {
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.MATERIALS_DETECTION);
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    dasConfirmedAt: new Date('2026-08-20T09:00:00Z'),
+    save: async () => { throw new Error('nothing should be saved'); }
+  };
+  mockDb(t, rows, submission);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, 'user-2');
+
+  assert.equal(submission.dataAvailabilityStatement, 'Data are at Zenodo.');
+});
+
+test('a reset that throws does not stop the run the user asked for', async (t) => {
+  // The run is the request; the reset is housekeeping around it. Refusing to
+  // run because the tidy-up failed would be the wrong trade.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_EXTRACTION);
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    save: async () => { throw new Error('database is down'); }
+  };
+  mockDb(t, rows, submission);
+
+  const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_EXTRACTION, 1, 'user-2');
+
+  assert.equal(job.status, 'queued');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // cascadeRestart — invalidating what a re-run makes stale
 // ─────────────────────────────────────────────────────────────────────────────
 

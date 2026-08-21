@@ -3,14 +3,15 @@
  */
 
 const { Op } = require('sequelize');
-const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, sequelize } = require('../models');
+const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, SubmissionJob, sequelize } = require('../models');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const { extractProjectFromManuscriptId, parsePagination, buildPaginationMeta, statusToStep, buildS3Folder } = require('../utils/helpers');
 const s3Service = require('../services/storage/s3.service');
 const parserService = require('../services/krt/parser.service');
 const krtService = require('../services/krt/krt.service');
+const { NO_DAS_SENTINEL } = require('../services/das-suggestions/das-suggestions.service');
 const jobAdminService = require('../services/queue/job-admin.service');
-const { KRT_COLUMNS, SUBMISSION_STATUSES } = require('../config/constants');
+const { KRT_COLUMNS, SUBMISSION_STATUSES, JOB_TYPES } = require('../config/constants');
 const logger = require('../utils/logger');
 
 /**
@@ -323,22 +324,33 @@ async function update(req, res, next) {
   try {
     const submission = req.submission;
     const { title, dataAvailabilityStatement, manuscriptId, notes, status } = req.validatedBody;
+    let dasNowConfirmed = false;
 
     if (title) submission.title = title;
     if (dataAvailabilityStatement !== undefined) {
-      // Changing the statement withdraws the confirmation. The Availability
-      // check runs on what the author agreed to, so a statement edited after
-      // the fact must be agreed to again rather than inherit the old consent —
-      // otherwise the check reports on text nobody approved.
+      // Writing the statement IS confirming it.
+      //
+      // The confirmation exists because EXTRACTION writes this field: text
+      // pulled out of the manuscript automatically, which the Availability
+      // check would otherwise report on as though the author had written it.
+      // A person who types the statement has already vouched for it, and
+      // asking them to confirm text they just authored is a click that means
+      // nothing — the kind of confirmation people learn to dismiss.
       //
       // Only on a real change: re-saving the same text from the metadata modal
-      // is not an edit, and clearing the confirmation there would make the
-      // Availability step ask again for no reason.
+      // is not an authorship event, and re-stamping the confirmation there
+      // would credit the wrong person with the decision.
       const changed = (submission.dataAvailabilityStatement || '') !== (dataAvailabilityStatement || '');
       submission.dataAvailabilityStatement = dataAvailabilityStatement;
       if (changed) {
-        submission.dasConfirmedAt = null;
-        submission.dasConfirmedByUserId = null;
+        // Emptying the field is not authorship. Nothing to confirm, and a
+        // confirmation left standing over a blank statement would let the
+        // check run against nothing the moment text reappeared.
+        const text = (dataAvailabilityStatement || '').trim();
+        const real = text && text !== NO_DAS_SENTINEL;
+        submission.dasConfirmedAt = real ? new Date() : null;
+        submission.dasConfirmedByUserId = real ? (req.userId || null) : null;
+        dasNowConfirmed = !!real;
       }
     }
     if (manuscriptId !== undefined) {
@@ -372,6 +384,14 @@ async function update(req, res, next) {
     // wait for the KRT step to be validated), so a status change may unblock
     // waiting jobs. Failure here is non-fatal: the periodic reconciler
     // re-drives gated jobs within one sweep interval.
+    // A statement the author just wrote is one the check may read, and the
+    // check may be sitting in `pending_input` waiting for exactly that. Saving
+    // the form has to release it — otherwise the author writes the statement,
+    // sees nothing happen, and has no way to find out why.
+    if (dasNowConfirmed) {
+      await releaseAvailabilityCheck(submission, req.userId);
+    }
+
     if (statusChanged) {
       try {
         const orchestrator = require('../services/queue/orchestrator.service');
@@ -723,6 +743,11 @@ async function processNewVersion(req, res, next) {
       submission.currentRound = newRound;
       submission.dataAvailabilityStatement = null;
       submission.extractedDataAvailabilityStatement = null;
+      // The confirmation was about the previous manuscript's statement. Leaving
+      // it standing would let the new round's Availability check run on text
+      // extracted from a document nobody has confirmed anything about.
+      submission.dasConfirmedAt = null;
+      submission.dasConfirmedByUserId = null;
       submission.status = 'step_krt';
       await submission.save({ transaction: t });
 
@@ -857,6 +882,89 @@ async function processNewVersion(req, res, next) {
   }
 }
 
+/**
+ * Release the Availability check now that the statement has a person behind it.
+ *
+ * `requeueStep` resets the row out of `pending_input` — which nothing else
+ * revisits — and runs it as a manual trigger, so whoever authorised the
+ * statement is credited with the run.
+ *
+ * Never throws. The confirmation is recorded either way, and a step left
+ * `waiting` is picked up by the next reconciler sweep; failing the request
+ * would tell the user their statement did not save, which is false, and they
+ * would type it again.
+ *
+ * @param {object} submission
+ * @param {string} [userId] - who authorised it
+ */
+async function releaseAvailabilityCheck(submission, userId) {
+  try {
+    const orchestrator = require('../services/queue/orchestrator.service');
+    const round = submission.currentRound || 1;
+    const job = await SubmissionJob.getLatest(submission.id, JOB_TYPES.DAS_SUGGESTIONS, round);
+
+    // Only release a step that is actually held. A check that has already run —
+    // or is running — does not need releasing, and requeueStep would happily
+    // reset a `complete` row and spend the call a second time. That turns
+    // re-saving a form into an LM bill.
+    const held = !job || ['waiting', 'pending_input', 'failed'].includes(job.status);
+    if (held) {
+      await orchestrator.requeueStep(submission.id, JOB_TYPES.DAS_SUGGESTIONS, round, userId);
+    }
+  } catch (releaseErr) {
+    logger.error('Availability Statement confirmed, but the check did not start', {
+      submissionId: submission.id,
+      error: releaseErr.message
+    });
+  }
+}
+
+/**
+ * Confirm the Availability Statement, and release the check that reads it.
+ *
+ * The Availability check is the one step that will not start on its own. It
+ * reports on a paragraph pulled out of the manuscript automatically, and
+ * extraction gets it wrong often enough to matter — a check of the wrong
+ * paragraph is worse than no check, because it is reported as the author's.
+ *
+ * Confirming is therefore a decision, recorded with who made it and when, and
+ * it is what lets the pipeline spend the call.
+ *
+ * @route POST /api/submissions/:id/das/confirm
+ */
+async function confirmDas(req, res, next) {
+  try {
+    const submission = req.submission;
+
+    // NO_DAS_SENTINEL, not just empty: extraction always persists something,
+    // and "Not found" is the shape of nothing. Confirming it would send the
+    // checker the literal string "Not found" to review.
+    const das = (submission.dataAvailabilityStatement || '').trim();
+    if (!das || das === NO_DAS_SENTINEL) {
+      throw new ValidationError(
+        'There is no Availability Statement to confirm. Add one first, then confirm it.'
+      );
+    }
+
+    submission.dasConfirmedAt = new Date();
+    submission.dasConfirmedByUserId = req.userId || null;
+    await submission.save();
+
+    logger.info('Availability Statement confirmed', {
+      submissionId: submission.id, userId: req.userId
+    });
+
+    await releaseAvailabilityCheck(submission, req.userId);
+
+    res.json({
+      dasConfirmedAt: submission.dasConfirmedAt,
+      dasConfirmedByUserId: submission.dasConfirmedByUserId
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   list,
   create,
@@ -870,5 +978,6 @@ module.exports = {
   listHidden,
   getFilterOptions,
   downloadFile,
-  processNewVersion
+  processNewVersion,
+  confirmDas
 };

@@ -374,7 +374,7 @@ async function processDasSuggestions(submissionId, jobLogger = null /*, opts */)
  * @returns {Promise<{queued: boolean, reason: 'no_statement'|'gated'|null,
  *   status?: string, jobId?: string|null, submissionJobId?: string}>}
  */
-async function queueDasSuggestions(submissionId, round = 1) {
+async function queueDasSuggestions(submissionId, round = 1, userId = null) {
   const { SubmissionJob, Submission } = require('../../models');
 
   // Nothing to check without a Data Availability Statement — this happens when
@@ -407,8 +407,11 @@ async function queueDasSuggestions(submissionId, round = 1) {
   const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_SUGGESTIONS, round);
   const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
 
+  // The caller is the trigger: somebody clicked "re-run this check". Passing
+  // null here left the run credited to whoever last touched the row, which for
+  // a reconciler-driven pipeline is nobody at all.
   const job = await orchestrator.requeueStep(
-    submissionId, JOB_TYPES.DAS_SUGGESTIONS, round, null
+    submissionId, JOB_TYPES.DAS_SUGGESTIONS, round, userId
   );
   logger.info('DAS suggestions re-queued', {
     submissionId, submissionJobId: job.id, status: job.status, alreadyInFlight

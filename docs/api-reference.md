@@ -217,12 +217,21 @@ Get a submission by ID. **Requires submission access.**
 ### `PATCH /api/submissions/:id`
 Update a submission (title, status, DAS, notes, etc.).
 
+Changing `dataAvailabilityStatement` **confirms it in the caller's name** and
+releases the Availability check: a person writing the statement has vouched for
+it, and asking them to confirm a sentence they just typed is a dialog people
+learn to dismiss. Re-saving the same text is not a change, so it does not
+re-stamp the confirmation — that would credit the wrong person with the
+decision. Emptying the field clears the confirmation instead.
+
 ### `DELETE /api/submissions/:id`
 Delete a submission. **admin, ds_annotator only.**
 
 ### `POST /api/submissions/:id/new-round`
 Start a new round (revision) for a submission. The submission must be at `step_report` or `completed`.
 - **Body**: `{ hasNewKRT: boolean }` (required) — when `true`, the user lands at `step_krt` to upload a fresh KRT; when `false`, the current KRT is carried forward and the user lands at `step_pdf`.
+- Clears `dataAvailabilityStatement`, `extractedDataAvailabilityStatement` and
+  the confirmation: they were about the previous manuscript.
 
 ### `POST /api/submissions/:id/hide`
 Hide a submission from the current user's dashboard.
@@ -358,6 +367,11 @@ a second job row, and it cannot jump ahead of the detectors it consolidates.
 ### `POST /api/submissions/:id/pdf/extract-das`
 Re-run DAS extraction **as a pipeline step**, and return immediately (202).
 - **Returns**: `{ message, status, submissionJobId }`
+- ⚠️ **Clears `dataAvailabilityStatement` first.** Asking for extraction again is
+  asking for a fresh reading of the manuscript, and the working field is only
+  filled while it is empty — without the reset the module would run and change
+  nothing visible. Any statement a person wrote is discarded by this call; the
+  previous extraction survives in `extractedDataAvailabilityStatement`.
 - It used to run the extraction inside the request. That worked, but left the
   pipeline untouched: the `das_extraction` job row kept the previous run's
   status, result, frozen inputs and prompt — so the module page described a run
@@ -516,9 +530,27 @@ Get the latest DAS check status + verdicts. Author-accessible (unlike the raw `/
 
 The `/availability` view shows a **loader** and **blocks Continue** while `status` is `queued`/`processing`.
 
+### `POST /api/submissions/:id/das/confirm`
+Confirm that the Availability Statement is the passage the check should read, and
+release the check — which does not start on its own.
+
+- **Returns**: `{ dasConfirmedAt, dasConfirmedByUserId }`
+- **400** when there is nothing to confirm: an empty statement, or the
+  `"Not found"` sentinel extraction writes when it found none. Confirming those
+  would send the checker two literal words to review, and bill for it.
+- Only needed for a statement that came from automatic **extraction**. Writing
+  one by hand records the same thing, in the same person's name — see
+  [background-jobs.md](./background-jobs.md#the-availability-statement-and-who-vouches-for-it).
+- Releases the step only when it is actually held (`waiting`, `pending_input` or
+  `failed`). A check that already ran is not re-run by confirming again, so
+  re-opening the confirmation screen cannot turn into a second LM bill.
+- No LM rate limiter: confirming spends nothing itself, and rate-limiting a "yes"
+  would leave the pipeline parked.
+
 ### `POST /api/submissions/:id/das-suggestions/regenerate`
 Re-run the DAS check (creates a fresh `das_suggestions` job). Called on first arrival at `/availability` and again
 whenever the author edits the DAS text. **Returns**: `{ queued: true, jobId }` (202).
+The run is credited to the caller — this is somebody asking for it by name.
 
 ---
 

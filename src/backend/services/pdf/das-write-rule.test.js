@@ -1,7 +1,14 @@
 /**
  * Whose Availability Statement wins when extraction runs again.
  *
- * The bug this pins: extraction wrote `dataAvailabilityStatement` every time,
+ * Two fields, two meanings:
+ *
+ *   - `extractedDataAvailabilityStatement` is what the last extraction found,
+ *     always overwritten;
+ *   - `dataAvailabilityStatement` is what the submission stands on, filled from
+ *     extraction only while it is empty.
+ *
+ * The bug this pins: extraction wrote the second field every time,
  * unconditionally. An author whose statement the extractor could not find typed
  * one by hand — the whole reason the manual path exists — and the next run of
  * extraction replaced it with "Not found". The app undid their work and called
@@ -43,14 +50,32 @@ test('a fresh extraction fills an empty submission', () => {
   assert.equal(outcome.replaced, true);
 });
 
-test('re-extraction may correct its own previous answer', () => {
-  // Nobody has touched it, so there is no human decision to protect — the newer
-  // reading of the manuscript is simply better.
+test('re-extraction does not overwrite a field that is already filled', () => {
+  // Even though nobody edited it: once the working field holds a statement, it
+  // belongs to whoever put it there, and the app cannot tell a statement the
+  // author read and accepted from one they never looked at.
+  //
+  // The newer reading is not lost — it goes to the extracted field, and the
+  // page shows the two side by side when they differ.
   const submission = untouched();
 
-  applyExtractedDas(submission, 'Data are at Dryad, accession 12345.');
+  const outcome = applyExtractedDas(submission, 'Data are at Dryad, accession 12345.');
 
-  assert.equal(submission.dataAvailabilityStatement, 'Data are at Dryad, accession 12345.');
+  assert.equal(submission.dataAvailabilityStatement, 'Data are at Zenodo.');
+  assert.equal(submission.extractedDataAvailabilityStatement, 'Data are at Dryad, accession 12345.');
+  assert.equal(outcome.replaced, false);
+});
+
+test('"Not found" does not count as filled', () => {
+  // Extraction is fail-soft and always persists something, so a first pass that
+  // found nothing leaves the sentinel in the working field. Treating that as
+  // occupied would lock out every later extraction — including the one that
+  // finally succeeds after the manuscript is re-uploaded.
+  const submission = untouched(NO_DAS_SENTINEL);
+
+  applyExtractedDas(submission, 'Data are at Zenodo.');
+
+  assert.equal(submission.dataAvailabilityStatement, 'Data are at Zenodo.');
 });
 
 test('re-extraction does NOT overwrite what the author typed', () => {
@@ -65,9 +90,8 @@ test('re-extraction does NOT overwrite what the author typed', () => {
 });
 
 test('and it does not overwrite an author correction with a better guess either', () => {
-  // The stronger case: extraction has something to say this time. It is still
-  // not the author's to overwrite — it goes to the extracted field, which is
-  // what that field is for.
+  // The case the two fields exist for: extraction has something to say this
+  // time, and it is still not the author's text to overwrite.
   const submission = untouched('Data are at Zenodo.');
   submission.dataAvailabilityStatement = 'Data are at Zenodo, DOI 10.5281/zenodo.1.';
 
@@ -78,9 +102,10 @@ test('and it does not overwrite an author correction with a better guess either'
     'the new reading is still recorded — it is just not promoted over a person');
 });
 
-test('an author edit keeps its confirmation', () => {
-  // The author confirmed their own text. Extraction running again changed
-  // nothing they agreed to, so making them agree again would be noise.
+test('a filled statement keeps its confirmation', () => {
+  // Extraction running again changed nothing the author agreed to, so making
+  // them agree again would be noise — and would park the Availability check
+  // awaiting input for a reason no user could see.
   const submission = untouched(NO_DAS_SENTINEL);
   submission.dataAvailabilityStatement = 'All data are in the supplement.';
 
@@ -90,10 +115,11 @@ test('an author edit keeps its confirmation', () => {
   assert.equal(outcome.confirmationWithdrawn, false);
 });
 
-test('new extracted text withdraws the confirmation', () => {
-  // What the author agreed to is gone. Re-confirming is one click; a report
-  // about a statement nobody has read is not recoverable.
-  const submission = untouched();
+test('filling an empty field withdraws any confirmation standing over it', () => {
+  // Extractor-authored text has nobody behind it. A confirmation left from
+  // earlier words does not carry over — the check would report on a statement
+  // nobody has read, in the author's name.
+  const submission = untouched(NO_DAS_SENTINEL);
 
   const outcome = applyExtractedDas(submission, 'Data available on request.');
 
@@ -102,22 +128,10 @@ test('new extracted text withdraws the confirmation', () => {
   assert.equal(outcome.confirmationWithdrawn, true);
 });
 
-test('re-extraction landing on the same text keeps the confirmation', () => {
-  // A re-run that produces an identical statement has not changed the subject
-  // of the agreement, so it must not silently invalidate it — that would park
-  // the Availability check awaiting input for no reason a user could see.
-  const submission = untouched();
-
-  const outcome = applyExtractedDas(submission, 'Data are at Zenodo.');
-
-  assert.equal(submission.dasConfirmedAt, CONFIRMED);
-  assert.equal(outcome.confirmationWithdrawn, false);
-});
-
-test('an empty statement is not an author edit', () => {
-  // '' and null both mean "nothing there", and neither is a decision worth
-  // protecting — otherwise a blanked field would freeze extraction out for good.
-  for (const blank of ['', null, undefined]) {
+test('a blank field is filled, whatever shape the blank is', () => {
+  // '', null and undefined all mean "nothing there". Any of them freezing
+  // extraction out would leave the submission with no statement at all.
+  for (const blank of ['', '   ', null, undefined]) {
     const submission = {
       extractedDataAvailabilityStatement: 'Data are at Zenodo.',
       dataAvailabilityStatement: blank,
@@ -130,4 +144,17 @@ test('an empty statement is not an author edit', () => {
     assert.equal(submission.dataAvailabilityStatement, 'Data are at Dryad.',
       `${JSON.stringify(blank)} must not lock extraction out`);
   }
+});
+
+test('the extracted field is always updated, filled or not', () => {
+  // It is the record of what the extractor said on this run. A reader comparing
+  // the two fields is asking "did the manuscript change?", and a stale
+  // extracted value answers a question about some earlier run instead.
+  const filled = untouched();
+  applyExtractedDas(filled, 'Data available on request.');
+  assert.equal(filled.extractedDataAvailabilityStatement, 'Data available on request.');
+
+  const empty = { extractedDataAvailabilityStatement: 'old', dataAvailabilityStatement: '', dasConfirmedAt: null };
+  applyExtractedDas(empty, 'Data available on request.');
+  assert.equal(empty.extractedDataAvailabilityStatement, 'Data available on request.');
 });

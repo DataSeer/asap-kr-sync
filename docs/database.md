@@ -112,8 +112,10 @@ Managed on the **Projects** admin page (CRUD + CSV import/export).
 | `project` | VARCHAR(10) | 2-letter grant code auto-extracted from `manuscript_id`; not FK-validated. Filter/label only — does not drive visibility (owner's teams do). |
 | `title` | VARCHAR(500) | Required |
 | `manuscript_id` | VARCHAR(100) | Optional, validated against the ASAP pattern |
-| `data_availability_statement` | TEXT | User-edited DAS |
-| `extracted_data_availability_statement` | TEXT | AI-extracted DAS |
+| `data_availability_statement` | TEXT | The statement the submission **stands on**. Filled from extraction *only while empty*; once it holds anything it belongs to whoever put it there. `"Not found"` counts as empty. |
+| `extracted_data_availability_statement` | TEXT | What the **last extraction** found. Always overwritten — it is a record of what the extractor said, not of what the submission claims. |
+| `das_confirmed_at` | TIMESTAMPTZ | When somebody vouched for the statement. The Availability check will not run without it. Cleared when extraction rewrites the field, and on a new round. |
+| `das_confirmed_by_user_id` | UUID (FK) | Who vouched for it. Set by `POST /:id/das/confirm`, and by writing the statement — authoring it says the same thing. |
 | `status` | ENUM | See status values below |
 | `notes` | TEXT | Optional notes |
 | `current_round` | INTEGER | Default 1; incremented by `POST /:id/new-round` |

@@ -91,6 +91,14 @@ router.get('/:id/das-suggestions',
   dasSuggestionsController.getDasSuggestions
 );
 
+// POST /api/submissions/:id/das/confirm - the author agrees the statement the
+// check will read is the right one. No LM limiter: confirming spends nothing
+// itself, and rate-limiting a "yes" would leave the pipeline parked.
+router.post('/:id/das/confirm',
+  canAccessSubmission,
+  submissionsController.confirmDas
+);
+
 // POST /api/submissions/:id/das-suggestions/regenerate - re-run the DAS check
 router.post('/:id/das-suggestions/regenerate',
   // Access first, THEN the budget — see the note on the limiters above. A

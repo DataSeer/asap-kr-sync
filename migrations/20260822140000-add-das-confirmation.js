@@ -8,10 +8,13 @@
  * nothing at all. Running first and asking later spends a model call on text
  * nobody has looked at, and produces advice about the wrong statement.
  *
- * Set when the author confirms, cleared when they edit, so an edited statement
- * is re-confirmed rather than silently re-used. Timestamped rather than a
- * boolean because "when was this agreed" is the question an audit asks, and a
- * boolean cannot answer it.
+ * Set when somebody vouches for the statement — by confirming it, or by writing
+ * it, since authoring it says the same thing. Cleared when extraction rewrites
+ * the field (that text has nobody behind it) and when a new round starts (it was
+ * about the previous manuscript).
+ *
+ * Timestamped rather than a boolean, and paired with a user, because "who agreed
+ * to this, and when" is the question an audit asks and a boolean cannot answer.
  *
  * Existing submissions backfill to NULL, which reads as "not yet confirmed" —
  * correct: nobody has been asked.

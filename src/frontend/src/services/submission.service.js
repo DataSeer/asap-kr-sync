@@ -63,6 +63,22 @@ export default {
   },
 
   /**
+   * Confirm the Availability Statement — the author agrees the statement the
+   * check will read is the right one. Records who and when, and releases the
+   * check, which does not start on its own.
+   *
+   * Only needed when the statement came from automatic extraction: writing one
+   * by hand already says the same thing.
+   *
+   * @param {string} id - The submission ID
+   * @returns {Promise<Object>} - { dasConfirmedAt, dasConfirmedByUserId }
+   */
+  async confirmDas(id) {
+    const response = await api.post(`/submissions/${id}/das/confirm`)
+    return response.data
+  },
+
+  /**
    * Reassign a submission to another owner (staff only)
    * @param {string} id - The submission ID
    * @param {string} userId - The new owner's user ID

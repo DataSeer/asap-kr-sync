@@ -142,7 +142,29 @@ const PIPELINE = [
   // DAS extraction now reads the converted markdown (Gemini-based, replaces
   // the Modal Llama fine-tune that ate the PDF directly), so it depends on
   // MARKDOWN_CONVERT just like the other Gemini-based detectors.
-  { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'markdown_ready' },
+  {
+    jobType: JOB_TYPES.DAS_EXTRACTION,
+    dependsOn: [JOB_TYPES.MARKDOWN_CONVERT],
+    gate: 'markdown_ready',
+
+    // Asking for extraction again is asking for a fresh reading of the
+    // manuscript, so the working statement is cleared to make room for it.
+    //
+    // Without this the module would run and change nothing visible: the working
+    // field is only filled while it is empty (see applyExtractedDas), so a
+    // re-extraction on a submission that already has a statement — every new
+    // round, every replaced PDF — would write to the extracted field alone and
+    // look like it had done nothing.
+    //
+    // Only on a MANUAL restart. The pipeline running extraction as part of a
+    // normal round must not wipe a statement somebody has already dealt with.
+    onManualRestart(submission) {
+      submission.dataAvailabilityStatement = null;
+      // Nothing left to have confirmed.
+      submission.dasConfirmedAt = null;
+      submission.dasConfirmedByUserId = null;
+    }
+  },
   // Softcite reads the PDF and could start immediately, but the module's second
   // engine — the LM pass — reads the converted markdown, and without this
   // dependency it would race conversion and skip on nearly every run. Waiting
@@ -924,6 +946,21 @@ async function requeueStep(submissionId, jobType, round, userId) {
   const submission = await Submission.findByPk(submissionId, {
     attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
+
+  // A step may need to clear what its previous run produced before running
+  // again — otherwise "re-run this module" is a button that appears to do
+  // nothing. Non-fatal: the run is what the user asked for, and a failure to
+  // reset is better reported than turned into a refusal to run at all.
+  if (submission && step.onManualRestart) {
+    try {
+      await step.onManualRestart(submission);
+      await submission.save();
+    } catch (resetErr) {
+      logger.error('Manual restart could not reset the step\'s previous output', {
+        submissionId, jobType, error: resetErr.message
+      });
+    }
+  }
 
   await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, 'manual');
   return job;

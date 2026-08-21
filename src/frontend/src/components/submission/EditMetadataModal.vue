@@ -48,6 +48,33 @@ const dasExtractionRunning = computed(() => {
   return status === 'queued' || status === 'processing'
 })
 
+// The Availability check waits for a person to vouch for the statement it will
+// read. Offered here as well as on the Availability page so the pipeline can be
+// unblocked from any step — which is the point of this modal being reachable
+// everywhere.
+//
+// Only for text nobody has touched: editing the field below and saving records
+// the same decision, in the same person's name.
+const dasNeedsConfirmation = computed(() => {
+  const das = (props.submission?.dataAvailabilityStatement || '').trim()
+  return !!das && das !== 'Not found' && !props.submission?.dasConfirmedAt
+})
+const confirmingDas = ref(false)
+
+async function confirmDas() {
+  confirmingDas.value = true
+  try {
+    await submissionStore.confirmDas(props.submission.id)
+    notificationStore.success('Statement confirmed — checking it now')
+  } catch (error) {
+    notificationStore.error(
+      error.response?.data?.error || 'Could not confirm the Availability Statement'
+    )
+  } finally {
+    confirmingDas.value = false
+  }
+}
+
 const submissionStore = useSubmissionStore()
 const notificationStore = useNotificationStore()
 const authStore = useAuthStore()
@@ -333,6 +360,23 @@ async function saveMetadata() {
               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-vertical disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
               placeholder="Describe how and where the data will be made available..."
             ></textarea>
+            <div
+              v-if="dasNeedsConfirmation && !dasExtractionRunning"
+              class="mt-2 flex items-start gap-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200"
+            >
+              <p class="flex-1 text-sm text-amber-900">
+                This was read out of your manuscript. We will check it against the ASAP requirements
+                once you confirm it is the right passage.
+              </p>
+              <button
+                type="button"
+                class="shrink-0 px-3 py-1.5 rounded-md bg-amber-700 text-white text-sm font-semibold hover:bg-amber-800 disabled:opacity-60 disabled:cursor-not-allowed"
+                :disabled="confirmingDas"
+                @click="confirmDas"
+              >
+                {{ confirmingDas ? 'Confirming…' : 'Confirm' }}
+              </button>
+            </div>
           </div>
 
           <!-- Notes -->

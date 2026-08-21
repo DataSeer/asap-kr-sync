@@ -513,6 +513,21 @@ async function applyEdit(submissionId, data, modifiedValue, userId, round) {
 /**
  * Decide what a fresh extraction is allowed to write onto the submission.
  *
+ * There are two fields, and they mean different things:
+ *
+ *   - `extractedDataAvailabilityStatement` — what the LAST extraction found.
+ *     Always overwritten; it is a record of what the extractor said, and a
+ *     newer reading of the manuscript replaces an older one.
+ *   - `dataAvailabilityStatement` — the statement the submission STANDS ON.
+ *     Filled from extraction only while it is empty. Once it holds anything,
+ *     it belongs to whoever put it there.
+ *
+ * The bug this rule fixes: extraction wrote the second field every time. An
+ * author whose statement the extractor could not find typed one by hand — the
+ * whole reason the manual path exists — and the next extraction replaced it
+ * with "Not found". The app undid their work and called it an update, with no
+ * record that anything had been lost.
+ *
  * Pure and synchronous on purpose: this is the rule about whose text wins, and
  * it should be readable and testable without a database behind it.
  *
@@ -521,33 +536,28 @@ async function applyEdit(submissionId, data, modifiedValue, userId, round) {
  * @returns {{ replaced: boolean, confirmationWithdrawn: boolean }}
  */
 function applyExtractedDas(submission, persisted) {
-  // The extractor's own answer, always recorded — it is this run's finding, and
-  // the page can show it beside the author's version when the two differ.
-  const previousExtraction = submission.extractedDataAvailabilityStatement;
-  const current = submission.dataAvailabilityStatement;
   submission.extractedDataAvailabilityStatement = persisted;
 
-  // The author's version wins. Extraction proposes; the person decides. An
-  // author who typed a statement the extractor could not find — the whole
-  // reason the manual path exists — had it overwritten the next time this ran,
-  // which is the app undoing their work and calling it an update.
-  //
-  // "Edited" means the statement no longer matches what extraction last
-  // produced. With no previous extraction, anything already there was put there
-  // by a person.
-  const authorEdited = !!current && current !== previousExtraction;
-  if (authorEdited) return { replaced: false, confirmationWithdrawn: false };
+  // The sentinel counts as empty. Extraction is fail-soft and always persists
+  // something, so a first pass that found nothing leaves "Not found" sitting in
+  // the working field — and treating that as occupied would lock out every
+  // later extraction, including the one that finally succeeds.
+  const current = (submission.dataAvailabilityStatement || '').trim();
+  const occupied = current && current !== NO_DAS_SENTINEL;
+  if (occupied) return { replaced: false, confirmationWithdrawn: false };
 
   const changed = current !== persisted;
   submission.dataAvailabilityStatement = persisted;
 
-  // New text to agree to, so the old agreement no longer applies. Re-confirming
-  // is a click; reporting on a statement nobody has read is not recoverable.
+  // Extractor-authored text has nobody behind it. Any confirmation standing
+  // here was about different words, so it does not carry over — the Availability
+  // check asks again rather than reporting on a statement nobody has read.
+  const hadConfirmation = !!submission.dasConfirmedAt;
   if (changed) {
     submission.dasConfirmedAt = null;
     submission.dasConfirmedByUserId = null;
   }
-  return { replaced: true, confirmationWithdrawn: changed };
+  return { replaced: true, confirmationWithdrawn: changed && hadConfirmation };
 }
 
 /**

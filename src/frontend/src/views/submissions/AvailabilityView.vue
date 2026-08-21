@@ -27,6 +27,36 @@ const dasWasModified = computed(() => {
     && extractedDAS.value !== asText.value
 })
 
+// ── Confirming the statement ──────────────────────────────────────────────
+// The check reads a paragraph that was pulled out of the manuscript
+// automatically, and extraction gets it wrong often enough to matter. A check
+// of the wrong paragraph is worse than none, because the report presents it as
+// the author's own statement.
+//
+// So the check waits for a person. Writing the statement by hand already says
+// the same thing (the server records that as the confirmation), which is why
+// this only appears for text nobody has touched.
+const dasConfirmed = computed(() => !!submission.value?.dasConfirmedAt)
+const needsConfirmation = computed(() =>
+  !!asText.value && asText.value !== 'Not found' && !dasConfirmed.value
+)
+const confirmingDAS = ref(false)
+
+async function confirmDAS() {
+  confirmingDAS.value = true
+  try {
+    await submissionStore.confirmDas(route.params.id)
+    notificationStore.success('Statement confirmed — checking it now')
+    startPolling()
+  } catch (error) {
+    notificationStore.error(
+      error.response?.data?.error || 'Could not confirm the Availability Statement'
+    )
+  } finally {
+    confirmingDAS.value = false
+  }
+}
+
 // DAS editing
 const isEditingDAS = ref(false)
 const editedDAS = ref('')
@@ -502,6 +532,26 @@ async function handleBack() {
     <div v-if="!loadError && dasWasModified" class="card extracted-das-card">
       <div class="text-xs font-semibold uppercase text-gray-500 mb-1">Original extracted text</div>
       <div class="extracted-das-text">{{ extractedDAS }}</div>
+    </div>
+
+    <!-- Confirmation — the check will not run until somebody vouches for the
+         text it is about to read. -->
+    <div v-if="!loadError && needsConfirmation" class="das-confirm-card">
+      <div class="das-confirm-body">
+        <p class="das-confirm-title">Is this your Availability Statement?</p>
+        <p class="das-confirm-sub">
+          We pulled this text out of your manuscript automatically. We will check it against the
+          ASAP requirements once you confirm it is the right passage — or edit it below if it is not.
+        </p>
+      </div>
+      <button
+        type="button"
+        class="das-confirm-btn"
+        :disabled="confirmingDAS"
+        @click="confirmDAS"
+      >
+        {{ confirmingDAS ? 'Confirming…' : 'Yes, check it' }}
+      </button>
     </div>
 
     <!-- AS Text Display -->
@@ -1313,5 +1363,39 @@ async function handleBack() {
   font-size: 0.8125rem;
   color: #6b7280;
   margin-top: 0.125rem;
+}
+
+/* Confirmation prompt — deliberately the loudest thing on the page while it is
+   showing: nothing downstream happens until it is answered. */
+.das-confirm-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  border: 1px solid #fcd34d;
+  border-left: 4px solid #f59e0b;
+  border-radius: 0.5rem;
+  background: #fffbeb;
+}
+.das-confirm-body { flex: 1; min-width: 0; }
+.das-confirm-title { font-weight: 600; color: #78350f; }
+.das-confirm-sub { margin-top: 0.25rem; font-size: 0.875rem; color: #92400e; }
+.das-confirm-btn {
+  flex-shrink: 0;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  background: #b45309;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+.das-confirm-btn:hover:not(:disabled) { background: #92400e; }
+.das-confirm-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .das-confirm-card { flex-direction: column; align-items: stretch; }
+  .das-confirm-btn { width: 100%; }
 }
 </style>
