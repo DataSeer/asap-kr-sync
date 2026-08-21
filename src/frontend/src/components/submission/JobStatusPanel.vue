@@ -15,6 +15,9 @@ import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isCancelledJob } from '@/composables/useJobPoller'
 import { isFutureStepJob } from '@/composables'
+// One vocabulary for job state, shared with the module pages — these were
+// about to be a second copy.
+import { formatFailReason, partialDetail } from '@/utils/job-status'
 
 const emit = defineEmits(['edit-das'])
 const route = useRoute()
@@ -751,32 +754,6 @@ function getDataSummary(job, r) {
  * Human-readable text for the helper's failReason codes. Mirrors the four
  * fail paths defined in demo-fallback.service.js.
  */
-function formatFailReason(reason) {
-  const map = {
-    external_failed_no_demo_data: 'External service failed and no demo data is available for this manuscript',
-    external_failed_demo_disabled: 'External service failed; demo fallback is disabled',
-    process_off_no_demo_data: 'Process is disabled; no demo data is available for this manuscript',
-    // Partial outcomes. `<engine>_failed` is written by demo-fallback from the
-    // `meta.degraded.engine` the service declares, so a new engine gets a
-    // readable line here rather than the generic fallback below.
-    softcite_failed: 'Softcite was unavailable — these rows come from the LM pass alone'
-  }
-  return map[reason] || 'Process did not produce a result'
-}
-
-/**
- * The full explanation of a partial run, for the popup and the module page.
- *
- * Names the engine that failed AND what it means for the rows on screen. A
- * user seeing a short software table needs both halves: without the first it
- * is a mystery, without the second it looks like a complete answer.
- */
-function partialDetail(job) {
-  if (job.outcomeState !== 'partial') return null
-  const headline = formatFailReason(job.outcomeFailReason)
-  const error = job.outcomeExternalError
-  return error ? `${headline}.\n\nThe service reported: ${error}` : `${headline}.`
-}
 
 /**
  * Tooltip for the line-1 config pill. Explains what On/Demo/Off mean for this

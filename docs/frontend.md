@@ -367,6 +367,32 @@ Vite config (`vite.config.js`):
 - **Source maps:** enabled in dev/staging, disabled in production
 - **Environment:** exposes `__APP_VERSION__` from package.json
 
+## Job state — one vocabulary, `utils/job-status.js`
+
+Three surfaces answer "what happened to this step?" — the processes panel, the
+pipeline page, and each module page. `utils/job-status.js` owns the wording so
+they cannot drift:
+
+- `describeJobStatus(job)` → `{ tone, label, title, detail }` for **every**
+  status, not just the unhappy ones. Module pages show it directly under the
+  title, because a table of results cannot say whether it is the full output, an
+  earlier run's leftovers, or nothing at all because the step never started —
+  the reader infers, and infers wrong.
+- `formatFailReason(reason)` and `partialDetail(job)` — shared with the panel,
+  which used to hold its own copies.
+- `outcomeStateOf(job)` — **read the outcome through this, always.**
+
+That last one exists because of a real bug. The jobs API sends
+`result.service.outcome.state`; `JobStatusPanel` flattens it onto its own
+view-model as `outcomeState`. The pipeline page holds RAW poller jobs and read
+the flattened name, so its check never fired at all and a step whose service had
+FAILED rendered as a green "done". A `partial` step made it visible; `fail` had
+been wrong the whole time.
+
+A unit test of the helper cannot catch that — the helper was right, the page
+asked it the wrong question. `views/submissions/pipeline-status.test.js` mounts
+the page with an API-shaped job for that reason.
+
 ## Tooltips — `v-tooltip`, never `title`
 
 The browser's native `title` is not used anywhere in this app. It cannot be

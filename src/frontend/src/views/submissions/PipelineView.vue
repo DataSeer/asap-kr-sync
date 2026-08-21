@@ -17,6 +17,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useRoute } from 'vue-router'
 import { useJobPoller } from '@/composables'
+import { outcomeStateOf } from '@/utils/job-status'
 import configService from '@/services/config.service'
 import { labelFor, purposeFor, stageLabel, hasModulePage } from '@/components/modules/module-meta'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
@@ -90,7 +91,15 @@ const jobFor = (jobType) => (jobs.value || {})[jobType] || null
 function statusOf(jobType) {
   const job = jobFor(jobType)
   if (!job || !job.status) return { text: 'not started', cls: 'st-idle' }
-  if (job.status === 'complete' && job.outcomeState === 'fail') return { text: 'failed', cls: 'st-fail' }
+  // Read through outcomeStateOf: this page holds RAW API jobs, which carry
+  // `result.service.outcome.state` and no flattened `outcomeState`. Reading the
+  // flattened name here meant the check below never fired at all, and a step
+  // whose service had failed rendered as a green "done".
+  const outcome = outcomeStateOf(job)
+  if (job.status === 'complete' && outcome === 'fail') return { text: 'failed', cls: 'st-fail' }
+  // A completed step whose engine failed. Amber, like the processes panel —
+  // this page and that one must not describe the same row differently.
+  if (job.status === 'complete' && outcome === 'partial') return { text: 'partial', cls: 'st-partial' }
   const map = {
     complete: { text: 'done', cls: 'st-done' },
     processing: { text: 'running', cls: 'st-run' },
@@ -190,13 +199,14 @@ const state = computed(() => {
   // steps' own "all finished" gates are the ones that must ignore a step parked
   // behind a later stage — see isFutureStepJob.)
   const nodes = graph.value.nodes
-  const tally = { done: 0, running: 0, waiting: 0, failed: 0, pending: 0, idle: 0 }
+  const tally = { done: 0, running: 0, waiting: 0, failed: 0, pending: 0, partial: 0, idle: 0 }
   for (const n of nodes) {
     const cls = statusOf(n.jobType).cls
     if (cls === 'st-done') tally.done++
     else if (cls === 'st-run') tally.running++
     else if (cls === 'st-fail') tally.failed++
     else if (cls === 'st-pending') tally.pending++
+    else if (cls === 'st-partial') tally.partial++
     else if (cls === 'st-wait') tally.waiting++
     else tally.idle++
   }
@@ -206,7 +216,11 @@ const state = computed(() => {
 /** The first stage that has not finished — where the work actually is now. */
 const activeStage = computed(() => {
   for (const stage of stages.value) {
-    if (stage.nodes.some((n) => statusOf(n.jobType).cls !== 'st-done')) return stage.index
+    // 'partial' counts as finished here: the step has run and will not run
+    // again on its own, so treating it as outstanding would peg "where the work
+    // is now" to a stage nothing is working on.
+    const unfinished = (n) => !['st-done', 'st-partial'].includes(statusOf(n.jobType).cls)
+    if (stage.nodes.some(unfinished)) return stage.index
   }
   return -1
 })
@@ -242,6 +256,7 @@ const activeStage = computed(() => {
       <span v-if="state.running" class="pv-state-item st-run">{{ state.running }} running</span>
       <span v-if="state.pending" class="pv-state-item st-pending">{{ state.pending }} needs input</span>
       <span v-if="state.waiting" class="pv-state-item st-wait">{{ state.waiting }} waiting</span>
+      <span v-if="state.partial" class="pv-state-item st-partial">{{ state.partial }} partly complete</span>
       <span v-if="state.failed" class="pv-state-item st-fail">{{ state.failed }} failed</span>
     </div>
 
@@ -428,6 +443,7 @@ const activeStage = computed(() => {
 .st-run { background: #dbeafe; color: #1d4ed8; }
 .st-wait { background: #fef3c7; color: #92400e; }
 .st-pending { background: #ffedd5; color: #c2410c; }
+.st-partial { background: #fef3c7; color: #92400e; }
 .st-fail { background: #fee2e2; color: #b91c1c; }
 .st-idle { background: #f3f4f6; color: #6b7280; }
 

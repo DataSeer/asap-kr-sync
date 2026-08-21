@@ -519,12 +519,12 @@ const activeFilterCount = computed(() => {
 
         <!-- User Multi-Select (asap_pm, ds_annotator, admin) -->
         <div v-if="canFilterTeamAndAuthor && filterOptions.users.length > 0" class="filter-dropdown relative">
-          <label class="label">Author</label>
+          <label class="label">Owner</label>
           <button
             class="input w-48 text-left flex items-center justify-between"
             @click.stop="showUserDropdown = !showUserDropdown; showStatusDropdown = false; showProjectDropdown = false"
           >
-            <span v-if="selectedUsers.length === 0" class="text-gray-400">All authors</span>
+            <span v-if="selectedUsers.length === 0" class="text-gray-400">All owners</span>
             <span v-else class="truncate">{{ selectedUsers.length }} selected</span>
             <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
@@ -830,7 +830,7 @@ const activeFilterCount = computed(() => {
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Manuscript ID</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Owner</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Round</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
@@ -872,6 +872,9 @@ const activeFilterCount = computed(() => {
                 <td class="px-4 py-3 text-sm text-gray-600">
                   {{ sub.project || '—' }}
                 </td>
+                <!-- The owner's NAME. It can look like a role — the seeded dev
+                     account for annotator@example.com is literally named
+                     "Annotator" — but `user.role` is never rendered here. -->
                 <td class="px-4 py-3 text-sm text-gray-600 truncate max-w-[120px]">
                   {{ sub.user?.name || '—' }}
                 </td>

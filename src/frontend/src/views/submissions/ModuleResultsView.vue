@@ -14,6 +14,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
+import { describeJobStatus } from '@/utils/job-status'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import DetectionsTable from '@/components/modules/DetectionsTable.vue'
@@ -49,6 +50,17 @@ const resourceTypesStore = useResourceTypesStore()
 const submissionStore = useSubmissionStore()
 
 const { jobs } = useJobPoller(submissionId)
+
+/**
+ * What state this module's run is in, in a sentence.
+ *
+ * Shown for EVERY status, not only the unhappy ones. The page is a table of
+ * results, and a table cannot say whether it is the full output, an earlier
+ * run's leftovers, or nothing at all because the step has not started — the
+ * reader infers, and infers wrong. One line under the title removes the
+ * guessing.
+ */
+const runStatus = computed(() => describeJobStatus((jobs.value || {})[jobType.value] || null))
 
 
 const job = computed(() => (jobs.value || {})[jobType.value] || null)
@@ -472,6 +484,16 @@ const tabConflicts = computed(() => {
       />
     </div>
 
+    <!-- Directly under the title, before anything that could be mistaken for a
+       result: what state this run is in. -->
+    <div class="mrv-status" :class="`mrv-status-${runStatus.tone}`" role="status">
+      <span class="mrv-status-label">{{ runStatus.label }}</span>
+      <span class="mrv-status-text">
+        {{ runStatus.title }}
+        <span v-if="runStatus.detail" class="mrv-status-detail">{{ runStatus.detail }}</span>
+      </span>
+    </div>
+
     <!-- Every step, as links. RouterLink rather than a click handler so
        ctrl-click opens a second tab, which is the point of these pages. -->
     <nav v-if="steps.length" class="mrv-modules" aria-label="Pipeline steps">
@@ -699,6 +721,40 @@ const tabConflicts = computed(() => {
 .mrv { padding: 1.25rem 1.5rem 3rem; max-width: 100%; }
 .mrv-files { margin-bottom: 0.5rem; }
 .mrv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+
+.mrv-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin: 0 0 1rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.mrv-status-label {
+  flex: none;
+  padding: 0.0625rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.mrv-status-detail { display: block; opacity: 0.9; }
+
+/* The palette the processes panel and the pipeline page use — one status must
+   not be green in one place and grey in another. */
+.mrv-status-good { background: #ecfdf5; border-color: #a7f3d0; color: #047857; }
+.mrv-status-warn { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+.mrv-status-bad  { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+.mrv-status-busy { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+.mrv-status-idle { background: #f9fafb; border-color: #e5e7eb; color: #4b5563; }
+
 .mrv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
 .mrv-back:hover { text-decoration: underline; }
 .mrv-title { font-size: 1.25rem; font-weight: 600; color: #111827; margin: 0; }
