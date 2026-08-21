@@ -361,6 +361,29 @@ not to the model, Sequelize dropped the unknown field, and two runs existed
 while the job row still said one. `services/queue/run-history.test.js` therefore
 includes a parity test over every column this feature added.
 
+### Reading a past run
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/submissions/:id/jobs/:jobType/runs` | every run, newest first, **metadata only** — the payloads are megabytes and a list shows none of them |
+| `GET` | `/api/submissions/:id/jobs/:jobType/runs/:runNumber` | one run, in full |
+
+Both are `canAccessSubmission` then `canViewJobInternals` — the same audience as
+prompts and raw responses. The module page's run selector is hidden from authors
+for the same reason; hiding a control whose data is one URL away would be
+decoration, so both exist. Pinned by `routes/limiter-ordering.test.js`.
+
+**The single-run response is shaped like a job.** The module page renders from
+`job.result.data.*`, so a past run goes through exactly the same path as the
+current one — one rendering branch rather than two that can drift.
+
+On the page: the latest run comes from the poller and costs no extra request,
+and selecting "latest" returns to the live job rather than pinning a frozen copy
+that would go stale on screen. A past run shows a persistent
+*"Viewing run 1 of 3 — this is not the current result"* bar above everything
+that could be read as a result, and the status line describes the **selected**
+run — otherwise a failed run 1 sits under "This step completed".
+
 ### A run can be partly complete
 
 `outcome.state` is `done` | **`partial`** | `fail`.

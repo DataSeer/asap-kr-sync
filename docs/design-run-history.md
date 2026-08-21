@@ -3,10 +3,14 @@
 **Status:** PHASE 1 IMPLEMENTED on `feat/run-history` · **Created:** 2026-08-21
 · **Updated:** 2026-08-22
 
-> Phase 1 is built: the schema and backfill, the run lifecycle, file provenance,
-> and the run number with the METADATA column (§13). Phases 2 (reading a past
-> run) and 3 (freezing the remaining live reads) are not started, and §6's
-> conversion list still describes what the pages do today.
+>
+> Phases 1 and 2 are built: the schema and backfill, the run lifecycle, file
+> provenance, the run number and METADATA column, the two run endpoints, and the
+> module-page run selector with its read-only bar (§13).
+>
+> **Phase 3 is not started** — the pipeline and module pages still read some
+> things live, so §6's conversion table describes what they do today, not what
+> they will do. **Phase 4** (the deletion policy, §7.4) is not started either.
 **Scope:** `submission_jobs` gains a history sidecar; the pipeline and module pages
 become records of a *run* rather than views of the submission.
 **Prerequisite:** none — additive to `feat/krt-detection-two-modes` as merged.
