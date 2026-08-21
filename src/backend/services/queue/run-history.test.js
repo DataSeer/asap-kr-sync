@@ -213,3 +213,71 @@ test('every column this feature added exists on its model', () => {
     ['s3Prefix', 's3_prefix']
   ]) has(SubmissionJobRun, attr, column);
 });
+
+/**
+ * The documents a run was contemporaneous with.
+ *
+ * A run freezes what its MODULE read — `software_detection` records only the
+ * markdown, and no detector ever opens the KRT — so without this there is no
+ * way to say which table or which PDF a run belonged to. Recorded when the run
+ * opens, by REFERENCE: files are versioned in S3, so a replaced document leaves
+ * the earlier version at its own key and the reference stays valid. Copying
+ * megabytes per run to record something that already cannot change would be
+ * storage for nothing.
+ */
+test('the document set is recorded by reference, never copied', async (t) => {
+  const { File } = models;
+  t.mock.method(File, 'findOne', async ({ where }) => ({
+    id: `${where.type}-id`, fileName: `f.${where.type}`, type: where.type,
+    version: 2, s3Key: `key/${where.type}_v2`, size: 4096
+  }));
+
+  const docs = await runHistory.captureDocuments('sub-1', 1);
+
+  assert.deepEqual(Object.keys(docs).sort(), ['krt', 'markdown', 'pdf']);
+  assert.equal(docs.krt.version, 2, 'the version is what pins the exact file');
+  assert.equal(docs.krt.s3Key, 'key/krt_v2');
+  assert.ok(!('content' in docs.krt), 'the bytes are not duplicated');
+  assert.ok(!('sha256' in docs.krt),
+    'and not hashed either — that would mean downloading every file on every enqueue');
+});
+
+test('a document that does not exist yet is simply absent', async (t) => {
+  // A step that runs before the conversion records no markdown, which is the
+  // truth about that run rather than a gap to paper over.
+  const { File } = models;
+  t.mock.method(File, 'findOne', async ({ where }) => (
+    where.type === 'markdown' ? null : { id: 'x', fileName: 'f', type: where.type, version: 1, s3Key: 'k', size: 1 }
+  ));
+
+  const docs = await runHistory.captureDocuments('sub-1', 1);
+
+  assert.ok(!('markdown' in docs));
+  assert.deepEqual(Object.keys(docs).sort(), ['krt', 'pdf']);
+});
+
+test('opening a run records the documents alongside it', async (t) => {
+  const state = fakeDb(t);
+  t.mock.method(models.File, 'findOne', async ({ where }) => ({
+    id: `${where.type}-id`, fileName: 'f', type: where.type, version: 1, s3Key: 'k', size: 1
+  }));
+
+  await runHistory.openRun(JOB, { userId: 'u1', triggerKind: 'manual' });
+
+  const written = state.run.updates.find((u) => u.inputs);
+  assert.ok(written, 'the run must carry the document set it opened with');
+  assert.equal(written.inputs.documents.krt.fileId, 'krt-id');
+});
+
+test('a failure to read the documents does not cost us the run record', async (t) => {
+  // Order matters: the row is inserted first, because reading the file table is
+  // the part most likely to be slow or to fail, and a run without its document
+  // set is far better than no run at all.
+  const state = fakeDb(t);
+  t.mock.method(models.File, 'findOne', async () => { throw new Error('db is on fire'); });
+
+  const run = await runHistory.openRun(JOB, { userId: 'u1' });
+
+  assert.ok(run, 'the run is still opened');
+  assert.equal(state.inserted.length, 1);
+});

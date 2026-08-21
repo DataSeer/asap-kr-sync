@@ -179,6 +179,24 @@ watch(jobType, () => {
 const submission = ref(null)
 const latestFiles = ref({})
 
+/**
+ * The documents this page is about — the ones the RUN was contemporaneous with,
+ * not the ones the submission holds today.
+ *
+ * A run records the KRT, PDF and markdown as they stood when it opened, by
+ * reference. The download endpoint takes a file id and an older version is its
+ * own row, so asking for the recorded id returns exactly that version even
+ * after the author has replaced it.
+ *
+ * Falls back to the current files for a run that predates this record — a link
+ * to today's PDF is better than none, and the "as at" line says which run the
+ * page is showing.
+ */
+const runDocuments = computed(() => {
+  const recorded = job.value?.documents
+  return recorded && Object.keys(recorded).length ? recorded : latestFiles.value
+})
+
 const steps = ref([])
 onMounted(async () => {
   submissionStore.fetchSubmission(submissionId.value).then((sub) => {
@@ -286,6 +304,17 @@ const authorsError = ref('')
  */
 onMounted(async () => {
   if (jobType.value !== 'orcid_extraction') return
+  // The run's own list wins. `submissions.authors` holds only the newest run's
+  // — the next run overwrites it — so reading it for a past run would show
+  // whoever the LATEST run found under an older run's timestamp. Older runs
+  // recorded no list, and fall back to the live one with the "as at" line
+  // saying which run is on screen.
+  const recorded = job.value?.result?.data?.items
+  if (Array.isArray(recorded) && recorded.length) {
+    authors.value = recorded
+    authorsLoading.value = false
+    return
+  }
   authorsLoading.value = true
   try {
     authors.value = (await orcidService.getAuthors(submissionId.value))?.authors || []
@@ -322,22 +351,36 @@ const markdownFileName = ref('converted manuscript')
 const markdown = ref('')
 const markdownLoading = ref(false)
 const markdownError = ref('')
-// Mount-time for the same reason as the author list above: the route is keyed.
-onMounted(async () => {
+/**
+ * The text THIS run produced, not the newest conversion.
+ *
+ * Re-read when the selected run changes: showing run 1's statistics above run
+ * 3's text is the page contradicting itself on the one thing it exists to show.
+ */
+async function loadMarkdown() {
   if (jobType.value !== 'markdown_convert') return
   markdownLoading.value = true
+  markdownError.value = ''
   try {
-    const data = await markdownService.getContent(submissionId.value)
+    const data = await markdownService.getContent(submissionId.value, markdownFileId.value)
     markdown.value = data?.content || ''
     if (data?.fileName) markdownFileName.value = data.fileName
   } catch (e) {
     markdownError.value = e?.response?.status === 404
-      ? 'No converted text is stored for this submission yet.'
+      ? (markdownFileId.value
+        // A run whose converted file has since been removed. Said plainly,
+        // rather than quietly falling back to a different run's text.
+        ? 'The text this run produced is no longer stored.'
+        : 'No converted text is stored for this submission yet.')
       : 'The converted text could not be loaded.'
   } finally {
     markdownLoading.value = false
   }
-})
+}
+
+// Mount-time for the same reason as the author list above: the route is keyed.
+onMounted(loadMarkdown)
+watch(markdownFileId, loadMarkdown)
 
 /**
  * The converted text, as the stored file rather than the raw LM artefact — this
@@ -597,7 +640,7 @@ const tabConflicts = computed(() => {
       <SubmissionFileLinks
         class="mrv-files-links"
         :submission-id="submissionId"
-        :files="latestFiles"
+        :files="runDocuments"
       />
     </div>
 
@@ -686,7 +729,7 @@ const tabConflicts = computed(() => {
       </div>
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -729,7 +772,7 @@ const tabConflicts = computed(() => {
       <SuggestionsTable :rows="visibleDecisionRows" :search="search" />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -760,7 +803,7 @@ const tabConflicts = computed(() => {
       />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -776,7 +819,7 @@ const tabConflicts = computed(() => {
       </div>
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -789,7 +832,7 @@ const tabConflicts = computed(() => {
       </p>
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -816,7 +859,7 @@ const tabConflicts = computed(() => {
       <DasSuggestionsTable :rows="visibleDasRows" :search="search" />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -829,7 +872,7 @@ const tabConflicts = computed(() => {
       />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       >
         <template v-if="markdownFileId" #files>
           <ul class="mrv-filelist">

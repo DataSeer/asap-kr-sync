@@ -454,7 +454,11 @@ async function initializeWorkers() {
           status: { detected: isProductive(result) },
           service: buildServiceSnapshot('orcid_extraction', result),
           counts: { authors: m.authorCount || 0, orcids: m.orcidCount || 0 },
-          data: { doi: m.doi || null }
+          // The author list lives on `submissions.authors`, which the NEXT run
+          // overwrites — so a past ORCID run had a count and no list, and the
+          // page could only show whoever the latest run found. Kept on the run
+          // too, which is the only copy that stays true to it.
+          data: { doi: m.doi || null, items: result.data?.items || [], meta: result.data?.meta || null }
         });
         await jobLogger?.flush();
         await advancePipeline(submissionId, 'orcid_extraction', round);

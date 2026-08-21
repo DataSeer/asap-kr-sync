@@ -42,6 +42,59 @@ async function guarded(what, fn) {
 }
 
 /**
+ * The submission's documents as they stand when a run opens.
+ *
+ * Recorded because a run freezes what its MODULE read, which is not the same
+ * thing: `software_detection` records only the markdown, and no detector ever
+ * opens the KRT — so without this there is no way to say which table or which
+ * PDF a run was contemporaneous with.
+ *
+ * **References, not copies.** Files are versioned in S3 (`name_v1.pdf`,
+ * `name_v2.pdf`), so a replaced document leaves the earlier version at its own
+ * key and the reference stays valid. Duplicating megabytes per run to record
+ * something that already cannot change would be storage for nothing.
+ *
+ * `sha256` is deliberately absent: computing it means downloading the file on
+ * every enqueue, and the version plus the key already identify it exactly. The
+ * modules that DO read a document hash it, because they have the bytes in hand.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @returns {Promise<object>} `{ krt, pdf, markdown }`, each a ref or absent
+ */
+async function captureDocuments(submissionId, round) {
+  const { File } = require('../../models');
+  const { FILE_TYPES } = require('../../config/constants');
+
+  const wanted = {
+    krt: FILE_TYPES.KRT,
+    pdf: FILE_TYPES.PDF,
+    markdown: FILE_TYPES.MARKDOWN
+  };
+
+  const documents = {};
+  for (const [name, type] of Object.entries(wanted)) {
+    // Newest version of that type in this round — the one the run is about to
+    // work from. A step that runs before the markdown exists simply records no
+    // markdown, which is the truth about that run.
+    const file = await File.findOne({
+      where: { submissionId, type, round },
+      order: [['version', 'DESC']]
+    });
+    if (!file) continue;
+    documents[name] = {
+      fileId: file.id,
+      fileName: file.fileName,
+      type: file.type,
+      version: file.version,
+      s3Key: file.s3Key,
+      bytes: file.size ?? null
+    };
+  }
+  return documents;
+}
+
+/**
  * Open a run for a step that has just been enqueued.
  *
  * `run_number` is allocated in the INSERT itself, so two callers cannot read
@@ -96,7 +149,19 @@ async function openRun(job, { userId = null, triggerKind = null } = {}) {
       { where: { id: job.id } }
     );
 
-    return SubmissionJobRun.findByPk(created.id);
+    const run = await SubmissionJobRun.findByPk(created.id);
+
+    // After the row exists, deliberately: reading the file table is the part
+    // most likely to be slow or to fail, and a run recorded without its
+    // document set is far better than no run record at all.
+    try {
+      const documents = await captureDocuments(job.submissionId, job.round ?? 1);
+      if (Object.keys(documents).length) await run.update({ inputs: { documents } });
+    } catch (error) {
+      logger.warn('Run history: could not record the run\'s documents', { error: error.message });
+    }
+
+    return run;
   });
 }
 
@@ -196,6 +261,7 @@ async function syncRunPayload(job) {
 
 module.exports = {
   openRun,
+  captureDocuments,
   syncRunPayload,
   currentRun,
   touchRun,

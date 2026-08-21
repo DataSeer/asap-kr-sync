@@ -396,6 +396,18 @@ function shapeRun(run, { runCount, triggeredBy, isLatest }) {
     logs: run.logs || [],
     files: run.result?.files || {},
     inputs: run.inputs || null,
+    /**
+     * The submission's documents as they were when this run opened, in the
+     * shape SubmissionFileLinks already takes — `{ krt: { id, ... } }`.
+     *
+     * `fileId` becomes `id` because the download endpoint takes a file id, and
+     * an older version is its own row: asking for it returns exactly the file
+     * this run was contemporaneous with, not the current one.
+     */
+    documents: Object.fromEntries(
+      Object.entries(run.inputs?.documents || {})
+        .map(([name, ref]) => [name, { ...ref, id: ref.fileId }])
+    ),
     startedAt: run.startedAt,
     completedAt: run.completedAt,
     elapsedMs: run.durationMs,
