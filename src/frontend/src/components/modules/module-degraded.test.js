@@ -30,7 +30,9 @@ const job = (outcome) => ({
   status: 'complete',
   result: {
     status: { detected: true },
-    counts: { unique: 21 },
+    // `total` is Softcite's raw mention count — 0 when Softcite never answered.
+    // Present because the real row has it; that is the number this blanks.
+    counts: { total: 0, unique: 21, enriched: 0 },
     data: { meta: { uniqueCount: 21, lmCount: 21, softciteCount: 0 } },
     service: { config: { state: 'on', enabled: true, demoEnabled: false }, outcome }
   }
@@ -92,5 +94,30 @@ describe('a partly-complete run on the module page', () => {
     })
 
     expect(wrapper.find('.mt-degraded').exists()).toBe(false)
+  })
+})
+
+describe('counts owned by the failed engine', () => {
+  it('are blanked, not shown as zero', async () => {
+    // "Total 0 / Unique 18" reads as "Softcite looked and found none", which is
+    // the opposite of what happened. Same error the panel summary used to make
+    // with "Softcite 0 + LM 18".
+    const wrapper = await mountOpen({
+      state: 'partial', source: 'external', failReason: 'softcite_failed', externalError: 'x'
+    })
+
+    // The FIRST .mt-block is Configuration; the counts live in the one headed
+    // "Statistics".
+    const stats = wrapper.findAll('.mt-block').find((b) => b.text().includes('Statistics'))
+    expect(stats, 'the Statistics block must render').toBeTruthy()
+    expect(stats.text()).toContain('—')
+    expect(stats.text()).not.toMatch(/Total\s*0\b/)
+  })
+
+  it('are shown normally on a healthy run', async () => {
+    const wrapper = await mountOpen({ state: 'done', source: 'external', failReason: null, externalError: null })
+
+    // A real zero from an engine that DID answer is information, and stays.
+    expect(wrapper.text()).toMatch(/Total\s*0/)
   })
 })

@@ -133,10 +133,42 @@ const config = computed(() => {
   return rows.filter(([, v]) => v !== undefined && v !== null && v !== '')
 })
 
-/** Everything the run counted, as recorded. */
-const stats = computed(() => Object.entries(counts.value)
-  .filter(([, v]) => typeof v === 'number')
-  .map(([k, v]) => [k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()), v]))
+/**
+ * The run produced a real result with one of its engines missing.
+ *
+ * Stated at the TOP of the panel rather than as another row in Statistics: the
+ * counts below are correct but are a floor, not a total, and a reader who
+ * meets the number first has already drawn the wrong conclusion.
+ */
+const degraded = computed(() => {
+  const outcome = props.job?.result?.service?.outcome
+  if (!outcome || outcome.state !== 'partial') return null
+  return {
+    engine: String(outcome.failReason || '').replace(/_failed$/, '') || 'one engine',
+    error: outcome.externalError || null
+  }
+})
+
+/**
+ * Everything the run counted, as recorded.
+ *
+ * A zero produced by an engine that never answered is shown as "—", not 0.
+ * With Softcite dead, `counts.total` (its raw mention count) is 0 — and "Total
+ * 0 / Unique 18" reads as "it looked and found none", which is the opposite of
+ * what happened. Only the counts the failed engine owns are blanked; the ones
+ * the surviving engine produced are real and stay.
+ */
+const DEGRADED_ENGINE_COUNTS = { softcite: ['total'] }
+
+const stats = computed(() => {
+  const blanked = degraded.value ? (DEGRADED_ENGINE_COUNTS[degraded.value.engine] || []) : []
+  return Object.entries(counts.value)
+    .filter(([, v]) => typeof v === 'number')
+    .map(([k, v]) => [
+      k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
+      blanked.includes(k) ? '—' : v
+    ])
+})
 
 /**
  * Durations, named so they cannot be read as counts: they share a list with
@@ -158,22 +190,6 @@ const timings = computed(() => [
  * case: naming the round's starter for a step nobody asked for by hand would
  * read as a claim about a decision they did not make.
  */
-/**
- * The run produced a real result with one of its engines missing.
- *
- * Stated at the TOP of the panel rather than as another row in Statistics: the
- * counts below are correct but are a floor, not a total, and a reader who
- * meets the number first has already drawn the wrong conclusion.
- */
-const degraded = computed(() => {
-  const outcome = props.job?.result?.service?.outcome
-  if (!outcome || outcome.state !== 'partial') return null
-  return {
-    engine: String(outcome.failReason || '').replace(/_failed$/, '') || 'one engine',
-    error: outcome.externalError || null
-  }
-})
-
 const provenance = computed(() => {
   const by = props.job?.triggeredBy
   if (!by) return []
