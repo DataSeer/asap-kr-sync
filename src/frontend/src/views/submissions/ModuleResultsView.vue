@@ -69,6 +69,23 @@ const { jobs } = useJobPoller(submissionId)
  */
 const runStatus = computed(() => describeJobStatus(job.value))
 
+/**
+ * When what is on screen was produced.
+ *
+ * Shown on EVERY run, not only past ones. This page is a record of a run, while
+ * the KRT editor a click away is live — so a page that silently shows the table
+ * as it was three runs ago reads as a lost edit. Saying "as at" is what makes
+ * the difference visible rather than surprising.
+ */
+const asAt = computed(() => {
+  const when = job.value?.completedAt || job.value?.startedAt
+  if (!when) return null
+  const n = job.value?.runNumber
+  const total = runCount.value
+  const run = n ? (total > 1 ? `Run ${n} of ${total}` : `Run ${n}`) : 'This run'
+  return `${run} · as at ${formatDateTime(when)}`
+})
+
 
 /**
  * Which run this page is showing.
@@ -604,6 +621,9 @@ const tabConflicts = computed(() => {
       <span class="mrv-status-text">
         {{ runStatus.title }}
         <span v-if="runStatus.detail" class="mrv-status-detail">{{ runStatus.detail }}</span>
+        <!-- What is below is this run's record, not the submission as it stands
+             now. The KRT editor next door is live; this is not. -->
+        <span v-if="asAt" class="mrv-status-asat">{{ asAt }}</span>
       </span>
     </div>
 
@@ -928,6 +948,13 @@ const tabConflicts = computed(() => {
 }
 
 .mrv-status-detail { display: block; opacity: 0.9; }
+
+.mrv-status-asat {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
 
 /* The palette the processes panel and the pipeline page use — one status must
    not be green in one place and grey in another. */

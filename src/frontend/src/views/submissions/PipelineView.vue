@@ -87,6 +87,23 @@ const gateLabel = (name) => GATE_LABELS[name] || name
 
 const jobFor = (jobType) => (jobs.value || {})[jobType] || null
 
+/**
+ * The configuration this step RAN under — `off`, `demo`, or on.
+ *
+ * From the run's own frozen snapshot, never the live service status. A module
+ * disabled during the run and switched on afterwards must still read as off
+ * here, or the page claims it looked at the manuscript when it never ran.
+ *
+ * Returns null for a normal run: "on" is the unremarkable case and a badge on
+ * every card would say nothing.
+ */
+function configOf(jobType) {
+  const state = jobFor(jobType)?.result?.service?.config?.state
+  if (state === 'off') return { text: 'was off', cls: 'pv-cfg-off' }
+  if (state === 'demo') return { text: 'demo data', cls: 'pv-cfg-demo' }
+  return null
+}
+
 /** Status as one word plus a colour, from the job if it has run. */
 function statusOf(jobType) {
   const job = jobFor(jobType)
@@ -310,6 +327,14 @@ const activeStage = computed(() => {
               >
                 <div class="pv-card-head">
                   <span class="pv-card-name">{{ labelFor(node.jobType) }}</span>
+                  <!-- Without this, a step that was switched off during the run
+                       is indistinguishable from one that ran and found nothing. -->
+                  <span
+                    v-if="configOf(node.jobType)"
+                    class="pv-cfg"
+                    :class="configOf(node.jobType).cls"
+                    v-tooltip="'The configuration this step ran under, as recorded by the run itself — not the current setting.'"
+                  >{{ configOf(node.jobType).text }}</span>
                   <span class="pv-status" :class="statusOf(node.jobType).cls">{{ statusOf(node.jobType).text }}</span>
                 </div>
 
@@ -443,6 +468,18 @@ const activeStage = computed(() => {
 .st-run { background: #dbeafe; color: #1d4ed8; }
 .st-wait { background: #fef3c7; color: #92400e; }
 .st-pending { background: #ffedd5; color: #c2410c; }
+.pv-cfg {
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.pv-cfg-off { background: #f3f4f6; color: #4b5563; }
+.pv-cfg-demo { background: #ede9fe; color: #6d28d9; }
+
 .st-partial { background: #fef3c7; color: #92400e; }
 .st-fail { background: #fee2e2; color: #b91c1c; }
 .st-idle { background: #f3f4f6; color: #6b7280; }
