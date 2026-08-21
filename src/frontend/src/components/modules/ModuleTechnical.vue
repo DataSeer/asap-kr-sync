@@ -278,7 +278,11 @@ const stats = computed(() => {
 const timings = computed(() => [
   {
     label: 'Duration',
-    value: ms(result.value.timing?.totalMs ?? meta.value.totalMs),
+    // The module's own measure first, then the run record's. Not every module
+    // times itself — DAS extraction records none — and "how long did this take"
+    // should not depend on which module you happen to be looking at when the
+    // run row has known it all along.
+    value: ms(result.value.timing?.totalMs ?? meta.value.totalMs ?? props.job?.elapsedMs),
     explain: 'How long this run took from start to finish, including time spent waiting on an external service.'
   },
   {
