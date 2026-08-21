@@ -44,6 +44,13 @@ const confirmingDAS = ref(false)
 
 async function confirmDAS() {
   confirmingDAS.value = true
+  // Optimistic, and set BEFORE the await on purpose: confirming unlocks the
+  // suggestions card, and the card would otherwise render its "the check
+  // failed, here are the built-in rules" state for the round-trip — advice
+  // about the statement, arriving before anything had checked it.
+  //
+  // The loader is the honest thing to show while we do not know yet.
+  dasJobStatus.value = 'queued'
   try {
     // The server says whether a run actually started. It may not have: the
     // check can already have run on this statement, or be gated to a later
@@ -53,8 +60,16 @@ async function confirmDAS() {
     notificationStore.success(
       checking ? 'Statement confirmed — checking it now' : 'Statement confirmed'
     )
-    if (checking) startPolling()
+    if (checking) {
+      // Leave the optimistic `queued` in place; the poller corrects it.
+      startPolling()
+    } else {
+      // Nothing was started, so the optimistic status is a lie — replace it
+      // with whatever is actually there.
+      await fetchDasSuggestions()
+    }
   } catch (error) {
+    dasJobStatus.value = 'none'
     notificationStore.error(
       error.response?.data?.error || 'Could not confirm the Availability Statement'
     )
@@ -214,6 +229,12 @@ function startPolling() {
 }
 
 async function regenerateDasSuggestions() {
+  // Same reason as confirmDAS: the loader goes up on the request, not on the
+  // reply. Editing the statement also confirms it server-side, so without this
+  // the card unlocks mid-round-trip and shows the built-in rules for a beat
+  // before the model's arrive.
+  const previousStatus = dasJobStatus.value
+  dasJobStatus.value = 'queued'
   try {
     const result = await dasSuggestionsService.regenerate(route.params.id)
 
@@ -233,7 +254,10 @@ async function regenerateDasSuggestions() {
     lmSuggestions.value = []
     startPolling()
   } catch (error) {
-    // If we couldn't re-queue, keep whatever suggestions we already have.
+    // Could not re-queue. Put the status back rather than leave the optimistic
+    // `queued` behind — a loader over a request that failed never resolves, and
+    // it also blocks Continue.
+    dasJobStatus.value = previousStatus === 'queued' ? 'failed' : previousStatus
   }
 }
 
@@ -453,18 +477,29 @@ const allRules = computed(() => {
   return rules
 })
 
-// Source suggestions: the LM verdicts when the job produced them, else the
-// legacy in-browser rules (LM disabled / failed / not yet run).
+// The built-in browser rules are a FAILURE fallback, not a default.
 //
-// Nothing at all until the statement is confirmed. The legacy rules run in the
-// browser and cost nothing, so they used to render immediately — which meant a
-// page full of advice about a paragraph the author had never agreed was theirs.
-// Free to compute is not the same as safe to show: the reader cannot tell which
-// engine produced a recommendation, so advice about the wrong statement reads
-// exactly like advice about the right one.
+// They used to fill in whenever the LM check was not `complete` — which
+// includes "has not run yet". So the moment the statement was confirmed the
+// page showed a full set of built-in recommendations for a beat, then swapped
+// them for the model's when the first poll landed. Two different sets of advice
+// about the same statement, seconds apart, with nothing to say which was which.
+//
+// Now: the model's verdicts when it produced them, the built-in rules only when
+// the check actually failed, and nothing while it is still working — the loader
+// says so instead.
+const usingBuiltinRules = computed(() => lmCheckFailed.value)
+
+// Whether the page has an ANSWER to show, from either engine. Distinct from
+// "the list is empty": before the check answers there are no suggestions
+// because nothing has been checked, and that must never render as a pass.
+const hasCheckAnswer = computed(() => usingLmSuggestions.value || usingBuiltinRules.value)
+
 const baseSuggestions = computed(() => {
   if (!dasConfirmed.value) return []
-  return usingLmSuggestions.value ? lmSuggestions.value : allRules.value
+  if (usingLmSuggestions.value) return lmSuggestions.value
+  if (usingBuiltinRules.value) return allRules.value
+  return []
 })
 
 // Filtered suggestions (only applicable ones, or all if showAllRules is true)
@@ -479,11 +514,23 @@ const asSuggestions = computed(() => {
   })
 })
 
-// Continue is blocked while the DAS check is still running.
-const canGoNext = computed(() => !isGeneratingSuggestions.value)
-const nextBlockedReason = computed(() =>
-  isGeneratingSuggestions.value ? 'Generating availability suggestions… please wait.' : ''
-)
+// Continue waits for the confirmation, then for the check.
+//
+// Without the first, an author can leave this step having never confirmed, the
+// check never runs, and the report carries no availability review at all — a
+// silence they had no way to notice.
+//
+// Gated on `needsConfirmation`, not on `dasConfirmed`: a submission with no
+// statement has nothing to confirm and nothing to check, so blocking there
+// would be a dead end with no way out of it.
+const canGoNext = computed(() => !isGeneratingSuggestions.value && !needsConfirmation.value)
+const nextBlockedReason = computed(() => {
+  if (needsConfirmation.value) {
+    return 'Confirm your Availability Statement first — it has not been checked yet.'
+  }
+  if (isGeneratingSuggestions.value) return 'Generating availability suggestions… please wait.'
+  return ''
+})
 
 // Current suggestion in carousel mode
 const currentSuggestion = computed(() => asSuggestions.value[currentSuggestionIndex.value] || null)
@@ -910,11 +957,11 @@ async function handleBack() {
 
       <!-- No applicable suggestions -->
       <!-- `v-else-if`, not `v-else`. The chain's tail is an ALL-CLEAR, and an
-           empty list is not the same as a clean one: before the statement is
-           confirmed there are no suggestions because nothing has been checked,
-           and a green tick there tells the author their statement passed a
-           check that never ran. -->
-      <div v-else-if="dasConfirmed" class="flex items-center py-4 text-green-700">
+           empty list is not the same as a clean one: with nothing checked there
+           are no suggestions BECAUSE nothing has been checked, and a green tick
+           there tells the author their statement passed a check that never ran.
+           So it renders only when an engine actually answered. -->
+      <div v-else-if="dasConfirmed && hasCheckAnswer" class="flex items-center py-4 text-green-700">
         <svg class="w-6 h-6 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
