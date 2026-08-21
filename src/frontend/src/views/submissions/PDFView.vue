@@ -96,8 +96,6 @@ provide('submissionJobs', jobs)
 
 // Derive analyzing state from job poller
 const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))
-const pdfAnalysisPendingInput = computed(() => pdfAnalysisJob.value?.status === 'pending_input')
-const advancingAnalysis = ref(false)
 
 // True while PDF analysis hasn't finished. Includes 'waiting' because
 // pdf_analysis often sits in that state while it queues on upstream
@@ -115,23 +113,6 @@ watch(pdfAnalysisJob, (job) => {
     analyzing.value = job.status === 'queued' || job.status === 'processing'
   }
 })
-
-/**
- * Manually advance PDF analysis from pending_input → queued.
- * Called after user has entered the DAS manually.
- */
-async function handleAdvanceAnalysis() {
-  advancingAnalysis.value = true
-  try {
-    await jobService.advanceJob(route.params.id, 'pdf_analysis')
-    notificationStore.info('PDF analysis started')
-    await refreshJobs()
-  } catch (error) {
-    notificationStore.error(error.response?.data?.error || 'Failed to start analysis')
-  } finally {
-    advancingAnalysis.value = false
-  }
-}
 
 // Wires job-completion side-effects (refreshing suggestions, surfacing
 // notifications, etc.) into the shared BackgroundProcesses wrapper. The wrapper
@@ -163,9 +144,6 @@ function registerJobCallbacks() {
     analyzing.value = false
     analysisStatus.value = 'failed'
     notificationStore.error('Analysis failed')
-  })
-  bg.onJobPendingInput('pdf_analysis', () => {
-    notificationStore.info('Availability Statement not found — please enter it manually, then start the analysis.', 30000)
   })
   bg.onJobComplete('das_extraction', async () => {
     await submissionStore.fetchSubmission(route.params.id)
@@ -1637,33 +1615,6 @@ function scrollToFindingRow(finding) {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
             </svg>
           </button>
-        </div>
-      </div>
-
-      <!-- PDF Analysis needs user input (DAS not found) -->
-      <div v-else-if="pdfAnalysisPendingInput" class="card">
-        <div class="flex items-start gap-3 py-2">
-          <svg class="w-5 h-5 text-orange-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-          </svg>
-          <div class="flex-1">
-            <p class="text-sm font-medium text-gray-900">Availability Statement not found</p>
-            <p class="text-sm text-gray-600 mt-1">
-              The automatic extraction could not find an Availability Statement in your manuscript.
-              Please enter it manually in Step 3 (Availability Statement), then come back and start the analysis.
-            </p>
-            <button
-              class="btn-primary mt-3"
-              :disabled="advancingAnalysis"
-              @click="handleAdvanceAnalysis"
-            >
-              <svg v-if="advancingAnalysis" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              {{ advancingAnalysis ? 'Starting...' : 'Start PDF Analysis' }}
-            </button>
-          </div>
         </div>
       </div>
 

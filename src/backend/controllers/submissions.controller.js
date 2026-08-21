@@ -325,7 +325,22 @@ async function update(req, res, next) {
     const { title, dataAvailabilityStatement, manuscriptId, notes, status } = req.validatedBody;
 
     if (title) submission.title = title;
-    if (dataAvailabilityStatement !== undefined) submission.dataAvailabilityStatement = dataAvailabilityStatement;
+    if (dataAvailabilityStatement !== undefined) {
+      // Changing the statement withdraws the confirmation. The Availability
+      // check runs on what the author agreed to, so a statement edited after
+      // the fact must be agreed to again rather than inherit the old consent —
+      // otherwise the check reports on text nobody approved.
+      //
+      // Only on a real change: re-saving the same text from the metadata modal
+      // is not an edit, and clearing the confirmation there would make the
+      // Availability step ask again for no reason.
+      const changed = (submission.dataAvailabilityStatement || '') !== (dataAvailabilityStatement || '');
+      submission.dataAvailabilityStatement = dataAvailabilityStatement;
+      if (changed) {
+        submission.dasConfirmedAt = null;
+        submission.dasConfirmedByUserId = null;
+      }
+    }
     if (manuscriptId !== undefined) {
       submission.manuscriptId = manuscriptId || null;
       // Re-derive the project (grant) code if the manuscript ID changed.

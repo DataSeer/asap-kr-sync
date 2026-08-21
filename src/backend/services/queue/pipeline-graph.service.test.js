@@ -65,7 +65,11 @@ test('gates are reported by name, and pausing steps are flagged', () => {
   const convert = nodes.find((n) => n.jobType === 'markdown_convert');
   assert.deepEqual(convert.gates, [], 'the step that PRODUCES the text cannot wait for it');
   const analysis = nodes.find((n) => n.jobType === 'pdf_analysis');
-  assert.equal(analysis.autoAdvances, false, 'it can park in pending_input awaiting a DAS');
+  assert.equal(analysis.autoAdvances, true,
+    'the consolidator asks nothing of the user — it merges what the detectors found');
+  const availability = nodes.find((n) => n.jobType === 'das_suggestions');
+  assert.equal(availability.autoAdvances, false,
+    'it parks in pending_input until somebody confirms the statement it will check');
   // A function must never be serialised to the client.
   for (const n of nodes) for (const g of n.gates) assert.equal(typeof g, 'string');
 });

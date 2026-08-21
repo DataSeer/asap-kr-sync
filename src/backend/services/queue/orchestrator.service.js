@@ -182,7 +182,16 @@ const PIPELINE = [
   {
     // PDF Analysis is the consolidator: it merges every detection's items
     // into the Generated KRT. So it depends on every detection that
-    // contributes resources (DAS is kept as a soft gate via canAutoAdvance).
+    // contributes resources.
+    //
+    // It does NOT depend on DAS extraction. It used to, and parked in
+    // `pending_input` unless a statement had been found — for a statement it
+    // never reads: there is no reference to `dataAvailabilityStatement`, or to
+    // the extraction result, anywhere in pdf-analysis.service. So a manuscript
+    // with no Availability Statement blocked the Generated KRT behind a state
+    // only a human could clear, and `pending_input` is the state nothing
+    // revisits (see the retry tests below). The statement is confirmed by the
+    // author on the Availability step, where the one module that reads it runs.
     //
     // It also depends on KRT_GROUNDING even though it does not read the
     // outcomes itself: SUGGESTION_GENERATION does, and it reaches this table
@@ -191,7 +200,6 @@ const PIPELINE = [
     // how PDF_ANALYSIS inherits the krt_curated gate.
     jobType: JOB_TYPES.PDF_ANALYSIS,
     dependsOn: [
-      JOB_TYPES.DAS_EXTRACTION,
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
       JOB_TYPES.MATERIALS_DETECTION,
@@ -199,11 +207,6 @@ const PIPELINE = [
       JOB_TYPES.IDENTIFIER_DETECTION,
       JOB_TYPES.KRT_GROUNDING
     ],
-    canAutoAdvance(dependencyJobs) {
-      const dasJob = dependencyJobs.get(JOB_TYPES.DAS_EXTRACTION);
-      // Auto-advance only if DAS was actually extracted (existing gate)
-      return dasJob?.result?.status?.detected === true;
-    }
   },
   {
     // LM comparison of author KRT vs Generated KRT → suggestions. Runs after
@@ -233,6 +236,22 @@ const PIPELINE = [
     jobType: JOB_TYPES.DAS_SUGGESTIONS,
     dependsOn: [JOB_TYPES.DAS_EXTRACTION],
     gate: ['availability_ready'],
+    /**
+     * The author confirms the statement before this spends anything.
+     *
+     * This is the only module that reads the Availability Statement, and the
+     * extractor's answer is a proposal: it can find the wrong paragraph, or
+     * nothing at all. Running first and asking later spends a model call on
+     * text nobody has looked at, and produces advice about the wrong statement.
+     *
+     * So the step parks in `pending_input` until the author confirms — which is
+     * what the Availability page asks them to do — and `advanceJob` releases it.
+     * `dasConfirmedAt` is set when they confirm and cleared when they edit, so
+     * an edited statement is re-confirmed rather than silently re-used.
+     */
+    canAutoAdvance(dependencyJobs, submission) {
+      return !!submission?.dasConfirmedAt;
+    },
     displayStage: 4
   }
 ];
@@ -356,7 +375,7 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
   // Submission state is needed to evaluate step gates
   const submission = await Submission.findByPk(submissionId, {
     // `availability_ready` reads the statement itself, not just the status.
-    attributes: ['id', 'status', 'dataAvailabilityStatement']
+    attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
 
   for (const step of dependentSteps) {
@@ -409,6 +428,8 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   // the status-change handler / reconciler re-drives once the state changes.
   // Debug level: the reconciler sweep re-checks gated jobs every interval and
   // an info log per sweep per job would be pure noise.
+  const isManual = triggeredBy === 'manual';
+
   const blocked = blockingGate(step, submission, jobsByType);
   if (blocked) {
     logger.debug('Pipeline step gated, staying in waiting', {
@@ -418,8 +439,18 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
 
-  // Check if this step has a conditional gate
-  if (step.canAutoAdvance && !step.canAutoAdvance(jobsByType)) {
+  // Check if this step has a conditional gate.
+  //
+  // `submission` is passed too: the DAS confirmation is a fact about the
+  // submission, not about a dependency's result.
+  //
+  // Skipped for a manual run, and the name says why — it governs AUTO
+  // advancing. The condition exists to stop the pipeline spending an LM call on
+  // a statement nobody has agreed to; a person clicking the step by name has
+  // agreed to it, by clicking. Applying it anyway would park a job somebody
+  // just asked for in `pending_input`, which nothing revisits — the same dead
+  // end that once stranded PDF Analysis behind a retrying extraction.
+  if (!isManual && step.canAutoAdvance && !step.canAutoAdvance(jobsByType, submission)) {
     // Gate condition not met — park job as pending_input
     await job.markPendingInput({ reason: 'Auto-advance condition not met' });
 
@@ -456,7 +487,6 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   // would quietly overwrite the curator who did. A worker-driven advance
   // carries no user at all and keeps whatever is already there.
   const claim = { status: 'queued' };
-  const isManual = triggeredBy === 'manual';
   if (userId && isManual) claim.triggeredByUserId = userId;
   const [claimed] = await SubmissionJob.update(
     claim,
@@ -518,7 +548,7 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
 
   const sub = submission || await Submission.findByPk(submissionId, {
     // `availability_ready` reads the statement itself, not just the status.
-    attributes: ['id', 'status', 'dataAvailabilityStatement']
+    attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
 
   let advanced = 0;
@@ -892,7 +922,7 @@ async function requeueStep(submissionId, jobType, round, userId) {
   const jobsByType = new Map(allJobs.map((j) => [j.jobType, j]));
   jobsByType.set(jobType, job);
   const submission = await Submission.findByPk(submissionId, {
-    attributes: ['id', 'status', 'dataAvailabilityStatement']
+    attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
 
   await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, 'manual');

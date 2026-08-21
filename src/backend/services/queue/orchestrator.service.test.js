@@ -367,43 +367,48 @@ test('the reconciler changes nothing when the pipeline is already correct', asyn
 test('a dependency being retried is not treated as finished', async (t) => {
   // The bug this pins: workers wrote `failed` on non-final attempts too, and
   // `failed` is terminal to the orchestrator. A sweep landing inside the retry
-  // backoff read DAS extraction as finished, evaluated PDF Analysis's gate
+  // backoff read DAS extraction as finished, evaluated its dependent's gate
   // against a result that was not there yet, and parked it in `pending_input` —
   // which nothing revisits. When the retry then succeeded, the advance found
-  // PDF Analysis no longer `waiting` and did nothing. Only a manual advance
+  // the dependent no longer `waiting` and did nothing. Only a manual advance
   // recovered it.
   //
   // A retrying job now stays `processing`, so the dependents stay `waiting`.
   const rows = pipelineRows();
-  // Everything PDF Analysis needs is done — except DAS extraction, which is
-  // between attempts and has no result yet.
-  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  // Everything the Availability check needs is done — except DAS extraction,
+  // which is between attempts and has no result yet.
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
   rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'processing';
   rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
   rows.get(JOB_TYPES.DAS_EXTRACTION).errorMessage = 'Gemini 503 — retrying';
-  mockDb(t, rows);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
+  });
 
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
 
-  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting',
-    'PDF Analysis must wait for the retry, not be parked awaiting input');
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'waiting',
+    'the check must wait for the retry, not be parked awaiting input');
 });
 
 test('a dependency that has genuinely failed does release its dependents', async (t) => {
   // The other half of the rule: once pg-boss has given up, `failed` IS terminal
   // and the pipeline must move rather than wait for ever. DAS extraction is the
-  // case that matters — it fails, PDF Analysis's gate finds no statement, and
-  // the step parks in `pending_input` asking the user to type one. That is the
-  // designed path, and it is only reachable because the failure is terminal.
+  // case that matters — it fails, the Availability check finds no confirmation
+  // recorded, and the step parks in `pending_input` asking the author to agree
+  // to the statement. That is the designed path, and it is only reachable
+  // because the failure is terminal.
   const rows = pipelineRows();
-  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
   rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'failed';
   rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
-  mockDb(t, rows);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
+  });
 
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
 
-  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'pending_input',
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'pending_input',
     'a terminal failure must not leave the dependent waiting for ever');
 });
 
@@ -587,47 +592,67 @@ test('every step that reads the manuscript waits for BOTH gates', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The DAS gate on pdf_analysis — the rule that parks a run awaiting the user
+// The Availability Statement is NOT an input to the consolidator
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('no Availability Statement parks the consolidator awaiting input', async (t) => {
-  const rows = pipelineRows();
-  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
-  rows.get(JOB_TYPES.DAS_EXTRACTION).result = { status: { detected: false } };
-  mockDb(t, rows);
+test('a missing Availability Statement no longer blocks the consolidator', async (t) => {
+  // PDF Analysis used to depend on DAS extraction and refuse to advance until a
+  // statement existed, parking in `pending_input` until somebody typed one.
+  //
+  // It was the wrong step to ask. The consolidator merges the KRT detectors'
+  // findings; it never reads the statement. So a field that only the
+  // Availability step uses was holding up the entire KRT half of the pipeline —
+  // and holding it in `pending_input`, which nothing revisits, so a run that
+  // parked there needed a manual advance even after the author supplied one.
+  //
+  // Every shape of "no statement" must now advance it, including the ones that
+  // used to be treated as an unfinished result.
+  const noStatement = [
+    { status: { detected: false } },
+    null,
+    {},
+    { status: {} },
+    { status: { detected: 'yes' } }
+  ];
 
-  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
-
-  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'pending_input',
-    'the user has to supply the statement — this is not a failure');
-  assert.equal(enqueued.length, 0);
-});
-
-test('a DAS extraction that completed without a verdict also parks it', async (t) => {
-  // `detected` must be exactly true. A result missing the field is not consent
-  // to run — that is how a half-written result would slip through.
-  for (const result of [null, {}, { status: {} }, { status: { detected: 'yes' } }]) {
+  for (const result of noStatement) {
     const rows = pipelineRows();
     completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
     rows.get(JOB_TYPES.DAS_EXTRACTION).result = result;
-    mockDb(t, rows);
+    mockDb(t, rows, { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: null });
 
     await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
 
-    assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'pending_input',
-      `result ${JSON.stringify(result)} must not auto-advance`);
+    assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued',
+      `result ${JSON.stringify(result)} must not hold up the consolidator`);
     t.mock.restoreAll();
   }
 });
 
-test('a found Availability Statement lets the consolidator run', async (t) => {
+test('a failed DAS extraction does not hold up the consolidator either', async (t) => {
+  // The strongest form: extraction is not merely empty, it errored. The
+  // consolidator still has everything it needs.
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
-  mockDb(t, rows);
+  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'failed';
+  rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
+  mockDb(t, rows, { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: null });
 
   await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+});
+
+test('the consolidator does not list DAS extraction as a dependency', async (t) => {
+  // Pinned on the declaration, not just the behaviour: re-adding the dependency
+  // would restore the coupling even if the gate stayed gone, because a step
+  // waits for every dependency to reach a terminal state.
+  const step = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.PDF_ANALYSIS);
+  assert.ok(step, 'PDF Analysis must be in the pipeline');
+  assert.ok(!step.dependsOn.includes(JOB_TYPES.DAS_EXTRACTION),
+    'the consolidator does not read the Availability Statement');
+  assert.equal(step.canAutoAdvance, undefined,
+    'and it has no condition of its own — its dependencies are the whole rule');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -684,16 +709,59 @@ test('finishing DAS extraction does NOT start the check before the Availability 
   assert.equal(enqueued.length, 0);
 });
 
-test('reaching the Availability step releases it', async (t) => {
+test('reaching the Availability step, with the statement confirmed, releases it', async (t) => {
   // This is what the status-change handler does: re-drive the pipeline once the
   // submission moves.
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
-  mockDb(t, rows, { id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT });
+  mockDb(t, rows, {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: A_STATEMENT,
+    dasConfirmedAt: new Date('2026-08-22T10:00:00Z')
+  });
 
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'queued');
+});
+
+test('an unconfirmed statement parks it awaiting the author', async (t) => {
+  // The statement is there and the step has been reached — but nobody has said
+  // it is the right statement. Extraction pulls it out of the PDF automatically
+  // and gets it wrong often enough to matter; checking a paragraph the author
+  // has never read spends an LM call to answer the wrong question, and the
+  // answer is then reported as theirs.
+  //
+  // `pending_input`, not `waiting`: this needs a person, and the panel says so.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
+  });
+
+  await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'pending_input');
+  // The sweep releases the rest of the pipeline in the same pass, so the check
+  // is that THIS queue stayed empty — not that nothing ran at all.
+  assert.ok(!enqueued.includes(jobQueue.QUEUES.DAS_SUGGESTIONS), 'and nothing was spent on it');
+});
+
+test('but a person asking for it by name is the confirmation', async (t) => {
+  // canAutoAdvance governs AUTO advancing. A manual run is somebody clicking
+  // the step, next to the statement they are looking at — parking that in
+  // `pending_input`, which nothing revisits, would strand a job the user just
+  // asked for.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
+  });
+
+  const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_SUGGESTIONS, 1, 'user-1');
+
+  assert.equal(job.status, 'queued');
 });
 
 test('but not without a statement to check', async (t) => {

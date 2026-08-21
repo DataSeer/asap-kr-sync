@@ -11,7 +11,7 @@
  *   @saved="handleSaved"
  * />
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, inject } from 'vue'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useAuthStore } from '@/stores/auth.store'
@@ -32,6 +32,21 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'saved'])
+
+// Provided by the views that poll jobs (KRT and PDF steps); absent elsewhere,
+// and the field then behaves as it always did. Editing metadata stays available
+// from EVERY step — the extraction notice narrows what is safe to type right
+// now, it does not take the feature away.
+const injectedJobs = inject('submissionJobs', ref({}))
+
+// Extraction writes the statement itself. Typing into the field while it runs
+// means typing into something that is about to be replaced — the save lands
+// first and the extractor overwrites it seconds later, or the reverse, and
+// either way the author cannot tell which text survived.
+const dasExtractionRunning = computed(() => {
+  const status = injectedJobs.value?.das_extraction?.status
+  return status === 'queued' || status === 'processing'
+})
 
 const submissionStore = useSubmissionStore()
 const notificationStore = useNotificationStore()
@@ -299,10 +314,23 @@ async function saveMetadata() {
             <label class="block text-sm font-medium text-gray-700 mb-1">
               Data Availability Statement
             </label>
+            <p
+              v-if="dasExtractionRunning"
+              class="flex items-start gap-2 mb-2 px-3 py-2 rounded-md bg-blue-50 text-sm text-blue-800"
+              role="status"
+            >
+              <svg class="animate-spin h-4 w-4 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              We are reading your manuscript for the Availability Statement. It will appear here in a
+              moment — anything typed now would be overwritten.
+            </p>
             <textarea
               v-model="editForm.dataAvailabilityStatement"
               rows="4"
-              class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-vertical"
+              :disabled="dasExtractionRunning"
+              class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-vertical disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
               placeholder="Describe how and where the data will be made available..."
             ></textarea>
           </div>

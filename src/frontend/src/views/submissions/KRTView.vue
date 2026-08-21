@@ -40,7 +40,7 @@ const latestFiles = computed(() => submissionStore.latestFiles)
  * So the poller is used directly. What was removed is the display, not the
  * behaviour.
  */
-const { jobs, onJobComplete, onJobFailed, onJobPendingInput, refresh: refreshJobs } = useJobPoller(
+const { jobs, onJobComplete, onJobFailed, refresh: refreshJobs } = useJobPoller(
   computed(() => route.params.id)
 )
 
@@ -279,12 +279,6 @@ function registerJobCallbacks() {
   })
   onJobFailed('pdf_analysis', () => {
     notificationStore.error('Manuscript analysis failed — suggestions unavailable')
-  })
-  onJobPendingInput('pdf_analysis', () => {
-    notificationStore.info(
-      'Availability Statement not found — please enter it manually, then start the analysis.',
-      30000
-    )
   })
   // DAS extraction updates submission.dataAvailabilityStatement; refresh
   // the cached submission so the header (and any "DAS detected" pill)

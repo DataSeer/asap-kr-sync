@@ -511,6 +511,46 @@ async function applyEdit(submissionId, data, modifiedValue, userId, round) {
 }
 
 /**
+ * Decide what a fresh extraction is allowed to write onto the submission.
+ *
+ * Pure and synchronous on purpose: this is the rule about whose text wins, and
+ * it should be readable and testable without a database behind it.
+ *
+ * @param {object} submission - mutated in place; not saved here
+ * @param {string} persisted - what extraction produced (NO_DAS_SENTINEL if nothing)
+ * @returns {{ replaced: boolean, confirmationWithdrawn: boolean }}
+ */
+function applyExtractedDas(submission, persisted) {
+  // The extractor's own answer, always recorded — it is this run's finding, and
+  // the page can show it beside the author's version when the two differ.
+  const previousExtraction = submission.extractedDataAvailabilityStatement;
+  const current = submission.dataAvailabilityStatement;
+  submission.extractedDataAvailabilityStatement = persisted;
+
+  // The author's version wins. Extraction proposes; the person decides. An
+  // author who typed a statement the extractor could not find — the whole
+  // reason the manual path exists — had it overwritten the next time this ran,
+  // which is the app undoing their work and calling it an update.
+  //
+  // "Edited" means the statement no longer matches what extraction last
+  // produced. With no previous extraction, anything already there was put there
+  // by a person.
+  const authorEdited = !!current && current !== previousExtraction;
+  if (authorEdited) return { replaced: false, confirmationWithdrawn: false };
+
+  const changed = current !== persisted;
+  submission.dataAvailabilityStatement = persisted;
+
+  // New text to agree to, so the old agreement no longer applies. Re-confirming
+  // is a click; reporting on a statement nobody has read is not recoverable.
+  if (changed) {
+    submission.dasConfirmedAt = null;
+    submission.dasConfirmedByUserId = null;
+  }
+  return { replaced: true, confirmationWithdrawn: changed };
+}
+
+/**
  * Extract Data Availability Statement from the manuscript PDF.
  *
  * Runs the standard external→demo workflow. The DAS text (or "Not found" when
@@ -541,9 +581,7 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
   // extraction was attempted. "Not found" doubles as the empty-but-tried
   // sentinel and as the placeholder shown in the UI.
   const das = result.data?.meta?.das || null;
-  const persisted = das || NO_DAS_SENTINEL;
-  submission.extractedDataAvailabilityStatement = persisted;
-  submission.dataAvailabilityStatement = persisted;
+  applyExtractedDas(submission, das || NO_DAS_SENTINEL);
   await submission.save();
 
   logger.info('DAS_EXTRACTION done', {
@@ -662,6 +700,7 @@ module.exports = {
   concatenatePDFs,
   queueAnalysis,
   extractAndSaveDAS,
+  applyExtractedDas,
   queueDASExtraction,
   // Apply helpers - exported for use by suggestion service
   applyAddRow,
