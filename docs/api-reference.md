@@ -534,7 +534,12 @@ The `/availability` view shows a **loader** and **blocks Continue** while `statu
 Confirm that the Availability Statement is the passage the check should read, and
 release the check — which does not start on its own.
 
-- **Returns**: `{ dasConfirmedAt, dasConfirmedByUserId }`
+- **Returns**: `{ dasConfirmedAt, dasConfirmedByUserId, checking }`
+- `checking` says whether a run actually started. It is `false` when the check
+  already ran on this statement, when it is gated to a later step, and when the
+  enqueue failed. The UI uses it to choose its message and whether to poll —
+  promising a result that is not coming sends the user to watch a spinner that
+  never resolves, with no way to find out why.
 - **400** when there is nothing to confirm: an empty statement, or the
   `"Not found"` sentinel extraction writes when it found none. Confirming those
   would send the checker two literal words to review, and bill for it.

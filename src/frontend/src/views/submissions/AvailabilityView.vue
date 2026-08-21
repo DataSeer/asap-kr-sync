@@ -45,9 +45,15 @@ const confirmingDAS = ref(false)
 async function confirmDAS() {
   confirmingDAS.value = true
   try {
-    await submissionStore.confirmDas(route.params.id)
-    notificationStore.success('Statement confirmed — checking it now')
-    startPolling()
+    // The server says whether a run actually started. It may not have: the
+    // check can already have run on this statement, or be gated to a later
+    // step. Promising a result that is not coming sends the user back to watch
+    // a spinner that will never resolve.
+    const { checking } = await submissionStore.confirmDas(route.params.id)
+    notificationStore.success(
+      checking ? 'Statement confirmed — checking it now' : 'Statement confirmed'
+    )
+    if (checking) startPolling()
   } catch (error) {
     notificationStore.error(
       error.response?.data?.error || 'Could not confirm the Availability Statement'

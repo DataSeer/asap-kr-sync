@@ -27,7 +27,7 @@ const NOW_ISH = (value) => value instanceof Date && !Number.isNaN(value.getTime(
  * Run confirmDas against a fake submission and capture what happened.
  * `jobStatus` is the state of the existing das_suggestions row (null = none).
  */
-async function confirm(t, { das, jobStatus = 'pending_input', userId = 'user-9' } = {}) {
+async function confirm(t, { das, jobStatus = 'pending_input', userId = 'user-9', releasedAs = 'queued' } = {}) {
   const saved = [];
   const submission = {
     id: 'sub-1',
@@ -40,7 +40,10 @@ async function confirm(t, { das, jobStatus = 'pending_input', userId = 'user-9' 
 
   t.mock.method(SubmissionJob, 'getLatest', async () => (jobStatus ? { status: jobStatus } : null));
   const requeued = [];
-  t.mock.method(orchestrator, 'requeueStep', async (...args) => { requeued.push(args); return {}; });
+  t.mock.method(orchestrator, 'requeueStep', async (...args) => {
+    requeued.push(args);
+    return { status: releasedAs };
+  });
 
   const reply = await new Promise((resolve) => {
     const res = {
@@ -149,6 +152,60 @@ test('a release that fails does not fail the confirmation', async (t) => {
 
   assert.equal(reply.error, undefined, 'the user confirmed; that part worked');
   assert.ok(NOW_ISH(submission.dasConfirmedAt));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Saying only what actually happened
+//
+// The reply drives a message the user reads and a poller they wait on. "We are
+// checking it now" over a check that is not running sends them to watch a
+// spinner that will never resolve, and there is no way for them to find out.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a check that starts is reported as running', async (t) => {
+  const { body } = await confirm(t, { das: 'Data are at Zenodo.', releasedAs: 'queued' });
+
+  assert.equal(body.checking, true);
+});
+
+test('a check gated to a later step is NOT reported as running', async (t) => {
+  // `waiting` means accepted but held — the submission has not reached the
+  // Availability step yet. Nothing is happening, and nothing is coming until
+  // the author gets there.
+  const { body } = await confirm(t, { das: 'Data are at Zenodo.', releasedAs: 'waiting' });
+
+  assert.equal(body.checking, false);
+});
+
+test('a check that already ran is not reported as running', async (t) => {
+  const { body } = await confirm(t, { das: 'Data are at Zenodo.', jobStatus: 'complete' });
+
+  assert.equal(body.checking, false);
+  assert.ok(body.dasConfirmedAt, 'the confirmation still stands');
+});
+
+test('a release that failed is not reported as running', async (t) => {
+  const submission = {
+    id: 'sub-1', currentRound: 1,
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    dasConfirmedAt: null, dasConfirmedByUserId: null,
+    save: async () => {}
+  };
+  t.mock.method(SubmissionJob, 'getLatest', async () => ({ status: 'pending_input' }));
+  t.mock.method(orchestrator, 'requeueStep', async () => { throw new Error('queue is down'); });
+
+  const { body } = await new Promise((resolve) => {
+    const res = {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      json(b) { resolve({ status: this.statusCode, body: b }); }
+    };
+    controller.confirmDas({ submission, userId: 'user-9', params: { id: 'sub-1' } }, res,
+      (err) => resolve({ error: err }));
+  });
+
+  assert.equal(body.checking, false, 'the confirmation landed; the run did not');
+  assert.ok(body.dasConfirmedAt);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -896,6 +896,7 @@ async function processNewVersion(req, res, next) {
  *
  * @param {object} submission
  * @param {string} [userId] - who authorised it
+ * @returns {Promise<boolean>} whether a run was actually started
  */
 async function releaseAvailabilityCheck(submission, userId) {
   try {
@@ -908,14 +909,20 @@ async function releaseAvailabilityCheck(submission, userId) {
     // reset a `complete` row and spend the call a second time. That turns
     // re-saving a form into an LM bill.
     const held = !job || ['waiting', 'pending_input', 'failed'].includes(job.status);
-    if (held) {
-      await orchestrator.requeueStep(submission.id, JOB_TYPES.DAS_SUGGESTIONS, round, userId);
-    }
+    if (!held) return false;
+
+    const released = await orchestrator.requeueStep(
+      submission.id, JOB_TYPES.DAS_SUGGESTIONS, round, userId
+    );
+    // `waiting` means accepted but gated to a later step — nothing is running,
+    // so the caller must not promise the user a result is on its way.
+    return released?.status === 'queued' || released?.status === 'processing';
   } catch (releaseErr) {
     logger.error('Availability Statement confirmed, but the check did not start', {
       submissionId: submission.id,
       error: releaseErr.message
     });
+    return false;
   }
 }
 
@@ -954,11 +961,15 @@ async function confirmDas(req, res, next) {
       submissionId: submission.id, userId: req.userId
     });
 
-    await releaseAvailabilityCheck(submission, req.userId);
+    // Reported honestly. The check may already have run on this statement, or
+    // be gated to a later step — in both cases nothing is happening now, and a
+    // "checking it now" message would be a small lie the user cannot check.
+    const checking = await releaseAvailabilityCheck(submission, req.userId);
 
     res.json({
       dasConfirmedAt: submission.dasConfirmedAt,
-      dasConfirmedByUserId: submission.dasConfirmedByUserId
+      dasConfirmedByUserId: submission.dasConfirmedByUserId,
+      checking
     });
   } catch (error) {
     next(error);

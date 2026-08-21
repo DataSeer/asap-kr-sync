@@ -64,8 +64,10 @@ const confirmingDas = ref(false)
 async function confirmDas() {
   confirmingDas.value = true
   try {
-    await submissionStore.confirmDas(props.submission.id)
-    notificationStore.success('Statement confirmed — checking it now')
+    const { checking } = await submissionStore.confirmDas(props.submission.id)
+    notificationStore.success(
+      checking ? 'Statement confirmed — checking it now' : 'Statement confirmed'
+    )
   } catch (error) {
     notificationStore.error(
       error.response?.data?.error || 'Could not confirm the Availability Statement'
