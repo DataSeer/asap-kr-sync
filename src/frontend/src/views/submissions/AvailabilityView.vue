@@ -240,6 +240,15 @@ async function regenerateDasSuggestions() {
 // Step help items
 const helpItems = computed(() => [
   {
+    title: 'Check your Availability Statement is the right one',
+    children: [
+      'We read it out of your manuscript automatically — it can pick the wrong passage, or miss it',
+      'Edit it here if it is wrong, then confirm it',
+      'No recommendations appear until you do: they would be about the wrong statement'
+    ],
+    done: dasConfirmed.value
+  },
+  {
     title: 'Review recommendations',
     children: [
       'Outside of this app, edit your manuscript to address each recommendation',
@@ -285,8 +294,17 @@ async function loadPage() {
     return
   }
 
-  if (dasJobStatus.value === 'none') {
-    // First arrival (the user just finished review) → run the DAS check now.
+  if (dasJobStatus.value === 'none' && dasConfirmed.value) {
+    // First arrival with a statement the author has already vouched for → run
+    // the check now.
+    //
+    // Only when confirmed. This used to fire on every first arrival, and it
+    // goes through the MANUAL path — which deliberately skips the auto-advance
+    // condition, because a person clicking a step by name has decided to run
+    // it. Merely opening a page is not that decision, and the effect was that
+    // the confirmation gate never applied to the one route every author takes:
+    // the check spent an LM call on a paragraph nobody had read, which is the
+    // exact thing it exists to prevent.
     await regenerateDasSuggestions()
   } else if (POLLABLE_STATUSES.includes(dasJobStatus.value)) {
     startPolling()
@@ -437,7 +455,17 @@ const allRules = computed(() => {
 
 // Source suggestions: the LM verdicts when the job produced them, else the
 // legacy in-browser rules (LM disabled / failed / not yet run).
-const baseSuggestions = computed(() => usingLmSuggestions.value ? lmSuggestions.value : allRules.value)
+//
+// Nothing at all until the statement is confirmed. The legacy rules run in the
+// browser and cost nothing, so they used to render immediately — which meant a
+// page full of advice about a paragraph the author had never agreed was theirs.
+// Free to compute is not the same as safe to show: the reader cannot tell which
+// engine produced a recommendation, so advice about the wrong statement reads
+// exactly like advice about the right one.
+const baseSuggestions = computed(() => {
+  if (!dasConfirmed.value) return []
+  return usingLmSuggestions.value ? lmSuggestions.value : allRules.value
+})
 
 // Filtered suggestions (only applicable ones, or all if showAllRules is true)
 // Always sort: applicable first, then N/A
@@ -608,12 +636,12 @@ async function handleBack() {
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">
           Suggestions
-          <span v-if="!isGeneratingSuggestions" class="text-sm font-normal text-gray-500 ml-2">
+          <span v-if="dasConfirmed && !isGeneratingSuggestions" class="text-sm font-normal text-gray-500 ml-2">
             {{ asSuggestions.filter(s => s.applies).length }} applicable
             <span v-if="showAllRules"> / {{ baseSuggestions.length }} total</span>
           </span>
         </h2>
-        <div v-show="!isGeneratingSuggestions" class="flex items-center gap-4">
+        <div v-show="dasConfirmed && !isGeneratingSuggestions" class="flex items-center gap-4">
           <!-- View mode switch -->
           <div class="view-mode-switch">
             <button
@@ -649,10 +677,38 @@ async function handleBack() {
         </div>
       </div>
 
+      <!-- Locked until the statement has a person behind it.
+           The checks are advice about a specific paragraph. Showing them over a
+           paragraph the author has never agreed is theirs makes the advice look
+           like it is about their statement when it may be about the wrong one —
+           and the reader cannot tell the difference. -->
+      <div v-if="!dasConfirmed" class="das-locked">
+        <svg class="das-locked-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+        <template v-if="needsConfirmation">
+          <p class="das-locked-title">Confirm your statement to see the checks</p>
+          <p class="das-locked-sub">
+            We read the statement above out of your manuscript. Once you confirm it is the right
+            passage, we check it against the ASAP requirements and the recommendations appear here.
+          </p>
+          <button type="button" class="das-locked-btn" :disabled="confirmingDAS" @click="confirmDAS">
+            {{ confirmingDAS ? 'Confirming…' : 'Yes, check it' }}
+          </button>
+        </template>
+        <template v-else>
+          <p class="das-locked-title">Add your Availability Statement to see the checks</p>
+          <p class="das-locked-sub">
+            We could not find one in your manuscript. Enter it above and we will check it against
+            the ASAP requirements.
+          </p>
+        </template>
+      </div>
+
       <!-- What the LM check saw: the KRT summary handed to it as ground truth.
            This is the "more details" for the whole run — it explains why a rule
            fired (e.g. "New code in the KRT: No" → the no-new-code checks apply). -->
-      <div v-if="!isGeneratingSuggestions && signalRows.length" class="signals-panel">
+      <div v-if="dasConfirmed && !isGeneratingSuggestions && signalRows.length" class="signals-panel">
         <button type="button" class="signals-toggle" @click="showSignals = !showSignals">
           <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-90': showSignals }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
@@ -676,7 +732,7 @@ async function handleBack() {
       </div>
 
       <!-- Accepted but waiting on a statement to read -->
-      <div v-if="lmCheckGated" class="das-fallback-notice">
+      <div v-if="dasConfirmed && lmCheckGated" class="das-fallback-notice">
         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
@@ -690,7 +746,7 @@ async function handleBack() {
       </div>
 
       <!-- The AI check did not produce verdicts — say which rules are on screen -->
-      <div v-if="lmCheckFailed && !isGeneratingSuggestions" class="das-fallback-notice">
+      <div v-if="dasConfirmed && lmCheckFailed && !isGeneratingSuggestions" class="das-fallback-notice">
         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
         </svg>
@@ -853,7 +909,12 @@ async function handleBack() {
       </div>
 
       <!-- No applicable suggestions -->
-      <div v-else class="flex items-center py-4 text-green-700">
+      <!-- `v-else-if`, not `v-else`. The chain's tail is an ALL-CLEAR, and an
+           empty list is not the same as a clean one: before the statement is
+           confirmed there are no suggestions because nothing has been checked,
+           and a green tick there tells the author their statement passed a
+           check that never ran. -->
+      <div v-else-if="dasConfirmed" class="flex items-center py-4 text-green-700">
         <svg class="w-6 h-6 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
@@ -1404,4 +1465,28 @@ async function handleBack() {
   .das-confirm-card { flex-direction: column; align-items: stretch; }
   .das-confirm-btn { width: 100%; }
 }
+
+/* Suggestions, locked until the statement has a person behind it. */
+.das-locked {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.4rem;
+  padding: 2rem 1rem;
+}
+.das-locked-icon { width: 1.75rem; height: 1.75rem; color: #9ca3af; }
+.das-locked-title { font-weight: 600; color: #374151; }
+.das-locked-sub { max-width: 34rem; font-size: 0.875rem; color: #6b7280; }
+.das-locked-btn {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  background: #b45309;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.das-locked-btn:hover:not(:disabled) { background: #92400e; }
+.das-locked-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>

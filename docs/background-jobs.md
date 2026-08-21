@@ -394,6 +394,26 @@ only for text nobody has touched — on the Availability page, and in the metada
 editor, which is reachable from **every** step so the pipeline can be unblocked
 without navigating to step 5.
 
+**Nothing is shown before it is confirmed.** The server refuses to spend an LM
+call, but the page had two ways around that and both were live:
+
+- the **legacy in-browser rules** cost nothing to compute, so they rendered
+  immediately — a page of recommendations about a paragraph the author had never
+  agreed was theirs, indistinguishable from the real thing. Free to compute is
+  not the same as safe to show;
+- **arriving on the page** called `regenerate`, which takes the MANUAL path —
+  and that path deliberately skips the confirmation, because a person clicking a
+  step by name has decided to run it. Opening a page is not that decision, so
+  the gate never applied to the one route every author takes.
+
+Worse, with no suggestions to show, the tail of the render chain was a bare
+`v-else` holding an **all-clear**: an unconfirmed statement rendered as a green
+"No issues found" — a pass from a check that had never run. It is now
+`v-else-if="dasConfirmed"`; an empty list is not a clean one.
+
+The Suggestions card shows a locked panel instead, with the confirmation in it,
+and the step's instructions lead with the same thing.
+
 **Re-running DAS Extraction by hand clears the working statement** first
 (`onManualRestart` on the step definition). Asking for extraction again is asking
 for a fresh reading, and without the reset the module would run and change
