@@ -171,8 +171,32 @@ async function closeRun(job) {
   });
 }
 
+/**
+ * Copy the run's payload again, once the job logger has finished writing it.
+ *
+ * `closeRun` runs from `markComplete`, and the logger's `flush()` runs AFTER
+ * that — it is what writes `result.files` (the S3 keys of every raw response)
+ * and `logs`. So the run's copy was taken one step too early and every run was
+ * recorded without its artefacts or its log, which is most of what a past run
+ * is worth reading for.
+ *
+ * @param {object} job - the SubmissionJob row, after flush has saved it
+ */
+async function syncRunPayload(job) {
+  return guarded('syncing a run payload', async () => {
+    const run = await currentRun(job.id);
+    if (!run) return null;
+    return run.update({
+      result: job.result ?? null,
+      logs: job.logs ?? null,
+      counts: job.result?.counts ?? null
+    });
+  });
+}
+
 module.exports = {
   openRun,
+  syncRunPayload,
   currentRun,
   touchRun,
   closeRun,

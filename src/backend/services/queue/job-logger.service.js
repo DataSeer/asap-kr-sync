@@ -113,6 +113,11 @@ function createJobLogger(submissionJob, manuscriptId, round) {
         }
         submissionJob.changed('logs', true);
         await submissionJob.save();
+        // The run's own copy was taken by closeRun, from markComplete — which
+        // happens BEFORE this. Without re-syncing here, every run is recorded
+        // without its artefact keys or its log, which is most of what a past
+        // run is worth opening. Guarded, like every history write.
+        await require('./run-history.service').syncRunPayload(submissionJob);
       } catch (error) {
         logger.error(`[${jobType}] Failed to flush job logs to DB`, {
           submissionId: submissionJob.submissionId,
