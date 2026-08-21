@@ -40,6 +40,19 @@ coherent.
 This covers **configuration as well as data**: a module disabled during a run
 and enabled later must still read as disabled in that run's history (§6.1).
 
+### 1.2 The audit requirement
+
+Beyond reading past results, the record must answer **who did what, when** for
+everything that touches a submission's processing:
+
+- **every run** of every step — including runs that produced nothing;
+- **every file** that entered it — the PDF, its replacements, the KRT;
+- **every edit** to the KRT.
+
+"Who" is a named person, "when" is a timestamp, and both must survive the thing
+they describe being superseded. This is the difference between a system that can
+be *reviewed* and one that merely *works*.
+
 ---
 
 ## 2. What is true today
@@ -194,7 +207,35 @@ a `waiting` → `queued` transition, so allocation happens inside the winner. Th
 path ever allocates concurrently, it surfaces as an error rather than as two
 runs numbered 3.
 
-### 4.2 History must never break a run
+### 4.2 A record for every enqueue — including runs that do nothing
+
+**A disabled module still gets a full run record.** No inputs, no outputs, but
+the same metadata as any other run: run number, who, when, how long, and the
+configuration that made it a no-op.
+
+This needs no special case, because it is already how the pipeline behaves. The
+orchestrator does **not** check whether a module is enabled — it enqueues every
+step. The worker runs, `runWithDemoFallback` short-circuits on the Off path, and
+the job completes with:
+
+```js
+config:  { state: 'off', enabled: false, demoEnabled: false }
+outcome: { state: 'done', source: null }   // source null = nothing was attempted
+data:    { items: [] }
+```
+
+Since the run record is created at **enqueue** (§4) rather than when data is
+produced, a disabled module's run is recorded like any other and its payload is
+simply empty. The distinction the history must preserve — *"this module was off
+during run 2, and switched on before run 3"* — is carried by the frozen
+`config.state`, and is exactly what makes an empty result readable as a
+configuration rather than as a finding about the manuscript.
+
+The same applies to runs that **failed**, were **cancelled**, or ran on **demo
+data**. Every enqueue is a run; every run is a record.
+
+### 4.3 History must never break a run
+
 
 Writing the run record is wrapped so a failure **logs and continues**. History
 is an audit sidecar; a bug in it must not fail a pipeline step that otherwise
@@ -212,7 +253,7 @@ a pipeline that stops because its logbook failed is neither.
 `generateJobS3Key` takes the run number instead of the job row id. Its stale
 comment (§2) is rewritten to say what is now true.
 
-**Existing artefacts are not moved.** The backfill (§8) records each existing
+**Existing artefacts are not moved.** The backfill (§9) records each existing
 run's `s3_prefix` as its current `.../{jobRowId}/` path. Files stay where they
 are; the run row knows where to look. Moving hundreds of objects to satisfy a
 naming convention is risk with no user-visible gain.
@@ -290,7 +331,56 @@ current file, which would reintroduce exactly the confusion this design removes.
 
 ---
 
-## 7. API
+## 7. Provenance beyond runs — files and KRT edits
+
+Run history answers "who ran what, when". The audit requirement (§1.2) also
+covers the two other things that change a submission: **the files** it is
+processed from, and **the KRT edits** a person makes. Those are separate
+ledgers, and one of them has a hole.
+
+### 7.1 KRT edits — already audited
+
+`change_logs` records `user_id`, `action`, `source`, `step`, `round`,
+`row_id`, `column_name`, `old_value`, `new_value` and `created_at`. Every KRT
+mutation goes through it, and the actions in use today are `upload`,
+`edit`, `add_row`, `delete_row`, `approve_change`. Nothing to add.
+
+### 7.2 Files — **who uploaded is not recorded**
+
+`files` carries `id, submission_id, type, file_name, s3_key, mime_type, size,
+version, round, created_at`. There is **no uploader column**.
+
+The person is not lost entirely — `pdf.service.uploadPDF` and
+`krt.service.uploadAndProcess` both write a `ChangeLog` with the `userId` inside
+the same transaction as the `File` row. But that entry records only a free-text
+`description`; it carries **no `file_id` and no version**. So "who replaced the
+PDF with v2" can only be reconstructed by correlating timestamps between two
+tables and parsing a sentence.
+
+For a record that must state who did what, that is not good enough. Two small
+additions close it:
+
+| Change | Why |
+|---|---|
+| `files.uploaded_by_user_id` (UUID, FK, `ON DELETE SET NULL`) | the direct answer, on the row that is the subject of the question |
+| `change_logs.file_id` (UUID, FK, nullable) | ties the narrative entry to the exact file version it describes |
+
+Both are nullable and backfill to NULL for existing rows — provenance starts
+now, and no existing behaviour changes.
+
+### 7.3 What "frozen" then buys
+
+Once a run records the `fileRef` it was given (§6) and the file records who put
+it there, the chain is complete and answerable in one query:
+
+> *Run 3 of KRT Grounding read `manuscript_v2.pdf`, uploaded by Marie on
+> 19 August, and the table as Nicolas had edited it that morning.*
+
+That sentence is the point of the whole design.
+
+---
+
+## 8. API
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -307,7 +397,7 @@ everyone, because "this has been processed 3 times" is not internal.
 
 ---
 
-## 8. Migration and backfill
+## 9. Migration and backfill
 
 One migration:
 
@@ -317,14 +407,17 @@ One migration:
    `triggered_by_user_id`, with `s3_prefix` set to the existing
    `.../jobs/{jobType}/{jobRowId}/` path;
 3. add `run_count` to `submission_jobs` (denormalised, default 1) so the panel
-   and the jobs list need no aggregate query.
+   and the jobs list need no aggregate query;
+4. add `files.uploaded_by_user_id` and `change_logs.file_id` (§7.2), both
+   nullable, both backfilling to NULL — file provenance starts now rather than
+   being invented retrospectively.
 
 History therefore starts complete rather than empty, with every existing run
 presented as run 1.
 
 ---
 
-## 9. UI
+## 10. UI
 
 **Processes panel** — `run 3` beside each step's status. Nothing else changes.
 
@@ -349,11 +442,21 @@ presented as run 1.
 | Started / Finished | 21 Aug 2026, 14:26 → 14:26 |
 | Duration | 15.7s |
 | Attempts | 1 of 3 |
+| Configuration | on (external) — **or** `off`, `demo`, taken from the run |
 | Source | external |
+
+A run of a **disabled** module shows the same table with an empty result and
+`Configuration: off`, so the page reads as *"this module was switched off when
+this ran"* rather than as an empty finding.
+
+**Pipeline page.** Each step shows its run number and the run's **configuration
+state**, not the current one. Today it shows no config at all, so a step that
+was disabled during the run is indistinguishable from one that ran and found
+nothing (§6.1).
 
 ---
 
-## 10. What this deliberately does not change
+## 11. What this deliberately does not change
 
 - `submission_jobs` — still one row per (type, round). No new rows, ever.
 - `getForSubmission`, the orchestrator, the consolidator, the suggestions diff —
@@ -364,24 +467,26 @@ presented as run 1.
 
 ---
 
-## 11. Risks
+## 12. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Frozen page mistaken for a lost edit | the "as at" line on every module page, not only past runs (§9) |
+| Frozen page mistaken for a lost edit | the "as at" line on every module page, not only past runs (§10) |
 | Selecting a run mistaken for restoring it | read-only bar, no write affordances on a past run |
-| A history write failing a good run | wrapped; logs and continues (§4.2) |
+| A history write failing a good run | wrapped; logs and continues (§4.3) |
 | `run_number` duplication under the advance race | allocation inside the atomic claim + UNIQUE backstop (§4.1) |
 | Storage growth | accepted (S3 + DB can grow); payload/record split leaves pruning open (§3.4) |
 | Orphaned artefacts | submission delete already removes the whole S3 prefix |
 
 ---
 
-## 12. Phasing
+## 13. Phasing
 
-1. **Schema + backfill + run number.** Migration, model, lifecycle writes, and
-   `run 3` in the panel and Technical detail's METADATA column. Ships useful on
-   its own and proves the lifecycle before any page depends on it.
+1. **Schema + backfill + run number + file provenance.** Migration, model,
+   lifecycle writes (every enqueue, §4.2), `files.uploaded_by_user_id` and
+   `change_logs.file_id` (§7.2), and `run 3` in the panel with Technical
+   detail's METADATA column. Ships useful on its own and proves the lifecycle
+   before any page depends on it.
 2. **Read a past run.** The two endpoints, the module-page selector, the
    read-only bar, role gating.
 3. **Freeze the remaining live reads.** File links, markdown viewer, ORCID
@@ -394,7 +499,7 @@ paths); 2 and 3 are additive reads.
 
 ---
 
-## 13. Open questions
+## 14. Open questions
 
 1. **Retention.** None proposed. If it is ever wanted, the payload/record split
    makes "keep the last N payloads, keep every record" a one-query job.
@@ -403,3 +508,11 @@ paths); 2 and 3 are additive reads.
    work in ticket 0046.
 3. **Round-level view.** "Show me every run of round 1, across all steps" is a
    natural pipeline-page feature once the data exists.
+4. **Does deleting a submission erase its audit trail?** Today it does:
+   `submission_jobs` and `change_logs` are `ON DELETE CASCADE`, and the delete
+   endpoint clears the whole S3 prefix. If the record exists for accountability,
+   a record the subject can delete is a weak one. Options: soft-delete the
+   submission, or copy the ledger to a retained table on delete. Worth a
+   decision — it is a policy question, not a technical one.
+   (User *deletion* is already safe: accounts are anonymised, not removed, so
+   attribution survives as "Deleted user".)
