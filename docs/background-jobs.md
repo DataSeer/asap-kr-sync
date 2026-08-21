@@ -608,6 +608,16 @@ is a page of text, and read inside a panel inside a page it was a keyhole. There
 is no URL to link to — the copy lives in the run record, not in S3 — so the tab
 is served a blob built from it.
 
+One exception to "never a step page": a finding **handed over by another
+module** links to that module's own page. It is navigation between records, not
+a claim about content — the note beside it still says the exact bytes are in
+this run's `inputs` artefact — and the panel it lands on is open by default.
+
+**The panel starts open.** It used to be collapsed, which made the run's own
+record something you had to know was there. On a page whose subject IS one run,
+the result is the claim and this is the evidence for it; evidence behind a
+disclosure gets read by nobody.
+
 **Every statistic says what it counts.** The list was whatever numeric keys the
 module happened to record, camelCase turned into Title Case: *"Total 9, Unique
 2"* over a run that checked nine rules and found two to act on. A number nobody
@@ -626,10 +636,22 @@ A key with no entry still shows, title-cased and without an explanation: a
 missing sentence is a gap to fill, not a reason to hide a number the run
 recorded.
 
-> **Not shown, because it is not recorded:** model token usage and therefore
-> estimated cost. No service captures the provider's `usageMetadata`, so there
-> is nothing to display and inventing a figure would be worse than the gap.
-> Capturing it is a backend change — one field per LM client, then a count here.
+**Token usage is counted per run**, and shown beside the duration. Nine services
+call the model, most of them several times, so the tally is *ambient* rather
+than threaded: `utils/token-usage.js` holds an `AsyncLocalStorage`, the queue
+opens one per job in `registerHandler`, the shared Gemini wrapper adds every
+call's `usageMetadata` to whatever tally is in scope, and `markComplete` reads
+it back onto the result. Three seams, no service changes — and a tenth LM
+service reports its usage without knowing any of this exists.
+
+Per-job rather than a module counter for a reason the tests pin: workers run
+side by side, and a shared counter would charge one submission for another's
+tokens, under load, invisibly. Retries are included — a call that was made and
+thrown away was still paid for.
+
+> **Cost is not shown.** The provider returns tokens, not money. A price derived
+> here from a rate card would be a number the app cannot stand behind — rates
+> change, tiers differ, and nobody would know when it went stale.
 
 On the page: the latest run comes from the poller and costs no extra request,
 and selecting "latest" returns to the live job rather than pinning a frozen copy

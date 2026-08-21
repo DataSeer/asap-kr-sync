@@ -10,7 +10,8 @@
  * Everything is read from the stored result. Nothing is recomputed, so what is
  * shown is what the run actually recorded.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.store'
 import fileService from '@/services/file.service'
 import jobService from '@/services/job.service'
@@ -44,7 +45,16 @@ const authStore = useAuthStore()
  */
 const canViewInternals = computed(() => authStore.canViewJobInternals)
 
-const open = ref(false)
+/**
+ * Open on arrival.
+ *
+ * It used to start collapsed, which made the run's own record — who ran it,
+ * what it read, what it spent — something you had to know was there. On a page
+ * whose subject IS one run, that is the wrong default: the result is the claim
+ * and this is the evidence for it, and evidence behind a disclosure gets read
+ * by nobody.
+ */
+const open = ref(true)
 
 /**
  * What the prompt DOES, per module. The file name alone does not say whether it
@@ -106,6 +116,9 @@ async function loadPrompts() {
 
 // Only when the panel is actually opened.
 watch(open, (isOpen) => { if (isOpen) loadPrompts() })
+// The watcher only fires on a CHANGE, and the panel now starts open — so
+// without this the prompts of the first module you land on never load.
+onMounted(() => { if (open.value) loadPrompts() })
 
 const result = computed(() => props.job?.result || {})
 /**
@@ -323,10 +336,34 @@ function promptProvenance(p) {
 }
 
 /**
- * Counts and durations in one list — both answer "what did this run do", and a
- * column of its own for two timings was a column too many.
+ * What the run spent at the model.
+ *
+ * Absent when no model was called — a row of zeroes on Markdown Convert would
+ * be noise on every page it appears — and absent on runs that predate the
+ * tally, which is honest: they were not measured.
+ *
+ * Tokens rather than money on purpose. The provider does not return a price,
+ * and one derived here from a rate card would be a number the app cannot stand
+ * behind: rates change, tiers differ, and nobody would know when it went stale.
  */
-const statRows = computed(() => [...stats.value, ...timings.value])
+const tokens = computed(() => {
+  const t = result.value.tokens
+  if (!t?.totalTokens) return []
+  const detail = `${t.promptTokens.toLocaleString()} sent, ${t.outputTokens.toLocaleString()} returned`
+    + `, over ${t.calls} call${t.calls === 1 ? '' : 's'}`
+  return [{
+    label: 'Tokens used',
+    value: t.totalTokens.toLocaleString(),
+    explain: `What this run cost the language model, in tokens: ${detail}. `
+      + 'Retries are included — a call that was made and thrown away was still paid for.'
+  }]
+})
+
+/**
+ * Counts, durations and spend in one list — all three answer "what did this run
+ * do", and a column of its own for two timings was a column too many.
+ */
+const statRows = computed(() => [...stats.value, ...timings.value, ...tokens.value])
 
 const metadata = computed(() => {
   const job = props.job || {}
@@ -482,6 +519,11 @@ const inputs = computed(() => {
         if (!j) continue
         out.push({
           label: `${labelFor(t)} findings`,
+          // To the module that produced them, where its own frozen record is —
+          // its run, its inputs, its artefacts. Not a claim that this is the
+          // copy this run read, which is why the note still says what it does:
+          // the exact bytes are in the `inputs` artefact below.
+          route: { name: 'submission-module', params: { id: props.submissionId, type: t } },
           note: `${j.result?.data?.items?.length ?? 0} items, as handed to this run`
         })
       }
@@ -627,6 +669,17 @@ const responseUrl = (name) =>
             <button v-if="i.fileId" type="button" class="mt-linkish" @click="openFile(i.fileId)">
               {{ i.label }} ↗
             </button>
+            <!-- The producing module's own page, which opens on its technical
+                 record. A step page for a DOCUMENT would show today's version
+                 beside this run's result, which is why those are gone; a link
+                 to the module that produced a finding is navigation between
+                 records, and the note beside it still says the exact bytes are
+                 in the `inputs` artefact. -->
+            <RouterLink
+              v-else-if="i.route"
+              :to="i.route"
+              v-tooltip="'Opens that module\'s own record — its run, inputs and outputs'"
+            >{{ i.label }} ↗</RouterLink>
             <span v-else>{{ i.label }}</span>
             <span v-if="i.note" class="mt-files-note">{{ i.note }}</span>
           </li>

@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
+import { tooltip } from '@/directives/tooltip'
 import { h } from 'vue'
 import ModuleTechnical from './ModuleTechnical.vue'
 import { MODULE_META } from './module-meta'
@@ -37,9 +38,13 @@ beforeEach(() => setActivePinia(createPinia()))
 async function mountOpen(props) {
   const wrapper = mount(ModuleTechnical, {
     props: { submissionId: 'sub-1', jobs: {}, files: {}, ...props },
-    global: { plugins: [router] }
+    global: { plugins: [router], directives: { tooltip } }
   })
-  await wrapper.find('button.mt-toggle').trigger('click')
+  // The panel opens on arrival now, so a click here would CLOSE it. Only click
+  // when something has left it shut.
+  if (!wrapper.find('.mt-body').exists()) {
+    await wrapper.find('button.mt-toggle').trigger('click')
+  }
   return wrapper
 }
 
@@ -216,5 +221,64 @@ describe('the prompt shown is the run\'s own copy', () => {
     await new Promise((r) => setTimeout(r, 0))
 
     expect(wrapper.text()).toContain('could not be read')
+  })
+})
+
+describe('the panel itself', () => {
+  it('is open on arrival', async () => {
+    // It used to start collapsed, which made the run's own record — who ran it,
+    // what it read, what it spent — something you had to know was there. On a
+    // page whose subject IS one run, evidence behind a disclosure gets read by
+    // nobody.
+    const wrapper = mount(ModuleTechnical, {
+      props: { job: dasJob(), jobType: 'das_suggestions', submissionId: 'sub-1', jobs: {}, files: {} },
+      global: { plugins: [router], directives: { tooltip } }
+    })
+
+    expect(wrapper.find('.mt-body').exists()).toBe(true)
+  })
+
+  it('still closes when asked', async () => {
+    const wrapper = mount(ModuleTechnical, {
+      props: { job: dasJob(), jobType: 'das_suggestions', submissionId: 'sub-1', jobs: {}, files: {} },
+      global: { plugins: [router], directives: { tooltip } }
+    })
+
+    await wrapper.find('button.mt-toggle').trigger('click')
+
+    expect(wrapper.find('.mt-body').exists()).toBe(false)
+  })
+})
+
+describe('a finding handed over by another module', () => {
+  it('links to the module that produced it', async () => {
+    // Its own record — its run, its inputs, its artefacts — rather than a dead
+    // label. Documents are a different case and stay unlinked to today's
+    // version: this is navigation between records, not a claim about content.
+    const wrapper = await mountOpen({
+      jobType: 'pdf_analysis',
+      job: dasJob(),
+      jobs: {
+        software_detection: { type: 'software_detection', status: 'complete', result: { data: { items: [1, 2, 3] } } }
+      }
+    })
+
+    const link = wrapper.findAll('a').find((a) => a.text().includes('Software Detection findings'))
+    expect(link, 'the finding must be a link').toBeTruthy()
+    expect(link.attributes('href')).toContain('/pipeline/software_detection')
+  })
+
+  it('still says the exact copy is in the inputs artefact', async () => {
+    // The link goes to that module's latest record, which is not necessarily
+    // the copy this run read. The note is what keeps that honest.
+    const wrapper = await mountOpen({
+      jobType: 'pdf_analysis',
+      job: dasJob(),
+      jobs: {
+        software_detection: { type: 'software_detection', status: 'complete', result: { data: { items: [1] } } }
+      }
+    })
+
+    expect(wrapper.text()).toContain('as handed to this run')
   })
 })

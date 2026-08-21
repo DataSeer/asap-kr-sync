@@ -4,6 +4,7 @@
  */
 
 const { DataTypes, Op } = require('sequelize');
+const tokenUsage = require('../utils/token-usage');
 
 /**
  * Lazily required: the history service requires the models back, and resolving
@@ -179,6 +180,15 @@ module.exports = (sequelize) => {
     if (result) {
       this.result = { ...(this.result || {}), ...result };
     }
+    // What this run spent, read from the ambient tally rather than passed in by
+    // each of the nine services that call a model. Here because this is the one
+    // place every job's result is written, so a service added later reports its
+    // usage without knowing this exists.
+    //
+    // Absent when no model was called: a row of zeroes on Markdown Convert
+    // would be noise on every page it appears.
+    const tokens = tokenUsage.current();
+    if (tokens) this.result = { ...(this.result || {}), tokens };
     this.changed('result', true);
     this.completedAt = new Date();
     const saved = await this.save();

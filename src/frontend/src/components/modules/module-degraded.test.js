@@ -45,7 +45,10 @@ async function mountOpen(outcome) {
     props: { job: job(outcome), jobType: 'software_detection', submissionId: 'sub-1', jobs: {} },
     global: { directives: { tooltip }, stubs: { RouterLink: { template: '<a><slot /></a>' } } }
   })
-  await wrapper.find('button.mt-toggle').trigger('click')
+  // The panel opens on arrival now, so a click here would CLOSE it.
+  if (!wrapper.find('.mt-body').exists()) {
+    await wrapper.find('button.mt-toggle').trigger('click')
+  }
   return wrapper
 }
 
@@ -145,7 +148,9 @@ describe('a past run whose artefacts were not kept apart', () => {
       props: { job: pastRun(over), jobType: 'software_detection', submissionId: 'sub-1', jobs: {} },
       global: { directives: { tooltip }, stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     })
-    await wrapper.find('button.mt-toggle').trigger('click')
+    if (!wrapper.find('.mt-body').exists()) {
+      await wrapper.find('button.mt-toggle').trigger('click')
+    }
     return wrapper
   }
 

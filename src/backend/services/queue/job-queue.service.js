@@ -6,6 +6,7 @@
 const PgBoss = require('pg-boss');
 const logger = require('../../utils/logger');
 const { JOB_TYPES } = require('../../config/constants');
+const tokenUsage = require('../../utils/token-usage');
 
 let boss = null;
 
@@ -303,8 +304,13 @@ async function registerHandler(queueName, handler, options = {}) {
     });
 
     try {
-      // Pass both job.data and the full pg-boss job object to the handler
-      const result = await handler(job.data, job);
+      // Pass both job.data and the full pg-boss job object to the handler.
+      //
+      // Wrapped in a token tally so every model call underneath is counted
+      // against THIS job. The store is per-execution, so two workers running
+      // side by side cannot see each other's — which a module-level counter
+      // would have got wrong, silently and only under load.
+      const result = await tokenUsage.run(() => handler(job.data, job));
       logger.info('Job completed', { queue: queueName, jobId: job.id });
       return result;
     } catch (error) {

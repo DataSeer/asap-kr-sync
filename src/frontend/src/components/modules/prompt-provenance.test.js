@@ -47,7 +47,10 @@ async function provenanceLine({ startedAt = '2026-08-21T21:21:00Z' } = {}) {
     },
     global: { directives: { tooltip }, stubs: { RouterLink: true } }
   })
-  await wrapper.find('.mt-caret').trigger('click')
+  // The panel opens on arrival now, so a click here would CLOSE it.
+  if (!wrapper.find('.mt-body').exists()) {
+    await wrapper.find('.mt-caret').trigger('click')
+  }
   await flushPromises()
   const toggle = wrapper.findAll('button').find((b) => b.text().includes('das-suggestions.txt'))
   expect(toggle, 'the prompt must be listed before it can be opened').toBeTruthy()

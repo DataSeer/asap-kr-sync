@@ -24,6 +24,7 @@
 
 const { isTransientError } = require('./helpers');
 const logger = require('./logger');
+const tokenUsage = require('./token-usage');
 
 const DEFAULTS = { maxRetries: 4, delay: 1000, multiplier: 2, maxDelay: 15000, jitter: 400 };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -84,6 +85,8 @@ async function generateContentWithRetry(ai, params, options = {}) {
     let transientError = null;
     try {
       response = await ai.models.generateContent(callParams);
+      // Every call, including the ones a retry throws away — they were paid for.
+      tokenUsage.add(response?.usageMetadata);
     } catch (error) {
       // Non-transient (auth/bad-request) or last attempt → give up immediately.
       if (!isTransientError(error) || attempt === cfg.maxRetries) throw error;
