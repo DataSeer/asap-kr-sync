@@ -102,13 +102,21 @@ const INPUT_LABELS = {
   krt: 'Key Resources Table'
 }
 const staleInputs = computed(() => (inputs.value || []).filter((i) => i.stale))
-const inputLabel = (input) => INPUT_LABELS[input.inputKind] || input.inputKind
+
 function inputDetail(input) {
-  if (input.inputKind === 'krt') {
-    return `${input.rowCount} rows when this ran, ${input.liveRowCount} now`
-  }
-  return `version ${input.version} when this ran, version ${input.liveVersion} now`
+  const label = INPUT_LABELS[input.inputKind] || input.inputKind
+  const detail = input.inputKind === 'krt'
+    ? `${input.rowCount} rows when this ran, ${input.liveRowCount} now`
+    : `version ${input.version} when this ran, version ${input.liveVersion} now`
+  return `the ${label} has changed (${detail})`
 }
+
+// Assembled here rather than in the template: `v-for` with punctuation between
+// the items leaves the whitespace of the source in the rendered sentence, and
+// it showed as "112 now) ." on the page.
+const staleSentence = computed(() =>
+  `${staleInputs.value.map(inputDetail).join('; ')}.`
+)
 
 /**
  * The configuration this step RAN under — `off`, `demo`, or on.
@@ -298,10 +306,7 @@ const activeStage = computed(() => {
       <div class="pv-stale-body">
         <p class="pv-stale-title">This analysis used an earlier version of your data</p>
         <p class="pv-stale-sub">
-          <template v-for="(input, i) in staleInputs" :key="input.inputKind">
-            <template v-if="i">; </template>the {{ inputLabel(input) }} has changed ({{ inputDetail(input) }})
-          </template>.
-          Restart a step to run it against what is there now.
+          {{ staleSentence }} Restart a step to run it against what is there now.
         </p>
       </div>
     </div>
