@@ -124,18 +124,27 @@ const PIPELINE = [
     // manuscript, so the working statement is cleared to make room for it.
     //
     // Without this the module would run and change nothing visible: the working
-    // field is only filled while it is empty (see applyExtractedDas), so a
+    // field is only filled while it is empty (see apply.service), so a
     // re-extraction on a submission that already has a statement — every new
     // round, every replaced PDF — would write to the extracted field alone and
     // look like it had done nothing.
     //
     // Only on a MANUAL restart. The pipeline running extraction as part of a
     // normal round must not wipe a statement somebody has already dealt with.
-    onManualRestart(submission) {
-      submission.dataAvailabilityStatement = null;
-      // Nothing left to have confirmed.
-      submission.dasConfirmedAt = null;
-      submission.dasConfirmedByUserId = null;
+    //
+    // Through the apply service rather than as three assignments, because this
+    // DESTROYS data: a user who typed their own statement and then pressed
+    // "re-run" loses it. Correct — they asked — but it is exactly the silent
+    // pipeline write the apply split exists to end, so what was there is
+    // recorded against whoever asked.
+    async onManualRestart(submission, { userId, round } = {}) {
+      await require('./apply.service').clearFromPipeline({
+        submission,
+        target: 'data_availability_statement',
+        userId,
+        round,
+        description: 'Availability Statement cleared for a fresh extraction'
+      });
     }
   },
   // Softcite reads the PDF and could start immediately, but the module's second
@@ -1512,10 +1521,17 @@ async function requeueStep(submissionId, jobType, round, userId, {
   // again — otherwise "re-run this module" is a button that appears to do
   // nothing. Non-fatal: the run is what the user asked for, and a failure to
   // reset is better reported than turned into a refusal to run at all.
+  //
+  // The hook PERSISTS its own reset. It used to mutate and leave the saving
+  // here, which stopped working the moment a reset also had to be recorded —
+  // the record and the write have to land together or the log describes
+  // something that did not happen.
   if (submission && step.onManualRestart) {
     try {
-      await step.onManualRestart(submission);
-      await submission.save();
+      // `round` explicitly: the submission is loaded with a narrow attribute
+      // list that does not include currentRound, so a hook reaching for it
+      // would find undefined and the log row would refuse to write.
+      await step.onManualRestart(submission, { userId, round });
     } catch (resetErr) {
       logger.error('Manual restart could not reset the step\'s previous output', {
         submissionId, jobType, error: resetErr.message

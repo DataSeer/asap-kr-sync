@@ -63,6 +63,8 @@ Submission.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 // User -> ChangeLogs (one-to-many)
 User.hasMany(ChangeLog, { foreignKey: 'userId', as: 'changeLogs' });
 ChangeLog.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+StepExecution.hasMany(ChangeLog, { foreignKey: 'stepExecutionId', as: 'applies' });
+ChangeLog.belongsTo(StepExecution, { foreignKey: 'stepExecutionId', as: 'stepExecution' });
 
 // Submission -> Files (one-to-many)
 Submission.hasMany(File, { foreignKey: 'submissionId', as: 'files' });

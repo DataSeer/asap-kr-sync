@@ -22,6 +22,7 @@ const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
 const path = require('path');
 const inputFreeze = require('../queue/input-freeze.service');
+const applyService = require('../queue/apply.service');
 
 /**
  * Convert DOCX buffer to PDF buffer using libreoffice-convert
@@ -512,53 +513,56 @@ async function applyEdit(submissionId, data, modifiedValue, userId, round) {
 }
 
 /**
- * Decide what a fresh extraction is allowed to write onto the submission.
+ * Record what this extraction found, and offer it to the submission.
  *
- * There are two fields, and they mean different things:
+ * Two fields, meaning different things — and after the apply split, holding
+ * different KINDS of thing:
  *
  *   - `extractedDataAvailabilityStatement` — what the LAST extraction found.
- *     Always overwritten; it is a record of what the extractor said, and a
- *     newer reading of the manuscript replaces an older one.
+ *     Always overwritten. A projection of the newest extraction execution's
+ *     output, kept on the row for now because the Availability page and the
+ *     report read it directly; it goes when those reads move onto runs.
  *   - `dataAvailabilityStatement` — the statement the submission STANDS ON.
- *     Filled from extraction only while it is empty. Once it holds anything,
- *     it belongs to whoever put it there.
+ *     No longer written here. Promoting a result into the submission is an
+ *     APPLY: separate, attributed to the execution that produced it, and
+ *     recorded on `change_logs`. The rule about whose text wins moved with it,
+ *     into apply.service, where it can be read beside every other such rule
+ *     instead of being buried in an extractor.
  *
- * The bug this rule fixes: extraction wrote the second field every time. An
- * author whose statement the extractor could not find typed one by hand — the
- * whole reason the manual path exists — and the next extraction replaced it
+ * The bug that rule exists for: extraction wrote the second field every time.
+ * An author whose statement the extractor could not find typed one by hand —
+ * the whole reason the manual path exists — and the next extraction replaced it
  * with "Not found". The app undid their work and called it an update, with no
  * record that anything had been lost.
  *
- * Pure and synchronous on purpose: this is the rule about whose text wins, and
- * it should be readable and testable without a database behind it.
- *
- * @param {object} submission - mutated in place; not saved here
+ * @param {object} submission - loaded instance; saved here
  * @param {string} persisted - what extraction produced (NO_DAS_SENTINEL if nothing)
- * @returns {{ replaced: boolean, confirmationWithdrawn: boolean }}
+ * @param {object} [opts]
+ * @param {string} [opts.stepExecutionId] - the execution that produced it
+ * @returns {Promise<{ replaced: boolean, confirmationWithdrawn: boolean }>}
  */
-function applyExtractedDas(submission, persisted) {
+async function applyExtractedDas(submission, persisted, { stepExecutionId = null } = {}) {
   submission.extractedDataAvailabilityStatement = persisted;
-
-  // The sentinel counts as empty. Extraction is fail-soft and always persists
-  // something, so a first pass that found nothing leaves "Not found" sitting in
-  // the working field — and treating that as occupied would lock out every
-  // later extraction, including the one that finally succeeds.
-  const current = (submission.dataAvailabilityStatement || '').trim();
-  const occupied = current && current !== NO_DAS_SENTINEL;
-  if (occupied) return { replaced: false, confirmationWithdrawn: false };
-
-  const changed = current !== persisted;
-  submission.dataAvailabilityStatement = persisted;
-
-  // Extractor-authored text has nobody behind it. Any confirmation standing
-  // here was about different words, so it does not carry over — the Availability
-  // check asks again rather than reporting on a statement nobody has read.
   const hadConfirmation = !!submission.dasConfirmedAt;
-  if (changed) {
-    submission.dasConfirmedAt = null;
-    submission.dasConfirmedByUserId = null;
-  }
-  return { replaced: true, confirmationWithdrawn: changed && hadConfirmation };
+
+  const { applied } = await applyService.applyToSubmission({
+    submission,
+    target: 'data_availability_statement',
+    value: persisted,
+    stepExecutionId,
+    // Nobody chose this. An automatic apply is recorded with the system as the
+    // actor rather than not recorded at all.
+    userId: null,
+    round: submission.currentRound || 1,
+    description: 'Availability Statement filled from the manuscript'
+  });
+
+  // `applyToSubmission` saves only when it writes. The projection above has to
+  // land either way — a reading that was rejected is still a reading, and the
+  // page shows it beside the statement so the two can be compared.
+  if (!applied) await submission.save();
+
+  return { replaced: applied, confirmationWithdrawn: applied && hadConfirmation };
 }
 
 /**
@@ -592,8 +596,9 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
   // extraction was attempted. "Not found" doubles as the empty-but-tried
   // sentinel and as the placeholder shown in the UI.
   const das = result.data?.meta?.das || null;
-  applyExtractedDas(submission, das || NO_DAS_SENTINEL);
-  await submission.save();
+  await applyExtractedDas(submission, das || NO_DAS_SENTINEL, {
+    stepExecutionId: (await jobLogger?.currentExecutionId?.()) || null
+  });
 
   logger.info('DAS_EXTRACTION done', {
     submissionId,

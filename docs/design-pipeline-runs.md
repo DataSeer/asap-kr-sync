@@ -1,6 +1,7 @@
 # Design proposal — Pipeline runs: one coherent attempt, reconstructable in full
 
-**Status:** PROPOSED · **Created:** 2026-08-22
+**Status:** IN PROGRESS — steps 1–2 of §16 built · **Created:** 2026-08-22
+· **Updated:** 2026-08-22
 
 > Supersedes the run model in [design-run-history.md](./design-run-history.md),
 > which numbers runs **per step**. That model is built and working; this one
@@ -411,12 +412,21 @@ Most of it. The change is one of identity, not of machinery:
 
 Each step leaves the system working:
 
-1. **Schema + run creation.** New tables, `newRun()`, writing alongside the
+1. ✅ **Schema + run creation.** New tables, `newRun()`, writing alongside the
    current model. The scheduler is untouched.
+   `submission_job_runs` was renamed `step_executions` rather than replaced —
+   the columns were nearly right, and "run" had to stop meaning two things.
 2. **Attempts and the apply system.** Independent of the identity change and
    valuable on their own; the apply split is the one to do early, because
    retrofitting it later means revisiting every module.
+   - ✅ the apply system (`apply.service`), plus `change_logs.step_execution_id`
+     and a nullable `user_id` so the system can be an actor. A pipeline CLEAR
+     goes through it too: re-running DAS extraction destroys a statement the
+     author may have typed, which is the same silent write in reverse.
+   - ⬜ attempts
 3. **Move history reads** — module pages, run endpoints, report — onto runs.
+   `extracted_data_availability_statement` dissolves here, not earlier: it is a
+   read of the newest extraction execution, so it goes when the reads move.
 4. **Retire per-step run numbers** and shrink `submission_jobs`.
 5. **The run selector becomes submission-wide**: "show me run 1" across every
    module, rather than per step.

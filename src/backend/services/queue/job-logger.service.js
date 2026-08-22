@@ -30,6 +30,7 @@ function createJobLogger(submissionJob, manuscriptId, round) {
   const entries = [];
   const rawResponses = {};
   const jobType = submissionJob.jobType;
+  let executionId;   // undefined = not looked up yet; null = there isn't one
 
   return {
     /**
@@ -124,6 +125,29 @@ function createJobLogger(submissionJob, manuscriptId, round) {
           error: error.message
         });
       }
+    },
+
+    /**
+     * The execution this step is running as, for attributing what it produces.
+     *
+     * A service that promotes its output into the submission has to say WHICH
+     * run the value came from, and it is handed a logger, not a job row. Looked
+     * up once and cached: within one worker invocation the execution cannot
+     * change, and the alternative is a database round trip per applied field.
+     *
+     * Null when there is no execution — a step run outside the pipeline, or a
+     * history write that failed. The apply still happens; it is recorded
+     * without a source, which is worse than attributed and much better than
+     * refusing to write a value the user is waiting for.
+     *
+     * @returns {Promise<string|null>}
+     */
+    async currentExecutionId() {
+      if (executionId === undefined) {
+        const run = await require('./run-history.service').currentRun(submissionJob.id);
+        executionId = run?.id || null;
+      }
+      return executionId;
     },
 
     /** Get current log entries (for inspection) */

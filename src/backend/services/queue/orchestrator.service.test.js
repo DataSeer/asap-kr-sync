@@ -17,7 +17,7 @@
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { SubmissionJob, Submission } = require('../../models');
+const { SubmissionJob, Submission, ChangeLog } = require('../../models');
 const jobQueue = require('./job-queue.service');
 const orchestrator = require('./orchestrator.service');
 const { JOB_TYPES } = require('../../config/constants');
@@ -27,6 +27,7 @@ const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
 let saved;      // every row .save() was called on, in order
 let enqueued;   // every queue name addJob() was called with
 let pipelineRuns; // what mockDb recorded about the runs that were opened
+let applied;    // every change-log row a reset hook wrote
 
 function row(jobType, over = {}) {
   const r = {
@@ -96,6 +97,9 @@ function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAva
     return created;
   });
   t.mock.method(Submission, 'findByPk', async () => submission);
+  // A step's reset hook records what it destroyed. These tests are not about
+  // the log, but an unmocked create reaches for a connection.
+  t.mock.method(ChangeLog, 'create', async (row) => { applied.push(row); return row; });
   t.mock.method(jobQueue, 'addJob', async (queueName) => {
     enqueued.push(queueName);
     return `pgboss-${enqueued.length}`;
@@ -125,8 +129,8 @@ function completeUpstreamOf(rows, jobType) {
   walk(jobType);
 }
 
-beforeEach(() => { saved = []; enqueued = []; });
-afterEach(() => { saved = []; enqueued = []; });
+beforeEach(() => { saved = []; enqueued = []; applied = []; });
+afterEach(() => { saved = []; enqueued = []; applied = []; });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // computeDownstreamSet — what a re-run invalidates
@@ -490,6 +494,13 @@ test('re-running DAS extraction by hand clears the statement it will replace', a
   assert.equal(submission.dasConfirmedAt, null, 'and there is nothing left to have confirmed');
   assert.equal(submission.dasConfirmedByUserId, null);
   assert.equal(saves.length, 1, 'the reset has to be persisted, not just held in memory');
+
+  // And it has to say what it destroyed. A user who typed that statement and
+  // pressed "re-run" has just lost it; the log is the only place that says so.
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].oldValue, 'Data are at Zenodo.');
+  assert.equal(applied[0].newValue, null);
+  assert.equal(applied[0].userId, 'user-2', 'credited to whoever asked for the re-run');
 });
 
 test('the pipeline running extraction on its own does NOT clear it', async (t) => {
