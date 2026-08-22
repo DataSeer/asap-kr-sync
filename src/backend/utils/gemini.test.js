@@ -101,6 +101,18 @@ test('two transient failures then a success read back as three tries', async () 
   assert.ok(attempts.every((a) => a.engine === 'Datasets'), 'and each says which service');
 });
 
+test('a call that works first time records nothing', async () => {
+  // A run whose record is one "ok" per successful call says nothing and buries
+  // the attempts that matter. The delivery itself is recorded either way, by
+  // the layer that closes the execution.
+  const attempts = await attemptLog.run(async () => {
+    await generateContentWithRetry(fakeAi([{ text: 'ok' }]), { model: 'm', contents: [] }, { retry: NO_WAIT });
+    return attemptLog.drain();
+  });
+
+  assert.deepEqual(attempts, []);
+});
+
 test('a 200 that cannot be parsed is a failed try, not a silent one', async () => {
   // It produced nothing, it was paid for, and it caused a retry. Recording it
   // as a success would make a run that retried four times look clean.

@@ -177,3 +177,77 @@ describe('viewing a past run', () => {
     expect(wrapper.find('.mrv-status').text()).toMatch(/completed/i)
   })
 })
+
+/**
+ * A run that did not re-execute this step.
+ *
+ * The case the per-step numbering could not express, and the one most likely to
+ * mislead: someone restarts one detector, comes to another module's page, and
+ * reads a run number that is genuinely current beside a result that predates
+ * it. Nothing on the page was wrong; the only available reading of it was.
+ */
+describe('a carried-over step', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  const carried = (n, isLatest, producedByRun) => ({
+    ...runRow(n, isLatest), carriedOver: true, producedByRun
+  })
+
+  it('says so on the LATEST run, which is where it misleads', async () => {
+    const wrapper = await mountPage({ runs: [carried(3, true, 1), runRow(1, false)] })
+
+    const notice = wrapper.find('.mrv-carried')
+    expect(notice.exists()).toBe(true)
+    expect(notice.text()).toMatch(/did not run again in run 3/)
+    expect(notice.text()).toMatch(/produced by\s+run 1/)
+  })
+
+  it('names the run it came from in the selector, before anything is opened', async () => {
+    // Picking between runs is exactly when it matters that two of them hold the
+    // same result.
+    const wrapper = await mountPage({ runs: [carried(3, true, 1), runRow(1, false)] })
+
+    const options = wrapper.find('.mrv-runs-select').findAll('option')
+    expect(options[0].text()).toMatch(/carried over from run 1/)
+    expect(options[1].text()).not.toMatch(/carried over/)
+  })
+
+  it('is absent when the run actually ran the step', async () => {
+    const wrapper = await mountPage({ runs: [runRow(2, true), runRow(1, false)] })
+
+    expect(wrapper.find('.mrv-carried').exists()).toBe(false)
+  })
+
+  it('returning to the latest run does not lose the notice', async () => {
+    // `showRun(null)` clears the selection, so the notice has to fall back to
+    // the newest entry in the list rather than reading only the selected run.
+    const wrapper = await mountPage({ runs: [carried(3, true, 1), runRow(1, false)] })
+    getRun.mockResolvedValue({ run: { ...jobFor(3), runNumber: 1, isLatest: false } })
+
+    await wrapper.find('.mrv-runs-select').setValue('1')
+    await flushPromises()
+    await wrapper.find('.mrv-past-btn').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.mrv-carried').exists()).toBe(true)
+  })
+})
+
+describe('a run that has not reached this step', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('is offered, and says it has not run', async () => {
+    // A run in progress contains steps that have not started. Hiding them would
+    // make the current run look shorter than it is.
+    const wrapper = await mountPage({
+      runs: [
+        { ...runRow(2, true), status: 'not_started', startedAt: null, completedAt: null },
+        runRow(1, false)
+      ]
+    })
+
+    const options = wrapper.find('.mrv-runs-select').findAll('option')
+    expect(options).toHaveLength(2)
+    expect(options[0].text()).toMatch(/not run yet/)
+  })
+})

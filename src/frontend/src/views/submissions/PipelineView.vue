@@ -321,6 +321,15 @@ function groupsForStage(nodes) {
 }
 
 /** Where the pipeline currently is, in one line. */
+/**
+ * Which attempt at this round the page is showing.
+ *
+ * The same for every step, because a run is one attempt at the whole pipeline —
+ * which is exactly why it belongs here and not on each tile. Read off any job:
+ * the poller reports the round's current run on all of them.
+ */
+const runNumber = computed(() => Object.values(jobs.value || {})[0]?.runNumber || 1)
+
 const state = computed(() => {
   // Every step counts here: this page describes the whole run, and a step that
   // has not run yet is exactly what a reader wants to see. (The KRT and PDF
@@ -418,6 +427,10 @@ const activeStage = computed(() => {
 
     <!-- Where the pipeline is right now, before any of the detail. -->
     <div v-if="graph.nodes.length" class="pv-state">
+      <!-- The run this round is in. Once, here, rather than on each tile: a run
+           is one attempt at the WHOLE pipeline, so the number is the same on
+           every step, and twelve copies of it would say less than one. -->
+      <span v-if="runNumber > 1" class="pv-state-item pv-state-run">Run {{ runNumber }}</span>
       <span class="pv-state-item"><b>{{ state.done }}</b> of {{ state.total }} done</span>
       <span v-if="state.running" class="pv-state-item st-run">{{ state.running }} running</span>
       <span v-if="state.pending" class="pv-state-item st-pending">{{ state.pending }} needs input</span>
@@ -570,6 +583,9 @@ const activeStage = computed(() => {
   font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 0.3rem;
   background: #f3f4f6; color: #4b5563;
 }
+/* After .pv-state-item, not before: same specificity, so the later rule is the
+   one that wins. */
+.pv-state-run { font-weight: 600; color: #3730a3; background: #e0e7ff; }
 
 /* Top to bottom: the manuscript flows down the page, and an ordered list is
    what this actually is — which a screen reader then reads correctly. */

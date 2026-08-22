@@ -6,7 +6,7 @@
  * When omitted, defaults to the submission's current round.
  */
 
-const { SubmissionJob, StepExecution, User } = require('../models');
+const { SubmissionJob, User } = require('../models');
 const { JOB_TYPES } = require('../config/constants');
 const { ValidationError, NotFoundError } = require('../utils/errors');
 
@@ -22,6 +22,7 @@ const s3Service = require('../services/storage/s3.service');
 const { ROLES } = require('../config/constants');
 const logger = require('../utils/logger');
 const inputFreeze = require('../services/queue/input-freeze.service');
+const pipelineRuns = require('../services/queue/pipeline-run.service');
 
 // Statuses of jobs that have NOT started yet — these can be truly cancelled
 // (they will never run). A 'processing' job is deliberately excluded: it is
@@ -104,6 +105,22 @@ async function getJobs(req, res, next) {
       });
     }
 
+    // Which run this round is in. One query for the whole payload, because a
+    // run number belongs to the ROUND now, not to each step — that is the point
+    // of the model, and it is also what stopped the module page's header saying
+    // "run 2" while its own metadata panel said "run 1" two inches below.
+    //
+    // Non-fatal for the same reason as the freezes above: a pipeline page that
+    // will not load because it could not number the run is a worse page.
+    let currentRun = null;
+    try {
+      currentRun = await pipelineRuns.currentRun(req.params.id, round);
+    } catch (err) {
+      logger.error('Could not read the round\'s current pipeline run', {
+        submissionId: req.params.id, round, error: err.message
+      });
+    }
+
     // Everything about this round that needs a person, computed once. Five
     // surfaces render it; none of them re-derives it.
     const issues = orchestrator.describeIssues(jobsByType).map((issue) => ({
@@ -169,12 +186,20 @@ async function getJobs(req, res, next) {
           triggeredBy: job.triggeredByUserId
             ? { id: job.triggeredByUserId, name: triggerById.get(job.triggeredByUserId) || null }
             : null,
-          // How many times this step has run in this round, and therefore which
-          // run the numbers beside it belong to. Denormalised onto the job row,
-          // so the panel costs no extra query — this endpoint is polled every
-          // few seconds by every open tab.
-          runCount: job.runCount ?? 1,
-          runNumber: job.runCount ?? 1,
+          // Which run the numbers beside this step belong to. The PIPELINE
+          // run's number, the same for every step in the payload: "run 2" has
+          // to mean one thing across the page, and per-step numbering meant it
+          // could mean twelve.
+          //
+          // Runs are numbered 1..N per round, so the newest number is also the
+          // count. Falling back to 1 rather than to the step's own count, which
+          // is the number this replaces.
+          runCount: currentRun?.runNumber ?? 1,
+          runNumber: currentRun?.runNumber ?? 1,
+          // How many times this STEP has executed in the round. Kept, and named
+          // for what it is: it answers "has this been re-run", which the run
+          // number no longer does now that a run can carry a step over.
+          executionCount: job.runCount ?? 0,
           retryCount: job.retryCount || 0,
           round: job.round,
           startedAt: job.startedAt,
@@ -478,8 +503,12 @@ async function getJobPrompts(req, res, next) {
       throw new ValidationError(`Not a run number: "${req.query.run}"`);
     }
 
+    // Through the pipeline run, so `?run=2` means the same thing here as it does
+    // in the selector that produced it. Resolving it against the step's own
+    // numbering would answer for a different run whenever anything was carried
+    // over — the page contradicting itself, quietly.
     const job = wanted
-      ? await StepExecution.findOne({ where: { submissionId: submission.id, jobType, round, runNumber: wanted } })
+      ? (await pipelineRuns.stepInRun(submission.id, round, jobType, wanted))?.execution
       : await SubmissionJob.getLatest(submission.id, jobType, round);
     if (!job) {
       return res.status(404).json({ error: wanted ? `Run ${wanted} not found` : 'Job not found' });
@@ -536,13 +565,22 @@ async function getJobPrompts(req, res, next) {
  * @param {object} run - a StepExecution
  * @param {object} extras - `runCount`, `triggeredBy`, `isLatest`
  */
-function shapeRun(run, { runCount, triggeredBy, isLatest }) {
+function shapeRun(run, {
+  runCount, triggeredBy, isLatest, runNumber, carriedOver = false, producedByRun = null, cause = null
+}) {
   return {
     jobType: run.jobType,
     round: run.round,
-    runNumber: run.runNumber,
+    // The PIPELINE run's number, not the execution's own. They differ whenever
+    // a step was carried over, and the execution's number is the one nobody
+    // asked about.
+    runNumber: runNumber ?? run.runNumber,
     runCount,
     isLatest,
+    cause,
+    carriedOver,
+    producedByRun,
+    attempts: run.attempts || [],
     status: run.status,
     result: run.result,
     logs: run.logs || [],
@@ -600,8 +638,18 @@ function assertKnownJobType(jobType) {
 }
 
 /**
- * Every run of one step, newest first.
+ * Every PIPELINE RUN of this round that contains this step, newest first.
  * GET /api/submissions/:id/jobs/:jobType/runs
+ *
+ * "Every run of this step" is what this used to answer, and the numbers it gave
+ * back were per step: software run 3 beside materials run 1, no way to say which
+ * belonged together. A run is now one attempt at the whole round, so run 2 means
+ * the same thing on every module page.
+ *
+ * A step that was CARRIED OVER — the run did not re-execute it — still appears,
+ * flagged, naming the run that did the work. Under the old numbering it simply
+ * vanished from the list, so somebody comparing run 2 with run 3 saw the step
+ * disappear rather than being told it was unchanged.
  */
 async function listRuns(req, res, next) {
   try {
@@ -610,34 +658,48 @@ async function listRuns(req, res, next) {
     const round = resolveRound(req);
 
     // Metadata only: the payloads are megabytes and a list shows none of them.
-    const runs = await StepExecution.listForStep(req.params.id, jobType, round, { metadataOnly: true });
+    const entries = await pipelineRuns.runsForStep(req.params.id, round, jobType, { metadataOnly: true });
 
     const names = new Map();
-    for (const id of new Set(runs.map((r) => r.triggeredByUserId).filter(Boolean))) {
+    for (const id of new Set(entries.map((e) => e.execution?.triggeredByUserId).filter(Boolean))) {
       names.set(id, await resolveTrigger(id));
     }
 
     res.json({
       round,
       jobType,
-      runCount: runs.length,
-      runs: runs.map((run, index) => ({
-        runNumber: run.runNumber,
-        // The list is newest-first, so the first entry is the current run.
-        isLatest: index === 0,
-        status: run.status,
-        outcomeState: run.outcomeState,
-        outcomeSource: run.outcomeSource,
-        failReason: run.failReason,
-        externalError: run.externalError,
-        startedAt: run.startedAt,
-        completedAt: run.completedAt,
-        durationMs: run.durationMs,
-        retryCount: run.retryCount,
-        counts: run.counts,
-        triggerKind: run.triggerKind,
-        triggeredBy: names.get(run.triggeredByUserId) || null
-      }))
+      runCount: entries.length,
+      runs: entries.map((entry, index) => {
+        const execution = entry.execution;
+        return {
+          runNumber: entry.runNumber,
+          // Newest first, so the first entry is the run the pipeline is in.
+          isLatest: index === 0,
+          cause: entry.cause,
+          runStatus: entry.runStatus,
+          // The pair that keeps the list honest: an execution appears in every
+          // run that carried it, and a number over somebody else's result with
+          // nothing saying so is how "why does this still say 14 items" starts.
+          carriedOver: entry.carriedOver,
+          producedByRun: entry.producedByRun,
+          // `not_started` rather than null: a run that contains a step which
+          // has not run yet is a normal state while the run is going, and the
+          // selector has to be able to say so.
+          status: execution?.status || 'not_started',
+          outcomeState: execution?.outcomeState ?? null,
+          outcomeSource: execution?.outcomeSource ?? null,
+          failReason: execution?.failReason ?? null,
+          externalError: execution?.externalError ?? null,
+          startedAt: execution?.startedAt ?? null,
+          completedAt: execution?.completedAt ?? null,
+          durationMs: execution?.durationMs ?? null,
+          retryCount: execution?.retryCount ?? 0,
+          attemptCount: Array.isArray(execution?.attempts) ? execution.attempts.length : 0,
+          counts: execution?.counts ?? null,
+          triggerKind: execution?.triggerKind ?? null,
+          triggeredBy: names.get(execution?.triggeredByUserId) || null
+        };
+      })
     });
   } catch (error) {
     next(error);
@@ -659,20 +721,37 @@ async function getRun(req, res, next) {
     }
     const round = resolveRound(req);
 
-    const runs = await StepExecution.listForStep(req.params.id, jobType, round, { metadataOnly: true });
-    if (runs.length === 0) throw new NotFoundError(`Runs for ${jobType}`);
+    const entries = await pipelineRuns.runsForStep(req.params.id, round, jobType, { metadataOnly: true });
+    if (entries.length === 0) throw new NotFoundError(`Runs for ${jobType}`);
 
-    const run = await StepExecution.findOne({
-      where: { submissionId: req.params.id, jobType, round, runNumber }
-    });
-    if (!run) throw new NotFoundError(`Run ${runNumber} of ${jobType}`);
+    const entry = await pipelineRuns.stepInRun(req.params.id, round, jobType, runNumber);
+    if (!entry) throw new NotFoundError(`Run ${runNumber} of ${jobType}`);
+    if (!entry.execution) {
+      // The run contains the step and the step has not executed in it. Not a
+      // 404 — the run is real and the answer is "nothing yet", which a spinner
+      // waiting for a run that will never load cannot say.
+      return res.json({
+        run: {
+          jobType, round, runNumber, runCount: entries.length,
+          isLatest: runNumber === entries[0].runNumber,
+          status: 'not_started', carriedOver: entry.carriedOver, cause: entry.cause,
+          result: null, logs: [], files: {}, inputs: null, documents: {}
+        }
+      });
+    }
 
     res.json({
-      run: shapeRun(run, {
-        runCount: runs.length,
-        triggeredBy: await resolveTrigger(run.triggeredByUserId),
-        // Newest-first, so the highest number is the current run.
-        isLatest: run.runNumber === runs[0].runNumber
+      run: shapeRun(entry.execution, {
+        runCount: entries.length,
+        triggeredBy: await resolveTrigger(entry.execution.triggeredByUserId),
+        // Newest-first, so the first entry is the current run.
+        isLatest: runNumber === entries[0].runNumber,
+        // Which run number the user asked for, and whether the result they are
+        // about to read was actually produced by a different one.
+        runNumber,
+        carriedOver: entry.carriedOver,
+        producedByRun: entry.producedByRun,
+        cause: entry.cause
       })
     });
   } catch (error) {
@@ -680,8 +759,32 @@ async function getRun(req, res, next) {
   }
 }
 
+/**
+ * Every pipeline run of this round, and what each one contains.
+ * GET /api/submissions/:id/runs
+ *
+ * The submission-wide view: "show me run 2" as ONE number across every module,
+ * rather than a different number per module displayed in the same place. This
+ * is what a run being the unit of the model buys, and it is not derivable from
+ * the per-step endpoints — those can say what happened to a step across runs,
+ * and cannot say what a run did.
+ *
+ * Metadata only, and deliberately: a round with a dozen runs would otherwise
+ * fetch every payload of every step to draw a list.
+ */
+async function listPipelineRuns(req, res, next) {
+  try {
+    const round = resolveRound(req);
+    const runs = await pipelineRuns.runsForSubmission(req.params.id, round);
+    res.json({ round, runCount: runs.length, runs });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   getJobs,
+  listPipelineRuns,
   runProcesses,
   restartProcesses,
   retryJob,

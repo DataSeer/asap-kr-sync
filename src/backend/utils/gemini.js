@@ -102,13 +102,20 @@ async function generateContentWithRetry(ai, params, options = {}) {
       const usable = !validate || validate(response);
       // A 200 that cannot be parsed is a failed attempt as far as the run is
       // concerned: it produced nothing, it was paid for, and it caused a retry.
-      attemptLog.add({
-        layer: 'client',
-        engine: label,
-        ok: usable,
-        error: usable ? null : 'empty or unparseable response',
-        httpStatus: 200
-      });
+      //
+      // A first-attempt success records nothing, matching the shared retry
+      // helper: a run whose record is one "ok" per successful call says nothing
+      // and buries the attempts that matter. A success AFTER a failure is
+      // recorded, because "and then it worked" is half the story.
+      if (!usable || attempt > 1) {
+        attemptLog.add({
+          layer: 'client',
+          engine: label,
+          ok: usable,
+          error: usable ? null : 'empty or unparseable response',
+          httpStatus: 200
+        });
+      }
       if (usable) return response;
       // 200 but empty/unparseable. Keep it as best-effort and retry.
       lastResponse = response;

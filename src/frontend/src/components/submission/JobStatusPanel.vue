@@ -233,6 +233,8 @@ const jobList = computed(() => {
       // anything not named here never reaches the modal.
       triggeredBy: job?.triggeredBy || null,
       runNumber: job?.runNumber ?? null,
+      // How many times this STEP executed, which the run number no longer says.
+      executionCount: job?.executionCount ?? null,
       retryCount: job?.retryCount || 0,
       startedAt: job?.startedAt || null,
       completedAt: job?.completedAt || null,
@@ -435,6 +437,25 @@ const etaProgress = computed(() => {
  * reflects how the env was configured at execution time. Before the first run
  * we fall back to the live `/api/config/services` value.
  */
+/**
+ * What the "run N" badge means, said precisely.
+ *
+ * N is the PIPELINE run — one attempt at the whole round, the same number on
+ * every tile. How many times THIS step executed is a different number, because
+ * a run can carry a step over rather than re-running it, and the tile is
+ * exactly where somebody would otherwise read the first as the second.
+ *
+ * @param {object} job
+ * @returns {string}
+ */
+function runBadgeTooltip(job) {
+  const ran = job.executionCount;
+  const base = `Run ${job.runNumber} of this round — one attempt at the whole pipeline.`;
+  if (!ran) return `${base} This step has not run in it yet.`;
+  if (ran === 1) return `${base} This step ran once; later runs kept that result.`;
+  return `${base} This step has run ${ran} times; what is shown is the latest.`;
+}
+
 function getConfigPill(job) {
   return job.configState || job.liveConfigState || null
 }
@@ -1121,13 +1142,20 @@ async function downloadRawResponse(jobType, responseName) {
           >
             {{ getResultBadgeText(job) }}
           </span>
-          <!-- Only from run 2 onward: "run 1" on a step that has run once is
-               noise on every tile of a healthy pipeline. The number appears
-               exactly when it starts carrying information. -->
+          <!-- Only from run 2 onward: "run 1" on a healthy pipeline is noise on
+               every tile. The number appears exactly when it starts carrying
+               information.
+
+               It is the PIPELINE run's number, the same across every tile — so
+               the tooltip has to say how many times THIS step ran separately,
+               because a run can carry a step over rather than re-executing it,
+               and the two numbers then differ. Saying "run 3" while meaning
+               "this ran three times" was true under the old per-step numbering
+               and is not any more. -->
           <span
             v-if="job.runNumber > 1"
             class="job-run-badge"
-            v-tooltip="`This step has been run ${job.runNumber} times in this round. The results shown are the latest run.`"
+            v-tooltip="runBadgeTooltip(job)"
           >run {{ job.runNumber }}</span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
 

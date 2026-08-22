@@ -561,6 +561,16 @@ router.get('/:id/jobs/:jobType/responses/:responseName',
   jobsController.getJobResponse
 );
 
+// GET /api/submissions/:id/runs - Every pipeline run of this round, with what
+// each one contains. The submission-wide view: "run 2" as one number across
+// every module rather than a different number per module. Same audience as the
+// rest of the internals.
+router.get('/:id/runs',
+  canAccessSubmission,
+  canViewJobInternals,
+  jobsController.listPipelineRuns
+);
+
 // GET /api/submissions/:id/jobs/:jobType/runs - Every run of this step, newest
 // first, metadata only. Same audience as the rest of the internals: an author
 // reads the latest run and nothing else, which is why the selector that uses

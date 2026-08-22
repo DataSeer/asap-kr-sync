@@ -282,3 +282,84 @@ describe('a finding handed over by another module', () => {
     expect(wrapper.text()).toContain('as handed to this run')
   })
 })
+
+/**
+ * How many tries a run took.
+ *
+ * `retryCount + 1` counted pg-boss re-deliveries and nothing else, and the
+ * error text was overwritten each time — so a run that failed twice against
+ * Gemini and then succeeded looked identical to one that worked immediately.
+ */
+describe('the Attempts row', () => {
+  /** The metadata list is a <dl>; find the <dd> that follows the Attempts <dt>. */
+  const attemptsRow = (wrapper) => {
+    const terms = wrapper.findAll('dt')
+    const index = terms.findIndex((t) => t.text() === 'Attempts')
+    return index === -1 ? undefined : wrapper.findAll('dd')[index].text()
+  }
+
+  const jobWith = (attempts, over = {}) => ({
+    jobType: 'datasets_detection',
+    runNumber: 1,
+    status: 'complete',
+    attempts,
+    result: { service: { config: { state: 'on' }, outcome: { state: 'done' } } },
+    ...over
+  })
+
+  it('says nothing about a run that worked first time', async () => {
+    const wrapper = await mountOpen({ jobType: 'datasets_detection', job: jobWith([{ layer: 'queue', ok: true }]) })
+
+    expect(attemptsRow(wrapper)).toBeUndefined()
+  })
+
+  it('reports the external tries and what came back', async () => {
+    const wrapper = await mountOpen({
+      jobType: 'datasets_detection',
+      job: jobWith([
+        { layer: 'client', ok: false, httpStatus: 503 },
+        { layer: 'client', ok: false, httpStatus: 503 },
+        { layer: 'client', ok: true, httpStatus: 200 },
+        { layer: 'queue', ok: true }
+      ])
+    })
+
+    // Three calls, not four: a delivery contains calls, and adding the two
+    // layers together produces a number that means nothing.
+    expect(attemptsRow(wrapper)).toMatch(/3 — 2 failed \(503\)/)
+  })
+
+  it('counts deliveries when it was the queue that retried', async () => {
+    const wrapper = await mountOpen({
+      jobType: 'datasets_detection',
+      job: jobWith([
+        { layer: 'queue', ok: false, delivery: 1 },
+        { layer: 'queue', ok: true, delivery: 2 }
+      ])
+    })
+
+    expect(attemptsRow(wrapper)).toMatch(/2 — 1 failed/)
+  })
+
+  it('lists each distinct status once', async () => {
+    // Three 503s are one fact. A row reading "(503, 503, 503)" is longer and
+    // says less.
+    const wrapper = await mountOpen({
+      jobType: 'datasets_detection',
+      job: jobWith([
+        { layer: 'client', ok: false, httpStatus: 503 },
+        { layer: 'client', ok: false, httpStatus: 503 },
+        { layer: 'client', ok: false, httpStatus: 429 },
+        { layer: 'queue', ok: false }
+      ], { status: 'failed' })
+    })
+
+    expect(attemptsRow(wrapper)).toMatch(/\(503, 429\)/)
+  })
+
+  it('falls back to the queue count for a run recorded before attempts existed', async () => {
+    const wrapper = await mountOpen({ jobType: 'datasets_detection', job: jobWith(undefined, { retryCount: 2 }) })
+
+    expect(attemptsRow(wrapper)).toBe('3')
+  })
+})

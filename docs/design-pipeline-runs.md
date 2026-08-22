@@ -427,12 +427,22 @@ Each step leaves the system working:
      so the nine services that retry did not have to change. Fixed with it:
      `markComplete` never cleared `errorMessage`, so a step that succeeded on
      its third try carried the second try's error into its record.
-3. **Move history reads** — module pages, run endpoints, report — onto runs.
-   `extracted_data_availability_statement` dissolves here, not earlier: it is a
-   read of the newest extraction execution, so it goes when the reads move.
+3. ✅ **Move history reads** — module pages, run endpoints, the job poller —
+   onto runs. `GET /jobs/:type/runs` now lists the PIPELINE runs containing the
+   step, so a carried-over step appears (flagged, naming the run that did the
+   work) instead of vanishing from the list, and a step a run has not reached
+   answers `not_started` rather than 404.
+   - ⬜ the Excel report still reads the step's own numbering.
+   - ⬜ `extracted_data_availability_statement` still exists. It is a read of
+     the newest extraction execution, and dissolving it is a UI change to the
+     Availability page rather than part of this step.
 4. **Retire per-step run numbers** and shrink `submission_jobs`.
-5. **The run selector becomes submission-wide**: "show me run 1" across every
-   module, rather than per step.
+   `step_executions.run_number` is now unused by every read; removing the column
+   is what is left, with `submission_jobs`'s history fields.
+5. ✅ **The run selector is submission-wide**: `GET /submissions/:id/runs`, and
+   the poller reports the round's run number on every step — so "run 2" means
+   one thing across the page. The pipeline page shows it once in the state strip
+   rather than on each of twelve tiles, which is the point of the change.
 
 No backfill. There is no production data, and the standing rule for this
 project is no backward-compatibility fallbacks — a run recorded under the old

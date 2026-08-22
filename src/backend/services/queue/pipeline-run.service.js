@@ -300,11 +300,194 @@ async function attachExecution(pipelineRunId, jobType, stepExecutionId, options 
   return PipelineRunStep.attach(pipelineRunId, jobType, stepExecutionId, options);
 }
 
+/**
+ * Columns too heavy to send in a list.
+ *
+ * The payloads are megabytes and a list shows none of them; a run selector that
+ * downloaded every past result to draw ten rows would be unusable on exactly
+ * the submissions worth looking at.
+ *
+ * `attempts` is deliberately NOT here. It is bounded — a few hundred bytes on a
+ * healthy run — and the list is where "this one struggled" needs to be visible,
+ * so excluding it made every row report zero tries while the detail view
+ * reported three.
+ */
+const HEAVY = ['result', 'logs', 'inputs'];
+
+/**
+ * Turn a membership row into what a caller needs to know about that step in
+ * that run.
+ *
+ * `carriedOver` and `producedByRun` are the pair that keeps a run honest. An
+ * execution can appear in several runs — that is the point of linking rather
+ * than copying — and a page that showed run 3's number over run 1's result
+ * without saying so is the "why does this still say 14 items when I just
+ * re-ran it" question, back again in a new place.
+ *
+ * @param {object} member - PipelineRunStep with `pipelineRun` and `execution`
+ * @returns {object}
+ */
+function describeMembership(member) {
+  const run = member.pipelineRun;
+  const execution = member.execution;
+  return {
+    runNumber: run.runNumber,
+    cause: run.cause,
+    runStatus: run.status,
+    startedRunAt: run.createdAt,
+    jobType: member.jobType,
+    carriedOver: member.carriedOver,
+    // Which run actually did the work. Equal to runNumber unless carried over,
+    // and null when nothing has done the work yet — a step the run has not
+    // reached has no producer, and naming itself would read as "run 2 produced
+    // this" beside an empty result.
+    producedByRun: execution ? (execution.pipelineRun?.runNumber ?? run.runNumber) : null,
+    execution: execution || null
+  };
+}
+
+/**
+ * Every pipeline run of a round that contains one step, newest first.
+ *
+ * Replaces "every run of this step". The difference is not cosmetic: a step
+ * that was carried over did not run again, and under the old per-step numbering
+ * it simply did not appear — so a user comparing run 2 with run 3 saw the step
+ * vanish rather than being told it was unchanged.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} jobType
+ * @param {object} [options]
+ * @param {boolean} [options.metadataOnly] - drop the megabyte columns
+ * @returns {Promise<object[]>}
+ */
+async function runsForStep(submissionId, round, jobType, { metadataOnly = false } = {}) {
+  const { PipelineRun, PipelineRunStep, StepExecution } = require('../../models');
+
+  const members = await PipelineRunStep.findAll({
+    where: { jobType },
+    include: [
+      {
+        model: PipelineRun,
+        as: 'pipelineRun',
+        where: { submissionId, round },
+        required: true
+      },
+      {
+        model: StepExecution,
+        as: 'execution',
+        required: false,
+        ...(metadataOnly ? { attributes: { exclude: HEAVY } } : {}),
+        // The run that CREATED it, so a carried-over step can name where its
+        // result came from.
+        include: [{ model: PipelineRun, as: 'pipelineRun', attributes: ['runNumber'] }]
+      }
+    ],
+    order: [[{ model: PipelineRun, as: 'pipelineRun' }, 'run_number', 'DESC']]
+  });
+
+  return members.map(describeMembership);
+}
+
+/**
+ * One step, as it stands in one run.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} jobType
+ * @param {number} runNumber
+ * @returns {Promise<object|null>}
+ */
+async function stepInRun(submissionId, round, jobType, runNumber) {
+  const { PipelineRun, PipelineRunStep, StepExecution } = require('../../models');
+
+  const member = await PipelineRunStep.findOne({
+    where: { jobType },
+    include: [
+      {
+        model: PipelineRun,
+        as: 'pipelineRun',
+        where: { submissionId, round, runNumber },
+        required: true
+      },
+      {
+        model: StepExecution,
+        as: 'execution',
+        required: false,
+        include: [{ model: PipelineRun, as: 'pipelineRun', attributes: ['runNumber'] }]
+      }
+    ]
+  });
+
+  return member ? describeMembership(member) : null;
+}
+
+/**
+ * Every run of a round, with what each one contains — the submission-wide view.
+ *
+ * This is what "show me run 1" means once a run is the unit: one number across
+ * every module, rather than a different number per module that happens to be
+ * displayed in the same place.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @returns {Promise<object[]>} newest first
+ */
+async function runsForSubmission(submissionId, round) {
+  const { PipelineRun, PipelineRunStep, StepExecution, User } = require('../../models');
+
+  const runs = await PipelineRun.findAll({
+    where: { submissionId, round },
+    order: [['runNumber', 'DESC']],
+    include: [
+      { model: User, as: 'causedBy', attributes: ['id', 'name', 'email'], required: false },
+      {
+        model: PipelineRunStep,
+        as: 'steps',
+        required: false,
+        include: [{
+          model: StepExecution,
+          as: 'execution',
+          required: false,
+          attributes: { exclude: HEAVY }
+        }]
+      }
+    ]
+  });
+
+  return runs.map((run) => ({
+    runNumber: run.runNumber,
+    cause: run.cause,
+    status: run.status,
+    createdAt: run.createdAt,
+    completedAt: run.completedAt,
+    pipelineVersion: run.pipelineVersion,
+    appVersion: run.appVersion,
+    // Named, or falling back to the email — but never left blank. "A run
+    // nobody caused" and "a run whose user has no display name" are different
+    // things, and only the first should read as null.
+    causedBy: run.causedBy
+      ? { id: run.causedBy.id, name: run.causedBy.name || run.causedBy.email }
+      : null,
+    steps: (run.steps || []).map((member) => ({
+      jobType: member.jobType,
+      carriedOver: member.carriedOver,
+      status: member.execution?.status || 'not_started',
+      outcomeState: member.execution?.outcomeState || null,
+      counts: member.execution?.counts || null,
+      durationMs: member.execution?.durationMs || null
+    }))
+  }));
+}
+
 module.exports = {
   newRun,
   currentRun,
   attachExecution,
   downstreamOf,
   captureShape,
-  appVersion
+  appVersion,
+  runsForStep,
+  stepInRun,
+  runsForSubmission
 };

@@ -112,6 +112,20 @@ const job = computed(() => selectedRun.value || liveJob.value)
 const viewingPastRun = computed(() => !!selectedRun.value && selectedRun.value.isLatest === false)
 
 /**
+ * The run on screen holds a result an EARLIER run produced.
+ *
+ * Read from the selected run when one is open, and otherwise from the newest
+ * entry in the list — because the latest run is exactly where this is easiest
+ * to misread: restart one detector, come to this page, and the run number is
+ * current while the result is not.
+ */
+const carriedOverNotice = computed(() => {
+  const entry = selectedRun.value || runs.value.find((r) => r.isLatest)
+  if (!entry?.carriedOver || !entry.producedByRun) return null
+  return { runNumber: entry.runNumber, producedByRun: entry.producedByRun }
+})
+
+/**
  * Authors read the latest run and nothing else — the same audience rule the
  * run endpoints enforce. Hiding the control without the server gate would be
  * decoration; both exist.
@@ -139,7 +153,13 @@ async function loadRuns() {
 async function showRun(runNumber) {
   // Selecting the latest returns to the live job, so the page keeps polling and
   // keeps updating — a frozen copy of the current run would go stale on screen.
-  if (!runNumber || runNumber === runCount.value) {
+  //
+  // Decided by the entry's own `isLatest`, not by comparing the number to a
+  // count. Run numbers belong to the PIPELINE run now, and a step that was
+  // carried over appears under a number that is not its own — so "the highest
+  // number is the current one" stopped being something this page can assume.
+  const latest = runs.value.find((r) => r.isLatest)
+  if (!runNumber || (latest && runNumber === latest.runNumber)) {
     selectedRunNumber.value = null
     selectedRun.value = null
     return
@@ -717,7 +737,12 @@ const tabConflicts = computed(() => {
         >
           <option v-for="r in runs" :key="r.runNumber" :value="r.runNumber">
             {{ r.runNumber }} of {{ runCount }}{{ r.isLatest ? ' — latest' : '' }}
-            · {{ formatDateTime(r.completedAt || r.startedAt) }}
+            <!-- A run that did not re-execute this step says so in the list, not
+                 only once it is open: picking between runs is exactly when it
+                 matters that two of them hold the same result. -->
+            {{ r.carriedOver ? `· carried over from run ${r.producedByRun}` : '' }}
+            {{ r.status === 'not_started' ? '· not run yet'
+              : `· ${formatDateTime(r.completedAt || r.startedAt)}` }}
           </option>
         </select>
       </label>
@@ -781,6 +806,19 @@ const tabConflicts = computed(() => {
         current result</strong>. It is kept exactly as this run produced it.
       </span>
       <button type="button" class="mrv-past-btn" @click="showRun(null)">Back to the latest run</button>
+    </div>
+
+    <!-- A run that did not re-execute this step. Shown on the LATEST run too,
+         which is the case that matters: someone restarts one detector, comes
+         here, and reads a number that is real beside a result that predates it.
+         Without this line the only honest reading of the page is wrong. -->
+    <div v-if="carriedOverNotice" class="mrv-carried" role="status">
+      <span class="mrv-carried-badge">Carried over</span>
+      <span class="mrv-carried-text">
+        This step did not run again in run {{ carriedOverNotice.runNumber }}. What is below was
+        produced by <strong>run {{ carriedOverNotice.producedByRun }}</strong> and kept, because
+        nothing it depends on changed.
+      </span>
     </div>
 
     <!-- Directly under the title, before anything that could be mistaken for a
@@ -1078,6 +1116,30 @@ const tabConflicts = computed(() => {
 }
 
 .mrv-past-text { flex: 1; }
+
+.mrv-carried {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid #bfdbfe;
+  border-left: 4px solid #3b82f6;
+  border-radius: 0.5rem;
+  background: #eff6ff;
+}
+.mrv-carried-badge {
+  flex-shrink: 0;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.mrv-carried-text { font-size: 0.83rem; color: #1e3a8a; }
 
 .mrv-past-btn {
   flex: none;

@@ -369,6 +369,44 @@ const tokens = computed(() => {
  */
 const statRows = computed(() => [...stats.value, ...timings.value, ...tokens.value])
 
+/**
+ * How many tries this run took, and what went wrong on the way.
+ *
+ * `retryCount + 1` was all there was: it counts pg-boss re-deliveries and
+ * nothing else, and the error text was overwritten each time — so "the first
+ * two attempts returned 529, then it succeeded" was unanswerable, which is the
+ * difference between an upstream that is flaky and one that is broken.
+ *
+ * Two layers retry and they are counted separately, because adding them
+ * together produces a number that means nothing: a delivery contains calls.
+ * When the external service was retried, THAT is the interesting count; when it
+ * was not, the deliveries are.
+ *
+ * Nothing is shown for a run that worked first time — a row saying "1" on every
+ * module is noise on every page.
+ *
+ * @param {object} job
+ * @returns {string|null}
+ */
+function describeAttempts(job) {
+  const attempts = Array.isArray(job.attempts) ? job.attempts : []
+  if (!attempts.length) {
+    return job.retryCount > 0 ? String(job.retryCount + 1) : null
+  }
+
+  const calls = attempts.filter((a) => a.layer === 'client')
+  const deliveries = attempts.filter((a) => a.layer === 'queue')
+  const tries = calls.length || deliveries.length
+  const failed = attempts.filter((a) => !a.ok)
+  if (tries <= 1 && !failed.length) return null
+
+  // Distinct statuses rather than one per failure: three 503s are one fact.
+  const statuses = [...new Set(failed.map((a) => a.httpStatus).filter(Boolean))]
+  if (!failed.length) return String(tries)
+  return `${tries} — ${failed.length} failed`
+    + (statuses.length ? ` (${statuses.join(', ')})` : '')
+}
+
 const metadata = computed(() => {
   const job = props.job || {}
   const svc = job.result?.service || {}
@@ -393,7 +431,8 @@ const metadata = computed(() => {
   }
   if (job.startedAt) rows.push(['Started', formatDateTime(job.startedAt)])
   if (job.completedAt) rows.push(['Finished', formatDateTime(job.completedAt)])
-  if (job.retryCount > 0) rows.push(['Attempts', String(job.retryCount + 1)])
+  const attemptsRow = describeAttempts(job)
+  if (attemptsRow) rows.push(['Attempts', attemptsRow])
   if (svc.config?.state) {
     rows.push(['Configuration', CONFIG_STATE_LABEL[svc.config.state] || svc.config.state])
   }
