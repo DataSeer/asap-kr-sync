@@ -28,7 +28,7 @@ import { useSubmissionStore } from '@/stores/submission.store'
 import { setSubmissionTitle } from '@/router'
 import { useAuthStore } from '@/stores/auth.store'
 import { useNotificationStore } from '@/stores/notification.store'
-import { restartPlan } from '@/utils/restart-plan'
+import { restartPlan, downstreamOf } from '@/utils/restart-plan'
 import RestartFromHereDialog from '@/components/submission/RestartFromHereDialog.vue'
 
 const route = useRoute()
@@ -129,9 +129,15 @@ const stalled = computed(() => {
   return [...blocking].map((jobType) => ({
     jobType,
     label: labelFor(jobType),
-    // How many steps are actually stuck behind it — "the pipeline is paused" is
-    // a claim, and this is the number that backs it.
-    holding: Object.values(byType).filter((j) => (j.blockedBy || []).includes(jobType)).length
+    // Everything stuck behind it, not just what names it.
+    //
+    // `blockedBy` is DIRECT: the consolidator is waiting on the detectors, which
+    // are waiting on the conversion, so only the detectors name the conversion.
+    // Counting those alone said "6 steps are waiting on it" over a page showing
+    // 10 waiting — an undercount that invites the reader to think the rest are
+    // stuck on something else.
+    holding: downstreamOf(graph.value.nodes, jobType)
+      .filter((t) => byType[t]?.status === 'waiting').length
   }))
 })
 

@@ -299,11 +299,14 @@ describe('a paused pipeline', () => {
     expect(banner.text()).toContain('Markdown Convert')
   })
 
-  it('counts what is actually stuck behind it', async () => {
-    // "The pipeline is paused" is a claim; the number is what backs it.
+  it('counts everything stuck behind it, not just what names it', async () => {
+    // "The pipeline is paused" is a claim; the number is what backs it — so it
+    // has to be the whole stall. `blockedBy` is DIRECT: the two detectors name
+    // the conversion, but grounding is waiting on THEM, so counting names alone
+    // said "2" over a page showing three steps stuck.
     const wrapper = await mountBlocked()
 
-    expect(wrapper.find('.pv-stalled').text()).toMatch(/2 steps are waiting on it/)
+    expect(wrapper.find('.pv-stalled').text()).toMatch(/3 steps are waiting on it/)
   })
 
   it('offers the decision right there', async () => {
