@@ -171,6 +171,8 @@ function instance(over = {}) {
   };
   r.markFailed = SubmissionJob.prototype.markFailed.bind(r);
   r.markRetrying = SubmissionJob.prototype.markRetrying.bind(r);
+  r.markComplete = SubmissionJob.prototype.markComplete.bind(r);
+  r.changed = () => {};
   return r;
 }
 
@@ -213,4 +215,17 @@ test('markRetrying clears a completedAt left by an earlier attempt', async () =>
   await r.markRetrying('transient');
 
   assert.equal(r.completedAt, null, 'a job in flight has not completed');
+});
+
+test('a job that succeeds on its third try does not keep the second try\'s error', async () => {
+  // Nothing ever cleared it, so a completed run showed a red error string
+  // beside a green tick — and the error being shown was from an attempt that
+  // had been superseded. The attempts array is where the earlier failures
+  // belong now, and they are there.
+  const r = instance({ errorMessage: 'Gemini 503', retryCount: 2 });
+
+  await r.markComplete({ counts: { unique: 4 } });
+
+  assert.equal(r.status, 'complete');
+  assert.equal(r.errorMessage, null);
 });

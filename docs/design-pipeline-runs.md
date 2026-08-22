@@ -423,7 +423,10 @@ Each step leaves the system working:
      and a nullable `user_id` so the system can be an actor. A pipeline CLEAR
      goes through it too: re-running DAS extraction destroys a statement the
      author may have typed, which is the same silent write in reverse.
-   - ⬜ attempts
+   - ✅ attempts, at both layers, via an ambient store mirroring token-usage —
+     so the nine services that retry did not have to change. Fixed with it:
+     `markComplete` never cleared `errorMessage`, so a step that succeeded on
+     its third try carried the second try's error into its record.
 3. **Move history reads** — module pages, run endpoints, report — onto runs.
    `extracted_data_availability_statement` dissolves here, not earlier: it is a
    read of the newest extraction execution, so it goes when the reads move.

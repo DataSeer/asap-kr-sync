@@ -213,6 +213,46 @@ async function openRun(job, { userId = null, triggerKind = null } = {}) {
 }
 
 /**
+ * The execution's attempt list, with this delivery's tries appended.
+ *
+ * Appended rather than replaced, because a pg-boss re-delivery is another
+ * attempt at the SAME execution: its ambient store starts empty, and writing
+ * that over the existing array would erase the earlier deliveries — which are
+ * the ones worth reading.
+ *
+ * Drained rather than read: `markRetrying` and `markFailed` can both fire in
+ * one delivery, and a peek would record the same tries twice.
+ *
+ * The delivery number groups client tries under the queue try that contained
+ * them, which is what makes "retried twice" unambiguous — two layers retry, and
+ * the interesting runs are the ones where both did.
+ *
+ * @param {object} run - the StepExecution instance
+ * @param {object} outcome
+ * @param {boolean} outcome.ok
+ * @param {string} [outcome.error]
+ * @param {number} [outcome.delivery] - pg-boss retry count + 1
+ * @returns {object[]}
+ */
+function attemptsWith(run, { ok, error = null, delivery = 1 }) {
+  const attemptLog = require('../../utils/attempt-log');
+  const existing = Array.isArray(run.attempts) ? run.attempts : [];
+  const fresh = attemptLog.drain().map((attempt) => ({ ...attempt, delivery }));
+
+  fresh.push({
+    at: new Date().toISOString(),
+    layer: 'queue',
+    delivery,
+    ok,
+    engine: null,
+    error: error ? String(error).slice(0, 500) : null,
+    httpStatus: null
+  });
+
+  return [...existing, ...fresh].map((attempt, index) => ({ ...attempt, n: index + 1 }));
+}
+
+/**
  * The run currently open for a step: the highest-numbered one.
  *
  * @param {string} submissionJobId
@@ -236,11 +276,14 @@ async function currentRun(submissionJobId) {
  * @param {object} job
  * @param {object} fields - StepExecution attributes
  */
-async function touchRun(job, fields) {
+async function touchRun(job, fields, attemptOutcome = null) {
   return guarded('updating a run', async () => {
     const run = await currentRun(job.id);
     if (!run) return null;
-    return run.update(fields);
+    const attempts = attemptOutcome
+      ? { attempts: attemptsWith(run, attemptOutcome) }
+      : {};
+    return run.update({ ...fields, ...attempts });
   });
 }
 
@@ -276,6 +319,11 @@ async function closeRun(job) {
       durationMs: job.result?.timing?.totalMs
         ?? (startedAt ? completedAt - new Date(startedAt) : null),
       retryCount: job.retryCount ?? 0,
+      attempts: attemptsWith(run, {
+        ok: job.status === 'complete',
+        error: job.errorMessage || outcome.externalError || null,
+        delivery: (job.retryCount ?? 0) + 1
+      }),
       counts: job.result?.counts ?? null,
       result: job.result ?? null,
       logs: job.logs ?? null
@@ -308,6 +356,7 @@ async function syncRunPayload(job) {
 
 module.exports = {
   openRun,
+  attemptsWith,
   captureDocuments,
   syncRunPayload,
   currentRun,

@@ -348,3 +348,64 @@ test('a failure to read the documents does not cost us the run record', async (t
   assert.ok(run, 'the run is still opened');
   assert.equal(state.inserted.length, 1);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Attempts survive a re-delivery
+//
+// A pg-boss retry is another attempt at the SAME execution, and its ambient
+// store starts empty. Writing that over the existing array would erase the
+// earlier deliveries — which are the ones worth reading.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const attemptLog = require('../../utils/attempt-log');
+
+test('a re-delivery appends to what the first one recorded', () => {
+  const run = {
+    attempts: [
+      { n: 1, layer: 'client', delivery: 1, ok: false, error: 'overloaded' },
+      { n: 2, layer: 'queue', delivery: 1, ok: false, error: 'gave up' }
+    ]
+  };
+
+  const merged = attemptLog.run(() => {
+    attemptLog.add({ layer: 'client', engine: 'Gemini', ok: true });
+    return runHistory.attemptsWith(run, { ok: true, delivery: 2 });
+  });
+
+  assert.equal(merged.length, 4);
+  // Renumbered end to end, so `n` is a position in the execution's history
+  // rather than a position in whichever delivery happened to write it.
+  assert.deepEqual(merged.map((a) => a.n), [1, 2, 3, 4]);
+  // Grouped by delivery, which is what makes "retried twice" unambiguous: two
+  // layers retry, and the interesting runs are the ones where both did.
+  assert.deepEqual(merged.map((a) => a.delivery), [1, 1, 2, 2]);
+  assert.deepEqual(merged.map((a) => a.layer), ['client', 'queue', 'client', 'queue']);
+});
+
+test('the delivery itself is recorded even when nothing underneath retried', () => {
+  // A step that succeeded first time still has one attempt. An empty array
+  // would be indistinguishable from a step whose attempts were never captured.
+  const merged = attemptLog.run(() => runHistory.attemptsWith({ attempts: null }, { ok: true, delivery: 1 }));
+
+  assert.deepEqual(merged, [{
+    at: merged[0].at, layer: 'queue', delivery: 1, ok: true,
+    engine: null, error: null, httpStatus: null, n: 1
+  }]);
+});
+
+test('closing a run writes the attempts alongside the result', async (t) => {
+  const state = fakeDb(t, { existingRuns: [1] });
+
+  await attemptLog.run(async () => {
+    attemptLog.add({ layer: 'client', engine: 'Softcite', ok: false, error: 'timeout' });
+    await runHistory.closeRun({ ...JOB, status: 'failed', errorMessage: 'Softcite unreachable', retryCount: 1 });
+  });
+
+  const written = state.run.updates.at(-1);
+  assert.equal(written.attempts.length, 2);
+  assert.equal(written.attempts[0].engine, 'Softcite');
+  assert.equal(written.attempts[1].layer, 'queue');
+  assert.equal(written.attempts[1].ok, false);
+  // retryCount 1 means this was the SECOND delivery.
+  assert.ok(written.attempts.every((a) => a.delivery === 2));
+});

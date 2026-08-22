@@ -212,15 +212,25 @@ async function retry(fn, options = {}) {
     maxDelay = Infinity,
     jitter = 0,
     shouldRetry = () => true,
-    onRetry = () => {}
+    onRetry = () => {},
+    // Names the service in the run's attempt record. Optional: a caller that
+    // omits it still has its tries counted, just not attributed.
+    label = null
   } = options;
 
+  const attemptLog = require('./attempt-log');
   let lastError;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await fn();
+      const value = await fn();
+      // Only worth a line when something went wrong before it: a run whose
+      // record is one "ok" per successful call says nothing and buries the
+      // attempts that matter.
+      if (attempt > 1) attemptLog.add({ layer: 'client', engine: label, ok: true });
+      return value;
     } catch (error) {
       lastError = error;
+      attemptLog.add({ layer: 'client', engine: label, ok: false, error });
       if (attempt >= maxRetries || !shouldRetry(error)) break;
       const backoff = Math.min(maxDelay, delay * Math.pow(multiplier, attempt - 1));
       const waitTime = backoff + (jitter > 0 ? Math.floor(Math.random() * jitter) : 0);

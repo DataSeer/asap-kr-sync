@@ -131,6 +131,7 @@ async function convertViaModal(pdfBuffer, fileName) {
       maxContentLength: Infinity,
       maxBodyLength: Infinity
     }), {
+      label: 'Markdown Convert',
       maxRetries: 3, delay: 2000, multiplier: 2, maxDelay: 20000, jitter: 500,
       shouldRetry: isTransientError,
       onRetry: (attempt, waitMs, error) =>

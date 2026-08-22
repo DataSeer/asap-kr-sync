@@ -225,6 +225,11 @@ module.exports = (sequelize) => {
     // now-irrelevant result rather than flipping it back to 'complete'.
     if (this.status === 'cancelled') return this;
     this.status = 'complete';
+    // A step that succeeded on its third attempt used to carry the second
+    // attempt's error into its record, because nothing ever cleared it — so the
+    // module page showed a completed run beside a red error string. The
+    // attempts array is where that error belongs now, and it is there.
+    this.errorMessage = null;
     if (result) {
       this.result = { ...(this.result || {}), ...result };
     }
@@ -296,7 +301,14 @@ module.exports = (sequelize) => {
     const saved = await this.save();
     // The SAME run, one attempt further in. Opening a new run here would count
     // a pg-boss retry as a user-visible re-run, which it is not.
-    await runHistory().touchRun(this, { retryCount: this.retryCount ?? 0, externalError: errorMessage });
+    await runHistory().touchRun(
+      this,
+      { retryCount: this.retryCount ?? 0, externalError: errorMessage },
+      // This delivery is over and it failed. Recorded now rather than at the
+      // end: pg-boss hands the next delivery a fresh attempt store, so anything
+      // still sitting in this one would be lost.
+      { ok: false, error: errorMessage, delivery: (this.retryCount ?? 0) + 1 }
+    );
     return saved;
   };
 
