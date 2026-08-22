@@ -98,7 +98,12 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
   const convertStartTime = Date.now();
   await runInputs.saveRunInputs(jobLogger, {
     documents: { pdf: runInputs.fileRef(pdfFile, pdfBuffer) },
-    meta: { provider: markdownConfig.provider }
+    meta: { provider: markdownConfig.provider },
+    // No prompt and no model to pin here — the conversion is somebody else's
+    // service. The CONVERTER and the endpoint are still ours, and they change
+    // the markdown every later step reads: same PDF, different converter,
+    // different document. Recording them is the most this step can freeze.
+    call: markdownConfig
   });
 
   const rawMarkdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile.fileName);

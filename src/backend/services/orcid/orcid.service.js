@@ -118,7 +118,11 @@ async function extractAuthorsForSubmission(submission, jobLogger) {
   jobLogger?.log('grobid_start', 'Sending PDF to GROBID for header extraction');
   await runInputs.saveRunInputs(jobLogger, {
     documents: { pdf: runInputs.fileRef(pdfFile, pdfBuffer) },
-    meta: { engines: ['grobid', 'openalex', 'orcid_api'] }
+    meta: { engines: ['grobid', 'openalex', 'orcid_api'] },
+    // Three services, no model to pin — but their endpoints and timeouts are
+    // ours, and a GROBID version change is exactly the kind of thing that
+    // explains a different author list.
+    call: { grobid: grobidConfig, orcid: orcidApiConfig }
   });
 
   const grobidResult = await grobidClient.extractHeader(pdfBuffer, pdfFile.fileName);

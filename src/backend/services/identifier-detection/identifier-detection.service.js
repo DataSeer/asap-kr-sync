@@ -330,7 +330,12 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
         catalogTokens: index?.catalogTokens?.size ?? null
       }
     },
-    meta: { engine: 'local-scan', scannedLength, referencesCutoff }
+    meta: { engine: 'local-scan', scannedLength, referencesCutoff },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: identifierConfig
   });
 
   // Persist raw scan output for forensics.

@@ -228,7 +228,12 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
       strategy: resolved.strategy.id,
       model: protocolsConfig.model,
       seedCount: resolved.input.meta?.seedCount ?? 0
-    }
+    },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: protocolsConfig
   });
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
 

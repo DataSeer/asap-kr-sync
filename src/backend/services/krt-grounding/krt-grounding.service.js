@@ -333,7 +333,12 @@ async function groundSubmission(submission, jobLogger) {
       // there is no single assembled prompt to digest. The batch size is what a
       // rebuilder needs to reproduce the same split from the frozen rows.
       secondLookBatchSize: SECOND_LOOK_BATCH_SIZE
-    }
+    },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: groundingConfig
   });
 
   // ── Step 2: presence — the manuscript searched directly, independent of what

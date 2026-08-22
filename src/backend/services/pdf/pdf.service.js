@@ -649,7 +649,12 @@ async function runDasExtractor(submission, jobLogger) {
     prompt: runInputs.promptRef(repoPath(dasExtractionService.PROMPT_FILE), extracted?.promptDigest || null),
     // The section name is interpolated into the prompt, so a rebuild needs it.
     // Without it the digest could not be reproduced from this file alone.
-    meta: { model: dasExtractionConfig.model, section: dasExtractionConfig.section }
+    meta: { model: dasExtractionConfig.model, section: dasExtractionConfig.section },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: dasExtractionConfig
   });
   jobLogger?.log('das_api_done', 'DAS extractor returned', {
     dasLength: extracted?.content?.length || 0,

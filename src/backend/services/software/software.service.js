@@ -299,7 +299,12 @@ async function runLmPass(submissionId, round, jobLogger) {
     await runInputs.saveRunInputs(jobLogger, {
       documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
       prompt: runInputs.promptRef(repoPath(softwareLm.PROMPT_FILE), promptDigest),
-      meta: { model: require('../../config/software-detection-lm-api').model, engine: 'software-lm' }
+      meta: { model: require('../../config/software-detection-lm-api').model, engine: 'software-lm' },
+      // Everything asked of the external service, sanitised: secrets redacted,
+      // anything large replaced by its digest. Recorded whole rather than
+      // hand-picked — a hand-picked list is one somebody has to remember to
+      // extend, which is how four modules came to record no model at all.
+      call: require('../../config/software-detection-lm-api')
     });
 
     jobLogger?.log('software_lm_done', 'Software LM pass complete', {

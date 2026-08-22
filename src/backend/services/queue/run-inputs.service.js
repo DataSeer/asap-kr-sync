@@ -149,6 +149,147 @@ const upstreamRefs = (contributions = []) => contributions.map((c) => ({
   itemCount: c.items?.length ?? c.count ?? null
 }));
 
+/** Key names whose value must never reach an artefact. */
+const SECRET_KEY = /key|token|secret|password|passwd|auth|credential|bearer|cookie/i;
+
+/**
+ * Strings longer than this become a reference instead of a copy.
+ *
+ * By SIZE, not by key name, and that is the point: you cannot enumerate the
+ * keys that might one day hold a document. A rule keyed on names is a rule
+ * somebody has to remember to extend, which is exactly how four modules came to
+ * record no model at all.
+ *
+ * 2 KB is comfortably above any parameter worth reading inline (a model name, a
+ * converter, a temperature) and far below any document.
+ */
+const INLINE_LIMIT = 2048;
+
+/** Where a sanitised record lists what it left out, and why. */
+const OMITTED = '_omitted';
+
+/**
+ * Make an arbitrary parameter object safe to freeze — and safe to merge back.
+ *
+ * The inversion this exists for: recording the call parameters used to mean
+ * hand-picking them per module, and a hand-picked list drifts — four of twelve
+ * modules never recorded which model they called. Capturing everything and
+ * stripping what must not be kept cannot be forgotten in the same way.
+ *
+ * ── Why omitted, and not `[redacted]` ───────────────────────────────────────
+ *
+ * Because this record is not only read — it is MERGED BACK when a run is
+ * restarted with frozen parameters. A placeholder is not a redaction at that
+ * point, it is a poisoned value: the merge would send the literal string
+ * `[redacted]` as the API key, and the call would fail. Same for a document
+ * replaced by `{ omitted, sha256 }` — merged over the live `contents` it
+ * replaces a manuscript with a small object.
+ *
+ * So anything unsafe or too large is REMOVED from the body, and named under
+ * `_omitted` beside it. A merge skips that key and falls through to the live
+ * value; a reader still sees that a secret existed and was deliberately not
+ * kept, which plain absence could not tell apart from "this parameter did not
+ * exist in that version".
+ *
+ * @param {*} value
+ * @param {object} [state] - internal: accumulates the omissions
+ * @param {string} [prefix] - internal: dotted path of the current key
+ * @param {number} [depth] - guards against a cyclic or absurdly nested object
+ * @returns {*} a structure safe to serialise, carrying `_omitted` at the root
+ */
+function sanitise(value, state = { omitted: {} }, prefix = '', depth = 0) {
+  const walk = (v, path, d) => {
+    if (v === null || v === undefined) return v ?? null;
+    if (d > 8) return '[too deep]';
+
+    if (typeof v === 'string') {
+      if (v.length <= INLINE_LIMIT) return v;
+      state.omitted[path] = { reason: 'too large to inline', bytes: Buffer.byteLength(v), sha256: sha256(v) };
+      return undefined;
+    }
+    if (typeof v === 'number' || typeof v === 'boolean') return v;
+    // A method on a config module is a code fact, not a parameter. Dropped
+    // without a note: it was never a value to restore.
+    if (typeof v === 'function') return undefined;
+    if (typeof v !== 'object') return `[${typeof v}]`;
+
+    if (Buffer.isBuffer(v)) {
+      state.omitted[path] = { reason: 'binary', bytes: v.length, sha256: sha256(v) };
+      return undefined;
+    }
+    if (Array.isArray(v)) {
+      // Long arrays are summarised: a 117-item candidate list is a count, not a
+      // parameter, and the items themselves are in the result.
+      if (v.length > 50) {
+        state.omitted[path] = { reason: 'long array', length: v.length };
+        return undefined;
+      }
+      return v.map((item, i) => walk(item, path ? `${path}.${i}` : String(i), d + 1));
+    }
+
+    const out = {};
+    for (const [k, child] of Object.entries(v)) {
+      const childPath = path ? `${path}.${k}` : k;
+      if (SECRET_KEY.test(k)) {
+        state.omitted[childPath] = { reason: 'secret' };
+        continue;
+      }
+      const kept = walk(child, childPath, d + 1);
+      if (kept !== undefined) out[k] = kept;
+    }
+    return out;
+  };
+
+  const body = walk(value, prefix, depth);
+  if (body && typeof body === 'object' && !Array.isArray(body) && Object.keys(state.omitted).length) {
+    return { ...body, [OMITTED]: state.omitted };
+  }
+  return body;
+}
+
+/**
+ * The parameters to call with, when a restart is asked to use a run's own.
+ *
+ * Frozen wins, live fills the gaps — which is what makes omitting a secret
+ * correct rather than merely safe: the key was never in the record, so the
+ * merge falls through to the one configured now.
+ *
+ * ── Restricted to what the live config still knows ──────────────────────────
+ *
+ * A frozen parameter the current code no longer has cannot be honoured — the
+ * client would reject it, or ignore it and leave the caller believing the run
+ * was reproduced. Those are REPORTED instead, so "this run used a setting this
+ * version does not have" is something a user reads rather than something that
+ * silently does not happen.
+ *
+ * @param {object} live - the config as it stands now
+ * @param {object} frozen - a `call` record from a run's frozen inputs
+ * @returns {{params: object, ignored: string[], restored: string[]}}
+ */
+function mergeFrozen(live, frozen) {
+  const ignored = [];
+  const restored = [];
+
+  const merge = (base, over, path = '') => {
+    const out = { ...base };
+    for (const [k, v] of Object.entries(over || {})) {
+      if (k === OMITTED) continue;
+      const here = path ? `${path}.${k}` : k;
+      if (!(k in (base || {}))) { ignored.push(here); continue; }
+      if (v && typeof v === 'object' && !Array.isArray(v)
+        && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
+        out[k] = merge(base[k], v, here);
+      } else {
+        if (JSON.stringify(base[k]) !== JSON.stringify(v)) restored.push(here);
+        out[k] = v;
+      }
+    }
+    return out;
+  };
+
+  return { params: merge(live || {}, frozen || {}), ignored, restored };
+}
+
 /**
  * Assemble the record and hand it to the logger.
  *
@@ -157,10 +298,14 @@ const upstreamRefs = (contributions = []) => contributions.map((c) => ({
  * The failure is logged by the logger itself.
  *
  * @param {object|null} jobLogger
- * @param {object} parts { documents, frozen, upstream, prompt, meta }
+ * @param {object} parts { documents, frozen, upstream, prompt, meta, call }
+ *   `call` is whatever was handed to the external client — model, generation
+ *   config, endpoint, module knobs. Passed whole and sanitised here, rather
+ *   than picked apart at the call site.
  */
 async function saveRunInputs(jobLogger, parts = {}) {
   if (!jobLogger) return;
+  const { call, ...rest } = parts;
   await jobLogger.saveRawResponse('inputs', {
     capturedAt: new Date().toISOString(),
     // How to read this file, for whoever opens it without the code to hand.
@@ -168,9 +313,16 @@ async function saveRunInputs(jobLogger, parts = {}) {
       + '(their stored copies are immutable); everything under `frozen` is a '
       + 'verbatim copy because it can change afterwards. Each prompt template '
       + 'is copied in full under `templateText`; the assembled prompt is kept '
-      + 'by digest only — rebuild it from these inputs and compare.',
-    ...parts
+      + 'by digest only — rebuild it from these inputs and compare. `call` is '
+      + 'what was asked of the external service; anything secret or too large '
+      + 'is REMOVED and named under `call._omitted`, so these parameters can be '
+      + 'merged back over the live config without poisoning it.',
+    ...rest,
+    ...(call ? { call: sanitise(call) } : {})
   });
 }
 
-module.exports = { sha256, fileRef, promptRef, attachmentRef, upstreamRefs, saveRunInputs };
+module.exports = {
+  sha256, fileRef, promptRef, attachmentRef, upstreamRefs, saveRunInputs,
+  sanitise, mergeFrozen, INLINE_LIMIT, OMITTED
+};

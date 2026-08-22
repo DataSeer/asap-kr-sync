@@ -176,7 +176,11 @@ async function buildGeneratedKrt(submission, jobLogger) {
       repoPath(require('./krt-generation.service').PROMPT_FILE),
       consolidated.promptDigest || null
     ),
-    meta: { candidateCount: candidates.length, contributorCount: contributions.length }
+    meta: { candidateCount: candidates.length, contributorCount: contributions.length },
+    // What was asked of the model. This step froze its prompt from the start
+    // and never said which model read it, so two runs that disagreed could not
+    // be told apart from two models that disagreed.
+    call: require('../../config/krt-generation-api')
   });
   const { dropped, usedLM, rawResponse } = consolidated;
   if (rawResponse) {
