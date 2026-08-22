@@ -17,7 +17,7 @@
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { SubmissionJob, Submission, ChangeLog } = require('../../models');
+const { SubmissionJob, Submission, ChangeLog, sequelize } = require('../../models');
 const jobQueue = require('./job-queue.service');
 const orchestrator = require('./orchestrator.service');
 const { JOB_TYPES } = require('../../config/constants');
@@ -97,6 +97,11 @@ function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAva
     return created;
   });
   t.mock.method(Submission, 'findByPk', async () => submission);
+  // cascadeRestart reads each downstream row through findOne, inside a real
+  // transaction with a row lock. Both have to be answered or the call reaches
+  // for a connection.
+  t.mock.method(SubmissionJob, 'findOne', async ({ where }) => rows.get(where.jobType) || null);
+  t.mock.method(sequelize, 'transaction', async (fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }));
   // A step's reset hook records what it destroyed. These tests are not about
   // the log, but an unmocked create reaches for a connection.
   t.mock.method(ChangeLog, 'create', async (row) => { applied.push(row); return row; });
@@ -1959,4 +1964,38 @@ test('the LAST step finishing settles the run, though nothing depends on it', as
   await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DAS_SUGGESTIONS, 1);
 
   assert.equal(pipelineRuns.current.status, 'complete');
+});
+
+test('restarting a step revives the dependents a cancel had stopped', async (t) => {
+  // Found live: cancel the pipeline, restart the step, and its cancelled
+  // dependents sat `cancelled` for ever while the step they were waiting for
+  // ran to completion. Asking for a step to run again is asking for what
+  // depends on it to run again, whatever stopped them last time.
+  const rows = pipelineRows({
+    [JOB_TYPES.SOFTWARE_DETECTION]: { status: 'cancelled' },
+    [JOB_TYPES.KRT_GROUNDING]: { status: 'cancelled' },
+    [JOB_TYPES.PDF_ANALYSIS]: { status: 'cancelled' },
+    [JOB_TYPES.SUGGESTION_GENERATION]: { status: 'cancelled' }
+  });
+  mockDb(t, rows);
+
+  const reset = await orchestrator.cascadeRestart('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-1');
+
+  for (const jobType of [JOB_TYPES.KRT_GROUNDING, JOB_TYPES.PDF_ANALYSIS, JOB_TYPES.SUGGESTION_GENERATION]) {
+    assert.equal(rows.get(jobType).status, 'waiting', `${jobType} must be revived`);
+    assert.ok(reset.includes(jobType));
+  }
+});
+
+test('but a dependent still in flight is left alone', async (t) => {
+  // Resetting it would abandon work already under way and pay for it twice.
+  const rows = pipelineRows({
+    [JOB_TYPES.SOFTWARE_DETECTION]: { status: 'complete' },
+    [JOB_TYPES.KRT_GROUNDING]: { status: 'processing' }
+  });
+  mockDb(t, rows);
+
+  await orchestrator.cascadeRestart('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.KRT_GROUNDING).status, 'processing');
 });

@@ -1194,10 +1194,21 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
         lock: t.LOCK.UPDATE
       });
       if (!job) continue;
-      // Leave in-flight jobs alone, and don't revive a cancelled job to
-      // 'waiting' (that would strand it waiting on cancelled deps). Only
-      // terminal complete/failed downstream is reset to re-run.
-      if (job.status === 'queued' || job.status === 'processing' || job.status === 'cancelled') continue;
+      // Leave in-flight jobs alone. Everything else downstream is reset,
+      // CANCELLED INCLUDED.
+      //
+      // Cancelled used to be skipped too, for fear of stranding a step waiting
+      // on a dependency that was still cancelled. That fear is handled
+      // elsewhere now — `tryAdvanceStep` cancels a step whose dependency is
+      // cancelled rather than leaving it waiting — and skipping had a worse
+      // cost: after a cancel, restarting the step left its cancelled dependents
+      // stuck for ever. Seen live: cancel, restart software detection, and
+      // grounding, PDF analysis and suggestions sat `cancelled` while the step
+      // they were waiting for ran to completion.
+      //
+      // The user asking for a step to run again is asking for what depends on
+      // it to run again, whatever stopped them last time.
+      if (job.status === 'queued' || job.status === 'processing') continue;
       job.status = 'waiting';
       job.pgBossJobId = null;
       // Same rule as requeueStep, and it was missing here: a job queued to run
