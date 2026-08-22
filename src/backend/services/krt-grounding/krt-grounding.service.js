@@ -677,9 +677,7 @@ async function persistJobData(submissionId, jobType, round, data) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(data);
   }
 }
 

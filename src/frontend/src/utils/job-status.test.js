@@ -98,6 +98,38 @@ describe('describeJobStatus', () => {
     expect(d.tone).toBe('idle')
   })
 
+  it('names who cancelled it, when a person did', () => {
+    // "This run was stopped" needs a name on it for the same reason the
+    // decision to continue past a failure does: the alternative is a result
+    // that is missing for a reason nobody can find.
+    const d = describeJobStatus(apiJob('cancelled', null, {
+      cancelledBy: { id: 'u1', name: 'Nicolas' }
+    }))
+    expect(d.title).toContain('cancelled by Nicolas')
+  })
+
+  it('says a paid-for answer arrived after the cancel', () => {
+    // An external call already in flight cannot be stopped: it completes and is
+    // billed. A user who cancelled to avoid the spend should learn it happened
+    // from the page, not from an invoice.
+    const d = describeJobStatus(apiJob('cancelled', null, {
+      discarded: [{ at: '2026-08-22T10:00:00Z', outcome: 'done', tokens: { totalTokens: 30900 } }]
+    }))
+    expect(d.detail).toContain('arrived after you stopped it')
+    // Grouped the reader's way, not a hard-coded ','. The suite runs under
+    // whatever locale the machine has — this one is French, where the same
+    // number is "30 900" — so asserting one separator pins the test to a
+    // machine rather than to the behaviour.
+    expect(d.detail).toContain(`${(30900).toLocaleString()} tokens`)
+  })
+
+  it('says nothing about a discard when the cancel landed in time', () => {
+    // The common case. A sentence about money that was not spent is worse than
+    // no sentence.
+    const d = describeJobStatus(apiJob('cancelled', null, { discarded: [] }))
+    expect(d.detail).not.toContain('arrived after')
+  })
+
   it('always returns something renderable, for every status', () => {
     for (const status of ['waiting', 'queued', 'processing', 'pending_input', 'complete', 'failed', 'cancelled', 'weird']) {
       const d = describeJobStatus(apiJob(status))

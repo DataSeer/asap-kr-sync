@@ -356,9 +356,7 @@ async function processDasSuggestions(submissionId, jobLogger = null /*, opts */)
     // one reader that walks every module — the Technical detail panel — found
     // nothing: this module's statistics and input counts were blank while the
     // others' were fine.
-    job.result = { ...(job.result || {}), data: { ...result.data, meta: result.meta } };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData({ ...result.data, meta: result.meta });
   }
   return result;
 }

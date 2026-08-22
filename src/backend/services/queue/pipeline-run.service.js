@@ -315,6 +315,14 @@ async function attachExecution(pipelineRunId, jobType, stepExecutionId, options 
 const HEAVY = ['result', 'logs', 'inputs'];
 
 /**
+ * Columns the LIST needs even though they are JSONB.
+ *
+ * `attempts` and `discarded` are both bounded and both answer "did this one go
+ * badly", which is exactly what a run picker has to show. Excluding them made
+ * every row report zero tries while the detail view reported three.
+ */
+
+/**
  * Turn a membership row into what a caller needs to know about that step in
  * that run.
  *

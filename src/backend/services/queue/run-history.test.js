@@ -413,3 +413,86 @@ test('closing a run writes the attempts alongside the result', async (t) => {
   // retryCount 1 means this was the SECOND delivery.
   assert.ok(written.attempts.every((a) => a.delivery === 2));
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A cancel that could not stop the call
+//
+// The promise is abandoned; the call completes and is billed. Dropping the
+// answer silently means the money was spent and the record says nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a discarded response is recorded with what it cost', async (t) => {
+  const state = fakeDb(t);
+  const tokenUsage = require('../../utils/token-usage');
+
+  await tokenUsage.run(async () => {
+    tokenUsage.add({ promptTokenCount: 30000, candidatesTokenCount: 900, totalTokenCount: 30900 });
+    await runHistory.recordDiscarded(JOB, { outcome: 'done', counts: { unique: 4 } });
+  });
+
+  const [written] = state.run.updates.at(-1).discarded;
+  assert.equal(written.outcome, 'done');
+  assert.deepEqual(written.counts, { unique: 4 });
+  // The half that makes "did we pay for something we threw away" answerable.
+  assert.equal(written.tokens.totalTokens, 30900);
+  assert.ok(written.at);
+});
+
+test('a second late answer does not erase the first', async (t) => {
+  // A retry already in flight when the cancel landed arrives too. Overwriting
+  // would under-report exactly the runs worth looking at.
+  const state = fakeDb(t);
+  state.run.discarded = [{ at: '2026-08-22T10:00:00Z', outcome: 'fail', error: 'first' }];
+
+  await runHistory.recordDiscarded(JOB, { outcome: 'done' });
+
+  assert.equal(state.run.updates.at(-1).discarded.length, 2);
+  assert.equal(state.run.updates.at(-1).discarded[0].error, 'first');
+});
+
+test('who cancelled is recorded once, and not overwritten', async (t) => {
+  // Two people pressing Cancel on the same stalled pipeline must not rewrite
+  // the first one's name — the same rule the continue decision follows.
+  const state = fakeDb(t);
+
+  await runHistory.recordCancellation(JOB, { userId: 'user-1' });
+  const first = state.run.updates.at(-1);
+  assert.ok(first.cancelledAt);
+  assert.equal(first.cancelledByUserId, 'user-1');
+
+  const before = state.run.updates.length;
+  await runHistory.recordCancellation(JOB, { userId: 'user-2' });
+  assert.equal(state.run.updates.length, before, 'the second press writes nothing');
+});
+
+test('a cancelled execution does not take the answer back as its result', async (t) => {
+  // The logger's flush runs from the worker that was interrupted. Without a
+  // guard the answer the user threw away comes straight back in as the run's
+  // output, and every page renders it as this run's finding — next to a status
+  // line saying the run was cancelled.
+  const state = fakeDb(t);
+  state.run.status = 'cancelled';
+
+  await runHistory.syncRunPayload({
+    id: 'job-1',
+    result: { counts: { unique: 14 }, data: { items: [1, 2] } },
+    logs: [{ step: 'gemini_call' }]
+  });
+
+  const written = state.run.updates.at(-1);
+  assert.equal(written.result, undefined, 'the discarded answer is not the run\'s result');
+  // The log survives: it is the record of what the abandoned call did, and the
+  // only place its timing lives.
+  assert.deepEqual(written.logs, [{ step: 'gemini_call' }]);
+});
+
+test('a normal run still takes its payload', async (t) => {
+  const state = fakeDb(t);
+  state.run.status = 'complete';
+
+  await runHistory.syncRunPayload({
+    id: 'job-1', result: { counts: { unique: 14 } }, logs: [{ step: 'done' }]
+  });
+
+  assert.deepEqual(state.run.updates.at(-1).counts, { unique: 14 });
+});

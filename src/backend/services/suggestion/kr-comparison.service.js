@@ -615,9 +615,7 @@ async function processSuggestionGeneration(submissionId, jobLogger = null /*, op
   if (job) {
     // meta goes INSIDE data, which is where every other module puts it and
     // where the UI reads it from.
-    job.result = { ...(job.result || {}), data: { ...result.data, meta: result.meta } };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData({ ...result.data, meta: result.meta });
   }
   return result;
 }

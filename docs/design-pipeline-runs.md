@@ -305,8 +305,8 @@ so no retention job can remove an execution a live run still carries.
 
 ## 9. Cancellation
 
-A cancel **interrupts**: the execution becomes `cancelled`, is unusable, and the
-step must be re-run.
+**Built.** A cancel **interrupts**: the execution becomes `cancelled`, is
+unusable, and the step must be re-run.
 
 But an in-flight external call cannot actually be stopped — the promise is
 abandoned; the call completes and is billed. So the execution records:
@@ -315,8 +315,16 @@ abandoned; the call completes and is billed. So the execution records:
 - the response, if one arrives, with `discarded: true` and its own timestamp
 
 So "did we pay for something we threw away, and who threw it away" is answerable
-rather than inferred. No further attempts are made after a cancel: the current
-try finishes or fails, and that is the end of it.
+rather than inferred. No further attempts are made after a cancel: the queue
+entry is pulled, so the current try finishes or fails and that is the end of it.
+
+Two leaks had to be closed for this to be true, both found live. The logger's
+`flush()` copied the payload onto the execution after the cancel, and nine
+services wrote `job.result.data` by hand before `markComplete`'s guard could
+run — so the answer the user threw away came back as the step's result, on a
+page whose status line said the run was cancelled. Storing a result now goes
+through `job.persistData()`, which reloads and refuses a cancelled step, and a
+structural test keeps it that way.
 
 ---
 

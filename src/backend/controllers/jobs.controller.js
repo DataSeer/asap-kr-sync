@@ -78,7 +78,7 @@ async function getJobs(req, res, next) {
     // an issue's "carried on by Nicolas" needs the same name lookup, and
     // whoever acknowledged a failure need never have triggered anything.
     const triggerIds = [...new Set(
-      jobs.flatMap((j) => [j.triggeredByUserId, j.decision?.byUserId]).filter(Boolean)
+      jobs.flatMap((j) => [j.triggeredByUserId, j.decision?.byUserId, j.cancelledByUserId]).filter(Boolean)
     )];
     const triggers = triggerIds.length
       ? await User.findAll({ where: { id: triggerIds }, attributes: ['id', 'name'], raw: true })
@@ -178,6 +178,18 @@ async function getJobs(req, res, next) {
            * skipped" from "this found nothing" after the fact.
            */
           issueAcknowledgedAt: job.decision?.at || null,
+          /**
+           * A cancel that could not stop the call.
+           *
+           * Here rather than only on the run endpoints because the module page
+           * reads its status from THIS payload — without it a cancelled step
+           * says "cancelled" and cannot say by whom, or that an answer arrived
+           * afterwards and was billed.
+           */
+          cancelledBy: job.cancelledByUserId
+            ? { id: job.cancelledByUserId, name: triggerById.get(job.cancelledByUserId) || null }
+            : null,
+          discarded: job.discarded || [],
           referenceId: job.referenceId,
           result: safeResult,
           errorMessage: job.errorMessage,
@@ -376,9 +388,21 @@ async function advanceJob(req, res, next) {
  * Cancel all in-flight background processing for a submission.
  * POST /api/submissions/:id/processes/cancel?round=N
  *
- * Best-effort: cancels the underlying queue job (so a queued/running job stops)
- * and marks each active SubmissionJob as cancelled. Lets a user abort a wrong
- * document instead of waiting for the whole pipeline to finish (#15).
+ * A cancel INTERRUPTS. Every step that has not finished — waiting, queued and
+ * the one actually running — becomes `cancelled`, unusable, and must be re-run.
+ *
+ * A running step used to be left alone to finish and record its real status,
+ * which meant pressing Cancel on the one thing actually burning money did
+ * nothing a user could see: the module carried on, its result landed, and the
+ * pipeline treated it as a normal success.
+ *
+ * What still cannot be interrupted is the external call. The promise is
+ * abandoned, the call completes, and it is billed — so when the answer arrives
+ * it is recorded on the execution as discarded, with what it cost, rather than
+ * dropped. See SubmissionJob.markComplete.
+ *
+ * Lets a user abort a wrong document instead of waiting for the whole pipeline
+ * to finish (#15).
  */
 async function cancelProcessing(req, res, next) {
   try {
@@ -386,11 +410,15 @@ async function cancelProcessing(req, res, next) {
     const round = resolveRound(req);
 
     const jobs = await SubmissionJob.getForSubmission(submission.id, round);
-    const notStarted = jobs.filter(job => NOT_STARTED_STATUSES.includes(job.status));
     const stillRunning = jobs.filter(job => job.status === 'processing');
+    // Running steps LAST. Marking them first would let the guard in
+    // markComplete fire while their siblings were still queued, and a worker
+    // that finished in that window would advance the pipeline past a cancel
+    // only half applied.
+    const toCancel = [...jobs.filter(job => NOT_STARTED_STATUSES.includes(job.status)), ...stillRunning];
 
     let cancelled = 0;
-    for (const job of notStarted) {
+    for (const job of toCancel) {
       // Remove the queued pg-boss job so no worker ever picks it up. Best-effort
       // — a waiting/pending_input job has no pg-boss job yet, and a queued one
       // may already be gone. Marking the row 'cancelled' is what actually stops
@@ -407,24 +435,26 @@ async function cancelProcessing(req, res, next) {
           });
         }
       }
-      await job.markCancelled();
+      await job.markCancelled(req.userId);
       cancelled += 1;
     }
 
-    // A module already running can't be interrupted — it finishes and records
-    // its real done/failed status. Marking siblings 'cancelled' above is enough
-    // to stop the pipeline from advancing past it and to skip its retries.
     logger.info('Processing cancelled by user', {
       submissionId: submission.id,
       round,
       cancelled,
-      stillRunning: stillRunning.length,
+      // Named, because these are the ones with a call in flight: their answer
+      // will arrive and be recorded as discarded.
+      interrupted: stillRunning.map((job) => job.jobType),
       userId: req.userId
     });
 
     res.json({
       message: `Cancelled ${cancelled} process${cancelled === 1 ? '' : 'es'}`,
       cancelled,
+      // Still the count of steps whose external call was in flight. They are
+      // cancelled now — the name is kept because the client reads it — but
+      // their answer is still coming, and will be recorded as discarded.
       stillRunning: stillRunning.length,
       round
     });
@@ -566,7 +596,8 @@ async function getJobPrompts(req, res, next) {
  * @param {object} extras - `runCount`, `triggeredBy`, `isLatest`
  */
 function shapeRun(run, {
-  runCount, triggeredBy, isLatest, runNumber, carriedOver = false, producedByRun = null, cause = null
+  runCount, triggeredBy, isLatest, runNumber, carriedOver = false, producedByRun = null,
+  cause = null, cancelledBy = null
 }) {
   return {
     jobType: run.jobType,
@@ -580,6 +611,16 @@ function shapeRun(run, {
     carriedOver,
     producedByRun,
     attempts: run.attempts || [],
+    /**
+     * When a person stopped this execution, and what arrived afterwards anyway.
+     *
+     * The pair is the point: `cancelledAt` says the answer below was not wanted,
+     * and `discarded` says one came, and what it cost. Either alone reads as a
+     * step that simply produced nothing.
+     */
+    cancelledAt: run.cancelledAt || null,
+    cancelledBy: cancelledBy || null,
+    discarded: run.discarded || [],
     status: run.status,
     result: run.result,
     logs: run.logs || [],
@@ -694,6 +735,10 @@ async function listRuns(req, res, next) {
           durationMs: execution?.durationMs ?? null,
           retryCount: execution?.retryCount ?? 0,
           attemptCount: Array.isArray(execution?.attempts) ? execution.attempts.length : 0,
+          cancelledAt: execution?.cancelledAt ?? null,
+          // Just the count here. A run picker needs to know an answer arrived
+          // and was thrown away; what it was belongs on the run itself.
+          discardedCount: Array.isArray(execution?.discarded) ? execution.discarded.length : 0,
           counts: execution?.counts ?? null,
           triggerKind: execution?.triggerKind ?? null,
           triggeredBy: names.get(execution?.triggeredByUserId) || null
@@ -750,7 +795,8 @@ async function getRun(req, res, next) {
         runNumber,
         carriedOver: entry.carriedOver,
         producedByRun: entry.producedByRun,
-        cause: entry.cause
+        cause: entry.cause,
+        cancelledBy: await resolveTrigger(entry.execution.cancelledByUserId)
       })
     });
   } catch (error) {

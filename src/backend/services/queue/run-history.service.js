@@ -335,6 +335,66 @@ async function closeRun(job) {
 }
 
 /**
+ * Record that a person stopped this execution.
+ *
+ * Separate from `closeRun`, which copies whatever the job row holds: who
+ * cancelled is not on the job row, and inventing a place for it there would put
+ * the fact back on the thing that gets reused.
+ *
+ * @param {object} job - the SubmissionJob row, already `cancelled`
+ * @param {object} [opts]
+ * @param {string} [opts.userId] - who stopped it
+ */
+async function recordCancellation(job, { userId = null } = {}) {
+  return guarded('recording a cancellation', async () => {
+    const run = await currentRun(job.id);
+    if (!run || run.cancelledAt) return null;
+    return run.update({ cancelledAt: new Date(), cancelledByUserId: userId || null });
+  });
+}
+
+/**
+ * Record a response that arrived after the cancel, and was thrown away.
+ *
+ * An in-flight external call cannot be stopped. The promise is abandoned, the
+ * call completes, and it is billed — so dropping the answer silently means the
+ * money was spent and the record says nothing. This is what makes "did we pay
+ * for something we threw away, and who threw it away" answerable rather than
+ * inferred.
+ *
+ * The token tally is read here rather than passed in, from the same ambient
+ * store `markComplete` uses: it is the only number that answers the "did we
+ * pay" half, and by this point the job row will never carry it.
+ *
+ * Appended, not overwritten. A cancelled step can produce more than one late
+ * answer — a retry already in flight when the cancel landed — and the second
+ * arriving is not a reason to forget the first.
+ *
+ * @param {object} job - the SubmissionJob row, in its `cancelled` state
+ * @param {object} what - `{ outcome, error, counts }`, whatever there is
+ */
+async function recordDiscarded(job, what = {}) {
+  return guarded('recording a discarded response', async () => {
+    const run = await currentRun(job.id);
+    if (!run) return null;
+
+    const tokenUsage = require('../../utils/token-usage');
+    const previous = Array.isArray(run.discarded) ? run.discarded : [];
+
+    return run.update({
+      discarded: [...previous, {
+        at: new Date().toISOString(),
+        outcome: what.outcome || null,
+        error: what.error ? String(what.error).slice(0, 500) : null,
+        counts: what.counts || null,
+        // What the abandoned call cost. Absent when no model was involved.
+        tokens: tokenUsage.current()
+      }]
+    });
+  });
+}
+
+/**
  * Copy the run's payload again, once the job logger has finished writing it.
  *
  * `closeRun` runs from `markComplete`, and the logger's `flush()` runs AFTER
@@ -349,6 +409,19 @@ async function syncRunPayload(job) {
   return guarded('syncing a run payload', async () => {
     const run = await currentRun(job.id);
     if (!run) return null;
+
+    // A cancelled execution has no result, by definition — and the logger's
+    // flush runs from the worker that was interrupted, so without this the
+    // answer the user threw away comes straight back in as the run's output.
+    // Every page then renders it as this run's finding, next to a status line
+    // saying the run was cancelled.
+    //
+    // The LOG is still worth keeping: it is the record of what the abandoned
+    // call did, and it is the only place the timing of it survives.
+    if (run.status === 'cancelled') {
+      return run.update({ logs: job.logs ?? null });
+    }
+
     return run.update({
       result: job.result ?? null,
       logs: job.logs ?? null,
@@ -360,6 +433,8 @@ async function syncRunPayload(job) {
 module.exports = {
   openRun,
   attemptsWith,
+  recordCancellation,
+  recordDiscarded,
   captureDocuments,
   syncRunPayload,
   currentRun,

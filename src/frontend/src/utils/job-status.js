@@ -93,11 +93,24 @@ export function describeJobStatus(job) {
     || (job.status === 'failed' && /cancel/i.test(job.errorMessage || ''))
 
   if (cancelled) {
+    // An external call already in flight cannot be stopped: it completes and is
+    // billed. Saying so matters — a user who cancelled to avoid the spend
+    // should learn it happened anyway, from the page rather than from an
+    // invoice.
+    const discarded = Array.isArray(job.discarded) ? job.discarded : []
+    const spent = discarded.reduce((n, d) => n + (d.tokens?.totalTokens || 0), 0)
+    const late = discarded.length
+      ? ` One answer arrived after you stopped it and was thrown away${
+        spent ? ` — ${spent.toLocaleString()} tokens, already spent` : ''}.`
+      : ''
+
     return {
       tone: 'idle',
       label: 'Cancelled',
-      title: 'This step was cancelled.',
-      detail: 'Anything shown below is from an earlier run. Re-run the step to refresh it.'
+      title: job.cancelledBy?.name
+        ? `This step was cancelled by ${job.cancelledBy.name}.`
+        : 'This step was cancelled.',
+      detail: 'Anything shown below is from an earlier run. Re-run the step to refresh it.' + late
     }
   }
 

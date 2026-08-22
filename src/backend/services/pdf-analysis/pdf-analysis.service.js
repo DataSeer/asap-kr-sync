@@ -247,9 +247,7 @@ async function buildGeneratedKrt(submission, jobLogger) {
 async function persistJobData(submissionId, jobType, round, helperResult) {
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 
