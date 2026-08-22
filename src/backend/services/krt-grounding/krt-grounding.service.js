@@ -11,7 +11,7 @@
  * never drop one" — so the model could echo a seed it had never located, and
  * the output looked identical either way. That made grounding unverifiable and
  * suppressed discovery at the same time. Here the two are separate: detection
- * is KRT-blind (see docs/design-krt-detection-two-modes.md), and the author's
+ * is KRT-blind (see docs/background-modules.md), and the author's
  * table arrives here as a QUERY, never as a seed.
  *
  * Per author row the outcome is one of:

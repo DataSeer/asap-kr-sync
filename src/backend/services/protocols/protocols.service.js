@@ -17,7 +17,7 @@
  *
  * Detection is KRT-blind: the author's own rows are NOT fed to the model. They
  * are reconciled against this output later, by the krt_grounding module. See
- * docs/design-krt-detection-two-modes.md.
+ * docs/background-modules.md.
  *
  * Note: the curated enrichment list is no longer applied here — only the
  * Identifier Detection module consults the enrichment lists now.

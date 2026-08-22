@@ -646,27 +646,55 @@ the field says what is happening and disables itself. The feature is not taken
 away, only the trap: whatever is typed there would be overwritten seconds later,
 or would overwrite the extraction, with no way for the author to tell which.
 
-### What Cancel does, and deliberately does not do
+### What Cancel does, and what it cannot stop
 
-**A module already talking to an external API is never interrupted.** It
-finishes its call and records its real result; the pipeline stops there.
+**A cancel interrupts.** Every unfinished step becomes `cancelled`, is unusable,
+and must be re-run.
 
 | state when Cancel lands | what happens |
 |---|---|
-| `processing` | left alone. Its queue entry is **not** pulled, it completes normally, and its result is kept. |
+| `processing` | row marked `cancelled`, queue entry pulled. The CALL cannot be stopped — see below. |
 | `waiting` / `queued` / `pending_input` | queue entry dropped, row marked `cancelled`. |
 | `complete` / `failed` / `cancelled` | untouched — history, not backlog. |
 
-Four properties make that safe, and each can break on its own, so each is
-pinned in `controllers/cancel-lets-inflight-finish.test.js`:
+A running module used to be left alone to finish and record its real result,
+which meant pressing Cancel on the one thing actually burning money did nothing
+a user could see: the module carried on and the pipeline treated its answer as a
+normal success.
 
-1. the in-flight module keeps running — a Gemini call already paid for should
-   produce a stored answer rather than be thrown away;
-2. everything not yet started is `cancelled`;
-3. when the in-flight module finishes, its result is recorded (it was never
-   marked cancelled, so `markComplete`'s guard does not apply);
-4. **its dependents still do not start** — `tryAdvanceStep` only ever starts a
+**What genuinely cannot be interrupted is the external call.** The promise is
+abandoned, the request completes, and it is billed. So the answer is RECORDED as
+discarded rather than dropped — `step_executions.discarded`, with its counts and
+its token cost — and the page says so: *"One answer arrived after you stopped it
+and was thrown away — 33,286 tokens, already spent."* A user who cancelled to
+avoid the spend learns it happened from the page, not from an invoice.
+
+Pulling the queue entry is what stops a pg-boss RETRY, which would be a second
+call the user has already refused.
+
+Five properties, each breakable on its own, pinned in
+`controllers/cancel-interrupts.test.js`:
+
+1. a `processing` job is cancelled like the rest;
+2. its queue entry is pulled;
+3. everything not yet started is cancelled too;
+4. the late answer is recorded as discarded, not as a result;
+5. **its dependents still do not start** — `tryAdvanceStep` only ever starts a
    job that is `waiting`, and they are `cancelled`.
+
+**The discarded answer must not come back as the result**, and it did, twice
+over, until two leaks were closed: the job logger's `flush()` copied the payload
+onto the execution, and nine services wrote `job.result.data` by hand before
+`markComplete`'s guard could run. Storing a result goes through
+`job.persistData()` now, which reloads and refuses a cancelled step —
+`one-restart-path.test.js` reads the source to keep the tenth service honest.
+
+**A restart revives what the cancel stopped.** `cascadeRestart` resets cancelled
+dependents along with completed ones: asking for a step to run again is asking
+for what depends on it to run again, whatever stopped them last time. It used to
+skip them, which left three steps permanently stuck with no button that reached
+them. In-flight dependents are still skipped — resetting one abandons work
+already under way and pays for it twice.
 
 Two guards back that up. `markComplete` **reloads before deciding** and refuses
 to resurrect a cancelled row: a worker that had already dequeued a job when the
@@ -695,7 +723,7 @@ retrying would restart the very external work the user asked to stop.
   everything below it to re-run too, and those are real model calls really paid
   for. Re-running `identifier_detection` re-runs `krt_grounding`,
   `pdf_analysis` and `suggestion_generation` — all four are credited to the
-  person who clicked. A step the cascade *skips* (in-flight, or cancelled) is
+  person who clicked. A step the cascade *skips* — only in-flight ones now — is
   not re-credited, because its stored result is still the older run's.
 
   **Only a step somebody asked for is credited.** Not "every advance that has a
@@ -743,13 +771,53 @@ retrying would restart the very external work the user asked to stop.
 - **Conditional (`canAutoAdvance`) gate** — a step that needs a human decision moves to `pending_input` and waits for it. Only DAS Suggestions has one. It is **skipped for a manual run**, and the name is the reason: it governs *auto* advancing, and a person clicking the step by name has made the decision by clicking. Applying it anyway would park a job somebody just asked for in a state nothing revisits
 - **Submission-state gate** — a job whose `gate` (e.g. `krt_curated`) is not yet satisfied stays in `waiting` (never `pending_input`). It needs no manual action: the status-change handler re-drives the pipeline on every submission transition, and the periodic reconciler re-checks gated jobs each sweep, so the job advances on its own once the gate opens
 
-### Every run is recorded
+### A run is one attempt at the whole round
 
-`submission_jobs` describes the CURRENT run. `submission_job_runs` is the
-history beside it — see `docs/design-run-history.md`, and
-`services/queue/run-history.service.js`.
+Four levels, and knowing which one you are talking about is most of it:
 
-**A run begins at ENQUEUE**, not when data is produced: `runAllProcesses`,
+| Level | One of these is… | Where it lives |
+|---|---|---|
+| **round** | a version of the manuscript | `submissions.current_round` |
+| **pipeline run** | one coherent attempt at processing that round | `pipeline_runs` |
+| **step execution** | one step actually doing work | `step_executions` |
+| **attempt** | one try inside an execution — the two 529s before the success | `step_executions.attempts` |
+
+`submission_jobs` is what the SCHEDULER needs and nothing more: live status,
+queue id, round, job type. History and decisions live on the execution.
+
+**A run contains every step**, either executed by it or CARRIED OVER from its
+parent by link (`pipeline_run_steps.carried_over`). Restarting one detector must
+not re-run the other eleven — so run 2 points at run 1's executions for the
+steps it did not repeat, and the UI must always say when it is showing one.
+
+**`newRun()` is the only operation.** Creating a submission, retrying a step,
+restarting a selection and uploading a new document are the same call with a
+different set of steps to re-execute; `cause` is what tells them apart
+afterwards. Two rules it holds to:
+
+- the caller's re-run set is only a SEED — everything downstream joins it,
+  because a carried-over result built without what is being re-run is stale the
+  moment that step succeeds. An *optional* dependency is still downstream: "c
+  can run without b" says nothing about whether c's existing result, built from
+  b, is still true;
+- a step the parent never executed joins the re-run set too. There is nothing to
+  carry, and nothing else would enqueue it.
+
+**A run reaches a state of its own.** `settleRun` derives it from the steps:
+`paused` when something needs a person, `complete` when all are terminal,
+`superseded` when it was replaced before finishing. "Complete" is about the
+ATTEMPT — whether it went well lives on the executions, per step.
+
+**Releasing a gated step is not a new run.** `das_suggestions` waits behind the
+Availability step and never starts on its own, so confirming the statement comes
+through `requeueStep` — which opens a run only when the step has ALREADY
+executed in the current one. Otherwise this is the run REACHING the step.
+
+**A step writes only to its own execution.** Promoting output into the
+submission is a separate, attributed act — see [the apply
+system](#the-apply-system) below.
+
+**An execution begins at ENQUEUE**, not when data is produced: `runAllProcesses`,
 `tryAdvanceStep`'s atomic claim (which covers `checkAndAdvance`, `requeueStep`
 and the reconciler) and `advanceJob`. That is the moment somebody — or the
 pipeline — asked for it, and it is why **a disabled module, a failed run and a
@@ -775,19 +843,70 @@ funnels through — so a step cannot finish without its run being closed.
    not a dependency of the work it describes.
 2. **`run_number` is allocated inside the INSERT**
    (`COALESCE(MAX(run_number),0)+1`), so two callers cannot read the same
-   maximum, with `UNIQUE (submission_job_id, run_number)` as the backstop — a
+   maximum, with `UNIQUE (submission_id, round, run_number)` as the backstop — a
    bug surfaces as an error rather than as two runs numbered 3.
+   `UNIQUE (pipeline_run_id, job_type)` says the other half: a step executes at
+   most once in a run, and a second attempt is a new run.
 
-A consequence worth expecting: **re-running one step opens a run on everything
-it cascades into.** Re-running `identifier_detection` re-enqueues
-`krt_grounding`, `pdf_analysis` and `suggestion_generation`, so all four advance
-to the next run number together.
+   **A decision write is not a background write.** Recording that somebody chose
+   to continue past a failure is un-guarded, because the orchestrator is about
+   to act on it — a failure logged and ignored would release the pipeline on a
+   choice nobody made.
+
+A consequence worth expecting: **re-running one step re-runs everything it
+cascades into.** Re-running `identifier_detection` re-enqueues `krt_grounding`,
+`pdf_analysis` and `suggestion_generation`, so the new run executes four steps
+and carries the other eight over.
 
 Because the writes are guarded, a broken one is SILENT. That is deliberate for
 production and a trap for development: `run_count` was added to the database and
 not to the model, Sequelize dropped the unknown field, and two runs existed
 while the job row still said one. `services/queue/run-history.test.js` therefore
 includes a parity test over every column this feature added.
+
+### The apply system
+
+**A step writes only to its own execution.** Putting that output into the
+submission is a separate act, and it is recorded.
+
+Three steps used to write submission state directly and nothing said they had.
+Two things followed:
+
+- **a run was not a snapshot.** There is one statement field and the newest run
+  owns it, so opening run 1 showed you run 2's answer;
+- **a run could not be re-executed without side effects.**
+
+What may be promoted, and under what rule, is one list in
+`services/queue/apply.service.js`:
+
+| target | rule |
+|---|---|
+| `data_availability_statement` | filled from extraction only while EMPTY. Once it holds anything it belongs to whoever put it there — an author whose statement the extractor could not find typed one by hand, and the next extraction replaced it with "Not found" |
+| `authors` | applied on success only, and never an empty list, so a GROBID outage cannot wipe a good author list |
+
+Every apply is a `change_logs` row with `action: 'apply'` and
+`step_execution_id`, so one row answers *"this statement came from run 2's
+extraction, and nobody chose it"*. `user_id` is null for an automatic apply and
+`source` is `pipeline`; a person accepting a value is `manual` with their id.
+Clearing goes through the same door — re-running DAS extraction destroys a
+statement the author may have typed, and `old_value` records what was lost.
+
+**Two "current" states, never blurred:**
+
+| | source | shown on |
+|---|---|---|
+| what a module PRODUCED | its execution, per run | module and pipeline pages |
+| what the submission HOLDS | applied values | the KRT editor, Availability, the report |
+
+That is the real answer to "which run is this result from": the statement on the
+Availability page is not run 3's output, it is the submission's state, with
+provenance pointing at whichever execution was applied — possibly an older one,
+and that is correct.
+
+`one-restart-path.test.js` reads the source to check no service assigns an
+applied field directly, and `apply.service.test.js` checks every target names a
+real Submission attribute — a typo there would report success, log the value,
+and change nothing.
 
 ### Reading a past run
 
