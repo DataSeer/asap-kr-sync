@@ -1144,7 +1144,7 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
 /** Why a retry was refused, in words the UI can show as-is. */
 const RETRY_REFUSALS = {
   never_run: 'This step has not run yet, so there is nothing to retry.',
-  not_failed: 'Only a step that failed can be retried.',
+  no_issue: 'This step finished cleanly — there is nothing to retry.',
   downstream_already_ran:
     'Later steps have already run since this one failed, so retrying it alone '
     + 'would leave their results built on the failure. Restart it from the '
@@ -1232,7 +1232,11 @@ async function acknowledgeIssue(submissionId, jobType, round, userId) {
 function describeRetry(jobType, jobsByType) {
   const job = jobsByType.get(jobType);
   if (!job) return { retryable: false, reason: 'never_run' };
-  if (job.status !== 'failed') return { retryable: false, reason: 'not_failed' };
+  // Any issue, not only a failure. A partial is a run worth doing again — the
+  // module produced a real answer with one of its engines dead — and now that
+  // issues pause, nothing downstream has consumed it yet, so retrying one is
+  // exactly as cheap and as safe as retrying a failure.
+  if (!issueOf(job).needed) return { retryable: false, reason: 'no_issue' };
 
   const consumed = [...computeDownstreamSet(jobType)].filter((t) => {
     const d = jobsByType.get(t);

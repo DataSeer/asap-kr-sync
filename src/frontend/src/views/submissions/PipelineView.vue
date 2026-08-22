@@ -30,12 +30,13 @@ import { useAuthStore } from '@/stores/auth.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { restartPlan, downstreamOf } from '@/utils/restart-plan'
 import RestartFromHereDialog from '@/components/submission/RestartFromHereDialog.vue'
+import PipelineIssues from '@/components/submission/PipelineIssues.vue'
 
 const route = useRoute()
 const submissionId = computed(() => route.params.id)
 const authStore = useAuthStore()
 const notificationStore = useNotificationStore()
-const { jobs, inputs } = useJobPoller(submissionId)
+const { jobs, inputs, issues, refresh: refreshJobs } = useJobPoller(submissionId)
 
 
 
@@ -113,47 +114,6 @@ const canRestart = computed(() => authStore.canRestartJobs)
 // imports that existed only to be looked up by job type.
 function askToRestart(jobType) {
   pendingRestart.value = restartPlan(graph.value.nodes, jobType, labelFor)
-}
-
-// ── A paused pipeline ───────────────────────────────────────────────────────
-// A failure now HOLDS what comes after it, instead of letting the consolidator
-// build a thinner answer and say nothing. That only works if the pause is
-// visible: a page of steps sitting at "waiting" with no explanation is worse
-// than the silent degradation it replaced.
-const stalled = computed(() => {
-  const byType = jobs.value || {}
-  const blocking = new Set()
-  for (const job of Object.values(byType)) {
-    for (const dep of job.blockedBy || []) blocking.add(dep)
-  }
-  return [...blocking].map((jobType) => ({
-    jobType,
-    label: labelFor(jobType),
-    // Everything stuck behind it, not just what names it.
-    //
-    // `blockedBy` is DIRECT: the consolidator is waiting on the detectors, which
-    // are waiting on the conversion, so only the detectors name the conversion.
-    // Counting those alone said "6 steps are waiting on it" over a page showing
-    // 10 waiting — an undercount that invites the reader to think the rest are
-    // stuck on something else.
-    holding: downstreamOf(graph.value.nodes, jobType)
-      .filter((t) => byType[t]?.status === 'waiting').length
-  }))
-})
-
-const continuing = ref(null)
-
-async function continueWithout(jobType) {
-  if (continuing.value) return
-  continuing.value = jobType
-  try {
-    const result = await jobService.continueWithout(submissionId.value, jobType)
-    notificationStore.info(result?.message || 'Continuing without that step')
-  } catch (err) {
-    notificationStore.error(err.response?.data?.error || 'Could not continue past that step')
-  } finally {
-    continuing.value = null
-  }
 }
 
 // ── Choosing several ────────────────────────────────────────────────────────
@@ -418,43 +378,15 @@ const activeStage = computed(() => {
       Steps shown side by side run at the same time.
     </p>
 
-    <!-- The pause, first: every "waiting" below it is explained by this. -->
-    <div v-if="stalled.length" class="pv-stalled" role="alert">
-      <svg class="pv-stalled-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-      </svg>
-      <div class="pv-stalled-body">
-        <p class="pv-stalled-title">
-          The pipeline is paused
-          <template v-if="stalled.length === 1">by a failure</template>
-          <template v-else>by {{ stalled.length }} failures</template>
-        </p>
-        <ul class="pv-stalled-list">
-          <li v-for="f in stalled" :key="f.jobType">
-            <RouterLink
-              :to="{ name: 'submission-module', params: { id: submissionId, type: f.jobType } }"
-              class="pv-stalled-link"
-            >{{ f.label }} ↗</RouterLink>
-            failed —
-            <strong>{{ f.holding }}</strong>
-            {{ f.holding === 1 ? 'step is' : 'steps are' }} waiting on it.
-            <button
-              v-if="canRestart"
-              type="button"
-              class="pv-stalled-continue"
-              :disabled="continuing === f.jobType"
-              v-tooltip="'The steps waiting on it will run without its data. Recorded, so the report can say it was skipped rather than empty.'"
-              @click="continueWithout(f.jobType)"
-            >
-              {{ continuing === f.jobType ? 'Continuing…' : 'Continue without it' }}
-            </button>
-          </li>
-        </ul>
-        <p class="pv-stalled-sub">
-          Open the step to retry it — the usual answer when a service was down and has come back.
-        </p>
-      </div>
-    </div>
+    <!-- Everything needing a person, from the server's own list. This page was
+         the first consumer and kept its own copy of the rules for a while; the
+         component is now the only place they live. -->
+    <PipelineIssues
+      :submission-id="submissionId"
+      :issues="issues"
+      :actionable="canRestart"
+      @resolved="refreshJobs"
+    />
 
     <!-- Said before any result is shown, because it changes what they mean. -->
     <div v-if="staleInputs.length" class="pv-stale" role="status">
@@ -815,43 +747,5 @@ const activeStage = computed(() => {
 }
 .pv-selbar-go:hover { background: #1d4ed8; }
 
-/* A paused pipeline. Loud, because every "waiting" below it is explained here
-   and a page of stalled steps with no explanation is worse than the silent
-   degradation this replaced. */
-.pv-stalled {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-  padding: 0.8rem 0.9rem;
-  border: 1px solid #fca5a5;
-  border-left: 4px solid #dc2626;
-  border-radius: 0.5rem;
-  background: #fef2f2;
-}
-.pv-stalled-icon { width: 1.15rem; height: 1.15rem; flex-shrink: 0; margin-top: 0.1rem; color: #b91c1c; }
-.pv-stalled-body { min-width: 0; }
-.pv-stalled-title { font-weight: 600; color: #7f1d1d; font-size: 0.92rem; }
-.pv-stalled-list {
-  margin: 0.3rem 0 0;
-  padding-left: 1rem;
-  list-style: disc;
-  font-size: 0.84rem;
-  color: #991b1b;
-}
-.pv-stalled-list li { margin-bottom: 0.2rem; }
-.pv-stalled-link { color: #b91c1c; text-decoration: underline; }
-.pv-stalled-continue {
-  margin-left: 0.4rem;
-  padding: 0.05rem 0.4rem;
-  border: 1px solid #fca5a5;
-  border-radius: 0.25rem;
-  background: #fff;
-  color: #b91c1c;
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-.pv-stalled-continue:hover:not(:disabled) { background: #fee2e2; }
-.pv-stalled-continue:disabled { opacity: 0.6; cursor: not-allowed; }
-.pv-stalled-sub { margin-top: 0.35rem; font-size: 0.8rem; color: #b91c1c; }
+
 </style>

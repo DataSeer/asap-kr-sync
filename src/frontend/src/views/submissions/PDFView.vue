@@ -22,6 +22,8 @@ import { describeLoadError } from '@/utils/load-error'
 import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isFutureStepJob } from '@/composables'
+import PipelineIssues from '@/components/submission/PipelineIssues.vue'
+import { useJobPoller } from '@/composables'
 
 const route = useRoute()
 const router = useRouter()
@@ -80,6 +82,22 @@ function getJob(type) {
 // which in turn keeps the "Suggestions will be automatically populated"
 // empty-state visible even after every job has hit 'complete'.
 const jobs = computed(() => bgProcessesRef.value?.jobs || {})
+
+/**
+ * Issues come from a poller of this page's own, not from the panel below.
+ *
+ * BackgroundProcesses is a SIBLING of everything above it, and provide() only
+ * travels down — the same trap that once left the header blind to the pipeline.
+ * A second poller is a second request every few seconds, which is the price of
+ * not having a component's internals decide what the page above it can show.
+ */
+const { issues, refresh: refreshIssues } = useJobPoller(computed(() => route.params.id))
+
+/** A decision changes both what the panel shows and what is left to decide. */
+function refreshAfterDecision() {
+  refreshIssues()
+  refreshJobs()
+}
 
 // SubmissionHeader injects this to know whether pdf_analysis is parked on
 // `pending_input`, which is what makes saving a DAS advance the pipeline.
@@ -1240,6 +1258,17 @@ function scrollToFindingRow(finding) {
     </div>
 
     <template v-else>
+      <!-- Anything needing a decision, above the panel that shows the steps —
+           this is the page the user is on while the pipeline runs, so it is
+           where a stall has to be answerable. -->
+      <PipelineIssues
+        :submission-id="route.params.id"
+        :issues="issues"
+        actionable
+        compact
+        @resolved="refreshAfterDecision"
+      />
+
       <!-- Background processes panel — embeds the wait-time ETA in its
            header and exposes a "More details" toggle for the per-job grid. -->
       <BackgroundProcesses

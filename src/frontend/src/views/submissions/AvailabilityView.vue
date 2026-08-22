@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useKRTStore } from '@/stores/krt.store'
@@ -9,12 +9,28 @@ import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
 import dasSuggestionsService from '@/services/das-suggestions.service'
+import PipelineIssues from '@/components/submission/PipelineIssues.vue'
+import { useJobPoller } from '@/composables'
 
 const route = useRoute()
 const router = useRouter()
 const submissionStore = useSubmissionStore()
 const krtStore = useKRTStore()
 const notificationStore = useNotificationStore()
+
+const { jobs, issues } = useJobPoller(computed(() => route.params.id))
+
+/**
+ * The header reads this to know whether extraction is running and whether the
+ * statement still needs confirming.
+ *
+ * Provided by the VIEW, not by a child: provide() only travels down, and the
+ * header is a sibling of anything that could provide it from below. That is the
+ * exact bug that once left the banner permanently hidden with nothing thrown
+ * and nothing logged — `das-banner-injection.test.js` guards it, and caught
+ * this page the moment it started polling.
+ */
+provide('submissionJobs', jobs)
 
 const submission = computed(() => submissionStore.currentSubmission)
 const latestFiles = computed(() => submissionStore.latestFiles)
@@ -614,6 +630,14 @@ async function handleBack() {
       <div class="text-xs font-semibold uppercase text-gray-500 mb-1">Original extracted text</div>
       <div class="extracted-das-text">{{ extractedDAS }}</div>
     </div>
+
+    <PipelineIssues
+      :submission-id="route.params.id"
+      :issues="issues"
+      actionable
+      compact
+      @resolved="fetchDasSuggestions"
+    />
 
     <!-- Confirmation — the check will not run until somebody vouches for the
          text it is about to read. -->

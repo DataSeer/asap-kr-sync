@@ -269,16 +269,20 @@ describe('choosing several steps', () => {
 describe('a paused pipeline', () => {
   beforeEach(() => { setActivePinia(createPinia()); vi.clearAllMocks() })
 
-  /** A jobs payload where the conversion failed and the detectors are held. */
-  const blocked = () => [
-    { jobType: 'markdown_convert', status: 'failed', result: {}, blockedBy: [] },
-    { jobType: 'datasets_detection', status: 'waiting', result: {}, blockedBy: ['markdown_convert'] },
-    { jobType: 'materials_detection', status: 'waiting', result: {}, blockedBy: ['markdown_convert'] },
-    { jobType: 'krt_grounding', status: 'waiting', result: {}, blockedBy: [] }
-  ]
+  /** The server's own issue list — the page renders it, it does not derive it. */
+  const conversionFailed = [{
+    jobType: 'markdown_convert',
+    kind: 'failure',
+    decided: null,
+    blocking: true,
+    holding: ['datasets_detection', 'materials_detection', 'krt_grounding'],
+    wouldSkip: ['datasets_detection', 'materials_detection'],
+    producedOutput: false,
+    detail: 'Converter returned 503'
+  }]
 
-  async function mountBlocked(jobs = blocked()) {
-    getJobs.mockResolvedValue({ jobs, inputs: [] })
+  async function mountWithIssues(issues) {
+    getJobs.mockResolvedValue({ jobs: [], inputs: [], issues })
     const auth = useAuthStore()
     Object.defineProperty(auth, 'canRestartJobs', { get: () => true, configurable: true })
     const wrapper = mount(PipelineView, {
@@ -288,52 +292,31 @@ describe('a paused pipeline', () => {
     return wrapper
   }
 
-  it('says so, and names what failed', async () => {
-    // A page of steps sitting at "waiting" with no explanation is worse than the
-    // silent degradation this replaced.
-    const wrapper = await mountBlocked()
+  it('shows the issue the server reported', async () => {
+    const wrapper = await mountWithIssues(conversionFailed)
 
-    const banner = wrapper.find('.pv-stalled')
-    expect(banner.exists()).toBe(true)
-    expect(banner.text()).toMatch(/paused/i)
-    expect(banner.text()).toContain('Markdown Convert')
+    const block = wrapper.find('.pi-block')
+    expect(block.exists()).toBe(true)
+    expect(block.text()).toMatch(/paused/i)
+    expect(block.text()).toContain('Markdown Convert')
   })
 
-  it('counts everything stuck behind it, not just what names it', async () => {
-    // "The pipeline is paused" is a claim; the number is what backs it — so it
-    // has to be the whole stall. `blockedBy` is DIRECT: the two detectors name
-    // the conversion, but grounding is waiting on THEM, so counting names alone
-    // said "2" over a page showing three steps stuck.
-    const wrapper = await mountBlocked()
+  it('does not re-derive the pause from the jobs', async () => {
+    // The page used to work it out from `blockedBy`, and undercounted. The
+    // server computes it now, and the page renders exactly what it is given.
+    const wrapper = await mountWithIssues([])
 
-    expect(wrapper.find('.pv-stalled').text()).toMatch(/3 steps are waiting on it/)
+    expect(wrapper.find('.pi-block').exists()).toBe(false)
   })
 
   it('offers the decision right there', async () => {
     restartProcesses.mockClear()
-    const wrapper = await mountBlocked()
+    const wrapper = await mountWithIssues(conversionFailed)
 
-    await wrapper.find('.pv-stalled-continue').trigger('click')
+    await wrapper.find('.pi-continue').trigger('click')
     await flushPromises()
 
     expect(continueWithout).toHaveBeenCalledWith('sub-1', 'markdown_convert')
     expect(restartProcesses).not.toHaveBeenCalled()
-  })
-
-  it('stays quiet when nothing is blocked', async () => {
-    const wrapper = await mountBlocked([
-      { jobType: 'markdown_convert', status: 'complete', result: {}, blockedBy: [] }
-    ])
-
-    expect(wrapper.find('.pv-stalled').exists()).toBe(false)
-  })
-
-  it('is quiet for a failure that blocks nothing', async () => {
-    // A failed leaf holds nothing up, so there is no pause to report.
-    const wrapper = await mountBlocked([
-      { jobType: 'krt_grounding', status: 'failed', result: {}, blockedBy: [] }
-    ])
-
-    expect(wrapper.find('.pv-stalled').exists()).toBe(false)
   })
 })

@@ -43,6 +43,7 @@ import {
 import configService from '@/services/config.service'
 import orcidService from '@/services/orcid.service'
 import markdownService from '@/services/markdown.service'
+import PipelineIssues from '@/components/submission/PipelineIssues.vue'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { useSubmissionStore } from '@/stores/submission.store'
@@ -57,7 +58,7 @@ const submissionStore = useSubmissionStore()
 const authStore = useAuthStore()
 const notificationStore = useNotificationStore()
 
-const { jobs, refresh: refreshJobs } = useJobPoller(submissionId)
+const { jobs, issues, refresh: refreshJobs } = useJobPoller(submissionId)
 
 /**
  * What state this module's run is in, in a sentence.
@@ -765,6 +766,14 @@ const tabConflicts = computed(() => {
          the status line, stays put while the run is open, and offers the way
          back — otherwise someone picks run 2, sees it render, and reasonably
          concludes the pipeline is now using it. -->
+    <PipelineIssues
+      :submission-id="submissionId"
+      :issues="issues"
+      :actionable="!viewingPastRun"
+      compact
+      @resolved="refreshJobs"
+    />
+
     <div v-if="viewingPastRun" class="mrv-past" role="status">
       <span class="mrv-past-badge">Past run</span>
       <span class="mrv-past-text">

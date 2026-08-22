@@ -723,14 +723,31 @@ test('a step with no downstream is retryable — there is nothing to leave stale
   assert.equal(orchestrator.describeRetry(JOB_TYPES.SUGGESTION_GENERATION, rows).retryable, true);
 });
 
-test('a step that did not fail is not retryable', async (t) => {
-  // Including a `complete` one: "run it again" is a restart, and it is offered
-  // where restarts are.
+test('a step with no issue is not retryable', async (t) => {
+  // A clean run: "do it again" is a restart, and it is offered where restarts
+  // are. Retry is for putting an issue right.
   const rows = pipelineRows();
-  rows.get(JOB_TYPES.SOFTWARE_DETECTION).status = 'complete';
+  Object.assign(rows.get(JOB_TYPES.SOFTWARE_DETECTION), {
+    status: 'complete',
+    result: { service: { outcome: { state: 'done' } } }
+  });
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
 
-  assert.equal(orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows).reason, 'not_failed');
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows).reason, 'no_issue');
+});
+
+test('a PARTIAL is retryable — and now, cheaply', async (t) => {
+  // Before issues paused, retrying a partial meant re-running everything that
+  // had already consumed it. Now nothing downstream has run yet, so it is as
+  // cheap as retrying a failure.
+  const rows = pipelineRows();
+  Object.assign(rows.get(JOB_TYPES.SOFTWARE_DETECTION), {
+    status: 'complete',
+    result: { service: { outcome: { state: 'partial', failReason: 'lm_failed' } } }
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows).retryable, true);
 });
 
 test('a cancelled downstream step blocks a retry', async (t) => {
