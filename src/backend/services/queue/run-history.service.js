@@ -127,24 +127,24 @@ async function captureDocuments(submissionId, round) {
  */
 async function openRun(job, { userId = null, triggerKind = null } = {}) {
   return guarded('opening a run', async () => {
-    const { SubmissionJobRun, SubmissionJob, sequelize } = require('../../models');
+    const { StepExecution, SubmissionJob, sequelize } = require('../../models');
 
     const [rows] = await sequelize.query(`
-      INSERT INTO "submission_job_runs" (
+      INSERT INTO "step_executions" (
         id, submission_job_id, submission_id, job_type, round, run_number,
         status, triggered_by_user_id, trigger_kind, s3_prefix, created_at, updated_at
       )
       SELECT
         gen_random_uuid(), :jobId, :submissionId, :jobType, :round,
         COALESCE(MAX(r.run_number), 0) + 1,
-        'queued'::"enum_submission_job_runs_status", :userId, :triggerKind,
+        'queued'::"enum_step_executions_status", :userId, :triggerKind,
         -- Where this run's artefacts will be written, recorded in the same
         -- statement that decides the number they are keyed by. Runs from before
         -- run history keep their old jobs/<type>/<jobRowId> prefix, which is
         -- why this is stored per run rather than derived from the job type.
         'jobs/' || :jobType || '/run-' || (COALESCE(MAX(r.run_number), 0) + 1),
         NOW(), NOW()
-      FROM "submission_job_runs" r
+      FROM "step_executions" r
       WHERE r.submission_job_id = :jobId
       RETURNING id, run_number
     `, {
@@ -166,7 +166,7 @@ async function openRun(job, { userId = null, triggerKind = null } = {}) {
       { where: { id: job.id } }
     );
 
-    const run = await SubmissionJobRun.findByPk(created.id);
+    const run = await StepExecution.findByPk(created.id);
 
     // After the row exists, deliberately: reading the file table is the part
     // most likely to be slow or to fail, and a run recorded without its
@@ -189,8 +189,8 @@ async function openRun(job, { userId = null, triggerKind = null } = {}) {
  * @returns {Promise<object|null>}
  */
 async function currentRun(submissionJobId) {
-  const { SubmissionJobRun } = require('../../models');
-  return SubmissionJobRun.findOne({
+  const { StepExecution } = require('../../models');
+  return StepExecution.findOne({
     where: { submissionJobId },
     order: [['runNumber', 'DESC']]
   });
@@ -204,7 +204,7 @@ async function currentRun(submissionJobId) {
  * pg-boss attempts are not separate runs.
  *
  * @param {object} job
- * @param {object} fields - SubmissionJobRun attributes
+ * @param {object} fields - StepExecution attributes
  */
 async function touchRun(job, fields) {
   return guarded('updating a run', async () => {

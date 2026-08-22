@@ -16,7 +16,7 @@
  * ── What it touches ─────────────────────────────────────────────────────────
  *
  * INSERTS ONLY, into `submissions`, `files`, `krt_data`, `submission_jobs`,
- * `submission_job_runs` and `submission_input_freezes`. The source submission
+ * `step_executions` and `submission_input_freezes`. The source submission
  * is read and never modified. Every row it creates is titled with the marker
  * below, so `--clean` can find and remove exactly them and nothing else.
  *
@@ -37,7 +37,7 @@ const { randomUUID } = require('crypto');
 const { Op } = require('sequelize');
 
 const {
-  Submission, File, KRTData, SubmissionJob, SubmissionJobRun, SubmissionInputFreeze,
+  Submission, File, KRTData, SubmissionJob, StepExecution, SubmissionInputFreeze,
   User, sequelize
 } = require('../src/backend/models');
 const { JOB_TYPES } = require('../src/backend/config/constants');
@@ -127,7 +127,7 @@ async function clean() {
   // Children first: the schema cascades from `submissions`, but being explicit
   // means a partial failure leaves nothing dangling and the counts are visible.
   await sequelize.transaction(async (t) => {
-    await SubmissionJobRun.destroy({ where: { submissionId: ids }, transaction: t });
+    await StepExecution.destroy({ where: { submissionId: ids }, transaction: t });
     await SubmissionInputFreeze.destroy({ where: { submissionId: ids }, transaction: t });
     await SubmissionJob.destroy({ where: { submissionId: ids }, transaction: t });
     await KRTData.destroy({ where: { submissionId: ids }, transaction: t });
@@ -251,12 +251,12 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
       // History, so the run selector and METADATA column have something real.
       // Only for steps that still hold a result — a held step has no run.
       if (!failure && !held.has(row.jobType)) {
-        for (const run of await SubmissionJobRun.findAll({
+        for (const run of await StepExecution.findAll({
           where: { submissionJobId: job.id }, transaction: t
         })) {
           const runRow = { ...run.get({ plain: true }) };
           delete runRow.id;
-          await SubmissionJobRun.create({
+          await StepExecution.create({
             ...runRow, submissionJobId: newJobId, submissionId: newId
           }, { transaction: t });
         }

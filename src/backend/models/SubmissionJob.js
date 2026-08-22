@@ -114,7 +114,7 @@ module.exports = (sequelize) => {
     /**
      * How many times this step has been run in this round.
      *
-     * Denormalised from `submission_job_runs` so the panel and the jobs list can
+     * Denormalised from `step_executions` so the panel and the jobs list can
      * say "run 3" without an aggregate on a table polled every few seconds.
      * Written by run-history's openRun — which silently did nothing until this
      * attribute existed, because Sequelize drops unknown fields from `update`

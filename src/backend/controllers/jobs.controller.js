@@ -6,7 +6,7 @@
  * When omitted, defaults to the submission's current round.
  */
 
-const { SubmissionJob, SubmissionJobRun, User } = require('../models');
+const { SubmissionJob, StepExecution, User } = require('../models');
 const { JOB_TYPES } = require('../config/constants');
 const { ValidationError, NotFoundError } = require('../utils/errors');
 
@@ -479,7 +479,7 @@ async function getJobPrompts(req, res, next) {
     }
 
     const job = wanted
-      ? await SubmissionJobRun.findOne({ where: { submissionId: submission.id, jobType, round, runNumber: wanted } })
+      ? await StepExecution.findOne({ where: { submissionId: submission.id, jobType, round, runNumber: wanted } })
       : await SubmissionJob.getLatest(submission.id, jobType, round);
     if (!job) {
       return res.status(404).json({ error: wanted ? `Run ${wanted} not found` : 'Job not found' });
@@ -533,7 +533,7 @@ async function getJobPrompts(req, res, next) {
  * through exactly the same path as the current one — no second rendering
  * branch, and no chance of the two drifting.
  *
- * @param {object} run - a SubmissionJobRun
+ * @param {object} run - a StepExecution
  * @param {object} extras - `runCount`, `triggeredBy`, `isLatest`
  */
 function shapeRun(run, { runCount, triggeredBy, isLatest }) {
@@ -610,7 +610,7 @@ async function listRuns(req, res, next) {
     const round = resolveRound(req);
 
     // Metadata only: the payloads are megabytes and a list shows none of them.
-    const runs = await SubmissionJobRun.listForStep(req.params.id, jobType, round, { metadataOnly: true });
+    const runs = await StepExecution.listForStep(req.params.id, jobType, round, { metadataOnly: true });
 
     const names = new Map();
     for (const id of new Set(runs.map((r) => r.triggeredByUserId).filter(Boolean))) {
@@ -659,10 +659,10 @@ async function getRun(req, res, next) {
     }
     const round = resolveRound(req);
 
-    const runs = await SubmissionJobRun.listForStep(req.params.id, jobType, round, { metadataOnly: true });
+    const runs = await StepExecution.listForStep(req.params.id, jobType, round, { metadataOnly: true });
     if (runs.length === 0) throw new NotFoundError(`Runs for ${jobType}`);
 
-    const run = await SubmissionJobRun.findOne({
+    const run = await StepExecution.findOne({
       where: { submissionId: req.params.id, jobType, round, runNumber }
     });
     if (!run) throw new NotFoundError(`Run ${runNumber} of ${jobType}`);

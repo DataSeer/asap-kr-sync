@@ -43,7 +43,7 @@ function fakeDb(t, { existingRuns = [] } = {}) {
   const state = { inserted: [], updatedJob: null, run: null };
 
   t.mock.method(models.sequelize, 'query', async (sql, opts) => {
-    assert.match(sql, /INSERT INTO "submission_job_runs"/, 'openRun must insert');
+    assert.match(sql, /INSERT INTO "step_executions"/, 'openRun must insert');
     // The allocation happens in SQL — COALESCE(MAX(run_number),0)+1 — so two
     // callers cannot read the same maximum. Modelled here.
     const next = existingRuns.length + 1;
@@ -62,8 +62,8 @@ function fakeDb(t, { existingRuns = [] } = {}) {
     updates: [],
     async update(fields) { this.updates.push(fields); Object.assign(this, fields); return this; }
   };
-  t.mock.method(models.SubmissionJobRun, 'findByPk', async () => state.run);
-  t.mock.method(models.SubmissionJobRun, 'findOne', async () => state.run);
+  t.mock.method(models.StepExecution, 'findByPk', async () => state.run);
+  t.mock.method(models.StepExecution, 'findOne', async () => state.run);
 
   return state;
 }
@@ -160,7 +160,7 @@ test('a history failure never breaks the run', async (t) => {
   // THE rule. A missing history row is recoverable and visible; a pipeline that
   // stops because its logbook threw is neither.
   t.mock.method(models.sequelize, 'query', async () => { throw new Error('db is on fire'); });
-  t.mock.method(models.SubmissionJobRun, 'findOne', async () => { throw new Error('db is on fire'); });
+  t.mock.method(models.StepExecution, 'findOne', async () => { throw new Error('db is on fire'); });
 
   await assert.doesNotReject(() => runHistory.openRun(JOB, { userId: 'u1' }));
   await assert.doesNotReject(() => runHistory.closeRun(JOB));
@@ -170,7 +170,7 @@ test('a history failure never breaks the run', async (t) => {
 });
 
 test('closing a run that was never opened is a no-op, not a crash', async (t) => {
-  t.mock.method(models.SubmissionJobRun, 'findOne', async () => null);
+  t.mock.method(models.StepExecution, 'findOne', async () => null);
 
   assert.equal(await runHistory.closeRun(JOB), null);
 });
@@ -189,7 +189,7 @@ test('closing a run that was never opened is a no-op, not a crash', async (t) =>
  * the schema.
  */
 test('every column this feature added exists on its model', () => {
-  const { SubmissionJob, SubmissionJobRun, File, ChangeLog } = models;
+  const { SubmissionJob, StepExecution, File, ChangeLog } = models;
 
   const has = (model, attr, column) => {
     const def = model.rawAttributes[attr];
@@ -211,7 +211,7 @@ test('every column this feature added exists on its model', () => {
     ['startedAt', 'started_at'], ['completedAt', 'completed_at'],
     ['durationMs', 'duration_ms'], ['retryCount', 'retry_count'],
     ['s3Prefix', 's3_prefix']
-  ]) has(SubmissionJobRun, attr, column);
+  ]) has(StepExecution, attr, column);
 });
 
 /**

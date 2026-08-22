@@ -33,7 +33,9 @@ const UserHiddenSubmission = require('./UserHiddenSubmission')(sequelize);
 const ResourceType = require('./ResourceType')(sequelize);
 const AppConfig = require('./AppConfig')(sequelize);
 const SubmissionJob = require('./SubmissionJob')(sequelize);
-const SubmissionJobRun = require('./SubmissionJobRun')(sequelize);
+const StepExecution = require('./StepExecution')(sequelize);
+const PipelineRun = require('./PipelineRun')(sequelize);
+const PipelineRunStep = require('./PipelineRunStep')(sequelize);
 const SubmissionInputFreeze = require('./SubmissionInputFreeze')(sequelize);
 const EnrichmentListEntry = require('./EnrichmentListEntry')(sequelize);
 const RefreshToken = require('./RefreshToken')(sequelize);
@@ -102,12 +104,33 @@ SubmissionJob.belongsTo(User, { foreignKey: 'triggeredByUserId', as: 'triggeredB
 
 // SubmissionJob -> its history. The job row is the CURRENT run; these are every
 // run that has ever been started, including the ones that produced nothing.
-SubmissionJob.hasMany(SubmissionJobRun, { foreignKey: 'submissionJobId', as: 'runs' });
-SubmissionJobRun.belongsTo(SubmissionJob, { foreignKey: 'submissionJobId', as: 'job' });
-Submission.hasMany(SubmissionJobRun, { foreignKey: 'submissionId', as: 'jobRuns' });
-SubmissionJobRun.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submission' });
-User.hasMany(SubmissionJobRun, { foreignKey: 'triggeredByUserId', as: 'triggeredRuns' });
-SubmissionJobRun.belongsTo(User, { foreignKey: 'triggeredByUserId', as: 'triggeredBy' });
+SubmissionJob.hasMany(StepExecution, { foreignKey: 'submissionJobId', as: 'runs' });
+StepExecution.belongsTo(SubmissionJob, { foreignKey: 'submissionJobId', as: 'job' });
+Submission.hasMany(StepExecution, { foreignKey: 'submissionId', as: 'jobRuns' });
+StepExecution.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submission' });
+User.hasMany(StepExecution, { foreignKey: 'triggeredByUserId', as: 'triggeredRuns' });
+StepExecution.belongsTo(User, { foreignKey: 'triggeredByUserId', as: 'triggeredBy' });
+User.hasMany(StepExecution, { foreignKey: 'cancelledByUserId', as: 'cancelledExecutions' });
+StepExecution.belongsTo(User, { foreignKey: 'cancelledByUserId', as: 'cancelledBy' });
+
+// Submission -> PipelineRuns, and a run's own lineage.
+Submission.hasMany(PipelineRun, { foreignKey: 'submissionId', as: 'pipelineRuns' });
+PipelineRun.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submission' });
+User.hasMany(PipelineRun, { foreignKey: 'causedByUserId', as: 'causedRuns' });
+PipelineRun.belongsTo(User, { foreignKey: 'causedByUserId', as: 'causedBy' });
+PipelineRun.belongsTo(PipelineRun, { foreignKey: 'parentRunId', as: 'parent' });
+PipelineRun.hasMany(PipelineRun, { foreignKey: 'parentRunId', as: 'children' });
+
+// A run CREATED these executions...
+PipelineRun.hasMany(StepExecution, { foreignKey: 'pipelineRunId', as: 'executions' });
+StepExecution.belongsTo(PipelineRun, { foreignKey: 'pipelineRunId', as: 'pipelineRun' });
+
+// ...and CONTAINS these, which is a different set: a carried-over execution is
+// contained by several runs and created by exactly one.
+PipelineRun.hasMany(PipelineRunStep, { foreignKey: 'pipelineRunId', as: 'steps' });
+PipelineRunStep.belongsTo(PipelineRun, { foreignKey: 'pipelineRunId', as: 'pipelineRun' });
+PipelineRunStep.belongsTo(StepExecution, { foreignKey: 'stepExecutionId', as: 'execution' });
+StepExecution.hasMany(PipelineRunStep, { foreignKey: 'stepExecutionId', as: 'memberships' });
 
 Submission.hasMany(SubmissionInputFreeze, { foreignKey: 'submissionId', as: 'inputFreezes' });
 SubmissionInputFreeze.belongsTo(Submission, { foreignKey: 'submissionId', as: 'submission' });
@@ -149,7 +172,9 @@ module.exports = {
   ResourceType,
   AppConfig,
   SubmissionJob,
-  SubmissionJobRun,
+  StepExecution,
+  PipelineRun,
+  PipelineRunStep,
   SubmissionInputFreeze,
   EnrichmentListEntry,
   RefreshToken,

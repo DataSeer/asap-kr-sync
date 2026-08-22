@@ -17,7 +17,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const controller = require('./jobs.controller');
-const { SubmissionJobRun, User } = require('../models');
+const { StepExecution, User } = require('../models');
 
 const RUN = (over = {}) => ({
   jobType: 'identifier_detection',
@@ -45,8 +45,8 @@ const RUN = (over = {}) => ({
 /** Express doubles: capture whatever the handler produced. */
 function run(handler, params, t, { runs = [], one = null } = {}) {
   const captured = { json: null, error: null };
-  t.mock.method(SubmissionJobRun, 'listForStep', async () => runs);
-  t.mock.method(SubmissionJobRun, 'findOne', async () => one);
+  t.mock.method(StepExecution, 'listForStep', async () => runs);
+  t.mock.method(StepExecution, 'findOne', async () => one);
   t.mock.method(User, 'findByPk', async (id) => ({ id, name: 'Annotator' }));
 
   const req = { params: { id: 'sub-1', ...params }, query: {}, submission: { currentRound: 1 } };
