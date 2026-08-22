@@ -1353,6 +1353,35 @@ test('every step that reads the manuscript waits for the KRT and requires the te
   }
 });
 
+test('every step that READS the manuscript depends on the conversion', () => {
+  // The invariant that would have caught a live regression: KRT Grounding reads
+  // the manuscript but declared no dependency on the conversion — it had been
+  // relying on the `markdown_ready` gate. When that moved onto the conversion
+  // as `produced`, grounding was left with no protection and started on a round
+  // whose text never existed.
+  //
+  // `reads` and `dependsOn` were two lists that could disagree. Now they cannot.
+  for (const step of orchestrator.PIPELINE) {
+    if (!(step.reads || []).includes('markdown')) continue;
+    if (step.jobType === JOB_TYPES.MARKDOWN_CONVERT) continue;   // it produces it
+
+    assert.ok(step.dependsOn.includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${step.jobType} reads the manuscript, so it must depend on the conversion`);
+    assert.ok(!(step.optional || []).includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${step.jobType} cannot read a manuscript that was never produced`);
+  }
+});
+
+test('every step that READS the KRT can say where it comes from', () => {
+  // The same shape of check for the other document. The KRT has no producing
+  // STEP — the author uploads it — so this only asserts the declaration exists,
+  // which is what the input freeze keys off.
+  for (const step of orchestrator.PIPELINE) {
+    if (!(step.reads || []).includes('krt')) continue;
+    assert.ok(Array.isArray(step.reads), `${step.jobType} declares what it reads`);
+  }
+});
+
 test('the "is there any text" question is asked once, on the conversion', () => {
   // It used to be a gate function repeated across seven readers. A reader added
   // later without it would have run on an empty document, and nothing would

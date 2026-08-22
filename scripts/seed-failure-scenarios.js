@@ -226,6 +226,9 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
           status: 'failed',
           errorMessage: failure.error,
           result: null,
+          // Both timestamps, or the copy inherits the source's `startedAt` and
+          // reports a duration measured in days.
+          startedAt: new Date(Date.now() - 4000),
           completedAt: new Date(),
           failureAcknowledgedAt: failure.acknowledged ? new Date() : null,
           failureAcknowledgedByUserId: failure.acknowledged ? ownerId : null

@@ -673,6 +673,10 @@ All job endpoints support an optional `?round=N` query parameter. When omitted, 
 ### `GET /api/submissions/:id/jobs?round=N`
 Get all background job statuses for a submission.
 - **Returns**: `{ round, inputs, jobs: [...] }` — each job includes `logs`, `files`, `result`, `config`
+- `issues` is everything about this round needing a person: `{ jobType, kind
+  ('failure' | 'unusable' | 'partial'), blocking, holding, wouldSkip,
+  producedOutput, detail, decided }`. Computed server-side so the five surfaces
+  that render it cannot disagree.
 - Each job carries `blockedBy` — the failed steps holding it, by name — and
   `waitingReason: 'blocked_by_failure'`, which takes precedence over a gate: a
   step behind a failed conversion is also behind `markdown_ready`, and naming the
@@ -713,15 +717,19 @@ Re-run a **chosen set** of steps as one restart.
   model work.
 
 ### `POST /api/submissions/:id/jobs/:jobType/continue?round=N`
-Proceed without a **failed** step's data.
+Proceed despite a step's **issue** — a failure, a partial, or a run that
+completed while producing nothing usable.
 
 - **Returns**: `{ message, jobType, acknowledgedAt }`
 - Re-runs nothing and does not mark the step successful — it stays `failed`.
   What is recorded is `failure_acknowledged_at` / `..._by_user_id`: a report built
   without software detection looks exactly like one where software detection
   found nothing, and only this tells them apart.
-- **400** unless the step failed. Deciding twice is *not* an error, and the second
-  caller does not overwrite the first's name on the record.
+- **400** unless the step actually has an issue. Deciding twice is *not* an
+  error, and the second caller does not overwrite the first's name.
+- What it releases depends on what the step produced: dependants that can run on
+  less do; dependants that REQUIRED its output are marked `skipped`, recording
+  what was missing.
 - No LM limiter: it starts nothing itself, it releases steps that were already
   going to run.
 

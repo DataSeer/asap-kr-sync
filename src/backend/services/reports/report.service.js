@@ -194,6 +194,10 @@ async function getReports(submissionId) {
 }
 
 module.exports = {
+  // Exported for the same reason the KRT formatters are: the Pipeline sheet is
+  // the only record of HOW a result was reached, and it should be checkable
+  // without generating a report and writing to S3 to see it.
+  describePipelineForReport,
   generateReport,
   getReports
 };

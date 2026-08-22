@@ -191,6 +191,17 @@ const PIPELINE = [
       JOB_TYPES.IDENTIFIER_DETECTION
     ],
     dependsOn: [
+      // It reads the manuscript, so it depends on the conversion. It did not
+      // say so before, because the `markdown_ready` GATE covered it — and when
+      // that gate moved onto the conversion as `produced`, grounding was left
+      // with no protection at all and started on a round whose text never
+      // existed. Found by a live Continue; pinned now by "every step that reads
+      // the manuscript depends on the conversion".
+      //
+      // No ordering change: it already sat behind the detectors, which sit
+      // behind the conversion. The edge makes a requirement that was always
+      // true visible to the rule that acts on it.
+      JOB_TYPES.MARKDOWN_CONVERT,
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
       JOB_TYPES.MATERIALS_DETECTION,

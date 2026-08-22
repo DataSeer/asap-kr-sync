@@ -240,11 +240,19 @@ class ExcelExporter extends ReportExporter {
     return sheet;
   }
 
-  /** `software_detection` → `Software Detection`. */
+  /**
+   * `software_detection` → `Software Detection`, and `das_extraction` → `DAS
+   * Extraction` rather than `Das Extraction`.
+   *
+   * Title-casing alone produced "Das Extraction", "Krt Grounding", "Pdf
+   * Analysis" and "Orcid Extraction" — four of the twelve steps misspelt in a
+   * document that goes to reviewers.
+   */
   humanJobType(jobType) {
+    const ACRONYMS = { das: 'DAS', krt: 'KRT', pdf: 'PDF', orcid: 'ORCID', ai: 'AI' };
     return String(jobType || '')
       .split('_')
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .map((w) => ACRONYMS[w] || w.charAt(0).toUpperCase() + w.slice(1))
       .join(' ');
   }
 

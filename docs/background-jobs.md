@@ -351,6 +351,56 @@ On the pipeline page the card is itself a link, so the button's click is both
 stopped AND prevented: without both, restarting a step also navigates away from
 the page you wanted to watch it from.
 
+#### The four cases, and one rule
+
+| A finished step | Clean? | What happens |
+|---|---|---|
+| no error, results | yes | carries on by itself |
+| no error, **nothing found** | yes | carries on. A detector finding nothing IS an answer |
+| **partial** error | no | the pipeline pauses and asks |
+| **total** error | no | the pipeline pauses and asks |
+
+One predicate covers both halves of "not clean" — `issueOf()` in the
+orchestrator — and it also swallows a case that used to slip through entirely: a
+step reaching `complete` while its outcome was `fail`, which a rule keyed on
+status alone let past while the consolidator built on nothing.
+
+**A tolerated partial does not ask.** Whether a degraded run is worth a human's
+attention depends on WHICH engine died, so it is declared per module:
+
+```js
+const PARTIAL_AUTO_CONTINUE = { software_detection: ['softcite'] }
+```
+
+Softcite dying leaves the LM pass, which read the manuscript — common, and
+stopping the round for it would be noise. The LM dying leaves name-matching with
+no reading behind it, which is worth a question. The engine is already in the
+record (`failReason: '<engine>_failed'`), so this is a lookup rather than an
+inference.
+
+#### Gates and required edges
+
+They used to be two ideas doing overlapping work. Splitting them properly turned
+out to remove one:
+
+- **`gate`** — a fact about the **submission**: `krt_curated`,
+  `availability_ready`. Not a dependency, and no dependency rule can express it.
+- **`dependsOn` + `optional`** — facts about **dependencies**. A step lists what
+  it needs; anything in `optional` it can do without.
+- **`produced(job)`** — on the **producer**: did this step yield usable output?
+  Defaults to "finished cleanly".
+
+`markdown_ready` was the odd one out — a gate that only ever asked a question
+about a dependency's output, repeated on the seven steps that read the
+manuscript. It is now `produced()` on Markdown Convert: asked once, and a reader
+added later cannot forget to ask it.
+
+> A live Continue immediately found what that refactor exposed: **KRT Grounding
+> read the manuscript but declared no dependency on the conversion** — it had
+> been relying on the gate. With the gate gone it had no protection at all. The
+> invariant *"every step that `reads: ['markdown']` must depend on the
+> conversion, and not optionally"* is now a test.
+
 #### A failure pauses what comes after it
 
 `failed` used to count as terminal alongside `complete`, so a failed step
@@ -358,6 +408,25 @@ released its dependents and they ran anyway. The consolidator would build a
 Generated KRT from four detectors instead of five and say nothing about the
 fifth — a quietly thinner answer, and the reader had no way to know it had
 happened.
+
+Now the dependents hold at `waiting`, and the person looking at it chooses. The
+choice is **not a gamble**, because what each answer costs is computed:
+
+| What is missing | Continue means |
+|---|---|
+| **optional** data | the steps below run, degraded — "will run with less to work from" |
+| **required** data | they cannot run at all, so they are **skipped** — "cannot run without it and will be skipped" |
+
+Skipping rather than the alternatives, all of which are worse: running them
+means nine unexplained failures in place of the one real one; leaving them
+`waiting` makes `allProcessesFinished` false for ever, which disables the
+submission's own Continue button and traps the user in the step; `cancelled`
+means "a person stopped this", and a report must tell that apart from "skipped
+because the conversion produced no text".
+
+Skipping cascades, so `reconcileSubmission` repeats until nothing moves —
+`PIPELINE` is not in topological order and one pass left the tail of a cascade
+waiting for the next sweep.
 
 Now the dependents hold at `waiting`, and the person looking at it chooses:
 
@@ -382,7 +451,28 @@ One unacknowledged failure is enough to hold a step — a decision about dataset
 says nothing about materials.
 
 **The pause has to be visible**, or it is worse than the silent degradation it
-replaced: a page of steps sitting at `waiting` with no explanation. `GET /jobs`
+replaced: a page of steps sitting at `waiting` with no explanation.
+
+`GET /jobs` therefore carries an **`issues`** array — the whole list, computed
+once by `describeIssues()`. One component, `PipelineIssues.vue`, renders it on
+the PDF step, the Availability step, the pipeline and a module's page, all able
+to act; anywhere else can render the same list with `actionable: false`, because
+a page that reports a problem it cannot help with is still how someone finds
+out. None of them re-derives anything: the last time a rule like this lived on
+the client, the pipeline page asked for a field the API never sent and drew
+failed steps as green ticks for weeks.
+
+**"Continue past all"** exists because three degraded detectors is three
+questions blocking the same steps, asked when the user is already annoyed. One
+press, recorded against each step separately so the record stays precise.
+
+**The report carries it.** A `Pipeline` sheet lists every step in pipeline order:
+what became of it, who carried on past it and when, runs, duration and tokens.
+Every other sheet in that workbook is the OUTPUT, and a report built without
+software detection looks exactly like one where software detection found
+nothing — this is the only place the difference is written down. Present even
+when empty, because "no record" is itself a fact and a missing sheet reads as an
+oversight. `GET /jobs`
 therefore returns `blockedBy` (the failed steps holding each one, by name) and
 `waitingReason: 'blocked_by_failure'`, which takes precedence over a gate — a
 step behind a failed conversion is *also* behind `markdown_ready`, and "waiting

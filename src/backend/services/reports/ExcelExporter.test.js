@@ -94,6 +94,19 @@ test('Pipeline: says what each step did, and who carried on past it', () => {
   assert.match(rows[2][2], /produced nothing/);
 });
 
+test('Pipeline: acronyms are spelt the way the app spells them', () => {
+  // Title-casing alone produced "Das Extraction", "Krt Grounding", "Pdf
+  // Analysis" and "Orcid Extraction" — four of the twelve steps misspelt in a
+  // document that goes to reviewers.
+  const exporter = new ExcelExporter();
+
+  assert.equal(exporter.humanJobType('das_extraction'), 'DAS Extraction');
+  assert.equal(exporter.humanJobType('krt_grounding'), 'KRT Grounding');
+  assert.equal(exporter.humanJobType('pdf_analysis'), 'PDF Analysis');
+  assert.equal(exporter.humanJobType('orcid_extraction'), 'ORCID Extraction');
+  assert.equal(exporter.humanJobType('software_detection'), 'Software Detection');
+});
+
 test('Pipeline: says so rather than showing a blank sheet', () => {
   const wb = new ExcelExporter().buildWorkbook(sampleData({ pipeline: [] }));
 
