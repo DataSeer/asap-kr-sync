@@ -261,6 +261,36 @@ const retryState = computed(() => {
     }
 })
 
+/**
+ * The other answer: carry on without this step's data.
+ *
+ * Offered on the same failure as Retry, and only while something is actually
+ * held behind it — a failure blocking nothing needs no decision, and a button
+ * that records one anyway would put a skip-marker on the record for no reason.
+ */
+const continuing = ref(false)
+
+const canContinue = computed(() => {
+  if (!retryState.value.show) return false
+  const current = (jobs.value || {})[jobType.value]
+  if (current?.failureAcknowledgedAt) return false
+  return downstreamTypes.value.some((t) => (jobs.value || {})[t]?.status === 'waiting')
+})
+
+async function continueWithout() {
+  if (continuing.value) return
+  continuing.value = true
+  try {
+    const result = await jobService.continueWithout(submissionId.value, jobType.value)
+    notificationStore.info(result?.message || 'Continuing without this step')
+    await refreshJobs()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Could not continue past this step')
+  } finally {
+    continuing.value = false
+  }
+}
+
 async function retry() {
   if (!retryState.value.enabled || retrying.value) return
   retrying.value = true
@@ -708,6 +738,19 @@ const tabConflicts = computed(() => {
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
         </svg>
         {{ retrying ? 'Starting…' : 'Retry' }}
+      </button>
+      <!-- The second answer. Beside Retry rather than hidden behind it: the
+           choice is between two things, and a user who cannot fix the service
+           needs to see that carrying on is allowed. -->
+      <button
+        v-if="canContinue"
+        type="button"
+        class="mrv-retry"
+        :disabled="continuing"
+        v-tooltip="'The steps waiting on this one will run without its data. Recorded, so the report can say it was skipped rather than empty.'"
+        @click="continueWithout"
+      >
+        {{ continuing ? 'Continuing…' : 'Continue without it' }}
       </button>
 
       <!-- The two documents every result on this page is a claim about. -->

@@ -450,7 +450,29 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
 
-  // Check if ALL dependencies are in a terminal state
+  // A FAILURE PAUSES WHAT COMES AFTER IT.
+  //
+  // `failed` used to count as terminal alongside `complete`, so a failed step
+  // released its dependents and they ran anyway. The consolidator would build a
+  // Generated KRT from four detectors instead of five and say nothing about the
+  // fifth — a quietly thinner answer, and the reader had no way to know.
+  //
+  // Now they hold here until a person decides: retry the failed step, or carry
+  // on without its data. `failureAcknowledgedAt` is that decision, recorded with
+  // who made it.
+  const blockedBy = step.dependsOn.filter(depType => {
+    const depJob = jobsByType.get(depType);
+    return depJob?.status === 'failed' && !depJob.failureAcknowledgedAt;
+  });
+  if (blockedBy.length) {
+    logger.debug('Pipeline step held behind an unresolved failure', {
+      submissionId, jobType: step.jobType, blockedBy, triggeredBy
+    });
+    return false;
+  }
+
+  // Everything else must be finished. An acknowledged failure counts as
+  // finished — that is what acknowledging it means.
   const allDependenciesDone = step.dependsOn.every(depType => {
     const depJob = jobsByType.get(depType);
     return depJob && (depJob.status === 'complete' || depJob.status === 'failed');
@@ -935,6 +957,8 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
       // re-run had already reset it.
       job.result = null;
       job.errorMessage = null;
+      job.failureAcknowledgedAt = null;
+      job.failureAcknowledgedByUserId = null;
       if (userId) job.triggeredByUserId = userId;
       await job.save({ transaction: t });
       reset.push(jobType);
@@ -984,6 +1008,56 @@ const RETRY_REFUSALS = {
     + 'would leave their results built on the failure. Restart it from the '
     + 'pipeline page instead, which re-runs them too.'
 };
+
+/**
+ * Carry on without a failed step's data.
+ *
+ * The second of the two answers a failure asks for — the other being Retry. It
+ * does NOT re-run anything and does not pretend the step succeeded: the row
+ * stays `failed`, and what is recorded is that a person decided the rest of the
+ * pipeline should proceed without it.
+ *
+ * Recorded with who and when because the consequence outlives the decision. A
+ * report built without software detection looks exactly like a report where
+ * software detection found nothing, and the difference is only knowable if
+ * somebody wrote it down.
+ *
+ * @param {string} submissionId
+ * @param {string} jobType - the failed step
+ * @param {number} round
+ * @param {string} [userId] - who decided
+ * @returns {Promise<object>} the job row
+ */
+async function acknowledgeFailure(submissionId, jobType, round, userId) {
+  const step = PIPELINE.find((s) => s.jobType === jobType);
+  if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
+
+  const job = await SubmissionJob.getLatest(submissionId, jobType, round);
+  if (!job) throw new NotFoundError('Job');
+  if (job.status !== 'failed') {
+    throw new ValidationError('Only a step that failed can be carried past.');
+  }
+  if (job.failureAcknowledgedAt) return job;   // already decided; not an error
+
+  job.failureAcknowledgedAt = new Date();
+  job.failureAcknowledgedByUserId = userId || null;
+  await job.save();
+
+  logger.info('Failure acknowledged — the pipeline proceeds without this step', {
+    submissionId, jobType, round, userId
+  });
+
+  // Release whatever was held behind it. Non-fatal: the decision is recorded
+  // either way, and the reconciler re-drives waiting jobs within a sweep.
+  try {
+    await reconcileSubmission(submissionId, round, userId);
+  } catch (err) {
+    logger.error('Could not re-drive the pipeline after acknowledging a failure', {
+      submissionId, jobType, error: err.message
+    });
+  }
+  return job;
+}
 
 /**
  * Is this failure safe to retry on its own?
@@ -1067,6 +1141,10 @@ async function retryStep(submissionId, jobType, round, userId) {
   // The attempts belong to the run that failed. Left in place, the panel would
   // show a fresh run already on its third try.
   job.retryCount = 0;
+  // And so does any decision to carry on without it — that was about a failure
+  // this run is replacing.
+  job.failureAcknowledgedAt = null;
+  job.failureAcknowledgedByUserId = null;
   if (userId) job.triggeredByUserId = userId;
   await job.save();
 
@@ -1156,6 +1234,11 @@ async function requeueStep(submissionId, jobType, round, userId, { releaseFreeze
     job.status = 'waiting';
     job.pgBossJobId = null;
     job.result = null;
+    // A decision to carry on without this step was about the failure being
+    // replaced. Left behind, the next failure would be waved through by a
+    // choice nobody made about it.
+    job.failureAcknowledgedAt = null;
+    job.failureAcknowledgedByUserId = null;
     // `errorMessage`, not `error` — the model has no `error` field, so this
     // set a plain JS property Sequelize ignores and the previous run's
     // failure text stayed on the row. The panel then showed a stale error
@@ -1219,6 +1302,25 @@ async function requeueStep(submissionId, jobType, round, userId, { releaseFreeze
  * @param {object} submission - needs `status`
  * @returns {boolean}
  */
+/**
+ * Which of this step's dependencies failed and have not been decided about.
+ *
+ * The client needs the names, not just the fact: "waiting" tells a user
+ * nothing, "waiting because Datasets Detection failed" tells them where to go.
+ *
+ * @param {string} jobType
+ * @param {Map<string, object>} jobsByType
+ * @returns {string[]}
+ */
+function blockingFailures(jobType, jobsByType) {
+  const step = PIPELINE.find(s => s.jobType === jobType);
+  if (!step) return [];
+  return step.dependsOn.filter(depType => {
+    const depJob = jobsByType.get(depType);
+    return depJob?.status === 'failed' && !depJob.failureAcknowledgedAt;
+  });
+}
+
 function isGateBlocked(jobType, submission, jobsByType) {
   const step = PIPELINE.find(s => s.jobType === jobType);
   if (!step) return null;
@@ -1231,6 +1333,7 @@ module.exports = {
   requeueStep,
   restartSteps,
   retryStep,
+  acknowledgeFailure,
   describeRetry,
   failStrandedProcessingJobs,
   checkAndAdvance,
@@ -1239,5 +1342,6 @@ module.exports = {
   advanceJob,
   cascadeRestart,
   computeDownstreamSet,
-  isGateBlocked
+  isGateBlocked,
+  blockingFailures
 };

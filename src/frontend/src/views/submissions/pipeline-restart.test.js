@@ -18,6 +18,7 @@ import { tooltip } from '@/directives/tooltip'
 
 const getJobs = vi.fn()
 const restartProcesses = vi.fn()
+const continueWithout = vi.fn()
 
 vi.mock('vue-router', async (importOriginal) => ({
   ...(await importOriginal()),
@@ -26,7 +27,8 @@ vi.mock('vue-router', async (importOriginal) => ({
 vi.mock('@/services/job.service', () => ({
   default: {
     getJobs: (...a) => getJobs(...a),
-    restartProcesses: (...a) => restartProcesses(...a)
+    restartProcesses: (...a) => restartProcesses(...a),
+    continueWithout: (...a) => continueWithout(...a)
   }
 }))
 vi.mock('@/services/config.service', () => ({
@@ -261,5 +263,74 @@ describe('choosing several steps', () => {
     await wrapper.find('.pv-selbar-clear').trigger('click')
 
     expect(wrapper.find('.pv-selbar').exists()).toBe(false)
+  })
+})
+
+describe('a paused pipeline', () => {
+  beforeEach(() => { setActivePinia(createPinia()); vi.clearAllMocks() })
+
+  /** A jobs payload where the conversion failed and the detectors are held. */
+  const blocked = () => [
+    { jobType: 'markdown_convert', status: 'failed', result: {}, blockedBy: [] },
+    { jobType: 'datasets_detection', status: 'waiting', result: {}, blockedBy: ['markdown_convert'] },
+    { jobType: 'materials_detection', status: 'waiting', result: {}, blockedBy: ['markdown_convert'] },
+    { jobType: 'krt_grounding', status: 'waiting', result: {}, blockedBy: [] }
+  ]
+
+  async function mountBlocked(jobs = blocked()) {
+    getJobs.mockResolvedValue({ jobs, inputs: [] })
+    const auth = useAuthStore()
+    Object.defineProperty(auth, 'canRestartJobs', { get: () => true, configurable: true })
+    const wrapper = mount(PipelineView, {
+      global: { directives: { tooltip }, stubs: { RouterLink: { template: '<a><slot /></a>' } } }
+    })
+    await flushPromises()
+    return wrapper
+  }
+
+  it('says so, and names what failed', async () => {
+    // A page of steps sitting at "waiting" with no explanation is worse than the
+    // silent degradation this replaced.
+    const wrapper = await mountBlocked()
+
+    const banner = wrapper.find('.pv-stalled')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toMatch(/paused/i)
+    expect(banner.text()).toContain('Markdown Convert')
+  })
+
+  it('counts what is actually stuck behind it', async () => {
+    // "The pipeline is paused" is a claim; the number is what backs it.
+    const wrapper = await mountBlocked()
+
+    expect(wrapper.find('.pv-stalled').text()).toMatch(/2 steps are waiting on it/)
+  })
+
+  it('offers the decision right there', async () => {
+    restartProcesses.mockClear()
+    const wrapper = await mountBlocked()
+
+    await wrapper.find('.pv-stalled-continue').trigger('click')
+    await flushPromises()
+
+    expect(continueWithout).toHaveBeenCalledWith('sub-1', 'markdown_convert')
+    expect(restartProcesses).not.toHaveBeenCalled()
+  })
+
+  it('stays quiet when nothing is blocked', async () => {
+    const wrapper = await mountBlocked([
+      { jobType: 'markdown_convert', status: 'complete', result: {}, blockedBy: [] }
+    ])
+
+    expect(wrapper.find('.pv-stalled').exists()).toBe(false)
+  })
+
+  it('is quiet for a failure that blocks nothing', async () => {
+    // A failed leaf holds nothing up, so there is no pause to report.
+    const wrapper = await mountBlocked([
+      { jobType: 'krt_grounding', status: 'failed', result: {}, blockedBy: [] }
+    ])
+
+    expect(wrapper.find('.pv-stalled').exists()).toBe(false)
   })
 })

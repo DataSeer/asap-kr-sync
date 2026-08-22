@@ -201,6 +201,8 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 | `round` | INTEGER | Default 1 |
 | `logs` | JSONB | Structured log entries from job execution (`[]` default) |
 | `triggered_by_user_id` | UUID (FK, nullable) | Who asked for this step to run — **not** the submission's owner. `ON DELETE SET NULL`, though accounts are anonymised rather than deleted so it should never fire. NULL means the row predates the column or no user was involved. |
+| `failure_acknowledged_at` | TIMESTAMPTZ | When somebody decided to carry on without this step's data. A failure holds everything downstream at `waiting` until this is set. Cleared on retry and restart — the decision was about one failure, not about the step |
+| `failure_acknowledged_by_user_id` | UUID (FK, nullable) | Who decided. `ON DELETE SET NULL` |
 | `run_count` | INTEGER | How many times this step has run in this round. Denormalised from `submission_job_runs` so the panel can say "run 3" without an aggregate on a table polled every few seconds. |
 | `started_at` / `completed_at` | TIMESTAMPTZ | |
 

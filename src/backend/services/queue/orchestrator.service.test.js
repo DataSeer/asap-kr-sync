@@ -298,9 +298,11 @@ test('an empty conversion starts nothing that reads the manuscript', async (t) =
   assert.ok([...rows.values()].every((r) => r.status !== 'queued'));
 });
 
-test('a step whose dependency FAILED still advances — failure is terminal too', async (t) => {
-  // Otherwise one failed detector strands the whole run in `waiting`, and the
-  // curator sees a pipeline that never finishes rather than a partial result.
+test('a step whose dependency FAILED waits for a person', async (t) => {
+  // This used to advance: `failed` counted as terminal alongside `complete`, so
+  // the consolidator ran and built a Generated KRT from four detectors instead
+  // of five — with nothing anywhere saying so. A quietly thinner answer is worse
+  // than a visible stall, because the reader cannot tell it happened.
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
   rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
@@ -309,7 +311,41 @@ test('a step whose dependency FAILED still advances — failure is terminal too'
 
   await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-1');
 
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting');
+  assert.equal(enqueued.length, 0, 'and nothing is spent while it waits');
+});
+
+test('acknowledging the failure lets the rest of the pipeline through', async (t) => {
+  // The other half of the choice: carry on without that step's data. Recorded on
+  // the row, so the run history can answer "who decided this report would be
+  // built without datasets detection".
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
+  failed.status = 'failed';
+  failed.result = null;
+  failed.failureAcknowledgedAt = new Date('2026-08-22T12:00:00Z');
+  mockDb(t, rows);
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-1');
+
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+});
+
+test('one unacknowledged failure is enough to hold a step', async (t) => {
+  // Two detectors failed and only one was waved through. The consolidator still
+  // waits — a decision about datasets says nothing about materials.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
+    status: 'failed', result: null, failureAcknowledgedAt: new Date()
+  });
+  Object.assign(rows.get(JOB_TYPES.MATERIALS_DETECTION), { status: 'failed', result: null });
+  mockDb(t, rows);
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting');
 });
 
 test('a cancelled dependency cancels the step rather than leaving it waiting', async (t) => {
@@ -391,25 +427,31 @@ test('a dependency being retried is not treated as finished', async (t) => {
     'the check must wait for the retry, not be parked awaiting input');
 });
 
-test('a dependency that has genuinely failed does release its dependents', async (t) => {
-  // The other half of the rule: once pg-boss has given up, `failed` IS terminal
-  // and the pipeline must move rather than wait for ever. DAS extraction is the
-  // case that matters — it fails, the Availability check finds no confirmation
-  // recorded, and the step parks in `pending_input` asking the author to agree
-  // to the statement. That is the designed path, and it is only reachable
-  // because the failure is terminal.
+test('a dependency that has genuinely failed holds its dependents until acknowledged', async (t) => {
+  // The other half of the retry rule. A retrying job stays `processing` and the
+  // dependent waits for the retry; a job that has genuinely failed also makes it
+  // wait — but for a PERSON, not for the queue. Once the failure is
+  // acknowledged the dependent proceeds, and DAS Suggestions then parks in
+  // `pending_input` asking the author to confirm the statement, which is the
+  // designed path.
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
-  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'failed';
-  rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
+  const extraction = rows.get(JOB_TYPES.DAS_EXTRACTION);
+  extraction.status = 'failed';
+  extraction.result = null;
   mockDb(t, rows, {
     id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
   });
 
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'waiting',
+    'held for a decision, not run against a statement extraction never produced');
+
+  extraction.failureAcknowledgedAt = new Date();
+  await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'pending_input',
-    'a terminal failure must not leave the dependent waiting for ever');
+    'and once the decision is made it moves, rather than waiting for ever');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -799,6 +841,115 @@ test('an unknown step is refused', async (t) => {
     () => orchestrator.retryStep('sub-1', 'not_a_step', 1, 'user-3'),
     /Unknown pipeline step/
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// acknowledgeFailure — carrying on without a step's data
+//
+// The second answer a paused pipeline asks for. It re-runs nothing and does not
+// pretend the step succeeded: the row stays `failed`, and what is recorded is
+// that a person decided the rest should proceed without it. Recorded, because a
+// report built without software detection looks exactly like one where software
+// detection found nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('the decision is recorded with who made it and when', async (t) => {
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  const job = await orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+
+  assert.ok(job.failureAcknowledgedAt instanceof Date);
+  assert.equal(job.failureAcknowledgedByUserId, 'user-5');
+});
+
+test('the step stays failed — this is not a pretend success', async (t) => {
+  const rows = pipelineRows();
+  const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
+  failed.status = 'failed';
+  failed.errorMessage = 'Gemini 503';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.errorMessage, 'Gemini 503', 'and it still says why');
+});
+
+test('it releases what was held behind it', async (t) => {
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.DATASETS_DETECTION).result = null;
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting', 'precondition');
+
+  await orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+});
+
+test('a step that did not fail cannot be carried past', async (t) => {
+  // There is nothing to decide about, and recording a decision would put a
+  // skip-marker on a step that ran perfectly well.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await assert.rejects(
+    () => orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5'),
+    /Only a step that failed/
+  );
+});
+
+test('deciding twice is not an error, and does not rewrite who decided', async (t) => {
+  // Two people looking at the same stalled pipeline both press Continue. The
+  // second must not overwrite the first's name on the record.
+  const rows = pipelineRows();
+  const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
+  failed.status = 'failed';
+  failed.failureAcknowledgedAt = new Date('2026-08-22T09:00:00Z');
+  failed.failureAcknowledgedByUserId = 'user-1';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-9');
+
+  assert.equal(failed.failureAcknowledgedByUserId, 'user-1');
+  assert.deepEqual(failed.failureAcknowledgedAt, new Date('2026-08-22T09:00:00Z'));
+});
+
+test('retrying clears the decision', async (t) => {
+  // It was about a failure this run is replacing. Left behind, the NEXT failure
+  // would be waved through by a choice nobody made about it.
+  const rows = pipelineRows();
+  const failed = rows.get(JOB_TYPES.MARKDOWN_CONVERT);
+  Object.assign(failed, {
+    status: 'failed',
+    failureAcknowledgedAt: new Date(),
+    failureAcknowledgedByUserId: 'user-1'
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-5');
+
+  assert.equal(failed.failureAcknowledgedAt, null);
+  assert.equal(failed.failureAcknowledgedByUserId, null);
+});
+
+test('which failures are holding a step is reported by name', async (t) => {
+  // "Waiting" tells a user nothing; "waiting because Datasets Detection failed"
+  // tells them where to go.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.MATERIALS_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.MATERIALS_DETECTION).failureAcknowledgedAt = new Date();
+
+  const blocking = orchestrator.blockingFailures(JOB_TYPES.PDF_ANALYSIS, rows);
+
+  assert.deepEqual(blocking, [JOB_TYPES.DATASETS_DETECTION],
+    'only the one still undecided');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ import { tooltip } from '@/directives/tooltip'
 
 const getJobs = vi.fn()
 const retryJob = vi.fn()
+const continueWithout = vi.fn()
 
 vi.mock('vue-router', async (importOriginal) => ({
   ...(await importOriginal()),
@@ -30,6 +31,7 @@ vi.mock('@/services/job.service', () => ({
   default: {
     getJobs: (...a) => getJobs(...a),
     retryJob: (...a) => retryJob(...a),
+    continueWithout: (...a) => continueWithout(...a),
     getRuns: vi.fn().mockResolvedValue({ runCount: 1, runs: [] }),
     getRun: vi.fn(),
     getJobPrompts: vi.fn().mockResolvedValue({ prompts: [] })
@@ -168,5 +170,55 @@ describe('the retry button', () => {
     })
 
     expect(retryButton(wrapper)).toBeTruthy()
+  })
+})
+
+describe('the continue button', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  const continueButton = (wrapper) =>
+    wrapper.findAll('button').find((b) => /continue/i.test(b.text()))
+
+  it('is offered alongside Retry while something is held', async () => {
+    // The choice is between two things. A user who cannot fix the service needs
+    // to see that carrying on is allowed, not discover it by asking.
+    const wrapper = await mountPage({
+      jobs: [job('markdown_convert', 'failed'), job('datasets_detection', 'waiting')]
+    })
+
+    expect(retryButton(wrapper)).toBeTruthy()
+    expect(continueButton(wrapper)).toBeTruthy()
+  })
+
+  it('is absent when the failure is holding nothing', async () => {
+    // Nothing to decide about. Recording a decision anyway would put a
+    // skip-marker on the record for no reason.
+    const wrapper = await mountPage({
+      jobs: [job('markdown_convert', 'failed'), job('datasets_detection', 'complete')]
+    })
+
+    expect(continueButton(wrapper)).toBeUndefined()
+  })
+
+  it('is absent once the decision has been made', async () => {
+    const acknowledged = { ...job('markdown_convert', 'failed'), failureAcknowledgedAt: '2026-08-22T12:00:00Z' }
+    const wrapper = await mountPage({
+      jobs: [acknowledged, job('datasets_detection', 'waiting')]
+    })
+
+    expect(continueButton(wrapper)).toBeUndefined()
+  })
+
+  it('records the decision without re-running anything', async () => {
+    continueWithout.mockResolvedValue({ message: 'Continuing without markdown_convert' })
+    const wrapper = await mountPage({
+      jobs: [job('markdown_convert', 'failed'), job('datasets_detection', 'waiting')]
+    })
+
+    await continueButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(continueWithout).toHaveBeenCalledWith('sub-1', 'markdown_convert')
+    expect(retryJob).not.toHaveBeenCalled()
   })
 })

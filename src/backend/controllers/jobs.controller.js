@@ -52,6 +52,7 @@ function resolveRound(req) {
  * the frontend: renaming a gate must not silently change what users read.
  */
 const WAITING_REASONS = {
+  blocked_by_failure: 'blocked_by_failure',
   krt_curated: 'krt_validation',
   markdown_ready: 'markdown_missing',
   // Not a stall: this step belongs to a later stage of the submission. The
@@ -127,8 +128,24 @@ async function getJobs(req, res, next) {
           // Explains a `waiting` status the dependency graph can't: the step
           // is gated on submission state (e.g. KRT not yet validated).
           waitingReason: job.status === 'waiting'
-            ? WAITING_REASONS[orchestrator.isGateBlocked(job.jobType, req.submission, jobsByType)] || null
+            // A failure held in front of it comes FIRST: a step blocked behind a
+            // failed dependency is also, usually, behind that dependency's gate,
+            // and "waiting for the converted manuscript" is a true but useless
+            // thing to say when the conversion failed and needs a decision.
+            ? (orchestrator.blockingFailures(job.jobType, jobsByType).length
+              ? WAITING_REASONS.blocked_by_failure
+              : WAITING_REASONS[orchestrator.isGateBlocked(job.jobType, req.submission, jobsByType)] || null)
             : null,
+          /** Which failed steps are holding this one — named, so the UI can point at them. */
+          blockedBy: job.status === 'waiting'
+            ? orchestrator.blockingFailures(job.jobType, jobsByType)
+            : [],
+          /**
+           * When somebody decided to carry on without this step, and who. Only
+           * ever set on a failed step, and the only way to tell "this was
+           * skipped" from "this found nothing" after the fact.
+           */
+          failureAcknowledgedAt: job.failureAcknowledgedAt || null,
           referenceId: job.referenceId,
           result: safeResult,
           errorMessage: job.errorMessage,
@@ -256,6 +273,33 @@ async function retryJob(req, res, next) {
       message: `${req.params.jobType} is running again`,
       jobType: job.jobType,
       status: job.status
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Carry on without a failed step's data.
+ *
+ * POST /api/submissions/:id/jobs/:jobType/continue?round=N
+ *
+ * The second answer a failure asks for; Retry is the other. Nothing is re-run
+ * and the step stays `failed` — what is recorded is that a person decided the
+ * pipeline should proceed without it, which is the only way anyone can later
+ * tell "software detection was skipped" from "software detection found nothing".
+ */
+async function continueWithoutJob(req, res, next) {
+  try {
+    const submission = req.submission;
+    const job = await orchestrator.acknowledgeFailure(
+      submission.id, req.params.jobType, resolveRound(req), req.userId
+    );
+
+    res.json({
+      message: `Continuing without ${req.params.jobType}`,
+      jobType: job.jobType,
+      acknowledgedAt: job.failureAcknowledgedAt
     });
   } catch (error) {
     next(error);
@@ -626,6 +670,7 @@ module.exports = {
   runProcesses,
   restartProcesses,
   retryJob,
+  continueWithoutJob,
   advanceJob,
   cancelProcessing,
   getJobResponse,

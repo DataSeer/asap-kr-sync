@@ -673,6 +673,10 @@ All job endpoints support an optional `?round=N` query parameter. When omitted, 
 ### `GET /api/submissions/:id/jobs?round=N`
 Get all background job statuses for a submission.
 - **Returns**: `{ round, inputs, jobs: [...] }` — each job includes `logs`, `files`, `result`, `config`
+- Each job carries `blockedBy` — the failed steps holding it, by name — and
+  `waitingReason: 'blocked_by_failure'`, which takes precedence over a gate: a
+  step behind a failed conversion is also behind `markdown_ready`, and naming the
+  gate would be true but useless.
 - `inputs` is what the round is being **processed from**: one entry per frozen
   input (`pdf`, `markdown`, `krt`), each with the version the run read, what is
   live now, and `stale`. The pipeline page turns a stale entry into *"This
@@ -707,6 +711,19 @@ Re-run a **chosen set** of steps as one restart.
   step's downstream is reset before any of them is enqueued.
 - Behind the LM budget: a selection of five detectors is five detectors' worth of
   model work.
+
+### `POST /api/submissions/:id/jobs/:jobType/continue?round=N`
+Proceed without a **failed** step's data.
+
+- **Returns**: `{ message, jobType, acknowledgedAt }`
+- Re-runs nothing and does not mark the step successful — it stays `failed`.
+  What is recorded is `failure_acknowledged_at` / `..._by_user_id`: a report built
+  without software detection looks exactly like one where software detection
+  found nothing, and only this tells them apart.
+- **400** unless the step failed. Deciding twice is *not* an error, and the second
+  caller does not overwrite the first's name on the record.
+- No LM limiter: it starts nothing itself, it releases steps that were already
+  going to run.
 
 ### `POST /api/submissions/:id/jobs/:jobType/retry?round=N`
 Run a **failed** step again, and change nothing else.

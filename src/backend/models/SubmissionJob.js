@@ -72,6 +72,29 @@ module.exports = (sequelize) => {
         key: 'id'
       }
     },
+    /**
+     * When somebody decided to carry on without this step's data.
+     *
+     * A failure holds everything downstream at `waiting` until this is set — the
+     * alternative, which is what used to happen, is a Generated KRT built from
+     * four detectors instead of five with nothing anywhere saying so.
+     *
+     * Timestamped and attributed rather than a boolean, because the question is
+     * "who decided this report would be built without software detection, and
+     * when" and a boolean cannot answer it. Cleared on retry and on restart: the
+     * decision was about one failure, not about the step.
+     */
+    failureAcknowledgedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: 'failure_acknowledged_at'
+    },
+    failureAcknowledgedByUserId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'failure_acknowledged_by_user_id',
+      references: { model: 'users', key: 'id' }
+    },
     result: {
       type: DataTypes.JSONB,
       allowNull: true

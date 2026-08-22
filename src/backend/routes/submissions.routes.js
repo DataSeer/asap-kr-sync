@@ -500,6 +500,14 @@ router.post('/:id/processes/run',
   jobsController.runProcesses
 );
 
+// POST /api/submissions/:id/jobs/:jobType/continue - Proceed without a failed
+// step's data. No LM limiter: it starts nothing itself — it releases steps that
+// were already going to run.
+router.post('/:id/jobs/:jobType/continue',
+  canAccessSubmission,
+  jobsController.continueWithoutJob
+);
+
 // POST /api/submissions/:id/jobs/:jobType/retry - Run a failed step again and
 // change nothing else. Behind the LM budget like the restarts: it starts real
 // model work, even though it starts only one step's worth.

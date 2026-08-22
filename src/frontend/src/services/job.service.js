@@ -48,6 +48,22 @@ export default {
     return response.data
   },
 
+  /**
+   * Carry on without a failed step's data.
+   *
+   * Re-runs nothing. The step stays `failed`; what is recorded is that a person
+   * decided the pipeline should proceed without it — the only way anyone can
+   * later tell "this was skipped" from "this found nothing".
+   *
+   * @param {string} submissionId
+   * @param {string} jobType
+   * @returns {Promise<{message: string, jobType: string, acknowledgedAt: string}>}
+   */
+  async continueWithout(submissionId, jobType) {
+    const response = await api.post(`/submissions/${submissionId}/jobs/${jobType}/continue`)
+    return response.data
+  },
+
   async getJobs(submissionId, round = null) {
     const params = round ? { round } : {}
     const response = await api.get(`/submissions/${submissionId}/jobs`, { params })

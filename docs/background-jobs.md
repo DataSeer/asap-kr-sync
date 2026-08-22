@@ -351,6 +351,49 @@ On the pipeline page the card is itself a link, so the button's click is both
 stopped AND prevented: without both, restarting a step also navigates away from
 the page you wanted to watch it from.
 
+#### A failure pauses what comes after it
+
+`failed` used to count as terminal alongside `complete`, so a failed step
+released its dependents and they ran anyway. The consolidator would build a
+Generated KRT from four detectors instead of five and say nothing about the
+fifth — a quietly thinner answer, and the reader had no way to know it had
+happened.
+
+Now the dependents hold at `waiting`, and the person looking at it chooses:
+
+| | What it does | Where |
+|---|---|---|
+| **Retry** | runs the failed step again | the module's page |
+| **Continue without it** | records a decision to proceed without its data | the module's page and the pipeline banner |
+
+**Continue does not re-run anything and does not pretend the step succeeded.**
+The row stays `failed`; what is written is `failure_acknowledged_at` and
+`failure_acknowledged_by_user_id`. Recorded rather than inferred, because a
+report built without software detection looks exactly like one where software
+detection found nothing, and the difference is only knowable if somebody wrote
+it down. Two people pressing Continue on the same stalled pipeline is not an
+error, and the second does not overwrite the first's name.
+
+The decision is cleared on **retry** and on **restart**: it was about one
+failure, not about the step. Left behind, the *next* failure would be waved
+through by a choice nobody made about it.
+
+One unacknowledged failure is enough to hold a step — a decision about datasets
+says nothing about materials.
+
+**The pause has to be visible**, or it is worse than the silent degradation it
+replaced: a page of steps sitting at `waiting` with no explanation. `GET /jobs`
+therefore returns `blockedBy` (the failed steps holding each one, by name) and
+`waitingReason: 'blocked_by_failure'`, which takes precedence over a gate — a
+step behind a failed conversion is *also* behind `markdown_ready`, and "waiting
+for the converted manuscript" is true but useless when the conversion failed.
+The pipeline page turns that into a banner naming each failure and how many
+steps are stuck behind it.
+
+The trade, stated plainly: a transient 503 now stalls the round until someone
+looks. For a tool with a human in the loop that is the right way round — a stall
+you can see beats a result quietly missing a detector — but it is a trade.
+
 #### Retry — the narrow one
 
 A module's own page offers **Retry**, not a restart. Different thing, different
@@ -361,7 +404,7 @@ rule:
 | Runs | the step **and everything built on it** | that step, alone |
 | Releases input freezes | yes, when every reader re-runs | **never** |
 | Runs `onManualRestart` | yes | no |
-| Available when | any time | the step **failed** and nothing downstream has run since |
+| Available when | any time | the step **failed** and nothing downstream has run since — which, now that failures pause, is the normal case |
 | Lives on | the pipeline page | the module's page |
 
 It is for the case that comes up after an external service is fixed, or a patch
