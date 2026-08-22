@@ -35,7 +35,10 @@ async function describePipelineForReport(submissionId, round) {
   const jobs = await SubmissionJob.getForSubmission(submissionId, round);
   const byType = new Map(jobs.map((j) => [j.jobType, j]));
 
-  const deciderIds = [...new Set(jobs.map((j) => j.issueAcknowledgedByUserId).filter(Boolean))];
+  // `job.decision` comes from the execution the round's current run holds for
+  // the step — attached by getForSubmission, so the report cannot read a
+  // decision that belongs to a run it is not describing.
+  const deciderIds = [...new Set(jobs.map((j) => j.decision?.byUserId).filter(Boolean))];
   const deciders = deciderIds.length
     ? await User.findAll({ where: { id: deciderIds }, attributes: ['id', 'name'], raw: true })
     : [];
@@ -59,8 +62,10 @@ async function describePipelineForReport(submissionId, round) {
         ? `needed ${skipped.missing.join(', ')}, which produced nothing`
         : (job.errorMessage || job.result?.service?.outcome?.externalError || null),
       /** Present only when somebody chose to carry on despite an issue. */
-      decidedBy: job.issueAcknowledgedAt ? (nameById.get(job.issueAcknowledgedByUserId) || 'a user who has since been removed') : null,
-      decidedAt: job.issueAcknowledgedAt || null,
+      decidedBy: job.decision?.at
+        ? (nameById.get(job.decision.byUserId) || 'a user who has since been removed')
+        : null,
+      decidedAt: job.decision?.at || null,
       runCount: job.runCount || (job.status === 'complete' ? 1 : 0),
       durationMs: job.startedAt && job.completedAt
         ? new Date(job.completedAt) - new Date(job.startedAt)

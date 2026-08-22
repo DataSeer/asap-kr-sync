@@ -78,7 +78,7 @@ async function getJobs(req, res, next) {
     // an issue's "carried on by Nicolas" needs the same name lookup, and
     // whoever acknowledged a failure need never have triggered anything.
     const triggerIds = [...new Set(
-      jobs.flatMap((j) => [j.triggeredByUserId, j.issueAcknowledgedByUserId]).filter(Boolean)
+      jobs.flatMap((j) => [j.triggeredByUserId, j.decision?.byUserId]).filter(Boolean)
     )];
     const triggers = triggerIds.length
       ? await User.findAll({ where: { id: triggerIds }, attributes: ['id', 'name'], raw: true })
@@ -177,7 +177,7 @@ async function getJobs(req, res, next) {
            * ever set on a failed step, and the only way to tell "this was
            * skipped" from "this found nothing" after the fact.
            */
-          issueAcknowledgedAt: job.issueAcknowledgedAt || null,
+          issueAcknowledgedAt: job.decision?.at || null,
           referenceId: job.referenceId,
           result: safeResult,
           errorMessage: job.errorMessage,
@@ -339,7 +339,7 @@ async function continueWithoutJob(req, res, next) {
     res.json({
       message: `Continuing without ${req.params.jobType}`,
       jobType: job.jobType,
-      acknowledgedAt: job.issueAcknowledgedAt
+      acknowledgedAt: job.decision?.at
     });
   } catch (error) {
     next(error);
@@ -571,10 +571,9 @@ function shapeRun(run, {
   return {
     jobType: run.jobType,
     round: run.round,
-    // The PIPELINE run's number, not the execution's own. They differ whenever
-    // a step was carried over, and the execution's number is the one nobody
-    // asked about.
-    runNumber: runNumber ?? run.runNumber,
+    // The PIPELINE run's number. The execution no longer has one of its own —
+    // numbering the step inside the run was the ambiguity this model removed.
+    runNumber,
     runCount,
     isLatest,
     cause,

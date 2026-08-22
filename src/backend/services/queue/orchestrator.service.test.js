@@ -335,7 +335,7 @@ test('acknowledging the failure lets the rest of the pipeline through', async (t
   const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
   failed.status = 'failed';
   failed.result = null;
-  failed.issueAcknowledgedAt = new Date('2026-08-22T12:00:00Z');
+  failed.decision = { at: '2026-08-22T12:00:00Z', byUserId: 'user-1' };
   mockDb(t, rows);
 
   await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-1');
@@ -349,7 +349,7 @@ test('one unacknowledged failure is enough to hold a step', async (t) => {
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
   Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
-    status: 'failed', result: null, issueAcknowledgedAt: new Date()
+    status: 'failed', result: null, decision: { at: new Date().toISOString(), byUserId: 'user-1' }
   });
   Object.assign(rows.get(JOB_TYPES.MATERIALS_DETECTION), { status: 'failed', result: null });
   mockDb(t, rows);
@@ -458,7 +458,7 @@ test('a dependency that has genuinely failed holds its dependents until acknowle
   assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'waiting',
     'held for a decision, not run against a statement extraction never produced');
 
-  extraction.issueAcknowledgedAt = new Date();
+  extraction.decision = { at: new Date().toISOString(), byUserId: 'user-1' };
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'pending_input',
@@ -724,7 +724,7 @@ test('a batch restart is one run, not one per step', async (t) => {
 
 test('a retry is a run of its own, named as a retry', async (t) => {
   const rows = pipelineRows({
-    [JOB_TYPES.MARKDOWN_CONVERT]: { status: 'failed', issueAcknowledgedAt: null }
+    [JOB_TYPES.MARKDOWN_CONVERT]: { status: 'failed', decision: null }
   });
   mockDb(t, rows);
 
@@ -979,10 +979,15 @@ test('the decision is recorded with who made it and when', async (t) => {
   rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
 
-  const job = await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+  await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
 
-  assert.ok(job.issueAcknowledgedAt instanceof Date);
-  assert.equal(job.issueAcknowledgedByUserId, 'user-5');
+  // On the EXECUTION, not the job row. That is what makes the decision travel
+  // with the result it is about — and what removes the field three call sites
+  // had to remember to clear on a re-run.
+  const decision = pipelineRuns.executions[JOB_TYPES.DATASETS_DETECTION].decision;
+  assert.ok(decision.at);
+  assert.equal(decision.byUserId, 'user-5');
+  assert.equal(decision.choice, 'continue');
 });
 
 test('the step stays failed — this is not a pretend success', async (t) => {
@@ -1037,8 +1042,9 @@ test('a PARTIAL can be carried past — same decision, same record', async (t) =
 
   const job = await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.PROTOCOLS_DETECTION, 1, 'user-5');
 
-  assert.ok(job.issueAcknowledgedAt);
-  assert.equal(job.issueAcknowledgedByUserId, 'user-5');
+  const decision = pipelineRuns.executions[JOB_TYPES.PROTOCOLS_DETECTION].decision;
+  assert.ok(decision.at);
+  assert.equal(decision.byUserId, 'user-5');
   assert.equal(job.status, 'complete', 'it completed — that does not change');
 });
 
@@ -1048,32 +1054,42 @@ test('deciding twice is not an error, and does not rewrite who decided', async (
   const rows = pipelineRows();
   const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
   failed.status = 'failed';
-  failed.issueAcknowledgedAt = new Date('2026-08-22T09:00:00Z');
-  failed.issueAcknowledgedByUserId = 'user-1';
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+  // On the EXECUTION, which is where the guard looks. The job row's copy is
+  // hydrated from it and would be the wrong thing to seed.
+  const first = { at: '2026-08-22T09:00:00Z', byUserId: 'user-first', choice: 'continue' };
+  pipelineRuns.decide(JOB_TYPES.DATASETS_DETECTION, first);
 
   await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-9');
 
-  assert.equal(failed.issueAcknowledgedByUserId, 'user-1');
-  assert.deepEqual(failed.issueAcknowledgedAt, new Date('2026-08-22T09:00:00Z'));
+  assert.deepEqual(pipelineRuns.executions[JOB_TYPES.DATASETS_DETECTION].decision, first);
 });
 
-test('retrying clears the decision', async (t) => {
-  // It was about a failure this run is replacing. Left behind, the NEXT failure
-  // would be waved through by a choice nobody made about it.
+test('a retried step is not still carrying the decision about its failure', async (t) => {
+  // The decision was about a failure this run is replacing. It used to be two
+  // columns on the job row, cleared in three places — and `runAllProcesses`,
+  // the one that re-runs everything, did not clear them, so a decision about
+  // run 1's failure silently waved run 2's through.
+  //
+  // There is nothing to clear now. A retry opens a run that RE-EXECUTES this
+  // step, so the execution the round holds for it is a new one, and a new
+  // execution has never been decided about. The bug is not fixed here; it is
+  // unrepresentable.
   const rows = pipelineRows();
   const failed = rows.get(JOB_TYPES.MARKDOWN_CONVERT);
   Object.assign(failed, {
     status: 'failed',
-    issueAcknowledgedAt: new Date(),
-    issueAcknowledgedByUserId: 'user-1'
+    decision: { at: '2026-08-22T09:00:00Z', byUserId: 'user-1' }
   });
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
 
   await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-5');
 
-  assert.equal(failed.issueAcknowledgedAt, null);
-  assert.equal(failed.issueAcknowledgedByUserId, null);
+  // The run that was opened re-executes the step, which is what guarantees a
+  // fresh execution.
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.deepEqual(pipelineRuns.created[0].reRun, [JOB_TYPES.MARKDOWN_CONVERT]);
+  assert.equal(pipelineRuns.created[0].cause, 'retry');
 });
 
 test('which failures are holding a step is reported by name', async (t) => {
@@ -1083,7 +1099,7 @@ test('which failures are holding a step is reported by name', async (t) => {
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
   rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
   rows.get(JOB_TYPES.MATERIALS_DETECTION).status = 'failed';
-  rows.get(JOB_TYPES.MATERIALS_DETECTION).issueAcknowledgedAt = new Date();
+  rows.get(JOB_TYPES.MATERIALS_DETECTION).decision = { at: new Date().toISOString(), byUserId: 'u' };
 
   const blocking = orchestrator.blockingIssues(JOB_TYPES.PDF_ANALYSIS, rows);
 
@@ -1243,8 +1259,7 @@ test('a decided issue is still listed, but no longer blocking', () => {
   rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 64925 } };
   Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
     status: 'failed',
-    issueAcknowledgedAt: new Date('2026-08-22T12:00:00Z'),
-    issueAcknowledgedByUserId: 'user-5'
+    decision: { at: '2026-08-22T12:00:00Z', byUserId: 'user-5' }
   });
 
   const issues = orchestrator.describeIssues(rows);

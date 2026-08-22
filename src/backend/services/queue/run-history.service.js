@@ -128,10 +128,11 @@ async function captureDocuments(submissionId, round) {
  * on — it would sit in the table and appear on no screen — so a loud error and
  * no row is the better outcome.
  *
- * `run_number` is allocated in the INSERT itself, so two callers cannot read
- * the same maximum and both write run 3. The UNIQUE(submission_job_id,
- * run_number) index is the backstop: a bug surfaces as an error rather than as
- * two executions wearing the same number.
+ * The execution carries no number of its own. It used to, allocated per step,
+ * and that number meant something different from the one the user was shown —
+ * the ambiguity the whole model was changed to remove. UNIQUE(pipeline_run_id,
+ * job_type) is the backstop now, and it states the invariant directly: a step
+ * executes at most once in a run, and a second attempt is a new run.
  *
  * @param {object} job - the SubmissionJob row being enqueued
  * @param {object} [opts]
@@ -156,21 +157,19 @@ async function openRun(job, { userId = null, triggerKind = null } = {}) {
     const [rows] = await sequelize.query(`
       INSERT INTO "step_executions" (
         id, pipeline_run_id, submission_job_id, submission_id, job_type, round,
-        run_number, status, triggered_by_user_id, trigger_kind, s3_prefix,
+        status, triggered_by_user_id, trigger_kind, s3_prefix,
         created_at, updated_at
       )
-      SELECT
+      VALUES (
         gen_random_uuid(), :pipelineRunId, :jobId, :submissionId, :jobType, :round,
-        COALESCE(MAX(r.run_number), 0) + 1,
         'queued'::"enum_step_executions_status", :userId, :triggerKind,
-        -- Keyed by the PIPELINE run number, not this step's own. "Everything
-        -- run 2 produced" is then one prefix per step rather than a lookup, and
-        -- the number in the path is the number the user was shown.
+        -- Keyed by the PIPELINE run number. "Everything run 2 produced" is then
+        -- one prefix per step rather than a lookup, and the number in the path
+        -- is the number the user was shown.
         'jobs/' || :jobType || '/run-' || :pipelineRunNumber,
         NOW(), NOW()
-      FROM "step_executions" r
-      WHERE r.submission_job_id = :jobId
-      RETURNING id, run_number
+      )
+      RETURNING id
     `, {
       replacements: {
         pipelineRunId: pipelineRun.id,
@@ -189,12 +188,11 @@ async function openRun(job, { userId = null, triggerKind = null } = {}) {
     // The run declared this step when it was created; this is where the
     // placeholder stops being a placeholder.
     await pipelineRuns.attachExecution(pipelineRun.id, job.jobType, created.id);
-    // Denormalised onto the job row so the panel can say "run 3" without an
-    // aggregate on a table polled every few seconds.
-    await SubmissionJob.update(
-      { runCount: created.run_number },
-      { where: { id: job.id } }
-    );
+    // How many times this STEP has executed in the round. No longer the run
+    // number — that belongs to the pipeline run — but still worth having:
+    // "has this been re-run" is a different question from "which run is this",
+    // and a carried-over step makes the two diverge.
+    await SubmissionJob.increment('runCount', { by: 1, where: { id: job.id } });
 
     const run = await StepExecution.findByPk(created.id);
 
@@ -253,7 +251,12 @@ function attemptsWith(run, { ok, error = null, delivery = 1 }) {
 }
 
 /**
- * The run currently open for a step: the highest-numbered one.
+ * The execution currently open for a step: the most recently created.
+ *
+ * By `created_at` rather than by a number of its own, which the execution no
+ * longer has. Ordering is the same — executions are created in order, and a
+ * step executes at most once per run, which UNIQUE(pipeline_run_id, job_type)
+ * enforces.
  *
  * @param {string} submissionJobId
  * @returns {Promise<object|null>}
@@ -262,7 +265,7 @@ async function currentRun(submissionJobId) {
   const { StepExecution } = require('../../models');
   return StepExecution.findOne({
     where: { submissionJobId },
-    order: [['runNumber', 'DESC']]
+    order: [['createdAt', 'DESC']]
   });
 }
 

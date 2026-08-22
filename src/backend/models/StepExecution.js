@@ -71,16 +71,6 @@ module.exports = (sequelize) => {
     jobType: { type: DataTypes.STRING(50), allowNull: false, field: 'job_type' },
     round: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
 
-    /**
-     * 1-based, per (submission, jobType, round). Allocated at enqueue.
-     *
-     * Transitional. The pipeline run now numbers the attempt, and numbering the
-     * step again inside it is the ambiguity this model was changed to remove —
-     * "run 3" meant two different things depending on which screen asked. Kept
-     * only until the history reads move onto pipeline runs.
-     */
-    runNumber: { type: DataTypes.INTEGER, allowNull: false, field: 'run_number' },
-
     status: {
       type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed', 'cancelled', 'skipped'),
       allowNull: false,
@@ -176,35 +166,20 @@ module.exports = (sequelize) => {
     underscored: true,
     timestamps: true,
     indexes: [
-      { unique: true, fields: ['submission_job_id', 'run_number'] },
+      /**
+       * One execution per step per run.
+       *
+       * This replaces UNIQUE(submission_job_id, run_number), which was the
+       * backstop against a step quietly executing twice and one of the two
+       * becoming invisible — the shape of the worst bug this pipeline has had.
+       * The invariant is the same and now says what it means: a step executes at
+       * most once in a run, and a second attempt is a NEW run.
+       */
+      { unique: true, fields: ['pipeline_run_id', 'job_type'] },
       { fields: ['submission_id', 'round', 'job_type'] },
-      { fields: ['pipeline_run_id'] },
       { fields: ['triggered_by_user_id'] }
     ]
   });
-
-  /**
-   * The executions of one step, newest first.
-   *
-   * @param {string} submissionId
-   * @param {string} jobType
-   * @param {number} round
-   * @param {object} [options] - `metadataOnly` omits the heavy JSONB columns,
-   *   which is what an execution LIST wants: the payloads are megabytes and the list
-   *   shows none of them.
-   * @returns {Promise<StepExecution[]>}
-   */
-  StepExecution.listForStep = async function(submissionId, jobType, round, { metadataOnly = false } = {}) {
-    const where = { submissionId, jobType };
-    if (round !== undefined) where.round = round;
-    return StepExecution.findAll({
-      where,
-      order: [['runNumber', 'DESC']],
-      ...(metadataOnly
-        ? { attributes: { exclude: ['result', 'logs', 'inputs'] } }
-        : {})
-    });
-  };
 
   return StepExecution;
 };

@@ -1,6 +1,6 @@
 # Design proposal — Pipeline runs: one coherent attempt, reconstructable in full
 
-**Status:** IN PROGRESS — steps 1–2 of §16 built · **Created:** 2026-08-22
+**Status:** IMPLEMENTED — all five steps of §16 built · **Created:** 2026-08-22
 · **Updated:** 2026-08-22
 
 > Supersedes the run model in [design-run-history.md](./design-run-history.md),
@@ -436,9 +436,16 @@ Each step leaves the system working:
    - ⬜ `extracted_data_availability_statement` still exists. It is a read of
      the newest extraction execution, and dissolving it is a UI change to the
      Availability page rather than part of this step.
-4. **Retire per-step run numbers** and shrink `submission_jobs`.
-   `step_executions.run_number` is now unused by every read; removing the column
-   is what is left, with `submission_jobs`'s history fields.
+4. ✅ **Retire per-step run numbers** and shrink `submission_jobs`.
+   `step_executions.run_number` is gone, and with it the last place "run 3"
+   could mean two things. `UNIQUE(submission_job_id, run_number)` — the backstop
+   against a step executing twice and one of the two becoming invisible — is
+   replaced by `UNIQUE(pipeline_run_id, job_type)`, which states the same
+   invariant directly. `submission_jobs.issue_acknowledged_*` is gone too: the
+   decision lives on the execution, so there is no longer a field three call
+   sites had to remember to clear, and the one that re-runs everything did not.
+   `run_count` stays, renamed in the API to `executionCount` — "has this step
+   been re-run" is a different question from "which run is this".
 5. ✅ **The run selector is submission-wide**: `GET /submissions/:id/runs`, and
    the poller reports the round's run number on every step — so "run 2" means
    one thing across the page. The pipeline page shows it once in the state strip

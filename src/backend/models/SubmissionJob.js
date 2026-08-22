@@ -82,20 +82,25 @@ module.exports = (sequelize) => {
      *
      * Timestamped and attributed rather than a boolean, because the question is
      * "who decided this report would be built without software detection, and
-     * when" and a boolean cannot answer it. Cleared on retry and on restart: the
-     * decision was about one run's issue, not about the step.
+     * when" and a boolean cannot answer it.
+     *
+     * ── It lives on the EXECUTION, not here ─────────────────────────────────
+     *
+     * It used to be two columns on this row, cleared on retry and on restart
+     * because the decision was about one run's issue and not about the step.
+     * Three places had to remember to clear them, and `runAllProcesses` — the
+     * one that re-runs everything — did not: a decision made about run 1's
+     * failure silently waved through run 2's.
+     *
+     * A decision now belongs to the execution it was made about. A re-executed
+     * step gets a new execution, which was never decided about, so there is no
+     * field left to forget to clear; a carried-over step keeps the same
+     * execution and therefore the same decision, which is also right — you kept
+     * the result, you kept what was decided about it.
+     *
+     * `getForSubmission` attaches it as `job.decision`, so the orchestrator's
+     * hot path reads one object rather than issuing a query per step.
      */
-    issueAcknowledgedAt: {
-      type: DataTypes.DATE,
-      allowNull: true,
-      field: 'issue_acknowledged_at'
-    },
-    issueAcknowledgedByUserId: {
-      type: DataTypes.UUID,
-      allowNull: true,
-      field: 'issue_acknowledged_by_user_id',
-      references: { model: 'users', key: 'id' }
-    },
     result: {
       type: DataTypes.JSONB,
       allowNull: true
@@ -385,8 +390,59 @@ module.exports = (sequelize) => {
       where: { id: Array.from(latestIdByType.values()) },
       order: [['createdAt', 'DESC']]
     });
+
+    await attachDecisions(jobs, submissionId, round);
     return jobs;
   };
+
+  /**
+   * Attach each step's decision, from the run the round is currently in.
+   *
+   * Done HERE rather than in each caller, deliberately. A caller that forgot
+   * would not see an error — it would see a step with no decision, and would
+   * hold the pipeline for a question somebody has already answered. That is a
+   * failure by absence, which is the kind nobody notices.
+   *
+   * One query, through the run's MEMBERSHIP rather than the executions' own
+   * `pipeline_run_id`: a carried-over execution belongs to the run that created
+   * it, and looking it up by that column would drop its decision the moment
+   * anything else was restarted. Going through membership is also what makes
+   * "decisions carry over" true without any code saying so.
+   *
+   * Never throws. A decision that could not be read holds the pipeline, which is
+   * the conservative outcome — the question gets asked again rather than
+   * silently answered.
+   *
+   * @param {object[]} jobs - mutated in place
+   * @param {string} submissionId
+   * @param {number} round
+   */
+  async function attachDecisions(jobs, submissionId, round) {
+    if (round === undefined || !jobs.length) return;
+    try {
+      const { sequelize: db } = require('./index');
+      const [rows] = await db.query(`
+        SELECT prs.job_type, se.decision
+        FROM "pipeline_run_steps" prs
+        JOIN "step_executions" se ON se.id = prs.step_execution_id
+        JOIN "pipeline_runs" pr ON pr.id = prs.pipeline_run_id
+        WHERE pr.submission_id = :submissionId
+          AND pr.round = :round
+          AND pr.run_number = (
+            SELECT MAX(run_number) FROM "pipeline_runs"
+            WHERE submission_id = :submissionId AND round = :round
+          )
+          AND se.decision IS NOT NULL
+      `, { replacements: { submissionId, round } });
+
+      const byType = new Map(rows.map((row) => [row.job_type, row.decision]));
+      for (const job of jobs) job.decision = byType.get(job.jobType) || null;
+    } catch (error) {
+      require('../utils/logger').error('Could not read this round\'s decisions', {
+        submissionId, round, error: error.message
+      });
+    }
+  }
 
   /**
    * Get the latest job of a specific type for a submission

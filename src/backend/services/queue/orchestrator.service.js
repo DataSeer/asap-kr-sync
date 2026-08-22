@@ -1009,7 +1009,15 @@ function issueOf(job) {
 }
 
 /** Undecided issues are what hold the pipeline; a decided one does not. */
-const holdsPipeline = (job) => issueOf(job).needed && !job.issueAcknowledgedAt;
+/**
+ * Does this step hold what comes after it?
+ *
+ * `job.decision` is attached by `getForSubmission` from the execution the
+ * round's current run holds for this step. A step re-executed since the
+ * decision was made has a new execution and therefore no decision, which is the
+ * whole reason the field moved off the job row.
+ */
+const holdsPipeline = (job) => issueOf(job).needed && !job?.decision?.at;
 
 /** Is this dependency one the step cannot run without? */
 function isRequired(step, depType) {
@@ -1138,8 +1146,8 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
       // re-run had already reset it.
       job.result = null;
       job.errorMessage = null;
-      job.issueAcknowledgedAt = null;
-      job.issueAcknowledgedByUserId = null;
+      // Nothing to clear about the decision: it lives on the execution, and
+      // this step is about to get a new one that was never decided about.
       if (userId) job.triggeredByUserId = userId;
       await job.save({ transaction: t });
       reset.push(jobType);
@@ -1225,14 +1233,28 @@ async function acknowledgeIssue(submissionId, jobType, round, userId) {
   if (!issueOf(job).needed) {
     throw new ValidationError('This step finished cleanly — there is nothing to decide about.');
   }
-  if (job.issueAcknowledgedAt) return job;   // already decided; not an error
 
-  job.issueAcknowledgedAt = new Date();
-  job.issueAcknowledgedByUserId = userId || null;
-  await job.save();
+  // Onto the EXECUTION the current run holds for this step, not onto the job
+  // row. That is what makes the decision travel with the result it is about:
+  // re-execute the step and the new execution was never decided about; carry it
+  // over and the decision comes with it.
+  const entry = await pipelineRuns.currentStepInRun(submissionId, round ?? 1, jobType);
+  if (!entry?.execution) {
+    throw new ValidationError('There is no run of this step to decide about yet.');
+  }
+  if (entry.execution.decision?.at) return job;   // already decided; not an error
+
+  // NOT wrapped in the history layer's swallow-everything guard. Background
+  // history writes must never break a run; a decision is not a background
+  // write — the orchestrator is about to act on it, and a failure that is
+  // logged and ignored would release the pipeline on a decision nobody made.
+  await entry.execution.update({
+    decision: { at: new Date().toISOString(), byUserId: userId || null, choice: 'continue' }
+  });
+  job.decision = entry.execution.decision;
 
   logger.info('Issue acknowledged — the pipeline proceeds', {
-    submissionId, jobType, round, userId
+    submissionId, jobType, round, userId, execution: entry.execution.id
   });
 
   // Release whatever was held behind it — or skip it, if this step was the
@@ -1348,10 +1370,11 @@ async function retryStep(submissionId, jobType, round, userId) {
   // The attempts belong to the run that failed. Left in place, the panel would
   // show a fresh run already on its third try.
   job.retryCount = 0;
-  // And so does any decision to carry on without it — that was about a failure
-  // this run is replacing.
-  job.issueAcknowledgedAt = null;
-  job.issueAcknowledgedByUserId = null;
+  // The decision needs no clearing. It was recorded against the execution that
+  // failed, and the retry above opened a run that re-executes this step — so
+  // the execution the round now holds for it is a new one, about which nothing
+  // has been decided. This is the case three call sites had to remember, and
+  // the one that re-runs everything did not.
   if (userId) job.triggeredByUserId = userId;
   await job.save();
 
@@ -1463,11 +1486,8 @@ async function requeueStep(submissionId, jobType, round, userId, {
     job.status = 'waiting';
     job.pgBossJobId = null;
     job.result = null;
-    // A decision to carry on without this step was about the failure being
-    // replaced. Left behind, the next failure would be waved through by a
-    // choice nobody made about it.
-    job.issueAcknowledgedAt = null;
-    job.issueAcknowledgedByUserId = null;
+    // No decision to clear — see retryStep. A re-executed step has a new
+    // execution, and a decision belongs to the execution it was about.
     // `errorMessage`, not `error` — the model has no `error` field, so this
     // set a plain JS property Sequelize ignores and the previous run's
     // failure text stayed on the row. The panel then showed a stale error
@@ -1585,10 +1605,10 @@ function describeIssues(jobsByType) {
       jobType: step.jobType,
       kind,
       /** Undecided issues hold the pipeline; a decided one is history. */
-      decided: job.issueAcknowledgedAt
-        ? { at: job.issueAcknowledgedAt, byUserId: job.issueAcknowledgedByUserId || null }
+      decided: job.decision?.at
+        ? { at: job.decision.at, byUserId: job.decision.byUserId || null }
         : null,
-      blocking: !job.issueAcknowledgedAt && downstream.some(
+      blocking: !job.decision?.at && downstream.some(
         (t) => jobsByType.get(t)?.status === 'waiting'
       ),
       /** Everything stuck behind it right now. */

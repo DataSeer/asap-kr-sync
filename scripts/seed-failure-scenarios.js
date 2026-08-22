@@ -256,14 +256,7 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
           // Both timestamps, or the copy inherits the source's `startedAt` and
           // reports a duration measured in days.
           startedAt: new Date(Date.now() - 4000),
-          completedAt: new Date(),
-          // `issue_`, not `failure_`: a PARTIAL holds the pipeline too, so the
-          // columns stopped being about failures. Sequelize drops attributes a
-          // model does not declare, so the old names here meant every
-          // "acknowledged" scenario seeded as undecided and looked identical to
-          // the one beside it.
-          issueAcknowledgedAt: failure.acknowledged ? new Date() : null,
-          issueAcknowledgedByUserId: failure.acknowledged ? ownerId : null
+          completedAt: new Date()
         });
       } else if (held.has(row.jobType)) {
         // Exactly what the orchestrator leaves behind: waiting, with nothing
@@ -284,6 +277,32 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
       // a run that lists only what finished cannot be read while it is paused,
       // which is the state every one of these scenarios is in.
       let executionId = null;
+
+      if (failure) {
+        // A failed step needs an execution of its own, because that is where
+        // the DECISION lives now. Seeding "acknowledged" on the job row used to
+        // work and silently stopped: a decision belongs to the execution it was
+        // made about, so an acknowledged scenario with no execution is a
+        // scenario where nobody decided anything.
+        const broke = await StepExecution.create({
+          pipelineRunId: pipelineRun.id,
+          submissionJobId: newJobId,
+          submissionId: newId,
+          jobType: row.jobType,
+          round: row.round,
+          status: 'failed',
+          outcomeState: 'fail',
+          externalError: failure.error,
+          startedAt: row.startedAt,
+          completedAt: row.completedAt,
+          durationMs: 4000,
+          s3Prefix: `jobs/${row.jobType}/run-1`,
+          decision: failure.acknowledged
+            ? { at: new Date().toISOString(), byUserId: ownerId, choice: 'continue' }
+            : null
+        }, { transaction: t });
+        executionId = broke.id;
+      }
 
       // History, so the run selector and METADATA column have something real.
       // Only for steps that still hold a result — a held step has no run.

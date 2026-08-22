@@ -423,6 +423,24 @@ async function stepInRun(submissionId, round, jobType, runNumber) {
 }
 
 /**
+ * One step, as it stands in the run the round is currently in.
+ *
+ * The common case, spelled once: "which execution does this step have right
+ * now" is what the decision path asks, and writing it out at the call site
+ * meant an awaited expression nested inside another one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} jobType
+ * @returns {Promise<object|null>}
+ */
+async function currentStepInRun(submissionId, round, jobType) {
+  const run = await currentRun(submissionId, round);
+  if (!run) return null;
+  return stepInRun(submissionId, round, jobType, run.runNumber);
+}
+
+/**
  * Every run of a round, with what each one contains — the submission-wide view.
  *
  * This is what "show me run 1" means once a run is the unit: one number across
@@ -489,5 +507,6 @@ module.exports = {
   appVersion,
   runsForStep,
   stepInRun,
+  currentStepInRun,
   runsForSubmission
 };

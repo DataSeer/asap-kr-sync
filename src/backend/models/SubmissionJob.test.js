@@ -18,7 +18,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { SubmissionJob } = require('./index');
+const models = require('./index');
+const { SubmissionJob } = models;
 
 const at = (iso) => new Date(iso);
 
@@ -228,4 +229,56 @@ test('a job that succeeds on its third try does not keep the second try\'s error
 
   assert.equal(r.status, 'complete');
   assert.equal(r.errorMessage, null);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decisions come from the execution, not from the job row
+//
+// They used to be two columns here, cleared in three places when a step re-ran
+// — and `runAllProcesses`, the one that re-runs everything, did not clear them.
+// A decision about run 1's failure silently waved run 2's through.
+//
+// Hydrating here rather than in each caller is deliberate: a caller that forgot
+// would see a step with no decision and hold the pipeline for a question
+// somebody had already answered. A failure by absence, which is the kind nobody
+// notices.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('the round\'s decisions are attached to the jobs that carry them', async (t) => {
+  const rows = [
+    { jobType: 'datasets_detection', id: 'a', createdAt: new Date('2026-08-22T10:00:00Z') },
+    { jobType: 'protocols_detection', id: 'b', createdAt: new Date('2026-08-22T10:00:00Z') }
+  ];
+  t.mock.method(SubmissionJob, 'findAll', async () => rows);
+  let sql = null;
+  t.mock.method(models.sequelize, 'query', async (text) => {
+    sql = text;
+    return [[{ job_type: 'protocols_detection', decision: { at: '2026-08-22T12:00:00Z', byUserId: 'u1' } }]];
+  });
+
+  const jobs = await SubmissionJob.getForSubmission('sub-1', 1);
+
+  assert.equal(jobs.find((j) => j.jobType === 'datasets_detection').decision, null);
+  assert.deepEqual(jobs.find((j) => j.jobType === 'protocols_detection').decision,
+    { at: '2026-08-22T12:00:00Z', byUserId: 'u1' });
+
+  // Through the run's MEMBERSHIP, not the executions' own pipeline_run_id: a
+  // carried-over execution belongs to the run that created it, so looking it up
+  // by that column would drop its decision the moment anything was restarted.
+  assert.match(sql, /pipeline_run_steps/);
+  assert.match(sql, /MAX\(run_number\)/, 'and only from the run the round is in');
+});
+
+test('a decision that cannot be read holds the pipeline rather than releasing it', async (t) => {
+  // The conservative outcome: the question gets asked again, instead of being
+  // silently answered by a lookup that failed.
+  t.mock.method(SubmissionJob, 'findAll', async () => [
+    { jobType: 'datasets_detection', id: 'a', createdAt: new Date() }
+  ]);
+  t.mock.method(models.sequelize, 'query', async () => { throw new Error('db is on fire'); });
+
+  const jobs = await SubmissionJob.getForSubmission('sub-1', 1);
+
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].decision, undefined);
 });

@@ -29,7 +29,7 @@
  * @param {object} t - the node:test context, so mocks are restored with it
  * @param {object} [opts]
  * @param {object|null} [opts.current] - what `currentRun` hands back
- * @returns {{created: object[], attached: object[], current: object}}
+ * @returns {{created: object[], attached: object[], current: object, executions: object}}
  */
 function fakePipelineRuns(t, { current } = {}) {
   const pipelineRuns = require('../services/queue/pipeline-run.service');
@@ -37,10 +37,55 @@ function fakePipelineRuns(t, { current } = {}) {
   const state = {
     created: [],
     attached: [],
+    /**
+     * jobType → the execution the current run holds for it.
+     *
+     * Materialised on demand rather than declared up front: a decision is
+     * written to whichever step the test happens to act on, and requiring every
+     * test to list its twelve steps first would be twelve lines of nothing.
+     */
+    executions: {},
     current: current === undefined
       ? { id: 'pipeline-run-1', runNumber: 1, status: 'running' }
       : current
   };
+
+  const executionFor = (jobType) => {
+    if (!state.executions[jobType]) {
+      state.executions[jobType] = {
+        id: `exec-${jobType}`,
+        decision: null,
+        async update(fields) { Object.assign(this, fields); return this; }
+      };
+    }
+    return state.executions[jobType];
+  };
+
+  /**
+   * Seed a decision already recorded against a step's execution.
+   *
+   * The execution is the source of truth for "has this been decided about", so
+   * a test about deciding twice has to put the first decision where the code
+   * will look for it — not on the job row, which is only a hydrated copy.
+   */
+  state.decide = (jobType, decision) => {
+    executionFor(jobType).decision = decision;
+    return state;
+  };
+
+  const entryFor = (jobType) => ({
+    runNumber: state.current?.runNumber ?? 1,
+    cause: 'create_submission',
+    carriedOver: false,
+    producedByRun: state.current?.runNumber ?? 1,
+    jobType,
+    execution: state.current ? executionFor(jobType) : null
+  });
+
+  t.mock.method(pipelineRuns, 'stepInRun', async (_sub, _round, jobType) => entryFor(jobType));
+  t.mock.method(pipelineRuns, 'currentStepInRun', async (_sub, _round, jobType) => (
+    state.current ? entryFor(jobType) : null
+  ));
 
   t.mock.method(pipelineRuns, 'newRun', async (params) => {
     state.created.push(params);

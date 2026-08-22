@@ -41,7 +41,7 @@ const JOB = {
 
 /** Stand in for the DB: records what was written, hands back what was asked. */
 function fakeDb(t, { existingRuns = [] } = {}) {
-  const state = { inserted: [], updatedJob: null, run: null };
+  const state = { inserted: [], incremented: [], run: null };
 
   // An execution is filed under the round's current pipeline run, and is
   // refused if there is none. That resolution is the run layer's business; what
@@ -51,16 +51,15 @@ function fakeDb(t, { existingRuns = [] } = {}) {
 
   t.mock.method(models.sequelize, 'query', async (sql, opts) => {
     assert.match(sql, /INSERT INTO "step_executions"/, 'openRun must insert');
-    // The allocation happens in SQL — COALESCE(MAX(run_number),0)+1 — so two
-    // callers cannot read the same maximum. Modelled here.
     const next = existingRuns.length + 1;
     existingRuns.push(next);
-    state.inserted.push({ ...opts.replacements, run_number: next });
-    return [[{ id: `run-${next}`, run_number: next }]];
+    state.inserted.push({ ...opts.replacements });
+    return [[{ id: `run-${next}` }]];
   });
 
-  t.mock.method(models.SubmissionJob, 'update', async (values, where) => {
-    state.updatedJob = { values, where };
+  state.incremented = [];
+  t.mock.method(models.SubmissionJob, 'increment', async (field, opts) => {
+    state.incremented.push({ field, by: opts.by, id: opts.where.id });
     return [1];
   });
 
@@ -103,14 +102,18 @@ test('a step enqueued outside any run writes nothing rather than an orphan', asy
   assert.deepEqual(state.inserted, []);
 });
 
-test('opening a run numbers it 1, then 2, then 3', async (t) => {
+test('an execution carries no number of its own', async (t) => {
+  // It used to be numbered per step, and that number meant something different
+  // from the one the user was shown — the ambiguity this model removed. The
+  // pipeline run numbers the attempt; UNIQUE(pipeline_run_id, job_type) is what
+  // now stops a step executing twice in one run and one of the two vanishing.
   const state = fakeDb(t);
 
   await runHistory.openRun(JOB, { userId: 'u1', triggerKind: 'manual' });
-  await runHistory.openRun(JOB, { userId: 'u1', triggerKind: 'manual' });
-  await runHistory.openRun(JOB, { userId: 'u1', triggerKind: 'pipeline' });
 
-  assert.deepEqual(state.inserted.map((i) => i.run_number), [1, 2, 3]);
+  assert.equal(state.inserted[0].run_number, undefined);
+  assert.equal(state.inserted[0].pipelineRunId, 'pipeline-run-1');
+  assert.equal(state.inserted[0].pipelineRunNumber, 1);
 });
 
 test('opening a run records who asked, and how', async (t) => {
@@ -136,16 +139,17 @@ test('a run nobody asked for is still recorded, with no user', async (t) => {
   assert.equal(state.inserted[0].triggerKind, 'pipeline');
 });
 
-test('opening a run bumps the job row\'s run_count', async (t) => {
-  // Denormalised so the panel can say "run 3" without an aggregate on a table
-  // polled every few seconds.
+test('opening an execution counts it against the step', async (t) => {
+  // NOT the run number — that belongs to the pipeline run. This answers "has
+  // this step been re-run", which a carried-over step makes a different
+  // question from "which run is this".
   const state = fakeDb(t);
 
   await runHistory.openRun(JOB, {});
   await runHistory.openRun(JOB, {});
 
-  assert.deepEqual(state.updatedJob.values, { runCount: 2 });
-  assert.deepEqual(state.updatedJob.where, { where: { id: 'job-1' } });
+  assert.equal(state.incremented.length, 2);
+  assert.deepEqual(state.incremented[0], { field: 'runCount', by: 1, id: 'job-1' });
 });
 
 test('closing a run copies the outcome, counts and timings off the job row', async (t) => {
@@ -239,7 +243,7 @@ test('every column this feature added exists on its model', () => {
 
   for (const [attr, column] of [
     ['submissionJobId', 'submission_job_id'], ['submissionId', 'submission_id'],
-    ['jobType', 'job_type'], ['runNumber', 'run_number'],
+    ['jobType', 'job_type'], ['pipelineRunId', 'pipeline_run_id'],
     ['outcomeState', 'outcome_state'], ['outcomeSource', 'outcome_source'],
     ['failReason', 'fail_reason'], ['externalError', 'external_error'],
     ['triggeredByUserId', 'triggered_by_user_id'], ['triggerKind', 'trigger_kind'],
