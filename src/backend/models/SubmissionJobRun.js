@@ -46,7 +46,7 @@ module.exports = (sequelize) => {
     runNumber: { type: DataTypes.INTEGER, allowNull: false, field: 'run_number' },
 
     status: {
-      type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed', 'cancelled'),
+      type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed', 'cancelled', 'skipped'),
       allowNull: false,
       defaultValue: 'queued'
     },

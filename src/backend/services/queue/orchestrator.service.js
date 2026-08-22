@@ -90,35 +90,6 @@ const GATES = {
     if (!['step_as', 'step_report', 'completed'].includes(submission.status)) return false;
     const das = (submission.dataAvailabilityStatement || '').trim();
     return das.length > 0 && das !== NO_DAS_SENTINEL;
-  },
-
-  // Nothing that reads the manuscript may run when there is no manuscript text.
-  //
-  // Conversion is fail-soft: when the converter errors or returns nothing, the
-  // job still completes, with `markdownLength: 0` and `detected: false`. Every
-  // downstream module then ran happily against an empty document and reported
-  // zero findings — which reads as "your manuscript mentions none of this",
-  // when the truth is that the app never read the manuscript. Observed on a
-  // real run: 11/11 steps "complete", 0 datasets, 0 materials, 0 protocols, and
-  // all 12 author rows reported as not detected.
-  //
-  // So the detectors hold in `waiting` instead. Re-running conversion releases
-  // them automatically; until then the panel says the pipeline is blocked and
-  // why.
-  markdown_ready: (submission, jobsByType) => {
-    const job = jobsByType?.get(JOB_TYPES.MARKDOWN_CONVERT);
-    // No conversion job in this map (e.g. a partial view): do not claim to
-    // know. The dependency check already keeps the step waiting.
-    if (!job) return true;
-    // A conversion that FAILED is the same situation as one that produced
-    // nothing, and it was slipping through: the gate only ever inspected
-    // `complete` rows, while the dependency check counts `failed` as terminal.
-    // So a failed conversion released every detector to read a manuscript that
-    // does not exist — the exact outcome this gate was added to prevent, by the
-    // one route that skipped it.
-    if (['failed', 'cancelled'].includes(job.status)) return false;
-    if (job.status !== 'complete') return true;
-    return (job.result?.data?.markdownLength || 0) > 0;
   }
 };
 
@@ -146,7 +117,6 @@ const PIPELINE = [
     jobType: JOB_TYPES.DAS_EXTRACTION,
     reads: ['markdown'],
     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT],
-    gate: 'markdown_ready',
 
     // Asking for extraction again is asking for a fresh reading of the
     // manuscript, so the working statement is cleared to make room for it.
@@ -173,19 +143,37 @@ const PIPELINE = [
   // KRT_GROUNDING, which waits for the markdown-dependent detectors regardless.
   // Gated with the rest of detection so the whole detection stage starts at one
   // moment rather than trickling in around the KRT step.
-  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['pdf', 'markdown', 'krt'] },
+  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['pdf', 'markdown', 'krt'] },
   { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [], reads: ['pdf'] },
-  { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [], reads: ['pdf'] },
+  {
+    jobType: JOB_TYPES.MARKDOWN_CONVERT,
+    dependsOn: [],
+    reads: ['pdf'],
+    /**
+     * Conversion can finish cleanly and produce nothing.
+     *
+     * This used to be the `markdown_ready` GATE, repeated on the seven steps
+     * that read the manuscript. It belongs here: "did the conversion produce
+     * usable text" is a fact about the conversion, not something each of its
+     * readers should be trusted to remember to ask.
+     *
+     * Observed on a real run before the gate existed: 11/11 steps "complete",
+     * 0 datasets, 0 materials, 0 protocols, and all 12 author rows reported as
+     * not detected — every module had happily read an empty document and
+     * reported that the manuscript mentions none of this.
+     */
+    produced: (job) => (job.result?.data?.markdownLength || 0) > 0
+  },
   // Every text detector waits for BOTH the markdown and the curated KRT: the
   // seeded prompts carry the author's rows, so starting earlier would seed
   // from a table the author is still editing.
-  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['markdown', 'krt'] },
-  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['markdown', 'krt'] },
-  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['markdown', 'krt'] },
+  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['markdown', 'krt'] },
+  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['markdown', 'krt'] },
+  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['markdown', 'krt'] },
   // Identifier detection scans the post-conversion markdown against the
   // curated enrichment list. Cross-category — produces software/materials/
   // datasets/protocols items in one pass and lets pdf-analysis consolidate.
-  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'], reads: ['markdown', 'krt'] },
+  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['markdown', 'krt'] },
   {
     // Grounding reconciles the author's KRT against the candidate pool: for
     // every author row it decides confirmed / incomplete / not_detected, and
@@ -194,6 +182,14 @@ const PIPELINE = [
     // so the pipeline shape is identical in both modes.
     jobType: JOB_TYPES.KRT_GROUNDING,
     reads: ['markdown', 'krt'],
+    // It grounds whatever candidates exist, and searches the manuscript
+    // directly for the author's rows besides — so a missing detector costs it
+    // coverage, not the ability to run.
+    optional: [
+      JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.DATASETS_DETECTION,
+      JOB_TYPES.MATERIALS_DETECTION, JOB_TYPES.PROTOCOLS_DETECTION,
+      JOB_TYPES.IDENTIFIER_DETECTION
+    ],
     dependsOn: [
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
@@ -201,7 +197,7 @@ const PIPELINE = [
       JOB_TYPES.PROTOCOLS_DETECTION,
       JOB_TYPES.IDENTIFIER_DETECTION
     ],
-    gate: ['markdown_ready', 'krt_curated']
+    gate: ['krt_curated']
   },
   {
     // PDF Analysis is the consolidator: it merges every detection's items
@@ -224,6 +220,14 @@ const PIPELINE = [
     // how PDF_ANALYSIS inherits the krt_curated gate.
     jobType: JOB_TYPES.PDF_ANALYSIS,
     reads: ['krt'],
+    // It consolidates what it is given, and seed retention carries every author
+    // row through regardless — so with no detector output at all it still
+    // produces the author's KRT rather than nothing.
+    optional: [
+      JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.DATASETS_DETECTION,
+      JOB_TYPES.MATERIALS_DETECTION, JOB_TYPES.PROTOCOLS_DETECTION,
+      JOB_TYPES.IDENTIFIER_DETECTION, JOB_TYPES.KRT_GROUNDING
+    ],
     dependsOn: [
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
@@ -262,6 +266,10 @@ const PIPELINE = [
     // following the page top to bottom should find it where it actually runs.
     jobType: JOB_TYPES.DAS_SUGGESTIONS,
     reads: ['krt'],
+    // It reads the submission's statement, which the author can type by hand —
+    // extraction failing is why the manual path exists, not a reason to skip
+    // the check.
+    optional: [JOB_TYPES.DAS_EXTRACTION],
     dependsOn: [JOB_TYPES.DAS_EXTRACTION],
     gate: ['availability_ready'],
     /**
@@ -450,35 +458,45 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
 
-  // A FAILURE PAUSES WHAT COMES AFTER IT.
+  // ── What this step's dependencies leave it able to do ───────────────────
   //
-  // `failed` used to count as terminal alongside `complete`, so a failed step
-  // released its dependents and they ran anyway. The consolidator would build a
-  // Generated KRT from four detectors instead of five and say nothing about the
-  // fifth — a quietly thinner answer, and the reader had no way to know.
-  //
-  // Now they hold here until a person decides: retry the failed step, or carry
-  // on without its data. `failureAcknowledgedAt` is that decision, recorded with
-  // who made it.
-  const blockedBy = step.dependsOn.filter(depType => {
+  // Three questions, in this order, because each only makes sense once the
+  // previous one is settled.
+
+  // 1. Has everything finished? A dependency still running has not "produced
+  //    nothing" — it has produced nothing YET, and the two must not be confused.
+  const allDependenciesDone = step.dependsOn.every(depType => {
     const depJob = jobsByType.get(depType);
-    return depJob?.status === 'failed' && !depJob.failureAcknowledgedAt;
+    return depJob && TERMINAL_STATUSES.includes(depJob.status);
   });
+  if (!allDependenciesDone) return false;
+
+  // 2. Is anything waiting on a person? A dependency that did not finish
+  //    cleanly — failed, unusable, or degraded in a way worth asking about —
+  //    holds this step until somebody chooses retry or continue.
+  const blockedBy = step.dependsOn.filter(depType => holdsPipeline(jobsByType.get(depType)));
   if (blockedBy.length) {
-    logger.debug('Pipeline step held behind an unresolved failure', {
+    logger.debug('Pipeline step held behind an unresolved issue', {
       submissionId, jobType: step.jobType, blockedBy, triggeredBy
     });
     return false;
   }
 
-  // Everything else must be finished. An acknowledged failure counts as
-  // finished — that is what acknowledging it means.
-  const allDependenciesDone = step.dependsOn.every(depType => {
-    const depJob = jobsByType.get(depType);
-    return depJob && (depJob.status === 'complete' || depJob.status === 'failed');
-  });
-
-  if (!allDependenciesDone) return false;
+  // 3. Can it run at all? A decision has been made, but a dependency this step
+  //    REQUIRES produced nothing — there is no manuscript text to read. Running
+  //    it would fail, and so would everything after it: nine unexplained
+  //    failures in place of the one real one. Skipping says what happened and,
+  //    unlike waiting, lets the round finish.
+  const missing = step.dependsOn.filter(
+    depType => isRequired(step, depType) && !producedOutput(jobsByType.get(depType))
+  );
+  if (missing.length) {
+    await job.markSkipped(missing);
+    logger.info('Pipeline step skipped: something it requires produced nothing', {
+      submissionId, jobType: step.jobType, missing, triggeredBy
+    });
+    return false;
+  }
 
   // Submission-state gate: unsatisfied → stay `waiting` (NOT pending_input);
   // the status-change handler / reconciler re-drives once the state changes.
@@ -607,12 +625,24 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
     attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
 
+  // Repeated passes until nothing moves.
+  //
+  // One pass was enough while the only outcome was "enqueue it". Skipping
+  // cascades — a step skipped because the conversion produced nothing makes
+  // everything that required IT skippable too — and PIPELINE is not in
+  // topological order, so a single pass would leave the tail of a cascade
+  // waiting until the next sweep. Bounded by the pipeline's length, which is
+  // the longest chain it could possibly have.
   let advanced = 0;
-  for (const step of PIPELINE) {
-    const didAdvance = await tryAdvanceStep(
-      step, jobsByType, sub, submissionId, round, userId, 'reconciler'
-    );
-    if (didAdvance) advanced++;
+  for (let pass = 0; pass < PIPELINE.length; pass++) {
+    const before = [...jobsByType.values()].map((j) => j.status).join(',');
+    for (const step of PIPELINE) {
+      const didAdvance = await tryAdvanceStep(
+        step, jobsByType, sub, submissionId, round, userId, 'reconciler'
+      );
+      if (didAdvance) advanced++;
+    }
+    if ([...jobsByType.values()].map((j) => j.status).join(',') === before) break;
   }
   return advanced;
 }
@@ -835,6 +865,118 @@ function buildJobData(jobType, submissionId, userId, submissionJob) {
  * @param {string} rootJobType
  * @returns {Set<string>}
  */
+/**
+ * ── The four cases a finished step can be in ────────────────────────────────
+ *
+ *   1. no error, results          → clean, the pipeline carries on by itself
+ *   2. no error, nothing found    → clean. A detector finding nothing IS an
+ *                                   answer, and a common one
+ *   3. partial error              → a person decides
+ *   4. total error                → a person decides
+ *
+ * Cases 3 and 4 differ only in what is left behind, so they are one rule here:
+ * a dependency holds its dependents unless it finished CLEANLY. That single
+ * predicate also swallows what used to be a hole — a step that reached
+ * `complete` while its outcome was `fail`, which slipped past a rule keyed on
+ * status alone and let the consolidator build on nothing.
+ */
+
+/**
+ * Engines whose failure is not worth stopping the round for.
+ *
+ * A module that runs two engines and loses one still has a real answer, and
+ * whether that is worth a human's attention depends on WHICH engine. Softcite
+ * dying leaves the LM pass, which read the manuscript; the LM dying leaves
+ * name-matching with no reading behind it. The first happens often and is
+ * tolerable, the second is worth a question.
+ *
+ * The engine is already in the record — a degrading module sets
+ * `meta.degraded = { engine }` and the outcome carries `failReason:
+ * '<engine>_failed'` — so this is a lookup, not an inference.
+ *
+ * Code rather than configuration on purpose: it is a judgement about which
+ * engine matters, it belongs beside the module, and it should be reviewed when
+ * it changes.
+ */
+const PARTIAL_AUTO_CONTINUE = {
+  [JOB_TYPES.SOFTWARE_DETECTION]: ['softcite']
+};
+
+/**
+ * Statuses a step will not move on from by itself.
+ *
+ * `skipped` belongs here for the same reason `cancelled` does: nothing is going
+ * to run it, so anything waiting on it must stop waiting.
+ */
+const TERMINAL_STATUSES = ['complete', 'failed', 'cancelled', 'skipped'];
+
+/** The outcome a run recorded about itself: 'done' | 'partial' | 'fail'. */
+const outcomeOf = (job) => job?.result?.service?.outcome?.state || 'done';
+
+/** Which engine degraded it, from `failReason: '<engine>_failed'`. */
+function degradedEngine(job) {
+  const reason = job?.result?.service?.outcome?.failReason || '';
+  const match = /^(.+)_failed$/.exec(reason);
+  return match ? match[1] : null;
+}
+
+/**
+ * Did this step produce something the steps after it can use?
+ *
+ * Not the same question as "did it finish", and not the same as "did it find
+ * anything" — a detector that found nothing produced a usable answer. This asks
+ * whether there is OUTPUT. A step may override it (`produced` on the step) when
+ * finishing cleanly is not enough; conversion is the case that matters, because
+ * it can complete with zero characters.
+ *
+ * @param {object} job
+ * @returns {boolean}
+ */
+function producedOutput(job) {
+  if (!job) return false;
+  if (['failed', 'cancelled', 'skipped'].includes(job.status)) return false;
+  if (job.status !== 'complete') return false;
+  if (outcomeOf(job) === 'fail') return false;
+
+  const step = PIPELINE.find((s) => s.jobType === job.jobType);
+  return step?.produced ? !!step.produced(job) : true;
+}
+
+/**
+ * Does this step's outcome need a person to decide before the pipeline moves?
+ *
+ * @param {object} job
+ * @returns {{needed: boolean, kind: string|null}}
+ */
+function issueOf(job) {
+  if (!job) return { needed: false, kind: null };
+  if (job.status === 'failed') return { needed: true, kind: 'failure' };
+  if (job.status !== 'complete') return { needed: false, kind: null };
+
+  const outcome = outcomeOf(job);
+  if (outcome === 'fail') return { needed: true, kind: 'unusable' };
+  if (outcome === 'partial') {
+    const engine = degradedEngine(job);
+    const auto = PARTIAL_AUTO_CONTINUE[job.jobType] || [];
+    // An engine on the auto list is a known, tolerated degradation: the answer
+    // is incomplete in a way somebody has already decided not to be asked about.
+    if (engine && auto.includes(engine)) return { needed: false, kind: null };
+    return { needed: true, kind: 'partial' };
+  }
+  // A step that produced nothing usable while reporting `done` — conversion with
+  // zero characters. Nobody errored, but nothing downstream can be built on it.
+  if (!producedOutput(job)) return { needed: true, kind: 'unusable' };
+  return { needed: false, kind: null };
+}
+
+/** Undecided issues are what hold the pipeline; a decided one does not. */
+const holdsPipeline = (job) => issueOf(job).needed && !job.issueAcknowledgedAt;
+
+/** Is this dependency one the step cannot run without? */
+function isRequired(step, depType) {
+  return !(step.optional || []).includes(depType);
+}
+
 function computeDownstreamSet(rootJobType) {
   const downstream = new Set();
   let frontier = new Set([rootJobType]);
@@ -957,8 +1099,8 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
       // re-run had already reset it.
       job.result = null;
       job.errorMessage = null;
-      job.failureAcknowledgedAt = null;
-      job.failureAcknowledgedByUserId = null;
+      job.issueAcknowledgedAt = null;
+      job.issueAcknowledgedByUserId = null;
       if (userId) job.triggeredByUserId = userId;
       await job.save({ transaction: t });
       reset.push(jobType);
@@ -1010,12 +1152,19 @@ const RETRY_REFUSALS = {
 };
 
 /**
- * Carry on without a failed step's data.
+ * Carry on despite a step's issue.
  *
- * The second of the two answers a failure asks for — the other being Retry. It
+ * The second of the two answers an issue asks for — the other being Retry. It
  * does NOT re-run anything and does not pretend the step succeeded: the row
- * stays `failed`, and what is recorded is that a person decided the rest of the
- * pipeline should proceed without it.
+ * keeps the status it had, and what is recorded is that a person decided the
+ * rest of the pipeline should proceed anyway.
+ *
+ * Covers all three kinds. A FAILURE left nothing behind; an UNUSABLE run
+ * finished while producing nothing a later step can read; a PARTIAL produced a
+ * real answer with one of its engines dead. The decision is the same shape in
+ * each case, and so is the record of it — what differs is what happens next,
+ * which the dependency rules work out on their own: with data, the steps below
+ * run; without data they are skipped.
  *
  * Recorded with who and when because the consequence outlives the decision. A
  * report built without software detection looks exactly like a report where
@@ -1028,31 +1177,32 @@ const RETRY_REFUSALS = {
  * @param {string} [userId] - who decided
  * @returns {Promise<object>} the job row
  */
-async function acknowledgeFailure(submissionId, jobType, round, userId) {
+async function acknowledgeIssue(submissionId, jobType, round, userId) {
   const step = PIPELINE.find((s) => s.jobType === jobType);
   if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
 
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (!job) throw new NotFoundError('Job');
-  if (job.status !== 'failed') {
-    throw new ValidationError('Only a step that failed can be carried past.');
+  if (!issueOf(job).needed) {
+    throw new ValidationError('This step finished cleanly — there is nothing to decide about.');
   }
-  if (job.failureAcknowledgedAt) return job;   // already decided; not an error
+  if (job.issueAcknowledgedAt) return job;   // already decided; not an error
 
-  job.failureAcknowledgedAt = new Date();
-  job.failureAcknowledgedByUserId = userId || null;
+  job.issueAcknowledgedAt = new Date();
+  job.issueAcknowledgedByUserId = userId || null;
   await job.save();
 
-  logger.info('Failure acknowledged — the pipeline proceeds without this step', {
+  logger.info('Issue acknowledged — the pipeline proceeds', {
     submissionId, jobType, round, userId
   });
 
-  // Release whatever was held behind it. Non-fatal: the decision is recorded
-  // either way, and the reconciler re-drives waiting jobs within a sweep.
+  // Release whatever was held behind it — or skip it, if this step was the
+  // required input it never got. Non-fatal: the decision is recorded either
+  // way, and the reconciler re-drives waiting jobs within a sweep.
   try {
     await reconcileSubmission(submissionId, round, userId);
   } catch (err) {
-    logger.error('Could not re-drive the pipeline after acknowledging a failure', {
+    logger.error('Could not re-drive the pipeline after acknowledging an issue', {
       submissionId, jobType, error: err.message
     });
   }
@@ -1143,8 +1293,8 @@ async function retryStep(submissionId, jobType, round, userId) {
   job.retryCount = 0;
   // And so does any decision to carry on without it — that was about a failure
   // this run is replacing.
-  job.failureAcknowledgedAt = null;
-  job.failureAcknowledgedByUserId = null;
+  job.issueAcknowledgedAt = null;
+  job.issueAcknowledgedByUserId = null;
   if (userId) job.triggeredByUserId = userId;
   await job.save();
 
@@ -1237,8 +1387,8 @@ async function requeueStep(submissionId, jobType, round, userId, { releaseFreeze
     // A decision to carry on without this step was about the failure being
     // replaced. Left behind, the next failure would be waved through by a
     // choice nobody made about it.
-    job.failureAcknowledgedAt = null;
-    job.failureAcknowledgedByUserId = null;
+    job.issueAcknowledgedAt = null;
+    job.issueAcknowledgedByUserId = null;
     // `errorMessage`, not `error` — the model has no `error` field, so this
     // set a plain JS property Sequelize ignores and the previous run's
     // failure text stayed on the row. The panel then showed a stale error
@@ -1303,7 +1453,66 @@ async function requeueStep(submissionId, jobType, round, userId, { releaseFreeze
  * @returns {boolean}
  */
 /**
- * Which of this step's dependencies failed and have not been decided about.
+ * Everything about this round that needs a person, in one list.
+ *
+ * Computed here, once, rather than on each page. Five surfaces show these now —
+ * the PDF step, the Availability step, the pipeline, a module's page, and a
+ * read-only badge everywhere else — and the last time a rule like this lived on
+ * the client, the pipeline page asked for a field the API never sent and
+ * rendered failed steps as green ticks for weeks.
+ *
+ * @param {Map<string, object>} jobsByType
+ * @returns {object[]}
+ */
+function describeIssues(jobsByType) {
+  const issues = [];
+
+  for (const step of PIPELINE) {
+    const job = jobsByType.get(step.jobType);
+    const { needed, kind } = issueOf(job);
+    if (!needed) continue;
+
+    // What this step's absence costs. A dependant that REQUIRES it cannot run
+    // at all and will be skipped; one that merely reads it runs with less.
+    const downstream = [...computeDownstreamSet(step.jobType)];
+    const wouldSkip = producedOutput(job)
+      ? []
+      : downstream.filter((t) => {
+        const dependant = PIPELINE.find((x) => x.jobType === t);
+        return dependant?.dependsOn.includes(step.jobType) && isRequired(dependant, step.jobType);
+      });
+
+    issues.push({
+      jobType: step.jobType,
+      kind,
+      /** Undecided issues hold the pipeline; a decided one is history. */
+      decided: job.issueAcknowledgedAt
+        ? { at: job.issueAcknowledgedAt, byUserId: job.issueAcknowledgedByUserId || null }
+        : null,
+      blocking: !job.issueAcknowledgedAt && downstream.some(
+        (t) => jobsByType.get(t)?.status === 'waiting'
+      ),
+      /** Everything stuck behind it right now. */
+      holding: downstream.filter((t) => jobsByType.get(t)?.status === 'waiting'),
+      /**
+       * What "continue" would cost. Empty means the steps below can still run,
+       * just with less to work from; a non-empty list means they cannot run at
+       * all and continuing skips them.
+       */
+      wouldSkip,
+      /** Whether anything downstream can still be produced from what it left. */
+      producedOutput: producedOutput(job),
+      detail: job.errorMessage || job.result?.service?.outcome?.externalError || null,
+      failReason: job.result?.service?.outcome?.failReason || null,
+      engine: degradedEngine(job)
+    });
+  }
+
+  return issues;
+}
+
+/**
+ * Which of this step's dependencies raised an issue nobody has decided about.
  *
  * The client needs the names, not just the fact: "waiting" tells a user
  * nothing, "waiting because Datasets Detection failed" tells them where to go.
@@ -1312,13 +1521,10 @@ async function requeueStep(submissionId, jobType, round, userId, { releaseFreeze
  * @param {Map<string, object>} jobsByType
  * @returns {string[]}
  */
-function blockingFailures(jobType, jobsByType) {
+function blockingIssues(jobType, jobsByType) {
   const step = PIPELINE.find(s => s.jobType === jobType);
   if (!step) return [];
-  return step.dependsOn.filter(depType => {
-    const depJob = jobsByType.get(depType);
-    return depJob?.status === 'failed' && !depJob.failureAcknowledgedAt;
-  });
+  return step.dependsOn.filter(depType => holdsPipeline(jobsByType.get(depType)));
 }
 
 function isGateBlocked(jobType, submission, jobsByType) {
@@ -1333,7 +1539,7 @@ module.exports = {
   requeueStep,
   restartSteps,
   retryStep,
-  acknowledgeFailure,
+  acknowledgeIssue,
   describeRetry,
   failStrandedProcessingJobs,
   checkAndAdvance,
@@ -1343,5 +1549,9 @@ module.exports = {
   cascadeRestart,
   computeDownstreamSet,
   isGateBlocked,
-  blockingFailures
+  blockingIssues,
+  describeIssues,
+  producedOutput,
+  issueOf,
+  holdsPipeline
 };

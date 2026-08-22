@@ -55,13 +55,19 @@ test('roots are stage 0, and stageCount covers every stage', () => {
 test('gates are reported by name, and pausing steps are flagged', () => {
   const { nodes } = buildPipelineGraph();
   const grounding = nodes.find((n) => n.jobType === 'krt_grounding');
-  assert.deepEqual(grounding.gates.sort(), ['krt_curated', 'markdown_ready'],
+  assert.deepEqual(grounding.gates.sort(), ['krt_curated'],
     'the client needs to know which gates apply');
   const detector = nodes.find((n) => n.jobType === 'materials_detection');
   assert.ok(detector.gates.includes('krt_curated'),
     'the seeded detectors wait for the KRT to be validated');
-  assert.ok(detector.gates.includes('markdown_ready'),
-    'nothing that reads the manuscript runs without converted text');
+  // "Is there converted text" was a gate here too, on every reader. It is now a
+  // required dependency plus one `produced` check on the conversion — the same
+  // protection, asked once, and the client is told which dependencies are
+  // required so it can explain what a failure will cost.
+  assert.ok(!detector.gates.includes('markdown_ready'),
+    'the manuscript condition is a dependency now, not a gate');
+  assert.ok(detector.requires.includes('markdown_convert'),
+    'and the client is told it is required');
   const convert = nodes.find((n) => n.jobType === 'markdown_convert');
   assert.deepEqual(convert.gates, [], 'the step that PRODUCES the text cannot wait for it');
   const analysis = nodes.find((n) => n.jobType === 'pdf_analysis');

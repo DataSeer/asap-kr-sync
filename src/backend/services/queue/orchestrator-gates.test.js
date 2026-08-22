@@ -29,79 +29,95 @@ const DETECTORS = [
   JOB_TYPES.IDENTIFIER_DETECTION
 ];
 
-test('an empty conversion blocks every step that reads the manuscript', () => {
-  const curated = { status: 'step_pdf' };
-  for (const jobType of [...DETECTORS, JOB_TYPES.DAS_EXTRACTION, JOB_TYPES.KRT_GROUNDING]) {
-    assert.equal(
-      orchestrator.isGateBlocked(jobType, curated, jobs(convertJob(0))),
-      'markdown_ready',
-      `${jobType} must not run on an empty document`
-    );
-  }
+// ── the manuscript text ─────────────────────────────────────────────────────
+//
+// This WAS a gate — `markdown_ready`, repeated on the seven steps that read the
+// manuscript. It is now a property of the conversion itself (`produced` on the
+// step), which is where it belonged: "did the conversion produce usable text"
+// is a fact about the conversion, not something each of its readers should be
+// trusted to remember to ask.
+//
+// The protection is the same and reaches further. A conversion that produced
+// nothing now raises an ISSUE — a person is asked — and once they decide, the
+// steps that required it are SKIPPED rather than left waiting for ever.
+
+test('an empty conversion has produced nothing, whatever its status says', () => {
+  // The run this was written for: conversion failed, the job still completed
+  // with `markdownLength: 0`, and every downstream module reported zero
+  // findings — indistinguishable, to a reader, from a manuscript that genuinely
+  // mentions nothing.
+  assert.equal(orchestrator.producedOutput(convertJob(0)), false);
+  assert.equal(orchestrator.producedOutput(convertJob(120_000)), true);
 });
 
-test('text present and KRT curated: nothing is gated', () => {
-  const curated = { status: 'step_pdf' };
+test('and it is an issue, so a person is asked before anything reads it', () => {
+  const { needed, kind } = orchestrator.issueOf(convertJob(0));
+
+  assert.equal(needed, true);
+  assert.equal(kind, 'unusable', 'nobody errored — there is simply nothing to read');
+});
+
+test('a conversion with text raises nothing', () => {
+  assert.equal(orchestrator.issueOf(convertJob(120_000)).needed, false);
+});
+
+test('a FAILED conversion produced nothing either', () => {
+  // The route that used to skip the gate: it only ever inspected `complete`
+  // rows, while the dependency check counted `failed` as terminal — so a
+  // conversion that errored outright released every detector to read a
+  // manuscript that does not exist.
+  const failed = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'failed', result: null };
+
+  assert.equal(orchestrator.producedOutput(failed), false);
+  assert.equal(orchestrator.issueOf(failed).kind, 'failure');
+});
+
+test('nor a cancelled one', () => {
+  const cancelled = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'cancelled', result: null };
+
+  assert.equal(orchestrator.producedOutput(cancelled), false);
+});
+
+test('a conversion still running has not produced nothing — it has produced nothing YET', () => {
+  // The distinction the ordering in tryAdvanceStep protects: a dependency that
+  // is still working must hold its dependents, not skip them.
+  const running = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'processing', result: null };
+
+  assert.equal(orchestrator.producedOutput(running), false, 'no output yet');
+  assert.equal(orchestrator.issueOf(running).needed, false, 'but nothing to decide about');
+});
+
+test('the manuscript is required by everything that reads it', () => {
+  // The declaration that turns "produced nothing" into "cannot run", and the
+  // reason those steps are skipped rather than run into a failure.
   for (const jobType of [...DETECTORS, JOB_TYPES.DAS_EXTRACTION, JOB_TYPES.KRT_GROUNDING]) {
-    assert.equal(orchestrator.isGateBlocked(jobType, curated, jobs(convertJob(120_000))), null, jobType);
+    const step = orchestrator.PIPELINE.find((x) => x.jobType === jobType);
+    assert.ok(
+      !(step.optional || []).includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${jobType} cannot run without the manuscript text`
+    );
   }
 });
 
 test('the KRT gate holds the detectors while the author is still curating', () => {
-  const editing = { status: 'step_krt' };
-  const ready = jobs(convertJob(120_000));
+  // Submission STATE, not a dependency — which is why it stayed a gate.
   for (const jobType of DETECTORS) {
-    assert.equal(orchestrator.isGateBlocked(jobType, editing, ready), 'krt_curated', jobType);
-  }
-  // DAS reads no KRT, so it runs as soon as there is text.
-  assert.equal(orchestrator.isGateBlocked(JOB_TYPES.DAS_EXTRACTION, editing, ready), null);
-});
-
-test('the missing text is reported before the KRT step, not after', () => {
-  // Both gates unsatisfied: the actionable one is the conversion, because the
-  // KRT gate clears by itself and this one does not.
-  assert.equal(
-    orchestrator.isGateBlocked(JOB_TYPES.MATERIALS_DETECTION, { status: 'step_krt' }, jobs(convertJob(0))),
-    'markdown_ready'
-  );
-});
-
-test('a FAILED conversion blocks the detectors, exactly like an empty one', () => {
-  // The route that skipped the gate. It only ever inspected `complete` rows,
-  // while the dependency check counts `failed` as terminal — so a conversion
-  // that errored outright released every detector to read a manuscript that
-  // does not exist, which is the outcome this gate was added to prevent.
-  const failed = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'failed', result: null };
-  for (const jobType of [...DETECTORS, JOB_TYPES.DAS_EXTRACTION, JOB_TYPES.KRT_GROUNDING]) {
     assert.equal(
-      orchestrator.isGateBlocked(jobType, { status: 'step_pdf' }, jobs(failed)),
-      'markdown_ready',
-      `${jobType} must not run when the conversion failed`
+      orchestrator.isGateBlocked(jobType, { status: 'step_krt' }, jobs(convertJob(120_000))),
+      'krt_curated',
+      jobType
     );
   }
 });
 
-test('a cancelled conversion blocks them too', () => {
-  const cancelled = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'cancelled', result: null };
-  assert.equal(
-    orchestrator.isGateBlocked(JOB_TYPES.MATERIALS_DETECTION, { status: 'step_pdf' }, jobs(cancelled)),
-    'markdown_ready'
-  );
-});
-
-test('conversion still running is not "no text" — the dependency check holds the step', () => {
-  const running = { jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'processing', result: null };
-  assert.equal(
-    orchestrator.isGateBlocked(JOB_TYPES.MATERIALS_DETECTION, { status: 'step_pdf' }, jobs(running)),
-    null
-  );
-});
-
-test('markdown_convert itself is never gated on its own output', () => {
-  assert.equal(
-    orchestrator.isGateBlocked(JOB_TYPES.MARKDOWN_CONVERT, { status: 'step_krt' }, jobs(convertJob(0))),
-    null
-  );
+test('and lets them go once the author moves on', () => {
+  for (const jobType of DETECTORS) {
+    assert.equal(
+      orchestrator.isGateBlocked(jobType, { status: 'step_pdf' }, jobs(convertJob(120_000))),
+      null,
+      jobType
+    );
+  }
 });
 
 // ── the Availability Statement check ────────────────────────────────────────

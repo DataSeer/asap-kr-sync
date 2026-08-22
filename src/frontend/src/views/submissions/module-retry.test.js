@@ -201,7 +201,7 @@ describe('the continue button', () => {
   })
 
   it('is absent once the decision has been made', async () => {
-    const acknowledged = { ...job('markdown_convert', 'failed'), failureAcknowledgedAt: '2026-08-22T12:00:00Z' }
+    const acknowledged = { ...job('markdown_convert', 'failed'), issueAcknowledgedAt: '2026-08-22T12:00:00Z' }
     const wrapper = await mountPage({
       jobs: [acknowledged, job('datasets_detection', 'waiting')]
     })

@@ -73,7 +73,12 @@ async function getJobs(req, res, next) {
     // An anonymised account still resolves — the row survives deletion with
     // the name 'Deleted user' — so a name is either real or an honest
     // tombstone, never a dangling id.
-    const triggerIds = [...new Set(jobs.map((j) => j.triggeredByUserId).filter(Boolean))];
+    // Both the people who STARTED a step and the people who DECIDED about one:
+    // an issue's "carried on by Nicolas" needs the same name lookup, and
+    // whoever acknowledged a failure need never have triggered anything.
+    const triggerIds = [...new Set(
+      jobs.flatMap((j) => [j.triggeredByUserId, j.issueAcknowledgedByUserId]).filter(Boolean)
+    )];
     const triggers = triggerIds.length
       ? await User.findAll({ where: { id: triggerIds }, attributes: ['id', 'name'], raw: true })
       : [];
@@ -99,9 +104,19 @@ async function getJobs(req, res, next) {
       });
     }
 
+    // Everything about this round that needs a person, computed once. Five
+    // surfaces render it; none of them re-derives it.
+    const issues = orchestrator.describeIssues(jobsByType).map((issue) => ({
+      ...issue,
+      decided: issue.decided
+        ? { ...issue.decided, byName: triggerById.get(issue.decided.byUserId) || null }
+        : null
+    }));
+
     res.json({
       round,
       inputs,
+      issues,
       jobs: jobs.map(job => {
         const queueName = JOB_TYPE_TO_QUEUE[job.jobType];
         const config = queueName ? JOB_CONFIG[queueName] : null;
@@ -132,20 +147,20 @@ async function getJobs(req, res, next) {
             // failed dependency is also, usually, behind that dependency's gate,
             // and "waiting for the converted manuscript" is a true but useless
             // thing to say when the conversion failed and needs a decision.
-            ? (orchestrator.blockingFailures(job.jobType, jobsByType).length
+            ? (orchestrator.blockingIssues(job.jobType, jobsByType).length
               ? WAITING_REASONS.blocked_by_failure
               : WAITING_REASONS[orchestrator.isGateBlocked(job.jobType, req.submission, jobsByType)] || null)
             : null,
           /** Which failed steps are holding this one — named, so the UI can point at them. */
           blockedBy: job.status === 'waiting'
-            ? orchestrator.blockingFailures(job.jobType, jobsByType)
+            ? orchestrator.blockingIssues(job.jobType, jobsByType)
             : [],
           /**
            * When somebody decided to carry on without this step, and who. Only
            * ever set on a failed step, and the only way to tell "this was
            * skipped" from "this found nothing" after the fact.
            */
-          failureAcknowledgedAt: job.failureAcknowledgedAt || null,
+          issueAcknowledgedAt: job.issueAcknowledgedAt || null,
           referenceId: job.referenceId,
           result: safeResult,
           errorMessage: job.errorMessage,
@@ -292,14 +307,14 @@ async function retryJob(req, res, next) {
 async function continueWithoutJob(req, res, next) {
   try {
     const submission = req.submission;
-    const job = await orchestrator.acknowledgeFailure(
+    const job = await orchestrator.acknowledgeIssue(
       submission.id, req.params.jobType, resolveRound(req), req.userId
     );
 
     res.json({
       message: `Continuing without ${req.params.jobType}`,
       jobType: job.jobType,
-      acknowledgedAt: job.failureAcknowledgedAt
+      acknowledgedAt: job.issueAcknowledgedAt
     });
   } catch (error) {
     next(error);

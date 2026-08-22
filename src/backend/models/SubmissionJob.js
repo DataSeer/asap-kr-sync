@@ -35,7 +35,7 @@ module.exports = (sequelize) => {
       field: 'job_type'
     },
     status: {
-      type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed', 'cancelled'),
+      type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed', 'cancelled', 'skipped'),
       allowNull: false,
       defaultValue: 'queued'
     },
@@ -73,26 +73,27 @@ module.exports = (sequelize) => {
       }
     },
     /**
-     * When somebody decided to carry on without this step's data.
+     * When somebody decided to carry on despite this step's issue.
      *
-     * A failure holds everything downstream at `waiting` until this is set — the
+     * An issue — a failure, a partial, or a run that completed producing nothing
+     * usable — holds everything downstream at `waiting` until this is set. The
      * alternative, which is what used to happen, is a Generated KRT built from
      * four detectors instead of five with nothing anywhere saying so.
      *
      * Timestamped and attributed rather than a boolean, because the question is
      * "who decided this report would be built without software detection, and
      * when" and a boolean cannot answer it. Cleared on retry and on restart: the
-     * decision was about one failure, not about the step.
+     * decision was about one run's issue, not about the step.
      */
-    failureAcknowledgedAt: {
+    issueAcknowledgedAt: {
       type: DataTypes.DATE,
       allowNull: true,
-      field: 'failure_acknowledged_at'
+      field: 'issue_acknowledged_at'
     },
-    failureAcknowledgedByUserId: {
+    issueAcknowledgedByUserId: {
       type: DataTypes.UUID,
       allowNull: true,
-      field: 'failure_acknowledged_by_user_id',
+      field: 'issue_acknowledged_by_user_id',
       references: { model: 'users', key: 'id' }
     },
     result: {
@@ -191,6 +192,30 @@ module.exports = (sequelize) => {
    * Mark job as complete with result data (merged with existing result)
    * @param {object} result - Standardized result: { status, counts, timing, data, files }
    */
+  /**
+   * The step will not run: something it required produced nothing.
+   *
+   * Not `cancelled` — that word means a person stopped it, and a report has to
+   * tell "skipped because the conversion produced no text" apart from "stopped
+   * deliberately". Not left `waiting` either: `allProcessesFinished` would never
+   * become true and the submission's own Continue button would stay disabled,
+   * trapping the user in the step with no way out.
+   *
+   * Records WHAT was missing, because "skipped" without a cause is the same
+   * silence this whole mechanism exists to remove.
+   *
+   * @param {string[]} missing - the required dependencies that produced nothing
+   */
+  SubmissionJob.prototype.markSkipped = async function(missing = []) {
+    await this.reload();
+    if (['cancelled', 'complete'].includes(this.status)) return this;
+    this.status = 'skipped';
+    this.completedAt = new Date();
+    this.result = { ...(this.result || {}), skipped: { missing, at: new Date().toISOString() } };
+    this.changed('result', true);
+    return this.save();
+  };
+
   SubmissionJob.prototype.markComplete = async function(result = null) {
     // Reload from DB to pick up any result changes made by the service
     // (the service may use a different instance via getLatest())

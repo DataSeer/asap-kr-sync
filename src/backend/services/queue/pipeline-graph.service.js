@@ -51,7 +51,7 @@ function computeStages(pipeline) {
  * The pipeline, described.
  *
  * @returns {{nodes: Array<object>, stageCount: number}}
- *   nodes: { jobType, dependsOn, gates, stage, autoAdvances, reads }
+ *   nodes: { jobType, dependsOn, requires, gates, stage, autoAdvances, reads }
  */
 function buildPipelineGraph() {
   const stages = computeStages(PIPELINE);
@@ -66,6 +66,14 @@ function buildPipelineGraph() {
     gates: Array.isArray(step.gate) ? [...step.gate] : (step.gate ? [step.gate] : []),
     // Whether this step can park in `pending_input` awaiting a human decision.
     autoAdvances: typeof step.canAutoAdvance !== 'function',
+    /**
+     * The dependencies this step cannot run without.
+     *
+     * Sent so the client can say what a failure will COST before the user
+     * decides: a missing optional dependency degrades the result, a missing
+     * required one means this step cannot run at all and will be skipped.
+     */
+    requires: (step.dependsOn || []).filter((d) => !(step.optional || []).includes(d)),
     // Which of the round's frozen inputs this step reads. The client uses it to
     // tell a user what a restart will re-read: an input is only re-taken when
     // every step that reads it is being re-run, so "restart this one detector"

@@ -324,7 +324,7 @@ test('acknowledging the failure lets the rest of the pipeline through', async (t
   const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
   failed.status = 'failed';
   failed.result = null;
-  failed.failureAcknowledgedAt = new Date('2026-08-22T12:00:00Z');
+  failed.issueAcknowledgedAt = new Date('2026-08-22T12:00:00Z');
   mockDb(t, rows);
 
   await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-1');
@@ -338,7 +338,7 @@ test('one unacknowledged failure is enough to hold a step', async (t) => {
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
   Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
-    status: 'failed', result: null, failureAcknowledgedAt: new Date()
+    status: 'failed', result: null, issueAcknowledgedAt: new Date()
   });
   Object.assign(rows.get(JOB_TYPES.MATERIALS_DETECTION), { status: 'failed', result: null });
   mockDb(t, rows);
@@ -447,7 +447,7 @@ test('a dependency that has genuinely failed holds its dependents until acknowle
   assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'waiting',
     'held for a decision, not run against a statement extraction never produced');
 
-  extraction.failureAcknowledgedAt = new Date();
+  extraction.issueAcknowledgedAt = new Date();
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'pending_input',
@@ -844,7 +844,7 @@ test('an unknown step is refused', async (t) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// acknowledgeFailure — carrying on without a step's data
+// acknowledgeIssue — carrying on without a step's data
 //
 // The second answer a paused pipeline asks for. It re-runs nothing and does not
 // pretend the step succeeded: the row stays `failed`, and what is recorded is
@@ -858,10 +858,10 @@ test('the decision is recorded with who made it and when', async (t) => {
   rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
 
-  const job = await orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+  const job = await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
 
-  assert.ok(job.failureAcknowledgedAt instanceof Date);
-  assert.equal(job.failureAcknowledgedByUserId, 'user-5');
+  assert.ok(job.issueAcknowledgedAt instanceof Date);
+  assert.equal(job.issueAcknowledgedByUserId, 'user-5');
 });
 
 test('the step stays failed — this is not a pretend success', async (t) => {
@@ -871,7 +871,7 @@ test('the step stays failed — this is not a pretend success', async (t) => {
   failed.errorMessage = 'Gemini 503';
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
 
-  await orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+  await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
 
   assert.equal(failed.status, 'failed');
   assert.equal(failed.errorMessage, 'Gemini 503', 'and it still says why');
@@ -885,12 +885,12 @@ test('it releases what was held behind it', async (t) => {
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting', 'precondition');
 
-  await orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+  await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
 
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
 });
 
-test('a step that did not fail cannot be carried past', async (t) => {
+test('a step that finished cleanly cannot be carried past', async (t) => {
   // There is nothing to decide about, and recording a decision would put a
   // skip-marker on a step that ran perfectly well.
   const rows = pipelineRows();
@@ -898,9 +898,27 @@ test('a step that did not fail cannot be carried past', async (t) => {
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
 
   await assert.rejects(
-    () => orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5'),
-    /Only a step that failed/
+    () => orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5'),
+    /nothing to decide about/
   );
+});
+
+test('a PARTIAL can be carried past — same decision, same record', async (t) => {
+  // The module produced a real answer with one of its engines dead. That is a
+  // decision, not a failure, and it is logged the same way: "this report was
+  // built with software detection missing its Softcite half, and a person chose
+  // that" is unanswerable otherwise.
+  const rows = pipelineRows();
+  const partial = rows.get(JOB_TYPES.PROTOCOLS_DETECTION);
+  partial.status = 'complete';
+  partial.result = { service: { outcome: { state: 'partial', failReason: 'lm_failed' } } };
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  const job = await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.PROTOCOLS_DETECTION, 1, 'user-5');
+
+  assert.ok(job.issueAcknowledgedAt);
+  assert.equal(job.issueAcknowledgedByUserId, 'user-5');
+  assert.equal(job.status, 'complete', 'it completed — that does not change');
 });
 
 test('deciding twice is not an error, and does not rewrite who decided', async (t) => {
@@ -909,14 +927,14 @@ test('deciding twice is not an error, and does not rewrite who decided', async (
   const rows = pipelineRows();
   const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
   failed.status = 'failed';
-  failed.failureAcknowledgedAt = new Date('2026-08-22T09:00:00Z');
-  failed.failureAcknowledgedByUserId = 'user-1';
+  failed.issueAcknowledgedAt = new Date('2026-08-22T09:00:00Z');
+  failed.issueAcknowledgedByUserId = 'user-1';
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
 
-  await orchestrator.acknowledgeFailure('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-9');
+  await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-9');
 
-  assert.equal(failed.failureAcknowledgedByUserId, 'user-1');
-  assert.deepEqual(failed.failureAcknowledgedAt, new Date('2026-08-22T09:00:00Z'));
+  assert.equal(failed.issueAcknowledgedByUserId, 'user-1');
+  assert.deepEqual(failed.issueAcknowledgedAt, new Date('2026-08-22T09:00:00Z'));
 });
 
 test('retrying clears the decision', async (t) => {
@@ -926,15 +944,15 @@ test('retrying clears the decision', async (t) => {
   const failed = rows.get(JOB_TYPES.MARKDOWN_CONVERT);
   Object.assign(failed, {
     status: 'failed',
-    failureAcknowledgedAt: new Date(),
-    failureAcknowledgedByUserId: 'user-1'
+    issueAcknowledgedAt: new Date(),
+    issueAcknowledgedByUserId: 'user-1'
   });
   mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
 
   await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-5');
 
-  assert.equal(failed.failureAcknowledgedAt, null);
-  assert.equal(failed.failureAcknowledgedByUserId, null);
+  assert.equal(failed.issueAcknowledgedAt, null);
+  assert.equal(failed.issueAcknowledgedByUserId, null);
 });
 
 test('which failures are holding a step is reported by name', async (t) => {
@@ -944,12 +962,189 @@ test('which failures are holding a step is reported by name', async (t) => {
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
   rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
   rows.get(JOB_TYPES.MATERIALS_DETECTION).status = 'failed';
-  rows.get(JOB_TYPES.MATERIALS_DETECTION).failureAcknowledgedAt = new Date();
+  rows.get(JOB_TYPES.MATERIALS_DETECTION).issueAcknowledgedAt = new Date();
 
-  const blocking = orchestrator.blockingFailures(JOB_TYPES.PDF_ANALYSIS, rows);
+  const blocking = orchestrator.blockingIssues(JOB_TYPES.PDF_ANALYSIS, rows);
 
   assert.deepEqual(blocking, [JOB_TYPES.DATASETS_DETECTION],
     'only the one still undecided');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The four cases a finished step can be in
+//
+//   1. no error, results        → clean, carry on
+//   2. no error, nothing found  → clean. A detector finding nothing IS an answer
+//   3. partial error            → a person decides
+//   4. total error              → a person decides
+//
+// 3 and 4 differ only in what is left behind, so one predicate covers both —
+// and it also swallows what used to slip through: a step reaching `complete`
+// while its outcome was `fail`, which a rule keyed on status alone let past.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const withOutcome = (state, extra = {}) => ({
+  jobType: JOB_TYPES.DATASETS_DETECTION,
+  status: 'complete',
+  result: { service: { outcome: { state, ...extra } }, data: { items: [] } }
+});
+
+test('case 1 — a clean run with results needs nobody', () => {
+  assert.equal(orchestrator.issueOf(withOutcome('done')).needed, false);
+});
+
+test('case 2 — a detector that found nothing is an ANSWER, not an issue', () => {
+  // The distinction the whole thing turns on. "No datasets in this manuscript"
+  // is a result, and stopping the round to ask about it would make the pipeline
+  // unusable on half the papers it sees.
+  const empty = withOutcome('done');
+  empty.result.data.items = [];
+
+  assert.equal(orchestrator.issueOf(empty).needed, false);
+  assert.equal(orchestrator.producedOutput(empty), true, 'it produced an answer');
+});
+
+test('case 3 — a partial asks', () => {
+  const { needed, kind } = orchestrator.issueOf(withOutcome('partial', { failReason: 'lm_failed' }));
+
+  assert.equal(needed, true);
+  assert.equal(kind, 'partial');
+});
+
+test('case 4 — a total error asks', () => {
+  const failed = { jobType: JOB_TYPES.DATASETS_DETECTION, status: 'failed', result: null };
+
+  assert.equal(orchestrator.issueOf(failed).kind, 'failure');
+});
+
+test('and so does a run that COMPLETED while producing nothing usable', () => {
+  // The hole the old rule left: status `complete`, outcome `fail`. Nothing
+  // paused, and the consolidator built on it.
+  const { needed, kind } = orchestrator.issueOf(
+    withOutcome('fail', { failReason: 'external_failed_demo_disabled' })
+  );
+
+  assert.equal(needed, true);
+  assert.equal(kind, 'unusable');
+});
+
+test('a tolerated engine does not ask', () => {
+  // Softcite dying leaves the LM pass, which read the manuscript. It happens
+  // often and stopping the round for it would be noise — so it is declared,
+  // per module and per engine, rather than inferred.
+  const partial = {
+    jobType: JOB_TYPES.SOFTWARE_DETECTION,
+    status: 'complete',
+    result: { service: { outcome: { state: 'partial', failReason: 'softcite_failed' } } }
+  };
+
+  assert.equal(orchestrator.issueOf(partial).needed, false);
+});
+
+test('but the same module asks when the OTHER engine dies', () => {
+  // The LM dying leaves name-matching with no reading behind it — a different
+  // kind of incomplete, and worth a question.
+  const partial = {
+    jobType: JOB_TYPES.SOFTWARE_DETECTION,
+    status: 'complete',
+    result: { service: { outcome: { state: 'partial', failReason: 'lm_failed' } } }
+  };
+
+  assert.equal(orchestrator.issueOf(partial).kind, 'partial');
+});
+
+test('a partial holds the steps that come after it', async (t) => {
+  // The change from before: a partial used to sail through, and the
+  // consolidator ran on an answer missing half its engine.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  Object.assign(rows.get(JOB_TYPES.MATERIALS_DETECTION), {
+    status: 'complete',
+    result: { service: { outcome: { state: 'partial', failReason: 'lm_failed' } } }
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skipping — what "continue" means when the missing data was REQUIRED
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a step whose required input produced nothing is SKIPPED, not run', () => {
+  // Running it would fail, and so would everything after it: nine unexplained
+  // failures in place of the one real one.
+  const detector = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.DATASETS_DETECTION);
+
+  assert.ok(!(detector.optional || []).includes(JOB_TYPES.MARKDOWN_CONVERT));
+});
+
+test('but a step whose OPTIONAL input is missing still runs', () => {
+  // The consolidator unions what it is given and carries every author row
+  // through regardless, so a dead detector costs it coverage, not the ability
+  // to run.
+  const analysis = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.PDF_ANALYSIS);
+
+  for (const detector of [JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.KRT_GROUNDING]) {
+    assert.ok(analysis.optional.includes(detector), `${detector} is optional to the consolidator`);
+  }
+});
+
+test('the issue list says what continuing would cost', () => {
+  // The difference between "these will run with less" and "these cannot run at
+  // all" is the whole reason Continue is not a gamble.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'waiting';
+  rows.set(JOB_TYPES.MARKDOWN_CONVERT, {
+    jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'complete',
+    result: { data: { markdownLength: 0 } }
+  });
+
+  const [issue] = orchestrator.describeIssues(rows);
+
+  assert.equal(issue.jobType, JOB_TYPES.MARKDOWN_CONVERT);
+  assert.equal(issue.kind, 'unusable');
+  assert.ok(issue.wouldSkip.includes(JOB_TYPES.DATASETS_DETECTION),
+    'the detectors cannot run without text');
+  assert.ok(!issue.wouldSkip.includes(JOB_TYPES.PDF_ANALYSIS),
+    'the consolidator can — every one of its dependencies is optional');
+});
+
+test('a decided issue is still listed, but no longer blocking', () => {
+  // It stays in the record — "software detection was carried past, by Nicolas,
+  // on the 22nd" is the thing the report needs — while ceasing to hold anything.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  // Conversion needs a length or it is an issue in its own right — which is the
+  // rule working, and would put a second entry in this list.
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 64925 } };
+  Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
+    status: 'failed',
+    issueAcknowledgedAt: new Date('2026-08-22T12:00:00Z'),
+    issueAcknowledgedByUserId: 'user-5'
+  });
+
+  const issues = orchestrator.describeIssues(rows);
+  assert.equal(issues.length, 1, 'only the one that was decided about');
+  const [issue] = issues;
+
+  assert.equal(issue.blocking, false);
+  assert.equal(issue.decided.byUserId, 'user-5');
+});
+
+test('a clean pipeline has no issues at all', () => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) {
+    r.status = 'complete';
+    r.result = { service: { outcome: { state: 'done' } } };
+  }
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = {
+    service: { outcome: { state: 'done' } }, data: { markdownLength: 64925 }
+  };
+
+  assert.deepEqual(orchestrator.describeIssues(rows), []);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1118,17 +1313,38 @@ test('every step is declared exactly once', () => {
   }
 });
 
-test('every step that reads the manuscript waits for BOTH gates', () => {
+test('every step that reads the manuscript waits for the KRT and requires the text', () => {
+  // Two conditions, and they are now different KINDS of condition — which is
+  // the point of the split. Waiting for the author to finish curating is a fact
+  // about the SUBMISSION, so it stays a gate. Needing converted text is a fact
+  // about a DEPENDENCY, so it is a required edge, and the "is there any text"
+  // question lives once on the conversion rather than five times here.
   const readsManuscript = [
     JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.DATASETS_DETECTION,
     JOB_TYPES.MATERIALS_DETECTION, JOB_TYPES.PROTOCOLS_DETECTION,
     JOB_TYPES.IDENTIFIER_DETECTION
   ];
   for (const jobType of readsManuscript) {
-    const gates = orchestrator.PIPELINE.find((s) => s.jobType === jobType).gate;
-    assert.deepEqual([...gates].sort(), ['krt_curated', 'markdown_ready'],
-      `${jobType} must wait for a converted manuscript AND a curated KRT`);
+    const step = orchestrator.PIPELINE.find((s) => s.jobType === jobType);
+
+    assert.deepEqual([...step.gate].sort(), ['krt_curated'],
+      `${jobType} waits for the author to finish curating`);
+    assert.ok(step.dependsOn.includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${jobType} depends on the conversion`);
+    assert.ok(!(step.optional || []).includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${jobType} cannot run without the text, so the conversion is required`);
   }
+});
+
+test('the "is there any text" question is asked once, on the conversion', () => {
+  // It used to be a gate function repeated across seven readers. A reader added
+  // later without it would have run on an empty document, and nothing would
+  // have said so.
+  const convert = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.MARKDOWN_CONVERT);
+
+  assert.equal(typeof convert.produced, 'function');
+  assert.equal(convert.produced({ result: { data: { markdownLength: 0 } } }), false);
+  assert.equal(convert.produced({ result: { data: { markdownLength: 42 } } }), true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

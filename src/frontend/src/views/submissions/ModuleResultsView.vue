@@ -273,7 +273,7 @@ const continuing = ref(false)
 const canContinue = computed(() => {
   if (!retryState.value.show) return false
   const current = (jobs.value || {})[jobType.value]
-  if (current?.failureAcknowledgedAt) return false
+  if (current?.issueAcknowledgedAt) return false
   return downstreamTypes.value.some((t) => (jobs.value || {})[t]?.status === 'waiting')
 })
 
