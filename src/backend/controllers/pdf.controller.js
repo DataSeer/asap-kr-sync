@@ -46,7 +46,14 @@ async function upload(req, res, next) {
     logger.info('PDF uploaded', { submissionId: submission.id });
 
     // Start the full processing pipeline (DAS → PDF analysis, Software detection in parallel)
-    await orchestrator.runAllProcesses(submission.id, req.userId, submission.currentRound);
+    //
+    // A replaced manuscript is named as such rather than passing as a restart:
+    // the distinction is the whole reason the results differ, and it is one the
+    // orchestrator cannot infer — it sees a full re-run either way. Version 1 is
+    // left to default, so the round's first run reads `create_submission`.
+    await orchestrator.runAllProcesses(submission.id, req.userId, submission.currentRound, {
+      cause: result.version > 1 ? 'new_document' : undefined
+    });
 
     res.json({
       message: 'PDF uploaded successfully',

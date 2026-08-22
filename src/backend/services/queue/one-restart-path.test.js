@@ -27,6 +27,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
+
 const SERVICES_DIR = path.join(__dirname, '..');
 
 /** Every service file, recursively, excluding tests. */
@@ -203,6 +205,7 @@ test('re-starting the pipeline reuses the round\'s rows instead of adding a set'
   const { SubmissionJob } = require('../../models');
   const orchestrator = require('./orchestrator.service');
   const jobQueue = require('./job-queue.service');
+  fakePipelineRuns(t);
 
   const rows = orchestrator.PIPELINE.map((step) => ({
     id: `${step.jobType}-row`,
@@ -237,6 +240,7 @@ test('a submission with no rows yet still gets its full set', async (t) => {
   const { SubmissionJob } = require('../../models');
   const orchestrator = require('./orchestrator.service');
   const jobQueue = require('./job-queue.service');
+  fakePipelineRuns(t);
 
   const created = [];
   t.mock.method(SubmissionJob, 'findAll', async () => []);

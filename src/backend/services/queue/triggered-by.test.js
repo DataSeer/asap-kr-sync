@@ -24,6 +24,7 @@ const { SubmissionJob, Submission, sequelize } = require('../../models');
 const orchestrator = require('./orchestrator.service');
 const jobQueue = require('./job-queue.service');
 const { JOB_TYPES } = require('../../config/constants');
+const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
 
 const STARTER = 'user-who-started';
 const CURATOR = 'user-who-restarted';
@@ -55,6 +56,9 @@ function pipelineRows(over = {}) {
 }
 
 function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: 'Data are available at Zenodo.' }) {
+  // Credit is what these tests are about; opening a pipeline run is not, and
+  // it reaches for a connection on every entry point.
+  fakePipelineRuns(t);
   t.mock.method(SubmissionJob, 'getForSubmission', async () => [...rows.values()]);
   t.mock.method(SubmissionJob, 'findAll', async () => [...rows.values()]);
   t.mock.method(SubmissionJob, 'getLatest', async (_s, jobType) => rows.get(jobType) || null);

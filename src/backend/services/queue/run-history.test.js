@@ -22,6 +22,7 @@ const assert = require('node:assert/strict');
 
 const models = require('../../models');
 const runHistory = require('./run-history.service');
+const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
 
 const JOB = {
   id: 'job-1',
@@ -41,6 +42,12 @@ const JOB = {
 /** Stand in for the DB: records what was written, hands back what was asked. */
 function fakeDb(t, { existingRuns = [] } = {}) {
   const state = { inserted: [], updatedJob: null, run: null };
+
+  // An execution is filed under the round's current pipeline run, and is
+  // refused if there is none. That resolution is the run layer's business; what
+  // these tests are about is what gets WRITTEN, so it is stubbed and the
+  // attachment recorded.
+  state.pipeline = fakePipelineRuns(t);
 
   t.mock.method(models.sequelize, 'query', async (sql, opts) => {
     assert.match(sql, /INSERT INTO "step_executions"/, 'openRun must insert');
@@ -67,6 +74,34 @@ function fakeDb(t, { existingRuns = [] } = {}) {
 
   return state;
 }
+
+test('an execution is filed under the round\'s pipeline run', async (t) => {
+  const state = fakeDb(t);
+
+  await runHistory.openRun(JOB, { userId: 'u1', triggerKind: 'manual' });
+
+  assert.equal(state.inserted[0].pipelineRunId, 'pipeline-run-1');
+  // Keyed by the PIPELINE run number, so "everything run 2 produced" is one
+  // prefix per step rather than a lookup — and the number in the path is the
+  // number the user was shown.
+  assert.equal(state.inserted[0].pipelineRunNumber, 1);
+  assert.deepEqual(state.pipeline.attached, [
+    { pipelineRunId: 'pipeline-run-1', jobType: 'software_detection', stepExecutionId: 'run-1' }
+  ]);
+});
+
+test('a step enqueued outside any run writes nothing rather than an orphan', async (t) => {
+  // An execution belonging to no run is unreachable from the model every screen
+  // is built on: it would sit in the table and appear nowhere. A loud error and
+  // no row beats a record that cannot be found.
+  const state = fakeDb(t);
+  state.pipeline.current = null;
+
+  const result = await runHistory.openRun(JOB, { userId: 'u1', triggerKind: 'manual' });
+
+  assert.equal(result, null);
+  assert.deepEqual(state.inserted, []);
+});
 
 test('opening a run numbers it 1, then 2, then 3', async (t) => {
   const state = fakeDb(t);

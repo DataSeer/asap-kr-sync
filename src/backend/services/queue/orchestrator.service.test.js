@@ -21,10 +21,12 @@ const { SubmissionJob, Submission } = require('../../models');
 const jobQueue = require('./job-queue.service');
 const orchestrator = require('./orchestrator.service');
 const { JOB_TYPES } = require('../../config/constants');
+const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
 
 // ── a job row that behaves like the model instance the code writes to ────────
 let saved;      // every row .save() was called on, in order
 let enqueued;   // every queue name addJob() was called with
+let pipelineRuns; // what mockDb recorded about the runs that were opened
 
 function row(jobType, over = {}) {
   const r = {
@@ -67,6 +69,11 @@ function pipelineRows(over = {}) {
 const A_STATEMENT = 'Data are available at Zenodo.';
 
 function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: A_STATEMENT }) {
+  // Every entry point opens a pipeline run before it enqueues anything. These
+  // tests are about the SCHEDULER — which row is reused, what advances, who is
+  // credited — so the run layer is recorded rather than exercised. The returned
+  // state is what the "one restart is one run" tests below assert on.
+  pipelineRuns = fakePipelineRuns(t);
   t.mock.method(SubmissionJob, 'getForSubmission', async () => [...rows.values()]);
   // runAllProcesses reads the round's existing rows before deciding whether to
   // create any, so this has to answer too.
@@ -677,6 +684,92 @@ test('an empty selection is refused', async (t) => {
 
   await assert.rejects(() => orchestrator.restartSteps('sub-1', [], 1, 'user-1'), /No steps/);
   assert.equal(enqueued.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// One act, one pipeline run
+//
+// Every entry point is the same operation with a different set of steps to
+// re-execute, and each one is ONE attempt. Getting the count wrong is not
+// cosmetic: a run superseded before anything in it executed is a record of an
+// attempt that never happened, and the history then shows three restarts where
+// the user pressed one button.
+//
+// The run must also exist BEFORE anything is enqueued — an execution files
+// itself under the round's current run, so a step enqueued first is recorded
+// against the run this one replaces.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a batch restart is one run, not one per step', async (t) => {
+  finishedRound(t);
+
+  await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-1');
+
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].cause, 'restart');
+  assert.deepEqual(pipelineRuns.created[0].reRun, TWO_DETECTORS);
+  assert.equal(pipelineRuns.created[0].userId, 'user-1');
+});
+
+test('a retry is a run of its own, named as a retry', async (t) => {
+  const rows = pipelineRows({
+    [JOB_TYPES.MARKDOWN_CONVERT]: { status: 'failed', issueAcknowledgedAt: null }
+  });
+  mockDb(t, rows);
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-2');
+
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].cause, 'retry');
+  assert.deepEqual(pipelineRuns.created[0].reRun, [JOB_TYPES.MARKDOWN_CONVERT]);
+});
+
+test('re-running one step by hand opens one run', async (t) => {
+  const rows = finishedRound(t);
+  completeUpstreamOf(rows, JOB_TYPES.SOFTWARE_DETECTION);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-3');
+
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].cause, 'restart');
+});
+
+test('starting the round opens a run before a single step is enqueued', async (t) => {
+  const rows = pipelineRows();
+  mockDb(t, rows);
+  // Recorded at the moment of the call: an execution resolves the round's
+  // CURRENT run, so ordering is the whole property here.
+  let runsWhenFirstEnqueued = null;
+  t.mock.method(jobQueue, 'addJob', async (queueName) => {
+    if (runsWhenFirstEnqueued === null) runsWhenFirstEnqueued = pipelineRuns.created.length;
+    enqueued.push(queueName);
+    return 'pgboss-1';
+  });
+
+  await orchestrator.runAllProcesses('sub-1', 'user-4', 1);
+
+  assert.equal(runsWhenFirstEnqueued, 1, 'the run must exist before anything is queued');
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].reRun, 'all');
+});
+
+test('a replaced manuscript says so, rather than passing as a restart', async (t) => {
+  mockDb(t, pipelineRows());
+
+  await orchestrator.runAllProcesses('sub-1', 'user-5', 1, { cause: 'new_document' });
+
+  assert.equal(pipelineRuns.created[0].cause, 'new_document');
+});
+
+test('re-queueing a step that is already running opens no run at all', async (t) => {
+  const rows = pipelineRows({ [JOB_TYPES.SOFTWARE_DETECTION]: { status: 'processing' } });
+  mockDb(t, rows);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-6');
+
+  // Nothing re-executes, so there is no attempt to record — and a run opened
+  // here would supersede the live one while its steps carried on writing to it.
+  assert.equal(pipelineRuns.created.length, 0);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -14,6 +14,8 @@ const { NO_DAS_SENTINEL } = require('../das-suggestions/das-suggestions.service'
 const jobQueue = require('./job-queue.service');
 const logger = require('../../utils/logger');
 const runHistory = require('./run-history.service');
+const pipelineRuns = require('./pipeline-run.service');
+const { CAUSES } = require('../../models/PipelineRun');
 
 // Jobs younger than this are left alone by the reconciler — their dependencies
 // may simply still be running, and we don't want to race a checkAndAdvance that
@@ -315,10 +317,27 @@ const { JOB_TYPE_TO_QUEUE } = jobQueue;
  * @param {string} submissionId
  * @param {string} userId
  * @param {number} round
+ * @param {object} [opts]
+ * @param {string} [opts.cause] - why this run exists. Left out, it is
+ *   `create_submission` for the round's first run and `restart` after that; a
+ *   replaced manuscript passes `new_document`, which is the one distinction the
+ *   caller knows and this function cannot infer.
  * @returns {Promise<object[]>} Created SubmissionJob records
  */
-async function runAllProcesses(submissionId, userId, round) {
+async function runAllProcesses(submissionId, userId, round, { cause } = {}) {
   const jobs = [];
+
+  // The run comes first, before anything is enqueued: `openRun` resolves the
+  // round's current run to file each execution under, so a step enqueued
+  // beforehand would be recorded against the run this one replaces.
+  await pipelineRuns.newRun({
+    submissionId,
+    round: round ?? 1,
+    pipeline: PIPELINE,
+    reRun: 'all',
+    cause,
+    userId
+  });
 
   // Every step in the round is about to run, so every input is re-taken. This
   // is the call a PDF upload makes, and it is what lets a replaced manuscript
@@ -1298,6 +1317,20 @@ async function retryStep(submissionId, jobType, round, userId) {
     throw new ValidationError(RETRY_REFUSALS[reason] || 'This step cannot be retried.');
   }
 
+  // A retry is a new attempt at the round, not a second life for the old one.
+  // Everything that finished cleanly is carried over by link; only this step
+  // executes again. The decision that was made about the failed execution stays
+  // on THAT execution, which is what stops a stale acknowledgement waving the
+  // next failure through.
+  await pipelineRuns.newRun({
+    submissionId,
+    round: round ?? 1,
+    pipeline: PIPELINE,
+    reRun: [jobType],
+    cause: CAUSES.RETRY,
+    userId
+  });
+
   const job = jobsByType.get(jobType);
   job.status = 'waiting';
   job.pgBossJobId = null;
@@ -1366,6 +1399,20 @@ async function restartSteps(submissionId, jobTypes, round, userId) {
 
   await releaseInputFreezes(submissionId, round, [...selected, ...downstream]);
 
+  // ONE run for the whole batch. Opening one per step would number the same
+  // restart three times and leave two of those runs superseded before anything
+  // in them executed — the batch is a single attempt, and the model should say
+  // so. `newRun` expands the selection downstream itself, so the set it records
+  // is the same union computed above.
+  await pipelineRuns.newRun({
+    submissionId,
+    round: round ?? 1,
+    pipeline: PIPELINE,
+    reRun: selected,
+    cause: CAUSES.RESTART,
+    userId
+  });
+
   // Reset first, every one of them, before anything is enqueued.
   for (const jobType of selected) {
     await cascadeRestart(submissionId, jobType, round, userId);
@@ -1373,7 +1420,10 @@ async function restartSteps(submissionId, jobTypes, round, userId) {
 
   const restarted = [];
   for (const jobType of selected) {
-    await requeueStep(submissionId, jobType, round, userId, { releaseFreezes: false });
+    await requeueStep(submissionId, jobType, round, userId, {
+      releaseFreezes: false,
+      newPipelineRun: false
+    });
     restarted.push(jobType);
   }
 
@@ -1383,7 +1433,10 @@ async function restartSteps(submissionId, jobTypes, round, userId) {
   return { restarted, reset: [...downstream] };
 }
 
-async function requeueStep(submissionId, jobType, round, userId, { releaseFreezes = true } = {}) {
+async function requeueStep(submissionId, jobType, round, userId, {
+  releaseFreezes = true,
+  newPipelineRun = true
+} = {}) {
   const step = PIPELINE.find((s) => s.jobType === jobType);
   if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
 
@@ -1394,6 +1447,8 @@ async function requeueStep(submissionId, jobType, round, userId, { releaseFreeze
     });
   } else if (['queued', 'processing'].includes(job.status)) {
     // Already on its way — re-queueing would duplicate the work it is doing.
+    // Deliberately BEFORE the run is opened: a run that re-executes nothing is
+    // an attempt that never happened, and it would supersede the live one.
     return job;
   } else {
     job.status = 'waiting';
@@ -1413,6 +1468,19 @@ async function requeueStep(submissionId, jobType, round, userId, { releaseFreeze
     // so they are the trigger even if the round was started by someone else.
     if (userId) job.triggeredByUserId = userId;
     await job.save();
+  }
+
+  // Skipped when a BATCH restart is driving: it opened one run for the whole
+  // selection, and a second here would supersede it before the first step ran.
+  if (newPipelineRun) {
+    await pipelineRuns.newRun({
+      submissionId,
+      round: round ?? 1,
+      pipeline: PIPELINE,
+      reRun: [jobType],
+      cause: CAUSES.RESTART,
+      userId
+    });
   }
 
   const allJobs = await SubmissionJob.getForSubmission(submissionId, round);

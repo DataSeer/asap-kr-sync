@@ -144,7 +144,10 @@ function captureShape(pipeline) {
  * @param {number} [params.round]
  * @param {object[]} params.pipeline - `{ jobType, dependsOn, optional }`
  * @param {string[]|'all'} params.reRun - the seed set, expanded downstream
- * @param {string} params.cause - one of PipelineRun.CAUSES
+ * @param {string} [params.cause] - one of PipelineRun.CAUSES. Defaulted from
+ *   whether the round has a run already: the first is `create_submission`, a
+ *   later one `restart`. A caller that knows better — a replaced manuscript is
+ *   `new_document`, not a restart — says so.
  * @param {string} [params.userId] - null when nobody asked
  * @param {object} [params.transaction]
  * @returns {Promise<{run: object, reRun: string[], carriedOver: string[], parent: object|null}>}
@@ -160,8 +163,15 @@ async function newRun({
 }) {
   const { PipelineRun, PipelineRunStep, sequelize } = require('../../models');
 
+  const { CAUSES } = require('../../models/PipelineRun');
+
   if (!pipeline?.length) throw new Error('newRun needs a pipeline');
-  if (!cause) throw new Error('newRun needs a cause');
+  if (cause && !Object.values(CAUSES).includes(cause)) {
+    // Checked here because PipelineRun.open inserts through raw SQL — the
+    // model's own validator never sees it, and a typo would become a cause
+    // nothing filters on and nobody notices.
+    throw new Error(`newRun: unknown cause ${cause}`);
+  }
 
   const allTypes = pipeline.map((step) => step.jobType);
   const unknown = (reRun === 'all' ? [] : reRun).filter((t) => !allTypes.includes(t));
@@ -193,7 +203,7 @@ async function newRun({
     const created = await PipelineRun.open({
       submissionId,
       round,
-      cause,
+      cause: cause || (parent ? CAUSES.RESTART : CAUSES.CREATE_SUBMISSION),
       causedByUserId: userId || null,
       parentRunId: parent?.id || null,
       shape: captureShape(pipeline),
@@ -218,7 +228,7 @@ async function newRun({
       submissionId,
       round,
       runNumber: created.runNumber,
-      cause,
+      cause: created.cause,
       parentRun: parent?.runNumber ?? null,
       executing: toExecute.length,
       carriedOver: carriedOver.length
@@ -248,24 +258,46 @@ async function currentRun(submissionId, round) {
 /**
  * Attach an execution to its place in the run.
  *
- * Called when a step starts. Zero rows updated means the run never declared
- * this step — a real fault, logged rather than swallowed, because the
- * execution then exists without being reachable from any run.
+ * Called when a step starts, and the point at which the run's placeholder stops
+ * being a placeholder. Two anomalies are reported rather than absorbed, because
+ * both leave a run that still reads as complete:
+ *
+ *   - **no membership row.** The run never declared this step, so the execution
+ *     exists reachable from nothing.
+ *   - **a row that already points somewhere.** A step executes at most once per
+ *     run — a retry opens a NEW run — so a second execution here means an
+ *     enqueue happened twice, and the first execution is about to become
+ *     invisible while still costing whatever it cost. The link is replaced,
+ *     since the later execution is the one the run actually used, but not
+ *     quietly: the s3 prefix is keyed on the run number, so the two share it.
  *
  * @param {string} pipelineRunId
  * @param {string} jobType
  * @param {string} stepExecutionId
  * @param {object} [options] - `transaction`
+ * @returns {Promise<number>} rows updated
  */
 async function attachExecution(pipelineRunId, jobType, stepExecutionId, options = {}) {
   const { PipelineRunStep } = require('../../models');
-  const updated = await PipelineRunStep.attach(pipelineRunId, jobType, stepExecutionId, options);
-  if (!updated) {
+
+  const existing = await PipelineRunStep.findOne({
+    where: { pipelineRunId, jobType },
+    transaction: options.transaction
+  });
+
+  if (!existing) {
     logger.error('Pipeline run: an execution has no place in its run', {
       pipelineRunId, jobType, stepExecutionId
     });
+    return 0;
   }
-  return updated;
+  if (existing.stepExecutionId && existing.stepExecutionId !== stepExecutionId) {
+    logger.error('Pipeline run: a step executed twice in one run', {
+      pipelineRunId, jobType, replaced: existing.stepExecutionId, with: stepExecutionId
+    });
+  }
+
+  return PipelineRunStep.attach(pipelineRunId, jobType, stepExecutionId, options);
 }
 
 module.exports = {

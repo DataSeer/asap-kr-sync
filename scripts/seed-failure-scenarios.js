@@ -38,6 +38,7 @@ const { Op } = require('sequelize');
 
 const {
   Submission, File, KRTData, SubmissionJob, StepExecution, SubmissionInputFreeze,
+  PipelineRun, PipelineRunStep,
   User, sequelize
 } = require('../src/backend/models');
 const { JOB_TYPES } = require('../src/backend/config/constants');
@@ -127,7 +128,17 @@ async function clean() {
   // Children first: the schema cascades from `submissions`, but being explicit
   // means a partial failure leaves nothing dangling and the counts are visible.
   await sequelize.transaction(async (t) => {
+    // Membership BEFORE executions: `pipeline_run_steps.step_execution_id` is
+    // ON DELETE RESTRICT, so the database refuses to let a run be hollowed out
+    // — which is the point of the constraint, and the reason for this order.
+    const runIds = (await PipelineRun.findAll({
+      where: { submissionId: ids }, attributes: ['id'], transaction: t
+    })).map((r) => r.id);
+    if (runIds.length) {
+      await PipelineRunStep.destroy({ where: { pipelineRunId: runIds }, transaction: t });
+    }
     await StepExecution.destroy({ where: { submissionId: ids }, transaction: t });
+    await PipelineRun.destroy({ where: { submissionId: ids }, transaction: t });
     await SubmissionInputFreeze.destroy({ where: { submissionId: ids }, transaction: t });
     await SubmissionJob.destroy({ where: { submissionId: ids }, transaction: t });
     await KRTData.destroy({ where: { submissionId: ids }, transaction: t });
@@ -207,6 +218,22 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
       }, { transaction: t });
     }
 
+    // One pipeline run for the whole clone. Built by hand rather than through
+    // `newRun`, because the scenario is a run that ALREADY happened and ended
+    // in this state — asking the real service for it would open a fresh run
+    // with nothing in it and then need every field overwritten anyway.
+    const pipelineRun = await PipelineRun.create({
+      submissionId: newId,
+      round: source.currentRound || 1,
+      runNumber: 1,
+      cause: 'create_submission',
+      causedByUserId: ownerId,
+      // `paused` is the truthful status for every one of these: a step failed
+      // and the steps behind it are waiting for somebody to decide.
+      status: scenario.failed.length ? 'paused' : 'complete',
+      appVersion: 'seed'
+    }, { transaction: t });
+
     // The jobs, rewritten to the scenario.
     const broken = new Map(scenario.failed.map((f) => [f.jobType, f]));
     const held = new Set();
@@ -230,8 +257,13 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
           // reports a duration measured in days.
           startedAt: new Date(Date.now() - 4000),
           completedAt: new Date(),
-          failureAcknowledgedAt: failure.acknowledged ? new Date() : null,
-          failureAcknowledgedByUserId: failure.acknowledged ? ownerId : null
+          // `issue_`, not `failure_`: a PARTIAL holds the pipeline too, so the
+          // columns stopped being about failures. Sequelize drops attributes a
+          // model does not declare, so the old names here meant every
+          // "acknowledged" scenario seeded as undecided and looked identical to
+          // the one beside it.
+          issueAcknowledgedAt: failure.acknowledged ? new Date() : null,
+          issueAcknowledgedByUserId: failure.acknowledged ? ownerId : null
         });
       } else if (held.has(row.jobType)) {
         // Exactly what the orchestrator leaves behind: waiting, with nothing
@@ -248,6 +280,11 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
 
       await SubmissionJob.create({ ...row, id: newJobId, submissionId: newId }, { transaction: t });
 
+      // Every step gets a membership row, including the ones that never ran —
+      // a run that lists only what finished cannot be read while it is paused,
+      // which is the state every one of these scenarios is in.
+      let executionId = null;
+
       // History, so the run selector and METADATA column have something real.
       // Only for steps that still hold a result — a held step has no run.
       if (!failure && !held.has(row.jobType)) {
@@ -256,11 +293,22 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
         })) {
           const runRow = { ...run.get({ plain: true }) };
           delete runRow.id;
-          await StepExecution.create({
-            ...runRow, submissionJobId: newJobId, submissionId: newId
+          const copy = await StepExecution.create({
+            ...runRow,
+            submissionJobId: newJobId,
+            submissionId: newId,
+            pipelineRunId: pipelineRun.id
           }, { transaction: t });
+          executionId = copy.id;
         }
       }
+
+      await PipelineRunStep.create({
+        pipelineRunId: pipelineRun.id,
+        jobType: row.jobType,
+        stepExecutionId: executionId,
+        carriedOver: false
+      }, { transaction: t });
     }
   });
 

@@ -112,53 +112,83 @@ async function captureDocuments(submissionId, round) {
 }
 
 /**
- * Open a run for a step that has just been enqueued.
+ * Open an execution for a step that has just been enqueued.
+ *
+ * ── It belongs to a pipeline run, and the run must already exist ────────────
+ *
+ * Every entry point — starting a submission, a restart, a retry, a replaced PDF
+ * — opens its run BEFORE enqueueing anything, so the run this execution belongs
+ * to is simply the round's current one. Resolved here rather than threaded
+ * through six call sites, which is a real trade: two restarts racing would put
+ * an execution in the wrong run. That race already exists in the scheduler and
+ * is not made worse by reading it here.
+ *
+ * If there is no run, this refuses rather than writing an orphan. An execution
+ * belonging to no run is unreachable from the model everything else is built
+ * on — it would sit in the table and appear on no screen — so a loud error and
+ * no row is the better outcome.
  *
  * `run_number` is allocated in the INSERT itself, so two callers cannot read
  * the same maximum and both write run 3. The UNIQUE(submission_job_id,
  * run_number) index is the backstop: a bug surfaces as an error rather than as
- * two runs wearing the same number.
+ * two executions wearing the same number.
  *
  * @param {object} job - the SubmissionJob row being enqueued
  * @param {object} [opts]
  * @param {string} [opts.userId] - who asked, when a person did
  * @param {string} [opts.triggerKind] - 'manual' | 'pipeline' | 'reconciler'
- * @returns {Promise<object|null>} the new run, or null if recording failed
+ * @returns {Promise<object|null>} the new execution, or null if it could not be recorded
  */
 async function openRun(job, { userId = null, triggerKind = null } = {}) {
   return guarded('opening a run', async () => {
     const { StepExecution, SubmissionJob, sequelize } = require('../../models');
+    const pipelineRuns = require('./pipeline-run.service');
+
+    const round = job.round ?? 1;
+    const pipelineRun = await pipelineRuns.currentRun(job.submissionId, round);
+    if (!pipelineRun) {
+      logger.error('Run history: a step was enqueued outside any pipeline run', {
+        submissionId: job.submissionId, jobType: job.jobType, round
+      });
+      return null;
+    }
 
     const [rows] = await sequelize.query(`
       INSERT INTO "step_executions" (
-        id, submission_job_id, submission_id, job_type, round, run_number,
-        status, triggered_by_user_id, trigger_kind, s3_prefix, created_at, updated_at
+        id, pipeline_run_id, submission_job_id, submission_id, job_type, round,
+        run_number, status, triggered_by_user_id, trigger_kind, s3_prefix,
+        created_at, updated_at
       )
       SELECT
-        gen_random_uuid(), :jobId, :submissionId, :jobType, :round,
+        gen_random_uuid(), :pipelineRunId, :jobId, :submissionId, :jobType, :round,
         COALESCE(MAX(r.run_number), 0) + 1,
         'queued'::"enum_step_executions_status", :userId, :triggerKind,
-        -- Where this run's artefacts will be written, recorded in the same
-        -- statement that decides the number they are keyed by. Runs from before
-        -- run history keep their old jobs/<type>/<jobRowId> prefix, which is
-        -- why this is stored per run rather than derived from the job type.
-        'jobs/' || :jobType || '/run-' || (COALESCE(MAX(r.run_number), 0) + 1),
+        -- Keyed by the PIPELINE run number, not this step's own. "Everything
+        -- run 2 produced" is then one prefix per step rather than a lookup, and
+        -- the number in the path is the number the user was shown.
+        'jobs/' || :jobType || '/run-' || :pipelineRunNumber,
         NOW(), NOW()
       FROM "step_executions" r
       WHERE r.submission_job_id = :jobId
       RETURNING id, run_number
     `, {
       replacements: {
+        pipelineRunId: pipelineRun.id,
+        pipelineRunNumber: pipelineRun.runNumber,
         jobId: job.id,
         submissionId: job.submissionId,
         jobType: job.jobType,
-        round: job.round ?? 1,
+        round,
         userId: userId || null,
         triggerKind: triggerKind || null
       }
     });
 
     const created = rows[0];
+
+    // The run declared this step when it was created; this is where the
+    // placeholder stops being a placeholder.
+    await pipelineRuns.attachExecution(pipelineRun.id, job.jobType, created.id);
     // Denormalised onto the job row so the panel can say "run 3" without an
     // aggregate on a table polled every few seconds.
     await SubmissionJob.update(
