@@ -3,6 +3,14 @@
 **Status:** PHASE 1 IMPLEMENTED on `feat/run-history` · **Created:** 2026-08-21
 · **Updated:** 2026-08-22
 
+> **Superseded in part by [design-pipeline-runs.md](./design-pipeline-runs.md).**
+> That document replaces the central identity — runs numbered *per step* become
+> a **pipeline run**, one coherent attempt containing every step — because a
+> per-step number cannot say which runs belong together, so a result is a mix
+> with no name for the set. Almost all the machinery below survives it: the
+> payload/record split, S3 keying, guarded writes, the freeze table and the
+> phases already built.
+
 >
 > Phases 1 and 2 are built, and phase 3 is **mostly** built: artefacts keyed by
 > run, the prompt following the selected run, the run's configuration on the
