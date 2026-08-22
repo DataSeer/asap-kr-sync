@@ -117,18 +117,28 @@ module.exports = (sequelize) => {
       field: 'retry_count'
     },
     /**
-     * How many times this step has been run in this round.
+     * How many times this step has EXECUTED in this round.
      *
-     * Denormalised from `step_executions` so the panel and the jobs list can
-     * say "run 3" without an aggregate on a table polled every few seconds.
-     * Written by run-history's openRun — which silently did nothing until this
-     * attribute existed, because Sequelize drops unknown fields from `update`
-     * and the history writes are deliberately guarded.
+     * Denormalised from `step_executions` so the panel and the report can say
+     * so without an aggregate on a table polled every few seconds. Written by
+     * run-history's openRun — which silently did nothing until this attribute
+     * existed, because Sequelize drops unknown fields from `update` and the
+     * history writes are deliberately guarded.
+     *
+     * Zero, not one. It used to be SET to the step's own run number, so a
+     * default of 1 meant "the first run"; it is INCREMENTED now, and the same
+     * default made a step that had run once report two. A step that has not run
+     * has executed zero times, which is also the honest answer for a step a run
+     * has not reached.
+     *
+     * NOT the run number. A run can carry a step over rather than re-executing
+     * it, so "which run is this" and "how many times has this step run" are
+     * different questions, and this answers the second.
      */
     runCount: {
       type: DataTypes.INTEGER,
       allowNull: false,
-      defaultValue: 1,
+      defaultValue: 0,
       field: 'run_count'
     },
     round: {

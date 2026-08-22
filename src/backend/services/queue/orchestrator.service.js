@@ -447,7 +447,10 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
     step => step.dependsOn.includes(completedJobType)
   );
 
-  if (dependentSteps.length === 0) return;
+  // No early return when nothing depends on this step. That is exactly the LAST
+  // step of a run — nothing follows it, so an early return here meant the run
+  // that had just finished never settled, and sat at `running` until the
+  // five-minute reconciler noticed. Seen on the first live run of this code.
 
   // Get all current jobs for this submission/round
   const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
@@ -461,6 +464,61 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
 
   for (const step of dependentSteps) {
     await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, completedJobType);
+  }
+
+  await settleRun(submissionId, round, jobsByType);
+}
+
+/**
+ * Move the run to the state its steps say it is in.
+ *
+ * Without this a finished run stays `running` for ever, which is the same
+ * shape of lie the `superseded` state was added to avoid — a status that
+ * describes an attempt that stopped happening some time ago.
+ *
+ * Three states, decided by the steps and nothing else:
+ *
+ *   paused    something is holding the pipeline and needs a person
+ *   complete  every step has finished, one way or another
+ *   running   still going
+ *
+ * `complete` does not mean "everything worked". A run whose steps failed, were
+ * skipped or were carried past is still a completed ATTEMPT, and the outcome
+ * lives on the executions where it can be read per step. A run-level "did it go
+ * well" would be a second, coarser answer to a question already answered
+ * better.
+ *
+ * Never throws. Getting the run's own status wrong is a cosmetic fault; failing
+ * a step that succeeded because its bookkeeping threw is not.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {Map<string, object>} jobsByType
+ */
+async function settleRun(submissionId, round, jobsByType) {
+  try {
+    const run = await pipelineRuns.currentRun(submissionId, round ?? 1);
+    if (!run || ['superseded', 'complete'].includes(run.status)) return;
+
+    const jobs = PIPELINE.map((step) => jobsByType.get(step.jobType));
+    // A step with no row at all has not run, so the round is not finished.
+    const finished = jobs.every((job) => job && TERMINAL_STATUSES.includes(job.status));
+    const held = jobs.some((job) => job && holdsPipeline(job));
+
+    const status = held ? 'paused' : (finished ? 'complete' : 'running');
+    if (status === run.status) return;
+
+    await run.update({
+      status,
+      completedAt: status === 'complete' ? new Date() : null
+    });
+    logger.info('Pipeline run settled', {
+      submissionId, round, runNumber: run.runNumber, status
+    });
+  } catch (error) {
+    logger.error('Could not settle the pipeline run\'s status', {
+      submissionId, round, error: error.message
+    });
   }
 }
 
@@ -683,6 +741,11 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
     }
     if ([...jobsByType.values()].map((j) => j.status).join(',') === before) break;
   }
+
+  // The reconciler is the sweep that catches whatever the per-step advance
+  // missed, so it is also where a run that finished while nobody was looking
+  // gets its status.
+  await settleRun(submissionId, round, jobsByType);
   return advanced;
 }
 
@@ -1499,17 +1562,34 @@ async function requeueStep(submissionId, jobType, round, userId, {
     await job.save();
   }
 
-  // Skipped when a BATCH restart is driving: it opened one run for the whole
-  // selection, and a second here would supersede it before the first step ran.
+  // A new run, but only when this step has ALREADY executed in the current one.
+  //
+  // Otherwise this is the run REACHING the step, not a new attempt at the
+  // round. The case that showed it: `das_suggestions` is gated behind the
+  // Availability step and never starts on its own, so confirming the statement
+  // comes through here — and opened run 2, superseding run 1, purely to run a
+  // step run 1 had never got to. The history then said the user restarted the
+  // pipeline when they had pressed "confirm", and eleven finished steps were
+  // relabelled as carried over.
+  //
+  // Skipped entirely when a BATCH restart is driving: it opened one run for the
+  // whole selection, and a second here would supersede it before the first step
+  // ran.
   if (newPipelineRun) {
-    await pipelineRuns.newRun({
-      submissionId,
-      round: round ?? 1,
-      pipeline: PIPELINE,
-      reRun: [jobType],
-      cause: CAUSES.RESTART,
-      userId
-    });
+    const inRun = await pipelineRuns.currentStepInRun(submissionId, round ?? 1, jobType);
+    // No run at all is a submission that predates the model, or one whose run
+    // creation failed. Opening one is the recoverable answer; leaving the step
+    // unreachable from any run is not.
+    if (!inRun || inRun.execution) {
+      await pipelineRuns.newRun({
+        submissionId,
+        round: round ?? 1,
+        pipeline: PIPELINE,
+        reRun: [jobType],
+        cause: CAUSES.RESTART,
+        userId
+      });
+    }
   }
 
   const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
@@ -1665,6 +1745,7 @@ module.exports = {
   reconcileSubmission,
   reconcileStuckJobs,
   advanceJob,
+  settleRun,
   cascadeRestart,
   computeDownstreamSet,
   isGateBlocked,

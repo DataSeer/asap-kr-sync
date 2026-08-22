@@ -150,6 +150,25 @@ async function loadRuns() {
   }
 }
 
+/**
+ * One run, as the selector names it.
+ *
+ * A run that did not re-execute this step says so HERE, not only once it is
+ * open: picking between runs is exactly when it matters that two of them hold
+ * the same result.
+ *
+ * @param {object} r - a run-list entry
+ * @returns {string}
+ */
+function runLabel(r) {
+  const parts = [`${r.runNumber} of ${runCount.value}${r.isLatest ? ' — latest' : ''}`]
+  if (r.carriedOver && r.producedByRun) parts.push(`carried over from run ${r.producedByRun}`)
+  parts.push(r.status === 'not_started'
+    ? 'not run yet'
+    : formatDateTime(r.completedAt || r.startedAt))
+  return parts.join(' · ')
+}
+
 async function showRun(runNumber) {
   // Selecting the latest returns to the live job, so the page keeps polling and
   // keeps updating — a frozen copy of the current run would go stale on screen.
@@ -735,15 +754,11 @@ const tabConflicts = computed(() => {
           :value="selectedRunNumber ?? runCount"
           @change="showRun(Number($event.target.value))"
         >
-          <option v-for="r in runs" :key="r.runNumber" :value="r.runNumber">
-            {{ r.runNumber }} of {{ runCount }}{{ r.isLatest ? ' — latest' : '' }}
-            <!-- A run that did not re-execute this step says so in the list, not
-                 only once it is open: picking between runs is exactly when it
-                 matters that two of them hold the same result. -->
-            {{ r.carriedOver ? `· carried over from run ${r.producedByRun}` : '' }}
-            {{ r.status === 'not_started' ? '· not run yet'
-              : `· ${formatDateTime(r.completedAt || r.startedAt)}` }}
-          </option>
+          <!-- Built as one string rather than interleaved expressions: the
+               template's own newlines and indentation land inside an <option>
+               and the browser renders them, so a conditional clause that is
+               empty leaves a visible gap. -->
+          <option v-for="r in runs" :key="r.runNumber" :value="r.runNumber">{{ runLabel(r) }}</option>
         </select>
       </label>
 

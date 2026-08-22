@@ -1827,3 +1827,136 @@ test('a failed enqueue puts the claim back instead of stranding the row', async 
   assert.equal(analysis.status, 'waiting', 'the claim must be released');
   assert.equal(analysis.pgBossJobId, null);
 });
+
+test('releasing a gated step continues the run rather than starting a new one', async (t) => {
+  // Found by running the real pipeline. `das_suggestions` waits behind the
+  // Availability step and never starts on its own, so confirming the statement
+  // arrives here — and opened run 2, superseding run 1, purely to run a step
+  // run 1 had never got to. The history then claimed a restart the user never
+  // asked for, and relabelled eleven finished steps as carried over.
+  const rows = pipelineRows({ [JOB_TYPES.DAS_SUGGESTIONS]: { status: 'waiting' } });
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as',
+    dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: new Date()
+  });
+  pipelineRuns.neverRan(JOB_TYPES.DAS_SUGGESTIONS);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_SUGGESTIONS, 1, 'user-1');
+
+  assert.equal(pipelineRuns.created.length, 0, 'the run is reaching the step, not repeating it');
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'queued', 'and it still runs');
+});
+
+test('but re-running a step that HAS already run in this run is a new run', async (t) => {
+  const rows = finishedRound(t);
+  completeUpstreamOf(rows, JOB_TYPES.SOFTWARE_DETECTION);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-1');
+
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].cause, 'restart');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A run reaches a state of its own
+//
+// Found by running the real pipeline: all twelve steps finished and the run
+// still said `running`. That is the same shape of lie `superseded` was added to
+// avoid — a status describing an attempt that stopped happening some time ago.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a run whose every step has finished is complete', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  mockDb(t, rows);
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'complete');
+  assert.ok(pipelineRuns.current.completedAt);
+});
+
+test('a run held behind an undecided failure is paused, not complete', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  // Terminal, so every step has "finished" — and still needs a person.
+  Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), { status: 'failed', decision: null });
+  mockDb(t, rows);
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'paused');
+  assert.equal(pipelineRuns.current.completedAt, null);
+});
+
+test('a run with a step still going stays running', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  rows.get(JOB_TYPES.PDF_ANALYSIS).status = 'processing';
+  mockDb(t, rows);
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'running');
+});
+
+test('a run that was already superseded is left alone', async (t) => {
+  // It was replaced before it finished. Marking it complete afterwards would
+  // erase the one fact that distinguishes it from a run that ran to the end.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  mockDb(t, rows);
+  pipelineRuns.current.status = 'superseded';
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'superseded');
+});
+
+test('a failed run still completes — the outcome lives on its steps', async (t) => {
+  // "Complete" is about the ATTEMPT, not about whether it went well. A run
+  // whose steps failed and were carried past has finished; a run-level verdict
+  // would be a second, coarser answer to a question the executions answer
+  // better.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
+    status: 'failed',
+    decision: { at: '2026-08-22T12:00:00Z', byUserId: 'user-1' }
+  });
+  mockDb(t, rows);
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'complete');
+});
+
+test('the LAST step finishing settles the run, though nothing depends on it', async (t) => {
+  // The hole in the first version of settleRun: checkAndAdvance returned early
+  // when a step had no dependents, which is precisely the final step of a run.
+  // The run that had just finished sat at `running` until the five-minute
+  // reconciler noticed. Seen on the first live run.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as',
+    dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: new Date()
+  });
+
+  // das_suggestions is the tail: no step declares it as a dependency.
+  const tail = orchestrator.PIPELINE.filter(
+    (s) => orchestrator.PIPELINE.some((o) => o.dependsOn.includes(s.jobType))
+  ).map((s) => s.jobType);
+  assert.ok(!tail.includes(JOB_TYPES.DAS_SUGGESTIONS), 'das_suggestions must have no dependents');
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DAS_SUGGESTIONS, 1);
+
+  assert.equal(pipelineRuns.current.status, 'complete');
+});

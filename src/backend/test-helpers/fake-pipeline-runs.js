@@ -46,11 +46,19 @@ function fakePipelineRuns(t, { current } = {}) {
      */
     executions: {},
     current: current === undefined
-      ? { id: 'pipeline-run-1', runNumber: 1, status: 'running' }
+      ? {
+        id: 'pipeline-run-1',
+        runNumber: 1,
+        status: 'running',
+        completedAt: null,
+        async update(fields) { Object.assign(this, fields); return this; }
+      }
       : current
   };
 
   const executionFor = (jobType) => {
+    // `null` is a deliberate "never ran"; only `undefined` means "not set up".
+    if (state.executions[jobType] === null) return null;
     if (!state.executions[jobType]) {
       state.executions[jobType] = {
         id: `exec-${jobType}`,
@@ -70,6 +78,18 @@ function fakePipelineRuns(t, { current } = {}) {
    */
   state.decide = (jobType, decision) => {
     executionFor(jobType).decision = decision;
+    return state;
+  };
+
+  /**
+   * Mark a step as never having executed in the current run.
+   *
+   * The state a GATED step is in — `das_suggestions` waits for the Availability
+   * step and never starts on its own — and the one that distinguishes "the run
+   * is reaching this step" from "run it again".
+   */
+  state.neverRan = (jobType) => {
+    state.executions[jobType] = null;
     return state;
   };
 

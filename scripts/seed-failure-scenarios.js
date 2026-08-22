@@ -306,11 +306,19 @@ async function buildScenario(source, scenario, ownerId, pipeline) {
 
       // History, so the run selector and METADATA column have something real.
       // Only for steps that still hold a result — a held step has no run.
+      //
+      // The NEWEST execution only, and only one. The clone is a single run, and
+      // a step executes at most once in a run — copying every execution of a
+      // source step that had been restarted put two rows in one run and the
+      // database refused, which is exactly what that constraint is for.
       if (!failure && !held.has(row.jobType)) {
-        for (const run of await StepExecution.findAll({
-          where: { submissionJobId: job.id }, transaction: t
-        })) {
-          const runRow = { ...run.get({ plain: true }) };
+        const latest = await StepExecution.findOne({
+          where: { submissionJobId: job.id },
+          order: [['createdAt', 'DESC']],
+          transaction: t
+        });
+        if (latest) {
+          const runRow = { ...latest.get({ plain: true }) };
           delete runRow.id;
           const copy = await StepExecution.create({
             ...runRow,
