@@ -108,10 +108,35 @@ and runs in full against a real instance:
 cd src/backend && node --test services/archive/archive-roundtrip.test.js
 ```
 
+## The tombstone
+
+Deleting records a row in `submission_archives`: what left, when, by whom, where
+it went, and the SHA-256 of the manifest. A dashboard that silently loses a
+submission is alarming; *"archived 3 March, restorable, checksum abc123"* is not.
+
+```bash
+node scripts/archive-submission.js --list
+```
+
+Three decisions worth knowing:
+
+- **It is written before the delete, not after.** If the delete then fails half
+  way, the worst case is a tombstone for something still here — visible and
+  correctable. The other order risks a submission that has vanished with nothing
+  saying where it went, which is the state this table exists to make impossible.
+- **It has no foreign key to `submissions`**, because what it names is gone.
+- **A restore closes it rather than removing it.** "Archived in March, restored
+  in May" is a truer record than a row that quietly disappears — and once the
+  archive folder is gone, it is the only place that history exists.
+
+It is also the one table with a `submission_id` that must never travel with the
+submission: archiving it would archive the record of the archiving, and
+restoring it would resurrect a tombstone for a submission that is back.
+`archive.test.js` names the exclusion so it stays a decision rather than an
+oversight.
+
 ## Not built yet
 
-- **The tombstone.** A dashboard that silently loses a submission is alarming; a
-  row saying *"archived 3 March, restorable, checksum abc123"* is not. Planned as
-  `submission_archives`.
-- **Retention criteria** — age, status, project — producing a list to review.
-  Never an automatic sweep.
+**Retention criteria** — age, status, project — producing a list to review.
+Never an automatic sweep: the archive is proven, but choosing what to delete is
+a judgement, and a cron job cannot make it.

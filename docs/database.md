@@ -317,7 +317,7 @@ that the round agrees on one input, not that a particular step wins.
 
 | Table | Purpose |
 |-------|---------|
-| `submission_archives` *(planned)* | The tombstone for an archived submission — what left, when, by whom, and the checksum of the file holding it. Not built yet; `scripts/archive-submission.js` currently records nothing after a delete |
+| `submission_archives` | The tombstone for an archived submission — what left, when, by whom, where it went, and the checksum of its manifest. **No foreign key to `submissions`**, because what it names is gone; written before the delete, so a half-failed delete leaves a visible inconsistency rather than a silent disappearance; and closed rather than removed on restore. See [archiving.md](./archiving.md) |
 | `change_logs` | Audit trail for all KRT changes (action, source, metadata). `file_id` ties an upload entry to the exact file version it describes — before it, the narrative and the file could only be matched by timestamp. `step_execution_id` records which execution's output a value came from, for `action: 'apply'` rows; `user_id` is nullable because an automatic apply has the system as its actor |
 | `reports` | Generated reports (`type` ENUM `excel`/`pdf`, `file_url`, `metadata` JSONB, `round`) |
 | `user_hidden_submissions` | Per-user submission visibility preferences |

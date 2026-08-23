@@ -218,9 +218,10 @@ async function readArchive(dir) {
  * @param {string} dir
  * @param {object} [opts]
  * @param {boolean} [opts.dryRun] - verify and report, write nothing
+ * @param {string} [opts.userId] - who restored it, for the tombstone
  * @returns {Promise<{submissionId: string, rows: object, objects: number, users: object}>}
  */
-async function importSubmission(dir, { dryRun = false } = {}) {
+async function importSubmission(dir, { dryRun = false, userId = null } = {}) {
   const fs = require('fs/promises');
   const models = require('../../models');
   const { manifest, data } = await readArchive(dir);
@@ -306,8 +307,16 @@ async function importSubmission(dir, { dryRun = false } = {}) {
     objects += 1;
   }
 
-  logger.info('Submission restored', { submissionId, rows: written, objects, users });
-  return { submissionId, rows: written, objects, users };
+  // The tombstone is CLOSED, not deleted: "archived in March, restored in May"
+  // is a truer record than a row that quietly disappears, and once the archive
+  // folder is gone it is the only place that history exists.
+  const [closed] = await models.SubmissionArchive.update(
+    { restoredAt: new Date(), restoredByUserId: userId },
+    { where: { submissionId, restoredAt: null } }
+  );
+
+  logger.info('Submission restored', { submissionId, rows: written, objects, users, closed });
+  return { submissionId, rows: written, objects, users, tombstonesClosed: closed };
 }
 
 /**
@@ -321,9 +330,11 @@ async function importSubmission(dir, { dryRun = false } = {}) {
  * @param {object} [opts]
  * @param {string} [opts.archiveDir] - verified first; deletion is refused
  *   without one, because deleting what was never archived is not retention
+ * @param {string} [opts.userId] - who deleted it, for the tombstone
  * @returns {Promise<{rows: object, objects: number}>}
  */
-async function deleteSubmission(submissionId, { archiveDir } = {}) {
+async function deleteSubmission(submissionId, { archiveDir, userId = null } = {}) {
+  const fs = require('fs/promises');
   const models = require('../../models');
   if (!archiveDir) throw new Error('Refusing to delete a submission that has not been archived');
 
@@ -331,6 +342,27 @@ async function deleteSubmission(submissionId, { archiveDir } = {}) {
   if (manifest.submission.id !== submissionId) {
     throw new Error(`That archive holds ${manifest.submission.id}, not ${submissionId}`);
   }
+
+  // The tombstone goes down BEFORE the submission comes out. If the delete then
+  // fails half way the worst case is a tombstone for something still here — a
+  // visible, correctable inconsistency. The other order risks a submission that
+  // has vanished with nothing anywhere saying where it went, which is the state
+  // this table exists to make impossible.
+  const manifestBytes = await fs.readFile(path.join(archiveDir, 'manifest.json'));
+  await models.SubmissionArchive.create({
+    submissionId,
+    manuscriptId: manifest.submission.manuscriptId,
+    title: manifest.submission.title,
+    archivedAt: new Date(),
+    archivedByUserId: userId,
+    location: path.resolve(archiveDir),
+    manifestSha256: sha256(manifestBytes),
+    contents: {
+      tables: Object.fromEntries(Object.entries(manifest.tables).map(([t, v]) => [t, v.rows])),
+      objects: manifest.objects.length,
+      bytes: manifest.objects.reduce((n, o) => n + o.bytes, 0)
+    }
+  });
 
   const rows = {};
   await models.sequelize.transaction(async (t) => {
@@ -351,6 +383,7 @@ async function deleteSubmission(submissionId, { archiveDir } = {}) {
   const objects = await s3Service.deletePrefix(manifest.s3Prefix);
   logger.info('Submission deleted after archiving', { submissionId, rows, objects, archiveDir });
   return { rows, objects };
+
 }
 
 module.exports = {

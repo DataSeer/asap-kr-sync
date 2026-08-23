@@ -61,7 +61,23 @@ async function main() {
     const result = await archive.deleteSubmission(deleteId, { archiveDir: dir });
     const total = Object.values(result.rows).reduce((n, v) => n + v, 0);
     console.log(`\nDeleted ${deleteId}: ${total} rows, ${result.objects} objects`);
+    console.log('  a tombstone was recorded — the submission is gone, not forgotten');
     console.log(`  restore it with: node scripts/archive-submission.js --import ${dir}`);
+    return;
+  }
+
+  if (has('--list')) {
+    const { SubmissionArchive } = require('../src/backend/models');
+    const rows = await SubmissionArchive.listMissing();
+    if (!rows.length) { console.log('\nNothing archived and still away.'); return; }
+    console.log(`\n${rows.length} archived submission(s) not currently here:\n`);
+    for (const r of rows) {
+      const n = Object.values(r.contents?.tables || {}).reduce((a, b) => a + b, 0);
+      console.log(`  ${r.manuscriptId || r.submissionId}`);
+      console.log(`    ${r.archivedAt.toISOString().slice(0, 10)} · ${n} rows, `
+        + `${r.contents?.objects || 0} objects · ${r.manifestSha256.slice(0, 12)}`);
+      console.log(`    ${r.location}`);
+    }
     return;
   }
 
@@ -71,6 +87,7 @@ async function main() {
     '  --export <submissionId> --out <dir>',
     '  --import <dir> [--dry-run]',
     '  --delete <submissionId> --archive <dir>',
+    '  --list                              what has been archived and not restored',
     '',
     'Deleting verifies the archive first: nothing is removed unarchived.'
   ].join('\n'));

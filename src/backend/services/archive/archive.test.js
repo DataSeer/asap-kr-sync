@@ -21,6 +21,16 @@ const assert = require('node:assert/strict');
 const models = require('../../models');
 const { TABLES, DELETE_ORDER } = require('./archive-shape');
 
+/**
+ * Tables with a `submissionId` that deliberately do NOT travel with it.
+ *
+ * Exactly one so far, and it has to be named rather than inferred: the
+ * tombstone exists precisely because the submission does not, so archiving it
+ * alongside the submission would be archiving the record of the archiving.
+ * Restoring one would resurrect a tombstone for a submission that is back.
+ */
+const NOT_OWNED = new Set(['submission_archives']);
+
 test('every table that belongs to a submission is in the shape', () => {
   // Read off the models rather than the database, so this runs without a
   // connection: a model with a `submissionId` attribute owns rows that go with
@@ -29,7 +39,8 @@ test('every table that belongs to a submission is in the shape', () => {
     .filter(([name, m]) => typeof m?.getAttributes === 'function'
       && name !== 'Submission'
       && 'submissionId' in m.getAttributes())
-    .map(([, m]) => m.getTableName());
+    .map(([, m]) => m.getTableName())
+    .filter((t) => !NOT_OWNED.has(t));
 
   const covered = new Set(TABLES.map((t) => t.table));
   const missing = owned.filter((t) => !covered.has(t));
@@ -96,4 +107,20 @@ test('a self-referencing table is marked as one', () => {
       `${table}.${field} points at its own table and must be declared as selfRef`);
   }
   assert.ok(selfRefs.length >= 2, 'krt_data and pipeline_runs both self-reference');
+});
+
+test('the tombstone outlives the submission, so it never travels with it', () => {
+  // Naming it in NOT_OWNED is a decision, and a decision needs a reason on
+  // record: archiving the tombstone would archive the record of the archiving,
+  // and restoring it would resurrect a tombstone for a submission that is back.
+  assert.ok(
+    'submissionId' in models.SubmissionArchive.getAttributes(),
+    'it does name a submission — which is exactly why the exclusion is deliberate'
+  );
+  assert.ok(
+    !TABLES.some((t) => t.table === 'submission_archives'),
+    'and it must never be in the export'
+  );
+  // And no foreign key, because what it names is gone.
+  assert.equal(models.SubmissionArchive.getAttributes().submissionId.references, undefined);
 });

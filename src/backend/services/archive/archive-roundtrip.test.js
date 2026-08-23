@@ -177,9 +177,30 @@ test('a submission survives being archived, deleted and restored', async (t) => 
 
     // ── and it refuses to restore twice ─────────────────────────────────────
     await assert.rejects(() => archive.importSubmission(dir), /already here/);
+
+    // ── the tombstone ───────────────────────────────────────────────────────
+    //
+    // Recorded on delete, CLOSED on restore rather than removed: "archived in
+    // March, restored in May" is a truer record than a row that quietly
+    // disappears, and once the archive folder is gone it is the only place that
+    // history exists.
+    const stones = await models.SubmissionArchive.findAll({
+      where: { submissionId: submission.id }
+    });
+    assert.equal(stones.length, 1, 'one delete, one tombstone');
+    assert.ok(stones[0].restoredAt, 'and the restore closed it');
+    assert.equal(stones[0].manuscriptId, 'AR1-000001-001-org-X-1');
+    assert.match(stones[0].manifestSha256, /^[0-9a-f]{64}$/);
+
+    const missing = await models.SubmissionArchive.listMissing();
+    assert.ok(!missing.some((m) => m.submissionId === submission.id),
+      'a restored submission is no longer missing');
   } finally {
     await archive.deleteSubmission(submission.id, { archiveDir: dir }).catch(() => {});
     await models.Submission.destroy({ where: { id: submission.id } }).catch(() => {});
+    // The tombstones this test made are its own litter, not history worth
+    // keeping — a real one is never deleted.
+    await models.SubmissionArchive.destroy({ where: { submissionId: submission.id } }).catch(() => {});
     await fs.rm(dir, { recursive: true, force: true });
   }
 });

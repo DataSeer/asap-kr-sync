@@ -36,6 +36,7 @@ const SubmissionJob = require('./SubmissionJob')(sequelize);
 const StepExecution = require('./StepExecution')(sequelize);
 const PipelineRun = require('./PipelineRun')(sequelize);
 const PipelineRunStep = require('./PipelineRunStep')(sequelize);
+const SubmissionArchive = require('./SubmissionArchive')(sequelize);
 const SubmissionInputFreeze = require('./SubmissionInputFreeze')(sequelize);
 const EnrichmentListEntry = require('./EnrichmentListEntry')(sequelize);
 const RefreshToken = require('./RefreshToken')(sequelize);
@@ -177,6 +178,7 @@ module.exports = {
   StepExecution,
   PipelineRun,
   PipelineRunStep,
+  SubmissionArchive,
   SubmissionInputFreeze,
   EnrichmentListEntry,
   RefreshToken,
