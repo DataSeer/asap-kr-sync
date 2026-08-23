@@ -703,10 +703,17 @@ PDF upload makes, and it is what lets a replaced manuscript reach the pipeline.
 ### `POST /api/submissions/:id/processes/restart`
 Re-run a **chosen set** of steps as one restart.
 
-- **Body**: `{ jobTypes: string[] }` — pipeline step names, at most 20.
-- **Returns**: `{ message, restarted, reset }`. `reset` is what the selection
-  carried with it (its shared downstream) — the UI already showed the user, but
-  a script or a log has to be told.
+- **Body**: `{ jobTypes: string[], paramsSource?: 'live' | 'frozen' }` — step
+  names, at most 20.
+- **Returns**: `{ message, restarted, reset, paramsSource }`. `reset` is what
+  the selection carried with it (its shared downstream) — the UI already showed
+  the user, but a script or a log has to be told.
+- **`paramsSource`** decides which prompts and model the re-run uses. `live`
+  (the default) is today's; `frozen` is what each step's previous execution
+  recorded. A restart already re-reads the round's frozen INPUTS, so without
+  this a re-run that disagrees with the original cannot be told apart from a
+  prompt somebody edited in between. Default is `live` because the common
+  restart is "I changed the prompt, run it again".
 - **400** on an unknown or empty list, *before anything is touched*: half a
   restart is worse than none, because the caller has to work out which half ran.
 - **Not a loop of single restarts.** The first step to finish would release the
@@ -716,15 +723,50 @@ Re-run a **chosen set** of steps as one restart.
 - Behind the LM budget: a selection of five detectors is five detectors' worth of
   model work.
 
+### `GET /api/submissions/:id/runs?round=N`
+Every **pipeline run** of the round, and what each one contains.
+
+- **Returns**: `{ round, runCount, runs: [{ runNumber, cause, status,
+  paramsSource, causedBy, createdAt, completedAt, pipelineVersion, appVersion,
+  steps: [{ jobType, carriedOver, status, outcomeState, counts, durationMs }] }] }`
+- The submission-wide view: "run 2" as ONE number across every module, rather
+  than a different number per module shown in the same place. Not derivable from
+  the per-step endpoints — those say what happened to a step across runs, and
+  cannot say what a run did.
+- Same audience as the other job internals: an author reads the latest result.
+
+### `GET /api/submissions/:id/jobs/:jobType/runs?round=N`
+Every pipeline run **containing this step**, newest first, metadata only.
+
+- **Returns**: `{ round, jobType, runCount, runs: [...] }`, each entry carrying
+  `runNumber`, `isLatest`, `cause`, `carriedOver`, `producedByRun`, `status`,
+  `outcomeState`, `counts`, `attemptCount`, `cancelledAt`, `discardedCount`,
+  `triggeredBy`, `triggerKind` and the timings.
+- A step the run **carried over** appears, flagged, naming the run that did the
+  work. Under the old per-step numbering it simply was not in the list, so
+  comparing run 2 with run 3 made the step look like it had vanished.
+- A step the run has **not reached** appears as `not_started` rather than being
+  hidden, which would make the current run look shorter than it is.
+
+### `GET /api/submissions/:id/jobs/:jobType/runs/:runNumber?round=N`
+One run of one step, in full — shaped like a job, so a past run renders through
+exactly the same path as the current one.
+
+- Adds `result`, `logs`, `files`, `inputs`, `documents`, `attempts`,
+  `cancelledAt`, `cancelledBy`, `discarded` and `artefactsAreOwn`.
+- **Not a 404** when the run contains the step but has not executed it: the run
+  is real and the answer is "nothing yet", which a spinner cannot say.
+
 ### `POST /api/submissions/:id/jobs/:jobType/continue?round=N`
 Proceed despite a step's **issue** — a failure, a partial, or a run that
 completed while producing nothing usable.
 
 - **Returns**: `{ message, jobType, acknowledgedAt }`
 - Re-runs nothing and does not mark the step successful — it stays `failed`.
-  What is recorded is `failure_acknowledged_at` / `..._by_user_id`: a report built
-  without software detection looks exactly like one where software detection
-  found nothing, and only this tells them apart.
+  What is recorded is `step_executions.decision` — `{ at, byUserId, choice }` on
+  the EXECUTION it was made about, not on the step: a report built without
+  software detection looks exactly like one where software detection found
+  nothing, and only this tells them apart.
 - **400** unless the step actually has an issue. Deciding twice is *not* an
   error, and the second caller does not overwrite the first's name.
 - What it releases depends on what the step produced: dependants that can run on

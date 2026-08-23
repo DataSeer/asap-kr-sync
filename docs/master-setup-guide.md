@@ -7,6 +7,7 @@
 >
 > **Deep-dive references** (optional): [Architecture](./architecture.md) · [Database](./database.md) ·
 > [External APIs](./external-apis.md) · [Background Jobs](./background-jobs.md) ·
+> [Archiving](./archiving.md) ·
 > [Background Modules](./background-modules.md) · [Authentication](./authentication.md) ·
 > [Auth0 Integration](./auth0-integration.md) · [Environment Variables](./environment-variables.md) ·
 > [Submission Workflow](./submission-workflow.md) · [EC2 Deployment](./ec2-deployment.md).

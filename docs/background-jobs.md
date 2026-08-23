@@ -436,16 +436,25 @@ Now the dependents hold at `waiting`, and the person looking at it chooses:
 | **Continue without it** | records a decision to proceed without its data | the module's page and the pipeline banner |
 
 **Continue does not re-run anything and does not pretend the step succeeded.**
-The row stays `failed`; what is written is `failure_acknowledged_at` and
-`failure_acknowledged_by_user_id`. Recorded rather than inferred, because a
-report built without software detection looks exactly like one where software
-detection found nothing, and the difference is only knowable if somebody wrote
-it down. Two people pressing Continue on the same stalled pipeline is not an
-error, and the second does not overwrite the first's name.
+The row stays `failed`; what is written is `step_executions.decision` —
+`{ at, byUserId, choice }`. Recorded rather than inferred, because a report
+built without software detection looks exactly like one where software detection
+found nothing, and the difference is only knowable if somebody wrote it down.
+Two people pressing Continue on the same stalled pipeline is not an error, and
+the second does not overwrite the first's name.
 
-The decision is cleared on **retry** and on **restart**: it was about one
-failure, not about the step. Left behind, the *next* failure would be waved
-through by a choice nobody made about it.
+**The decision lives on the EXECUTION, not on the step.** It used to be two
+columns on the job row, cleared in three places when a step re-ran — and
+`runAllProcesses`, the one that re-runs everything, did not clear them, so a
+decision about run 1's failure silently released run 2's. There is nothing to
+clear now: a re-executed step gets a new execution, which was never decided
+about, and a carried-over step keeps the decision along with the result it was
+about. The bug is not fixed; it is unrepresentable.
+
+Writing it is **not** a guarded background write. Every other history write logs
+and carries on, because a broken logbook must not fail a run that succeeded — but
+the orchestrator is about to act on a decision, and one that failed silently
+would release the pipeline on a choice nobody made.
 
 One unacknowledged failure is enough to hold a step — a decision about datasets
 says nothing about materials.
