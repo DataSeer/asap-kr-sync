@@ -236,6 +236,12 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 | `LOG_LEVEL` | Winston log level (`error`, `warn`, `info`, `http`, `verbose`, `debug`) | `http` | No |
 | `LOG_FILE` | Log file path | `logs/app.log` | No |
 
+## Provenance
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `GIT_SHA` | The commit this build came from. `SOURCE_COMMIT` is accepted as an alias. Recorded on every pipeline run as `app_version`. **Provenance only** — never read to decide whether an old run can be understood; that is `pipeline_version`'s job, and conflating the two turns every deploy into a history wipe. Without it a run records the package version alone, which cannot tell two deploys of the same version apart | package version | No |
+
 ## KRT
 
 | Variable | Description | Default | Required |
