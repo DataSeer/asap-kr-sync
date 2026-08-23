@@ -18,27 +18,14 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const path = require('path');
-
+const { serviceFiles, rel, read } = require('../../test-helpers/service-files');
 const { sanitise, mergeFrozen, INLINE_LIMIT, OMITTED } = require('./run-inputs.service');
-
-const SERVICES_DIR = path.join(__dirname, '..');
-
-function serviceFiles(dir = SERVICES_DIR, acc = []) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) serviceFiles(full, acc);
-    else if (entry.name.endsWith('.js') && !entry.name.includes('.test.')) acc.push(full);
-  }
-  return acc;
-}
 
 /** Every `saveRunInputs({...})` object literal in the services tree. */
 function freezeSites() {
   const sites = [];
   for (const file of serviceFiles()) {
-    const src = fs.readFileSync(file, 'utf8');
+    const src = read(file);
     for (const match of src.matchAll(/saveRunInputs\(jobLogger, \{/g)) {
       let depth = 0;
       const start = match.index + match[0].length - 1;
@@ -47,7 +34,7 @@ function freezeSites() {
         if (src[i] === '{') depth += 1;
         else if (src[i] === '}') { depth -= 1; if (depth === 0) { end = i; break; } }
       }
-      sites.push({ file: path.relative(SERVICES_DIR, file), body: src.slice(start, end + 1) });
+      sites.push({ file: rel(file), body: src.slice(start, end + 1) });
     }
   }
   return sites;
@@ -191,20 +178,42 @@ test('a cycle terminates instead of hanging the worker', () => {
   assert.doesNotThrow(() => JSON.stringify(sanitise(a)));
 });
 
-test('nothing in a real config leaks a value from the environment', () => {
-  // The strongest form of the secret rule: whatever the environment holds that
-  // looks like a credential must not appear anywhere in the output, under any
-  // key name the denylist happens not to match.
-  const secrets = Object.entries(process.env)
-    .filter(([k, v]) => /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(k) && v && v.length > 8)
-    .map(([, v]) => v);
+test('no real config module leaks a credential', () => {
+  // Over the ACTUAL config modules, because a hand-written fixture only ever
+  // contains the keys whoever wrote it thought of — and this rule exists for
+  // the key nobody thought of.
+  //
+  // A planted value, not whatever happens to be in the environment: the suite
+  // runs without dotenv, so an env-based check finds nothing to leak and
+  // passes while proving nothing. This one fails if the sanitiser stops
+  // working, whatever the machine is configured with.
+  const fs = require('fs');
+  const path = require('path');
+  const CONFIG_DIR = path.join(__dirname, '../../config');
+  const PLANTED = 'planted-credential-must-not-survive';
 
-  const configs = fs.readdirSync(path.join(__dirname, '../../config'))
-    .filter((f) => f.endsWith('-api.js'))
-    .map((f) => require(path.join(__dirname, '../../config', f)));
+  const names = fs.readdirSync(CONFIG_DIR).filter((f) => f.endsWith('-api.js'));
+  assert.ok(names.length >= 8, `expected the real config modules, found ${names.length}`);
 
-  const dumped = JSON.stringify(configs.map((c) => sanitise(c)));
-  const leaked = secrets.filter((s) => dumped.includes(s));
+  const leaked = [];
+  for (const name of names) {
+    const config = require(path.join(CONFIG_DIR, name));
+    const planted = {};
+    // Plant into every key the module itself declares as secret-ish, at every
+    // level, so the check follows the real shape rather than a guess at it.
+    const plant = (src, dest) => {
+      for (const [k, v] of Object.entries(src)) {
+        if (/key|token|secret|password|auth|credential/i.test(k)) dest[k] = PLANTED;
+        else if (v && typeof v === 'object' && !Array.isArray(v)) {
+          dest[k] = {}; plant(v, dest[k]);
+        } else dest[k] = v;
+      }
+    };
+    plant(config, planted);
+
+    const dumped = JSON.stringify(sanitise(planted));
+    if (dumped.includes(PLANTED)) leaked.push(name);
+  }
 
   assert.deepEqual(leaked, [], 'a credential reached a downloadable artefact');
 });
@@ -220,17 +229,16 @@ test('nothing in a real config leaks a value from the environment', () => {
 
 test('every prompt loader resolves through the frozen-params store', () => {
   const offenders = serviceFiles()
-    .filter((f) => /readFileSync\((?:CONSOLIDATION_)?PROMPT_FILE/.test(fs.readFileSync(f, 'utf8')))
-    .filter((f) => !/frozenParams\.prompt\(/.test(fs.readFileSync(f, 'utf8')))
-    .map((f) => path.relative(SERVICES_DIR, f));
+    .filter((file) => /readFileSync\((?:CONSOLIDATION_)?PROMPT_FILE/.test(read(file)))
+    .filter((file) => !/frozenParams\.prompt\(/.test(read(file)))
+    .map(rel);
 
   assert.deepEqual(offenders, [],
     'these read their prompt from disk without offering the run\'s own — use frozenParams.prompt()');
 });
 
 test('and there are enough of them to be the real list', () => {
-  const wired = serviceFiles()
-    .filter((f) => /frozenParams\.prompt\(/.test(fs.readFileSync(f, 'utf8')));
+  const wired = serviceFiles().filter((f) => /frozenParams\.prompt\(/.test(read(f)));
 
   assert.ok(wired.length >= 9, `expected a loader per prompted step, found ${wired.length}`);
 });

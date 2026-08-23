@@ -388,5 +388,5 @@ async function deleteSubmission(submissionId, { archiveDir, userId = null } = {}
 
 module.exports = {
   exportSubmission, importSubmission, deleteSubmission, readArchive,
-  collect, ARCHIVE_VERSION, sha256, TABLES, DELETE_ORDER
+  ARCHIVE_VERSION, sha256, TABLES, DELETE_ORDER
 };

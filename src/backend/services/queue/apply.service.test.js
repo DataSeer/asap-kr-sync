@@ -180,29 +180,16 @@ test('every target names a real submission field', () => {
 // stop. So the source is read, in the same spirit as one-restart-path.test.js.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const fs = require('fs');
 const path = require('path');
-
-const SERVICES_DIR = path.join(__dirname, '..');
-
-function serviceFiles(dir = SERVICES_DIR, acc = []) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) serviceFiles(full, acc);
-    else if (entry.name.endsWith('.js') && !entry.name.includes('.test.')) acc.push(full);
-  }
-  return acc;
-}
+const { servicesMatching } = require('../../test-helpers/service-files');
 
 test('no service writes an applied field except the apply service', () => {
   const fields = Object.values(TARGETS).map((spec) => spec.field);
   const assignment = new RegExp(`submission\\.(${fields.join('|')})\\s*=`);
-  const allowed = path.join(SERVICES_DIR, 'queue', 'apply.service.js');
 
-  const offenders = serviceFiles()
-    .filter((file) => file !== allowed)
-    .filter((file) => assignment.test(fs.readFileSync(file, 'utf8')))
-    .map((file) => path.relative(SERVICES_DIR, file));
+  const offenders = servicesMatching(assignment, {
+    except: [path.join('queue', 'apply.service.js')]
+  });
 
   assert.deepEqual(offenders, [],
     'these promote a value into the submission without recording that they did');

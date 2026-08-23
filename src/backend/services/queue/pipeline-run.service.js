@@ -567,7 +567,6 @@ module.exports = {
   currentRun,
   attachExecution,
   downstreamOf,
-  captureShape,
   appVersion,
   runsForStep,
   stepInRun,

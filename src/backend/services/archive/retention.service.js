@@ -29,6 +29,7 @@
 const { Op } = require('sequelize');
 const logger = require('../../utils/logger');
 const archive = require('./archive.service');
+const { buildS3Folder } = require('../../utils/helpers');
 
 /**
  * Submissions matching a set of criteria, newest first.
@@ -113,7 +114,14 @@ async function archiveAndDelete(submissionIds, { outDir, userId = null, dryRun =
         continue;
       }
 
-      const dir = path.join(outDir, submission.manuscriptId || id);
+      // The id is in the name, always. `manuscriptId` is NOT unique — it has a
+      // plain index, not a constraint — so naming a directory after it alone
+      // lets a second submission overwrite the first's archive and then be
+      // deleted too, leaving one of the two unrecoverable. Silent, and the
+      // worst failure this feature could have.
+      //
+      // `buildS3Folder` already makes exactly this name for the same reason.
+      const dir = path.join(outDir, buildS3Folder(submission.manuscriptId, id));
       const manifest = await archive.exportSubmission(id, dir);
 
       // Read it back before deleting anything. The export just wrote it, so

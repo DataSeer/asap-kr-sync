@@ -28,20 +28,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
-
-const SERVICES_DIR = path.join(__dirname, '..');
-
-/** Every service file, recursively, excluding tests. */
-function serviceFiles(dir = SERVICES_DIR, acc = []) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) serviceFiles(full, acc);
-    else if (entry.name.endsWith('.js') && !entry.name.includes('.test.')) acc.push(full);
-  }
-  return acc;
-}
-
-const rel = (f) => path.relative(SERVICES_DIR, f);
+const { serviceFiles, rel } = require('../../test-helpers/service-files');
 
 test('no service creates a SubmissionJob row except the orchestrator', () => {
   // The orchestrator is the one place allowed to: `runAllProcesses` seeds the
