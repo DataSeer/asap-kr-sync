@@ -59,9 +59,15 @@ async function select() {
   if (!rows.length) { console.log('\nNothing matches.'); return; }
   console.log(`\n${rows.length} submission(s), least recently touched first:\n`);
   for (const r of rows) {
-    console.log(`  ${r.manuscriptId || r.id}`);
-    console.log(`    ${r.status.padEnd(12)} round ${r.currentRound}  ${r.project || '--'}  ${r.owner || 'no owner'}`);
-    console.log(`    touched ${r.updatedAt.toISOString().slice(0, 10)}   ${r.id}`);
+    // The manuscript id reads first, because that is what a person recognises.
+    // The submission id is always underneath it, never instead of it: it is
+    // what the other half of this command takes, and `manuscriptId` is entered
+    // by hand and may repeat — two rows sharing one must still be tellable
+    // apart on the screen where somebody decides what to delete.
+    console.log(`  ${r.manuscriptId || '(no manuscript id)'}  ${r.title || ''}`);
+    console.log(`    ${r.status.padEnd(12)} round ${r.currentRound}  ${r.project || '--'}  `
+      + `${r.owner || 'no owner'}  touched ${r.updatedAt.toISOString().slice(0, 10)}`);
+    console.log(`    ${r.id}`);
   }
   console.log('\nArchive them with:');
   console.log('  node scripts/retention.js --select … --ids-only > ids.txt');
@@ -95,8 +101,9 @@ async function archive() {
     ? `\n${done.length} archived (nothing deleted — dry run):\n`
     : `\n${done.length} archived and deleted:\n`);
   for (const d of done) {
-    console.log(`  ${d.manuscriptId || d.id}`
+    console.log(`  ${d.manuscriptId || '(no manuscript id)'}`
       + (d.deleted ? `  ${d.rows} rows, ${d.objects} objects` : '  (dry run)'));
+    console.log(`    ${d.id}`);
     console.log(`    ${d.dir}`);
   }
   if (failed.length) {

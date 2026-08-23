@@ -33,7 +33,11 @@ async function main() {
     const out = flag('--out') || path.join('tmp', 'archives', exportId);
     const manifest = await archive.exportSubmission(exportId, out);
     const rows = Object.values(manifest.tables).reduce((n, t) => n + t.rows, 0);
-    console.log(`\nArchived ${manifest.submission.manuscriptId || manifest.submission.id}`);
+    // The manuscript id for the reader; the submission id because it is the
+    // identity — entered by hand, `manuscriptId` may repeat, so it names a
+    // submission the way a title does: usefully, and not uniquely.
+    console.log(`\nArchived ${manifest.submission.manuscriptId || '(no manuscript id)'}`);
+    console.log(`  ${manifest.submission.id}`);
     console.log(`  ${rows} rows across ${Object.keys(manifest.tables).length} tables`);
     console.log(`  ${manifest.objects.length} S3 objects`);
     console.log(`  -> ${out}`);
@@ -73,9 +77,12 @@ async function main() {
     console.log(`\n${rows.length} archived submission(s) not currently here:\n`);
     for (const r of rows) {
       const n = Object.values(r.contents?.tables || {}).reduce((a, b) => a + b, 0);
-      console.log(`  ${r.manuscriptId || r.submissionId}`);
+      console.log(`  ${r.manuscriptId || '(no manuscript id)'}${r.title ? `  ${r.title}` : ''}`);
       console.log(`    ${r.archivedAt.toISOString().slice(0, 10)} · ${n} rows, `
         + `${r.contents?.objects || 0} objects · ${r.manifestSha256.slice(0, 12)}`);
+      // Always shown, never instead of the label above: it is what --import
+      // takes, and the only thing separating two submissions that share one.
+      console.log(`    ${r.submissionId}`);
       console.log(`    ${r.location}`);
     }
     return;
