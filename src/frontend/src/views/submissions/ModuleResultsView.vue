@@ -163,6 +163,9 @@ async function loadRuns() {
 function runLabel(r) {
   const parts = [`${r.runNumber} of ${runCount.value}${r.isLatest ? ' — latest' : ''}`]
   if (r.carriedOver && r.producedByRun) parts.push(`carried over from run ${r.producedByRun}`)
+  // A run that reproduced an earlier one's prompts is not comparable with a
+  // live run on the same footing, and the selector is where runs get compared.
+  if (r.paramsSource === 'frozen') parts.push('earlier settings')
   parts.push(r.status === 'not_started'
     ? 'not run yet'
     : formatDateTime(r.completedAt || r.startedAt))

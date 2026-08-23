@@ -348,6 +348,7 @@ function describeMembership(member) {
     runNumber: run.runNumber,
     cause: run.cause,
     runStatus: run.status,
+    paramsSource: run.paramsSource,
     startedRunAt: run.createdAt,
     jobType: member.jobType,
     carriedOver: member.carriedOver,
@@ -537,6 +538,9 @@ async function runsForSubmission(submissionId, round) {
     runNumber: run.runNumber,
     cause: run.cause,
     status: run.status,
+    // A run that reproduced an earlier one's prompts and model must say so:
+    // its results are not comparable with a live run's on the same footing.
+    paramsSource: run.paramsSource,
     createdAt: run.createdAt,
     completedAt: run.completedAt,
     pipelineVersion: run.pipelineVersion,

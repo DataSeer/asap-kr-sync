@@ -128,6 +128,40 @@ async function deletePrefix(prefix) {
 }
 
 /**
+ * Every key under a prefix, paged.
+ *
+ * The read half of `deletePrefix`, and it exists for archiving: a submission's
+ * objects are not enumerable from the database — job artefacts are keyed by run
+ * and named by the module, and only S3 knows what is actually there. Walking
+ * the prefix is the only way to archive a submission without guessing.
+ *
+ * Keys come back WITHOUT the bucket prefix, so a caller can lay them out inside
+ * an archive and hand them straight back to `uploadFile` on restore.
+ *
+ * @param {string} prefix - S3 key prefix (without bucketPrefix; this adds it)
+ * @returns {Promise<Array<{key: string, size: number}>>}
+ */
+async function listPrefix(prefix) {
+  const fullPrefix = prefix.startsWith(bucketPrefix) ? prefix : `${bucketPrefix}${prefix}`;
+  const out = [];
+  let continuationToken;
+
+  do {
+    const listed = await s3Client.send(new ListObjectsV2Command({
+      Bucket: bucketName,
+      Prefix: fullPrefix,
+      ContinuationToken: continuationToken
+    }));
+    for (const o of listed.Contents || []) {
+      out.push({ key: o.Key.slice(bucketPrefix.length), size: o.Size ?? 0 });
+    }
+    continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return out;
+}
+
+/**
  * Check if file exists in S3
  * @param {string} key - S3 key
  * @returns {Promise<boolean>}
@@ -193,6 +227,7 @@ async function getPresignedUploadUrl(key, mimeType, expiresIn = 3600) {
 }
 
 module.exports = {
+  listPrefix,
   uploadFile,
   downloadFile,
   deleteFile,

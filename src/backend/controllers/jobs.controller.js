@@ -603,7 +603,7 @@ async function getJobPrompts(req, res, next) {
  */
 function shapeRun(run, {
   runCount, triggeredBy, isLatest, runNumber, carriedOver = false, producedByRun = null,
-  cause = null, cancelledBy = null
+  cause = null, cancelledBy = null, paramsSource = 'live'
 }) {
   return {
     jobType: run.jobType,
@@ -614,6 +614,7 @@ function shapeRun(run, {
     runCount,
     isLatest,
     cause,
+    paramsSource,
     carriedOver,
     producedByRun,
     attempts: run.attempts || [],
@@ -723,6 +724,7 @@ async function listRuns(req, res, next) {
           isLatest: index === 0,
           cause: entry.cause,
           runStatus: entry.runStatus,
+          paramsSource: entry.paramsSource,
           // The pair that keeps the list honest: an execution appears in every
           // run that carried it, and a number over somebody else's result with
           // nothing saying so is how "why does this still say 14 items" starts.
@@ -802,6 +804,7 @@ async function getRun(req, res, next) {
         carriedOver: entry.carriedOver,
         producedByRun: entry.producedByRun,
         cause: entry.cause,
+        paramsSource: entry.paramsSource,
         cancelledBy: await resolveTrigger(entry.execution.cancelledByUserId)
       })
     });
