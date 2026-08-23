@@ -1,11 +1,13 @@
 # Environment Variables
 
-Environment variables by category. **The single source of truth is `.env.example`** at the repo root — this doc
-tracks what each variable means and the code-side defaults, and it is not exhaustive: the KRT Grounding block
-(`KRT_GROUNDING_*`), the software-detection LM block (`SOFTWARE_DETECTION_LM_ENABLED`,
-`SOFTWARE_DETECTION_GEMINI_*`, `SOFTWARE_DETECTION_API_TIMEOUT`) and the per-bucket rate-limit overrides
-(`RATE_LIMIT_<BUCKET>_MAX` / `_WINDOW_MS`) are in `.env.example` but not below. If the two ever disagree, trust
-`.env.example`.
+Every variable the application reads, what it means, and the default it falls
+back to. **This is the complete reference.**
+
+`.env.example` is deliberately *not* complete: it holds only the decisions a
+deployment has to make, so that a value copied out of it is one somebody meant
+to set. Anything absent from that file and present here has a default in code —
+which means setting it here PINS it, and a default improved later will not
+reach that deployment.
 
 The application loads `.env` via dotenv at startup. Cascading load order is defined in `src/backend/server.js` (look there for the precedence if you maintain multiple env files locally). For most setups one `.env` file is enough.
 
@@ -78,14 +80,14 @@ Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=St
 
 ## PDF Analysis (Generated KRT — LM-primary, rule-based fallback)
 
-PDF Analysis regroups + coarse-dedups every detection's items (preserving per-resource `detectedBy` provenance), then asks an **LM (Google Gemini)** to consolidate those candidates into the final Generated KRT (merging near-duplicates, dropping non-resources, cleaning fields, attaching a `reason` per kept line). It is **LM-primary with a rule-based fallback** — when `KRT_GENERATION_ENABLED` is off or the LM errors, it falls back to the rule-based merge so the pipeline always yields a Generated KRT. The `PDF_ANALYSIS_API_*` entries below are vestigial (kept for compatibility with older `.env` files) and unused by the code; the LM call is configured separately (see [KRT Generation](#krt-generation-google-gemini--generated-krt) below).
+PDF Analysis regroups + coarse-dedups every detection's items (preserving per-resource `detectedBy` provenance), then asks an **LM (Google Gemini)** to consolidate those candidates into the final Generated KRT (merging near-duplicates, dropping non-resources, cleaning fields, attaching a `reason` per kept line). It is **LM-primary with a rule-based fallback** — when `KRT_GENERATION_ENABLED` is off or the LM errors, it falls back to the rule-based merge so the pipeline always yields a Generated KRT. It calls no service of its own — the LM step goes through [KRT Generation](#krt-generation-google-gemini--generated-krt), so that is where the model and key are configured.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `PDF_ANALYSIS_ENABLED` | Enable the consolidator | `true` | No |
 | `PDF_ANALYSIS_DEMO_DATA_ENABLED` | Demo data fallback | `false` | No |
+| `PDF_ANALYSIS_API_TIMEOUT` | How long the consolidation job may run before pg-boss expires it and re-delivers (ms). Named for the external API this step used to call; it now sizes the JOB, and the name is kept because changing it would break every existing `.env` | `300000` | No |
 | `PDF_ANALYSIS_SUPPRESS_SUGGESTIONS` | Filter out AI suggestions by kind. Comma-separated `<action>[:<column>[:<state>]]` tokens — **action**: `add`/`edit`/`update`; **column**: `source`/`identifier`/`resourceName`; optional **state**: `empty`/`filled` (the user's current cell value). E.g. `update:source:filled` drops SOURCE edits only when the cell already has a value (no overwrite), still allowing an empty cell to be filled. A value **replaces** the default; use `none` to suppress nothing. The default blocks name-change suggestions and SOURCE overwrites on existing rows. | `update:resourceName,update:source:filled` | No |
-| `PDF_ANALYSIS_API_BASE_URL` / `PDF_ANALYSIS_API_KEY` / `PDF_ANALYSIS_API_TIMEOUT` | Vestigial — unused by code | — | No |
 
 ## KRT Generation (Google Gemini — Generated KRT)
 
@@ -145,6 +147,7 @@ removed). The DAS Extraction job now depends on Markdown Convert.
 | `SOFTCITE_API_TIMEOUT` | Request timeout (ms) | `600000` | No |
 | `SOFTWARE_DETECTION_GEMINI_API_KEY` | Gemini key for the software LM pass | — | No |
 | `SOFTWARE_DETECTION_GEMINI_MODEL` | Model for the LM pass | `gemini-2.5-flash` | No |
+| `SOFTWARE_DETECTION_API_TIMEOUT` | Timeout for the LM pass (ms) | `300000` | No |
 | `SOFTWARE_DETECTION_DEMO_DATA_ENABLED` | Demo data fallback | `true` | No |
 
 ## KRT Grounding
@@ -260,6 +263,60 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 | `IDENTIFIER_DETECTION_ENABLED` | Enable the module. Set to `false` to skip identifier detection (job produces no data). | `true` | No |
 | `IDENTIFIER_DETECTION_CUT_AT_REFERENCES` | Truncate the document at the first "References"/"Bibliography" heading before scanning (avoids bibliography false positives). Set to `false` to scan the whole document — needed for combined manuscript+supplemental PDFs where the Key Resources table sits after the references heading. | `true` | No |
 
+## Rate limits
+
+Defaults live in `conf/rate-limits.json`. Any bucket can be overridden per
+environment without a redeploy, by pattern rather than by a variable per bucket:
+
+```
+RATE_LIMIT_<BUCKET>_MAX          requests allowed in the window
+RATE_LIMIT_<BUCKET>_WINDOW_MS    the window, in milliseconds
+```
+
+`<BUCKET>` is the upper-cased key from that file: `API`, `AUTH`, `REFRESH`,
+`UPLOAD`, `LMAPI`.
+
+| Bucket | What it limits |
+|--------|----------------|
+| `api` | the per-IP baseline across the whole `/api` surface |
+| `auth` | sign-in attempts |
+| `refresh` | token refreshes |
+| `upload` | file uploads |
+| `lmApi` | the per-user cap on triggering LM, detection and conversion jobs — the one that costs money |
+
+Because these are read through a computed name, a search for
+`process.env.RATE_LIMIT_API_MAX` finds nothing. They are live.
+
+## Turning a module on or off
+
+Every pipeline module follows the same two-variable pattern:
+
+```
+<MODULE>_ENABLED=true               opt-IN — a module is off unless this is exactly 'true'
+<MODULE>_DEMO_DATA_ENABLED=false    answer from canned demo data when the real path is unavailable
+```
+
+A module runs only when it is **both** switched on **and** given the credentials
+its service needs; either alone leaves it off. That is deliberate — an
+unconfigured module costs nothing and reports itself as `off` throughout the
+app, so an empty result reads as a configuration choice rather than as a finding
+about the manuscript.
+
+Demo data defaults to **on**, which suits a demo instance and not a real one: a
+canned answer is indistinguishable from a real one in the report, and only the
+run's own record says `source: demo`.
+
+Two modules do not fit the pattern, and the exceptions matter:
+
+- **Software Detection** has no single switch. Softcite
+  (`SOFTCITE_API_ENABLED`) and the Gemini pass (`SOFTWARE_DETECTION_LM_ENABLED`)
+  are enabled separately, and either one alone still produces a result — the run
+  is then recorded as `partial`, naming the engine that was missing.
+- **KRT Grounding** has no enable flag at all. Its deterministic matcher always
+  runs, so the step is never off; only the optional LM second look can be
+  disabled (`KRT_GROUNDING_SECOND_LOOK_ENABLED=false`), which settles fewer rows
+  rather than producing nothing.
+
 ## Logging
 
 | Variable | Description | Default | Required |
@@ -282,19 +339,3 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 | `KRT_TEMPLATE_URL` | Google Sheets KRT template URL surfaced as a download link in the SPA | — | No |
 
 ---
-
-## Removed in Phase 5 (cleanup)
-
-The following variables were previously documented but are not referenced anywhere in the codebase. They were removed from `.env.example` during the audit cleanup:
-
-- `EMAIL_SERVICE`, `EMAIL_API_KEY`, `EMAIL_FROM` — no email service is currently implemented.
-- `GOOGLE_SERVICE_ACCOUNT_KEY_FILE`, `GOOGLE_DRIVE_FOLDER_ID` — no Google Sheets exporter is currently implemented (Excel is the only active report format).
-- `MATERIALS_LANGEXTRACT_*`, `PROTOCOLS_LANGEXTRACT_*` — only datasets detection uses the langextract pipeline.
-- `PDF_ANALYSIS_API_BASE_URL`, `PDF_ANALYSIS_API_KEY` — PDF Analysis calls no
-  service of its own. It consolidates the detectors' findings locally and its LM
-  pass goes through KRT Generation, so these were read only by their own config
-  module. `services/pdf/pdf-analysis-client.service.js` is the dead HTTP client
-  they belonged to; nothing requires it. `PDF_ANALYSIS_ENABLED` still gates the
-  step and stays.
-
-If any of these features land in the future, document the new vars here and add them back to `.env.example` in the same PR.

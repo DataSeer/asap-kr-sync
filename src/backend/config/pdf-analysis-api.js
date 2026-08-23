@@ -1,50 +1,31 @@
 /**
- * PDF Analysis API Configuration
- * Uses API Key for authentication
+ * PDF Analysis — the consolidator's feature flag, and nothing else.
+ *
+ * PDF Analysis is not an external API call. It regroups every detector's items,
+ * coarse-dedups them, and asks an LM to consolidate the candidates into the
+ * Generated KRT — and that LM call is configured by `krt-generation-api`, not
+ * here. So "configured" means only "the flag is on"; there is no key or URL to
+ * validate.
+ *
+ * It used to be a remote service. The client, its base URL, API key, timeout,
+ * endpoints and retry policy all outlived it: nothing required the client
+ * module, and nothing read any field but `isConfigured()`. They are gone rather
+ * than kept "for compatibility", because dead configuration is worse than
+ * absent configuration — someone sets it, nothing happens, and the documented
+ * behaviour is a lie.
  */
 
-const logger = require('../utils/logger');
-
 module.exports = {
-  // API Base URL
-  baseUrl: process.env.PDF_ANALYSIS_API_BASE_URL || 'https://api.modal.com',
-
-  // API Key (Bearer token)
-  apiKey: process.env.PDF_ANALYSIS_API_KEY,
-
-  // Request timeout (5 minutes default for PDF analysis)
-  timeout: parseInt(process.env.PDF_ANALYSIS_API_TIMEOUT, 10) || 300000,
-
-  // API endpoints
-  endpoints: {
-    analyze: '/v1/analyze',
-    status: '/v1/status'
-  },
-
-  // Whether the service is disabled
+  // Opt-in, like every other module: off unless explicitly switched on.
   disabled: process.env.PDF_ANALYSIS_ENABLED !== 'true',
 
-  // Retry configuration
-  retryConfig: {
-    maxRetries: 3,
-    retryDelay: 1000,
-    retryDelayMultiplier: 2
-  },
-
-  // Whether the consolidator is enabled. PDF Analysis is no longer an
-  // external API call — it's the in-app KRT consolidator that merges every
-  // detection's output. So "configured" here means "feature flag is on";
-  // there's no API key / base URL to validate.
   isConfigured() {
     return !this.disabled;
   },
 
-  // Get authorization header
-  getAuthHeader() {
-    if (!this.apiKey) {
-      logger.warn('PDF Analysis API: API key not configured');
-      return null;
-    }
-    return `Bearer ${this.apiKey}`;
+  logStatus() {
+    const logger = require('../utils/logger');
+    if (this.isConfigured()) logger.info('PDF Analysis: enabled (in-app consolidator)');
+    else logger.warn('PDF Analysis: disabled (PDF_ANALYSIS_ENABLED)');
   }
 };
