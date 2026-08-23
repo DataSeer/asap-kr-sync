@@ -143,21 +143,36 @@ removed). The DAS Extraction job now depends on Markdown Convert.
 | `SOFTCITE_API_ENABLED` | Enable software detection | `false` | No |
 | `SOFTCITE_API_BASE_URL` | Softcite API endpoint | `http://localhost:8050` | If enabled |
 | `SOFTCITE_API_TIMEOUT` | Request timeout (ms) | `600000` | No |
+| `SOFTWARE_DETECTION_GEMINI_API_KEY` | Gemini key for the software LM pass | — | No |
+| `SOFTWARE_DETECTION_GEMINI_MODEL` | Model for the LM pass | `gemini-2.5-flash` | No |
 | `SOFTWARE_DETECTION_DEMO_DATA_ENABLED` | Demo data fallback | `true` | No |
+
+## KRT Grounding
+
+Judges each of the author's KRT rows against the manuscript. The deterministic
+matcher always runs; the LM second look only enriches what it could not settle.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `KRT_GROUNDING_GEMINI_API_KEY` | Gemini key for the second look | — | No |
+| `KRT_GROUNDING_GEMINI_MODEL` | Model for the second look | `gemini-2.5-flash` | No |
+| `KRT_GROUNDING_API_TIMEOUT` | Request timeout (ms) | `180000` | No |
+| `KRT_GROUNDING_SECOND_LOOK_ENABLED` | Set to `false` to skip the LM pass entirely. The deterministic matcher still runs, so the module never goes dark — it just settles fewer rows | `true` | No |
 
 ## PDF-to-Markdown Conversion
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `PDF_MARKDOWN_PROVIDER` | Conversion provider — `modal` or `markitdown` | `modal` | No |
-| `PDF_MARKDOWN_MARKITDOWN_URL` | MarkItDown service URL | `http://markitdown:3001` | If provider=markitdown |
-| `PDF_MARKDOWN_MARKITDOWN_ENDPOINT` | MarkItDown endpoint path | `/convert` | No |
+| `PDF_MARKDOWN_PROVIDER` | Conversion provider — `modal` (remote Docling) or `markitdown` (a **local Python subprocess**, so it needs no URL — see `PYTHON_BIN`) | `modal` | No |
 | `PDF_MARKDOWN_MODAL_API_URL` | Modal endpoint URL | — | If provider=modal |
 | `PDF_MARKDOWN_MODAL_API_KEY` | Modal API key | — | If provider=modal |
 | `PDF_MARKDOWN_MODAL_CONVERTER` | Modal converter name | `docling` | No |
 | `PDF_MARKDOWN_TIMEOUT` | Request timeout (ms) | `120000` | No |
 | `PDF_MARKDOWN_ENABLED` | Enable markdown conversion | `false` | No |
 | `PDF_MARKDOWN_DEMO_DATA_ENABLED` | Demo data fallback | `true` | No |
+| `MARKDOWN_FILTER_ENABLED` | Drop a conversion that looks like junk rather than letting every later step read it | `false` | No |
+| `MARKDOWN_FILTER_MIN_CHARS` | Above this many characters, the conversion is suspected of being a scanned or mis-parsed document | `300000` | No |
+| `MARKDOWN_FILTER_LANG_RATIO` | Minimum ratio of recognisable-language characters | `0.30` | No |
 
 ## Datasets Detection (Google Gemini + langextract)
 
@@ -173,6 +188,7 @@ Datasets is the only detection that uses the langextract two-pass pipeline. Mate
 | `DATASETS_LANGEXTRACT_MAX_WORKERS` | Parallel processing threads in the langextract pass | `60` | No |
 | `DATASETS_LANGEXTRACT_MAX_CHAR_BUFFER` | Character context per chunk | `3000` | No |
 | `DATASETS_LANGEXTRACT_EXTRACTION_PASSES` | Sequential extraction passes | `1` | No |
+| `DATASETS_LANGEXTRACT_TEMPERATURE` | Sampling temperature for the langextract pass. `0` for the same reason every other call uses it: this is extraction over a fixed document, so sampling variety is noise | `0` | No |
 | `DATASETS_LANGEXTRACT_TIMEOUT` | Script timeout (ms) | `600000` | No |
 | `DATASETS_LANGEXTRACT_BATCH_LENGTH` | Items the langextract helper batches per Gemini call | `60` | No |
 
@@ -240,6 +256,8 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
+| `SOURCE_REPO_URL` | Where this deployment's code lives. The UI links a module's result to the prompt that produced it, so a reader can open exactly what was asked | the DataSeer repo | No |
+| `SOURCE_BRANCH` | The branch those links point at | `main` when `NODE_ENV=production`, else `dev` | No |
 | `GIT_SHA` | The commit this build came from. `SOURCE_COMMIT` is accepted as an alias. Recorded on every pipeline run as `app_version`. **Provenance only** — never read to decide whether an old run can be understood; that is `pipeline_version`'s job, and conflating the two turns every deploy into a history wipe. Without it a run records the package version alone, which cannot tell two deploys of the same version apart | package version | No |
 
 ## KRT
