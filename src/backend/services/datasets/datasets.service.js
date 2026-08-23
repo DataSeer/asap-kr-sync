@@ -38,9 +38,11 @@ const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
 const runInputs = require('../queue/run-inputs.service');
 const { buildKrtItemFromLM } = require('../pdf-analysis/lm-resource.service');
+const inputFreeze = require('../queue/input-freeze.service');
 const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
@@ -84,7 +86,9 @@ function getConsolidationPrompt(override) {
       length: _consolidationPromptCache.length
     });
   }
-  return _consolidationPromptCache;
+  // See the note in materials.service getPrompt: a frozen restart uses the
+  // run's own template.
+  return frozenParams.prompt(_consolidationPromptCache);
 }
 
 /**
@@ -163,10 +167,12 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.DATASETS_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for datasets detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', { fileName: mdFile.fileName, s3Key: mdFile.s3Key });
@@ -228,7 +234,7 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
 
   // Consolidation is KRT-blind: the author's rows are reconciled against this
   // output by the krt_grounding module, downstream. See
-  // docs/design-krt-detection-two-modes.md.
+  // docs/background-modules.md.
   jobLogger?.log('consolidate_start', 'Starting Gemini consolidation', {
     datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length
   });
@@ -273,7 +279,12 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
       model: datasetsConfig.model,
       seedCount: resolved.input.meta?.seedCount ?? 0,
       signalCount: extractedRows.length
-    }
+    },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: datasetsConfig
   });
 
   // ── Step 2: buildKrtItems
@@ -523,9 +534,7 @@ async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 

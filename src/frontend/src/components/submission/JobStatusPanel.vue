@@ -19,7 +19,6 @@ import { isFutureStepJob } from '@/composables'
 // about to be a second copy.
 import { formatFailReason, partialDetail } from '@/utils/job-status'
 
-const emit = defineEmits(['edit-das'])
 const route = useRoute()
 /** For links out of the panel; the id is always in the route on these views. */
 const submissionId = computed(() => route.params.id)
@@ -73,7 +72,6 @@ const paused = computed(() => blockedOnMarkdown.value)
 /** How many steps that has stopped — the scale of the problem, not just its name. */
 const blockedCount = computed(() =>
   jobList.value.filter((j) => j.status === 'waiting' && j.waitingReason === 'markdown_missing').length)
-const restartJobFn = inject('restartJob', null)
 // Cancel-processing action, provided by BackgroundProcesses (#15).
 const cancelProcessingFn = inject('cancelProcessing', null)
 const cancelling = ref(false)
@@ -88,8 +86,6 @@ const submissionProtocols = inject('submissionProtocols', ref([]))
 const serviceStatus = inject('serviceStatus', ref({}))
 const authStore = useAuthStore()
 const resourceTypesStore = useResourceTypesStore()
-
-const restartingJobs = ref(new Set())
 
 // Collapse/expand state — persisted in localStorage
 const isCollapsed = ref(localStorage.getItem('job-panel-collapsed') === 'true')
@@ -210,44 +206,6 @@ const ALL_JOB_TYPES = [
   { type: 'suggestion_generation', label: 'AI Suggestions' }
 ]
 
-// Unified modal state
-const showModal = ref(false)
-const modalContent = ref('')
-const modalItems = ref(null)
-const modalTableType = ref(null) // 'software' | 'resources' | 'authors' | 'grounding' | 'suggestions' | 'pdf_analysis_krt' | null
-const modalLogs = ref([])
-const modalRawResponses = ref({})
-const modalJobType = ref(null)
-const modalExactMatchCount = ref(0)
-// PDF Analysis: candidates the LM dropped (not kept in the Generated KRT).
-const modalDropped = ref([])
-// Modal table controls: text search + resource-type filter (mirrors the KRT
-// editor so curators can find a line without scanning the whole table).
-const modalSearch = ref('')
-const modalTypeFilter = ref('all')
-// Tab-group filter for the consolidated views (Generated KRT, AI
-// suggestions) — same tabs as the KRT editor.
-const modalTabFilter = ref('all')
-// Multi-select decision filter for the AI-suggestions table (toggle chips).
-// Empty set = no filter (all decisions shown).
-const modalDecisionFilter = ref(new Set())
-/**
- * Modules with a dedicated results page. The others still open the modal until
- * their view exists — a link to an empty page would be worse than no link.
- */
-const MODULE_PAGE_TYPES = new Set([
-  'pdf_analysis', 'suggestion_generation',
-  'markdown_convert', 'orcid_extraction', 'das_extraction',
-  'krt_grounding',
-  'software_detection', 'datasets_detection', 'materials_detection',
-  'protocols_detection', 'identifier_detection'
-])
-
-/** Does this tile navigate, or open the modal? */
-function hasModulePage(job) {
-  return MODULE_PAGE_TYPES.has(job.type) && job.status === 'complete'
-}
-
 /**
  * Get service status info for a job type
  */
@@ -274,6 +232,9 @@ const jobList = computed(() => {
       // advanced the step itself. This view-model is built field by field, so
       // anything not named here never reaches the modal.
       triggeredBy: job?.triggeredBy || null,
+      runNumber: job?.runNumber ?? null,
+      // How many times this STEP executed, which the run number no longer says.
+      executionCount: job?.executionCount ?? null,
       retryCount: job?.retryCount || 0,
       startedAt: job?.startedAt || null,
       completedAt: job?.completedAt || null,
@@ -476,6 +437,25 @@ const etaProgress = computed(() => {
  * reflects how the env was configured at execution time. Before the first run
  * we fall back to the live `/api/config/services` value.
  */
+/**
+ * What the "run N" badge means, said precisely.
+ *
+ * N is the PIPELINE run — one attempt at the whole round, the same number on
+ * every tile. How many times THIS step executed is a different number, because
+ * a run can carry a step over rather than re-running it, and the tile is
+ * exactly where somebody would otherwise read the first as the second.
+ *
+ * @param {object} job
+ * @returns {string}
+ */
+function runBadgeTooltip(job) {
+  const ran = job.executionCount;
+  const base = `Run ${job.runNumber} of this round — one attempt at the whole pipeline.`;
+  if (!ran) return `${base} This step has not run in it yet.`;
+  if (ran === 1) return `${base} This step ran once; later runs kept that result.`;
+  return `${base} This step has run ${ran} times; what is shown is the latest.`;
+}
+
 function getConfigPill(job) {
   return job.configState || job.liveConfigState || null
 }
@@ -909,112 +889,6 @@ function getJobDetail(job) {
   return null
 }
 
-/**
- * Open the unified job detail modal
- */
-function openJobModal(job) {
-  activeJob.value = job
-  modalJobType.value = job.type
-  modalLogs.value = job.logs || []
-  modalRawResponses.value = job.files || {}
-  modalExactMatchCount.value = job.result?.counts?.exactMatch || 0
-  modalDropped.value = job.type === 'pdf_analysis' ? (job.result?.data?.meta?.dropped || []) : []
-
-  // Populate result data based on job type
-  if (job.type === 'das_extraction') {
-    modalContent.value = job.result?.data?.das || ''
-    modalItems.value = null
-    modalTableType.value = null
-  } else if (job.type === 'software_detection') {
-    modalContent.value = ''
-    modalTableType.value = 'software'
-    const items = softwareMentions.value?.length ? softwareMentions.value : (job.result?.data?.items || [])
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'datasets_detection') {
-    modalContent.value = ''
-    modalTableType.value = 'resources'
-    const items = submissionDatasets.value?.length ? submissionDatasets.value : (job.result?.data?.items || [])
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'materials_detection') {
-    modalContent.value = ''
-    modalTableType.value = 'resources'
-    const items = submissionMaterials.value?.length ? submissionMaterials.value : (job.result?.data?.items || [])
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'protocols_detection') {
-    modalContent.value = ''
-    modalTableType.value = 'resources'
-    const items = submissionProtocols.value?.length ? submissionProtocols.value : (job.result?.data?.items || [])
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'identifier_detection') {
-    // Identifier-scan emits KRT-shaped items the same way the other
-    // detectors do, so the generic 'resources' table renders them.
-    modalContent.value = ''
-    modalTableType.value = 'resources'
-    const items = job.result?.data?.items || []
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'orcid_extraction') {
-    modalContent.value = ''
-    modalTableType.value = 'authors'
-    modalItems.value = submissionAuthors.value?.length ? submissionAuthors.value : null
-  } else if (job.type === 'pdf_analysis') {
-    // Generated KRT consolidated from every detection. Each merged item
-    // carries detectedBy[] (one entry per source that contributed) so the
-    // modal can flatten back to the pre-merge view + flag duplicates.
-    modalContent.value = ''
-    modalTableType.value = 'pdf_analysis_krt'
-    const items = job.result?.data?.items || []
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'krt_grounding') {
-    // Per-author-row reconciliation verdicts. A different shape from the
-    // detectors (outcomes about the author's rows, not detected resources), so
-    // it gets its own table rather than being forced into 'resources'.
-    modalContent.value = ''
-    modalTableType.value = 'grounding'
-    // Which halves of this result may be shown, as stamped on the run itself.
-    // Read from the result rather than from the submission's current pipeline,
-    // so an old result is always read the way it was produced.
-    modalGroundingPolicy.value = job.result?.data?.meta?.grounding || null
-    const outcomes = job.result?.data?.outcomes || []
-    modalItems.value = outcomes.length ? outcomes : null
-  } else if (job.type === 'suggestion_generation') {
-    // The LM comparison's full decision log (add/update/remove/skip) + reasons.
-    // Falls back to the suggestion list for older results without decisions.
-    modalContent.value = ''
-    modalTableType.value = 'suggestions'
-    const items = job.result?.data?.decisions?.length
-      ? job.result.data.decisions
-      : (job.result?.data?.suggestions || [])
-    modalItems.value = items.length ? items : null
-  } else {
-    modalItems.value = null
-    modalTableType.value = null
-    modalContent.value = ''
-  }
-
-  // Fresh filters per modal open
-  modalSearch.value = ''
-  modalTypeFilter.value = 'all'
-  modalTabFilter.value = 'all'
-  modalDecisionFilter.value = new Set()
-
-  showModal.value = true
-}
-
-function closeModal() {
-  showModal.value = false
-  activeJob.value = null
-  modalContent.value = ''
-  modalItems.value = null
-  modalTableType.value = null
-  modalLogs.value = []
-  modalRawResponses.value = {}
-  modalJobType.value = null
-  modalExactMatchCount.value = 0
-  modalSearch.value = ''
-  modalTypeFilter.value = 'all'
-  modalTabFilter.value = 'all'
-  modalDecisionFilter.value = new Set()
-}
 
 /** Which halves of the open grounding result may be shown (from meta.grounding). */
 const modalGroundingPolicy = ref(null)
@@ -1030,84 +904,6 @@ const modalGroundingPolicy = ref(null)
  */
 
 /** Columns for the grounding table — same two-row shape as the detectors. */
-
-function canRestart(job) {
-  // Restart is meaningless when the process is fully off (config 'off') —
-  // there's no source of data to retry against.
-  if (getConfigPill(job) === 'off') return false
-  return !restartingJobs.value.has(job.type) &&
-    (!job.status || job.status === 'complete' || job.status === 'failed' ||
-     job.status === 'pending_input' || job.status === 'cancelled')
-}
-
-async function handleRestart(type) {
-  if (!restartJobFn || restartingJobs.value.has(type)) return
-  // Close the modal immediately so the user sees the panel update without
-  // having to dismiss it manually. The restart call still runs in the
-  // background and the panel polls for the new status.
-  closeModal()
-  restartingJobs.value.add(type)
-  try {
-    await restartJobFn(type)
-  } finally {
-    restartingJobs.value.delete(type)
-  }
-}
-
-/** Indices of rows whose mergedFrom drill-down is currently expanded. */
-
-const expandedMergedRows = ref(new Set())
-
-// Row indexes shift when the search/type filter changes — drop any open
-// merged-row expansions so they don't reattach to the wrong line.
-watch([modalSearch, modalTypeFilter, modalTabFilter], () => { expandedMergedRows.value = new Set() })
-
-/**
- * Reset the expanded set whenever the modal items change so the open-state
- * doesn't leak across detector views.
- */
-watch(() => modalItems.value, () => {
-  expandedMergedRows.value = new Set()
-})
-
-/**
- * Modal status pill label. Mirrors getResultBadgeText but kept as its own
- * function in case the modal wants different copy in the future.
- */
-function getStatusLabel(job) {
-  if (!job.status) return 'Not started'
-  if (job.status === 'complete') {
-    if (job.outcomeState === 'fail') return 'Fail'
-    if (job.outcomeState === 'partial') return 'Partial'
-    return 'Done'
-  }
-  const labels = {
-    waiting: 'Waiting',
-    pending_input: 'Needs input',
-    queued: 'Queued',
-    processing: 'Processing',
-    failed: 'Failed'
-  }
-  return labels[job.status] || job.status
-}
-
-function getStatusBadgeClass(job) {
-  if (!job.status) return 'job-status-idle'
-  if (isCancelledJob(job)) return 'job-status-cancelled'
-  if (job.status === 'complete') {
-    if (job.outcomeState === 'fail') return 'job-status-failed'
-    if (job.outcomeState === 'partial') return 'job-status-partial'
-    return 'job-status-complete'
-  }
-  const classes = {
-    waiting: 'job-status-waiting',
-    pending_input: 'job-status-pending-input',
-    queued: 'job-status-running',
-    processing: 'job-status-running',
-    failed: 'job-status-failed'
-  }
-  return classes[job.status] || 'job-status-idle'
-}
 
 function formatTime(dateStr) {
   if (!dateStr) return null
@@ -1133,17 +929,6 @@ function formatLogsAsText(logs) {
 }
 
 /**
- * Get the file extension from an S3 key (e.g., ".json", ".md").
- * Falls back to ".json" if no extension is found.
- */
-function getFileExtension(s3Key) {
-  if (typeof s3Key !== 'string') return '.json'
-  const lastDot = s3Key.lastIndexOf('.')
-  if (lastDot === -1) return '.json'
-  return s3Key.substring(lastDot)
-}
-
-/**
  * Download a raw response file via presigned URL
  */
 async function downloadRawResponse(jobType, responseName) {
@@ -1155,21 +940,6 @@ async function downloadRawResponse(jobType, responseName) {
     }
   } catch {
     // Silently fail — the button just won't work
-  }
-}
-
-/**
- * Download the converted markdown file via presigned URL
- */
-async function downloadMarkdownFile(fileId) {
-  try {
-    const submissionId = route.params.id
-    const data = await fileService.download(submissionId, fileId)
-    if (data.url) {
-      window.open(data.url, '_blank', 'noopener,noreferrer')
-    }
-  } catch {
-    // Silently fail
   }
 }
 
@@ -1280,19 +1050,20 @@ async function downloadMarkdownFile(fileId) {
 
     <!-- Expandable grid -->
     <div v-show="!isCollapsed" class="job-status-panel">
-      <!-- A module with its own page is a LINK, whole tile, so ctrl-click and
-           middle-click open it in a tab like anything else. The rest still open
-           the modal, until their pages exist. -->
-      <component
-        :is="hasModulePage(job) ? 'RouterLink' : 'div'"
+      <!-- Every tile is a LINK to that module's page — whole tile, so ctrl-click
+           and middle-click open it in a tab like anything else.
+           
+           There used to be a second destination: a modal, for any job that was
+           not `complete`. So the same click showed one thing for a finished
+           module and another for a failed one, and the modal was the older,
+           thinner view — no run history, no frozen inputs, no restart that says
+           what it takes with it. A module is worth the same page whatever state
+           it is in; "it failed" is exactly when you want the record. -->
+      <RouterLink
         v-for="job in jobList"
         :key="job.type"
-        :to="hasModulePage(job)
-          ? { name: 'submission-module', params: { id: submissionId, type: job.type } }
-          : undefined"
-        class="job-status-item"
-        :class="{ 'job-status-item-link': hasModulePage(job) }"
-        @click="hasModulePage(job) ? undefined : openJobModal(job)"
+        :to="{ name: 'submission-module', params: { id: submissionId, type: job.type } }"
+        class="job-status-item job-status-item-link"
       >
         <!-- Line 1: Configuration pill (On / Demo / Off) -->
         <div class="job-config-line" v-tooltip="getLiveConfigTitle(job)">
@@ -1371,6 +1142,21 @@ async function downloadMarkdownFile(fileId) {
           >
             {{ getResultBadgeText(job) }}
           </span>
+          <!-- Only from run 2 onward: "run 1" on a healthy pipeline is noise on
+               every tile. The number appears exactly when it starts carrying
+               information.
+
+               It is the PIPELINE run's number, the same across every tile — so
+               the tooltip has to say how many times THIS step ran separately,
+               because a run can carry a step over rather than re-executing it,
+               and the two numbers then differ. Saying "run 3" while meaning
+               "this ran three times" was true under the old per-step numbering
+               and is not any more. -->
+          <span
+            v-if="job.runNumber > 1"
+            class="job-run-badge"
+            v-tooltip="runBadgeTooltip(job)"
+          >run {{ job.runNumber }}</span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
 
           <!-- A KRT/manuscript disagreement is a defect, not a statistic, so it
@@ -1382,204 +1168,22 @@ async function downloadMarkdownFile(fileId) {
             v-tooltip="conflictCount(job) + ' KRT row(s) hold a value the manuscript contradicts. One of the two is wrong — open the module to see which values differ.'"
           >{{ conflictCount(job) }} conflict{{ conflictCount(job) === 1 ? '' : 's' }}</span>
         </div>
-      </component>
+      </RouterLink>
     </div>
   </div>
 
-  <!-- Unified job detail modal -->
-  <Teleport to="body">
-    <Transition name="modal-fade">
-      <div v-if="showModal && activeJob" class="job-modal-overlay" @click.self="closeModal">
-        <div class="job-modal">
-          <!-- Header -->
-          <div class="job-modal-header">
-            <div class="job-modal-header-left">
-              <h3>{{ activeJob.label }}</h3>
-              <div class="job-modal-header-badges">
-                <!-- Config pill — On / Demo / Off (always shown) -->
-                <span :class="getConfigPillClass(activeJob)">{{ getConfigPillText(activeJob) }}</span>
-                <!-- Status pill — in-progress label, or Done/Fail outcome -->
-                <span
-                  v-if="activeJob.status"
-                  class="job-status-badge"
-                  :class="getStatusBadgeClass(activeJob)"
-                >{{ getStatusLabel(activeJob) }}</span>
-              </div>
-            </div>
-            <button class="job-modal-close" @click="closeModal">&times;</button>
-          </div>
-
-          <div class="job-modal-body">
-            <!-- Notice bar — explains how results were produced (or why they're missing) -->
-            <div v-if="activeJob.outcomeSource === 'demo' && activeJob.outcomeExternalError" class="job-modal-notice job-modal-notice-demo">
-              External service failed; falling back to demo data.
-              <span class="job-modal-notice-detail">{{ activeJob.outcomeExternalError }}</span>
-            </div>
-            <div v-else-if="activeJob.outcomeSource === 'demo'" class="job-modal-notice job-modal-notice-demo">
-              Results are from demo data.
-            </div>
-            <div v-else-if="activeJob.outcomeState === 'fail'" class="job-modal-notice job-modal-notice-off">
-              {{ formatFailReason(activeJob.outcomeFailReason) }}
-              <span v-if="activeJob.outcomeExternalError" class="job-modal-notice-detail">{{ activeJob.outcomeExternalError }}</span>
-            </div>
-            <!-- Amber, and it leads with what the numbers below actually mean:
-                 they are real, and they are a floor rather than a total. -->
-            <div v-else-if="activeJob.outcomeState === 'partial'" class="job-modal-notice job-modal-notice-partial">
-              <strong>Partly complete.</strong>
-              {{ formatFailReason(activeJob.outcomeFailReason) }}. The results below are
-              genuine but incomplete — re-run this step once the service is back to fill the gap.
-              <span v-if="activeJob.outcomeExternalError" class="job-modal-notice-detail">{{ activeJob.outcomeExternalError }}</span>
-            </div>
-
-            <!-- ORCID sub-services -->
-            <div v-if="activeJob.type === 'orcid_extraction' && activeJob.serviceSubServices && canViewInternals" class="job-modal-sub-services">
-              <span v-for="(svc, name) in activeJob.serviceSubServices" :key="name" class="job-sub-service" :class="svc.enabled ? 'sub-on' : 'sub-off'">
-                {{ name === 'grobid' ? 'GROBID' : name === 'openalex' ? 'OpenAlex' : 'ORCID API' }}: {{ svc.enabled ? 'on' : 'off' }}
-              </span>
-            </div>
-
-            <!-- Status section -->
-            <div class="job-modal-section">
-              <h4 class="job-modal-section-title">Status</h4>
-              <div class="job-modal-status-content">
-                <p v-if="getJobDetail(activeJob)" class="job-modal-detail" :class="{ 'job-modal-error': activeJob.status === 'failed' }">{{ getJobDetail(activeJob) }}</p>
-
-                <p v-if="isSlowJob(activeJob)" class="job-modal-warning">
-                  Taking longer than expected. This attempt will time out after {{ Math.round((activeJob.config?.expireInSeconds || 0) / 60) }}min{{ activeJob.config?.retryLimit > 0 ? ` (${activeJob.config.retryLimit} retries remaining)` : '' }}.
-                </p>
-
-                <div class="job-modal-timing">
-                  <span v-if="getElapsed(activeJob)" class="job-modal-elapsed">
-                    <template v-if="activeJob.status === 'processing' || activeJob.status === 'queued'">Elapsed: {{ formatDuration(getElapsed(activeJob)) }}</template>
-                    <template v-else>Duration: {{ formatDuration(getElapsed(activeJob)) }}</template>
-                  </span>
-                  <span v-if="activeJob.retryCount > 0 || (activeJob.config && activeJob.status === 'failed')" class="job-modal-retry">
-                    Attempt {{ activeJob.retryCount + 1 }}/{{ (activeJob.config?.retryLimit || 2) + 1 }}
-                  </span>
-                </div>
-
-                <!-- Who asked for this run. NOT behind canViewInternals: the
-                     change log already shows every editor's name to anyone who
-                     can open the submission, and "a curator re-ran this on my
-                     manuscript" is exactly what an author benefits from
-                     knowing. Absent for a step the pipeline advanced on its
-                     own, where naming anyone would be a fiction. -->
-                <p v-if="activeJob.triggeredBy" class="job-modal-trigger">
-                  Requested by {{ activeJob.triggeredBy.name || 'a user who has since been removed' }}
-                </p>
-
-                <!-- Timestamps (hidden from authors) -->
-                <div v-if="canViewInternals && (activeJob.startedAt || activeJob.completedAt)" class="job-modal-times">
-                  <span v-if="activeJob.createdAt">Queued: {{ formatTime(activeJob.createdAt) }}</span>
-                  <span v-if="activeJob.startedAt">Started: {{ formatTime(activeJob.startedAt) }}</span>
-                  <span v-if="activeJob.completedAt">Completed: {{ formatTime(activeJob.completedAt) }}</span>
-                </div>
-                <div v-if="canViewInternals && activeJob.config" class="job-modal-config">
-                  Per attempt: {{ Math.round(activeJob.config.expireInSeconds / 60) }}min | Max total: {{ Math.round(activeJob.config.maxTotalSeconds / 60) }}min ({{ activeJob.config.retryLimit + 1 }} attempts)
-                </div>
-              </div>
-            </div>
-
-            <!-- No Results section here. Every module has a results PAGE, and a
-                 tile whose job is complete is a RouterLink to it — so this modal
-                 only ever opens for a job that is waiting, queued, processing or
-                 failed, none of which have results to show. The ~510 lines of
-                 tables that used to sit here were a second, diverging copy of the
-                 module pages' own: the grounding one called a helper the
-                 extraction left behind, and none of them gained the search,
-                 filters or shared row styling the pages have. What a non-complete
-                 job DOES have — status, logs, error — is still below. -->
-
-            <!-- Logs section (hidden from authors) -->
-            <div v-if="canViewInternals && modalLogs.length > 0" class="job-modal-section">
-              <h4 class="job-modal-section-title">Process Logs</h4>
-              <textarea
-                readonly
-                :value="formatLogsAsText(modalLogs)"
-                class="w-full text-xs font-mono bg-gray-50 text-gray-600 border border-gray-200 rounded p-2 resize-none"
-                :rows="Math.min(modalLogs.length + 1, 12)"
-              ></textarea>
-            </div>
-
-            <!-- Raw responses section (hidden from authors) -->
-            <div v-if="Object.keys(modalRawResponses).length > 0 && canViewInternals" class="job-modal-section">
-              <h4 class="job-modal-section-title">Raw Responses</h4>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  v-for="(s3Key, name) in modalRawResponses"
-                  :key="name"
-                  class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-700 transition-colors cursor-pointer border border-gray-200"
-                  @click="downloadRawResponse(modalJobType, name)"
-                >
-                  <svg class="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                  {{ name }}{{ getFileExtension(s3Key) }}
-                </button>
-              </div>
-            </div>
-
-            <!-- Action buttons -->
-            <div class="job-modal-actions">
-              <button
-                v-if="activeJob.type === 'das_extraction' && activeJob.status === 'complete'"
-                class="job-action-btn"
-                @click="emit('edit-das'); closeModal()"
-              >
-                Edit Availability Statement
-              </button>
-              <button
-                v-if="activeJob.type === 'markdown_convert' && activeJob.status === 'complete' && activeJob.result?.data?.fileId"
-                class="job-action-btn"
-                @click="downloadMarkdownFile(activeJob.result.data.fileId)"
-              >
-                <svg class="w-4 h-4 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-                Download Markdown
-              </button>
-              <button
-                v-if="restartJobFn && canRestartJobs && canRestart(activeJob)"
-                class="job-restart-btn"
-                :disabled="restartingJobs.has(activeJob.type)"
-                @click="handleRestart(activeJob.type)"
-              >
-                <svg
-                  v-if="activeJob.status === 'pending_input'"
-                  class="job-restart-icon"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-                <svg
-                  v-else
-                  class="job-restart-icon"
-                  :class="{ 'job-icon-spin': restartingJobs.has(activeJob.type) }"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                >
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                {{ restartingJobs.has(activeJob.type) ? 'Starting...' : (activeJob.status === 'pending_input' ? 'Start' : 'Restart') }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
 </template>
 
 <style scoped>
-.job-modal-trigger {
-  margin: 0.5rem 0 0;
-  font-size: 0.8125rem;
-  color: #4b5563;
-}
-
-.job-status-unreadable {
+.job-run-badge {
+  flex: none;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}.job-status-unreadable {
   margin: 0 0 0.75rem;
   padding: 0.625rem 0.75rem;
   border: 1px solid #fcd34d;
@@ -1965,138 +1569,7 @@ async function downloadMarkdownFile(fileId) {
 .sub-off {
   background: #f3f4f6;
   color: #9ca3af;
-}
-
-/* Restart button */
-.job-restart-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.375rem 0.75rem;
-  white-space: nowrap;
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
-  border-radius: 0.375rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #374151;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.job-restart-btn:hover:not(:disabled) {
-  background: #e5e7eb;
-  border-color: #9ca3af;
-}
-
-.job-restart-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.job-restart-icon {
-  width: 0.875rem;
-  height: 0.875rem;
-  flex-shrink: 0;
-}
-
-/* Action button (Edit DAS, etc.) */
-.job-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.375rem 0.75rem;
-  white-space: nowrap;
-  background: #dbeafe;
-  border: 1px solid #93c5fd;
-  border-radius: 0.375rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #1d4ed8;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.job-action-btn:hover {
-  background: #bfdbfe;
-}
-
-/* Modal */
-.job-modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
-}
-
-.job-modal {
-  background: #fff;
-  border-radius: 0.5rem;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
-  /* Detection-result tables can be wide (8+ columns). Give the modal room
-     to breathe — 90% of the viewport, capped at 1600px on ultra-wide
-     screens so columns don't get unreadably stretched. */
-  /* Wider than it was: the grounding table now carries the author's full KRT
-     row AND a written explanation per line, and reading the page behind the
-     modal is not something anyone does while inspecting results. */
-  width: 95vw;
-  max-width: 1900px;
-  max-height: 94vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.job-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.job-modal-header-left {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.job-modal-header-badges {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.job-modal-header h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #111827;
-}
-
-.job-modal-close {
-  background: none;
-  border: none;
-  font-size: 1.25rem;
-  color: #9ca3af;
-  cursor: pointer;
-  padding: 0 0.25rem;
-  line-height: 1;
-}
-
-.job-modal-close:hover {
-  color: #374151;
-}
-
-.job-modal-body {
-  padding: 1rem;
-  overflow-y: auto;
-  flex: 1;
-}
-
-/* An EvidenceContext inside the context line brings its own typography and
+}/* An EvidenceContext inside the context line brings its own typography and
    highlight; the cell's italic + muted colour would fight it. Reset there. */
 .context-cell :deep(.evidence-context) {
   font-style: normal;
@@ -2159,149 +1632,9 @@ async function downloadMarkdownFile(fileId) {
   background: #d1fae5;
   color: #047857;
   margin-left: 0.375rem;
-}
-
-/* Modal sections */
-.job-modal-section {
-  margin-top: 1rem;
-}
-
-.job-modal-section-title {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #6b7280;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin: 0 0 0.5rem 0;
-  padding-bottom: 0.25rem;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-.job-modal-notice {
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8125rem;
-  border-radius: 0.375rem;
-  margin-bottom: 0.5rem;
-}
-
-.job-modal-notice-demo {
-  background: #eef2ff;
-  color: #3730a3;
-}
-
-.job-modal-notice-off {
-  background: #f9fafb;
-  color: #6b7280;
-}
-
-.job-modal-notice-partial {
-  background: #fffbeb;
-  color: #92400e;
-  border: 1px solid #fcd34d;
-}
-
-.job-modal-notice-detail {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  font-family: ui-monospace, monospace;
-  opacity: 0.75;
-  word-break: break-word;
-}
-
-.job-modal-sub-services {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.job-modal-status-content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.job-modal-detail {
-  color: #374151;
-  line-height: 1.5;
-  word-break: break-word;
-  white-space: pre-wrap;
-  margin: 0;
-}
-
-.job-modal-error {
-  color: #b91c1c;
-}
-
-.job-modal-warning {
-  padding: 0.375rem 0.625rem;
-  background: #fef3c7;
-  color: #92400e;
-  border-radius: 0.25rem;
-  font-size: 0.8125rem;
-  margin: 0;
-}
-
-.job-modal-timing {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  font-size: 0.8125rem;
-  color: #6b7280;
-}
-
-.job-modal-elapsed {
-  font-weight: 500;
-  color: #374151;
-}
-
-.job-modal-retry {
-  color: #92400e;
-  font-weight: 500;
-}
-
-.job-modal-times {
-  display: flex;
-  gap: 1rem;
-  font-size: 0.75rem;
-  color: #6b7280;
-  padding: 0.375rem 0.5rem;
-  background: #f9fafb;
-  border-radius: 0.25rem;
-}
-
-.job-modal-config {
-  color: #9ca3af;
-  font-size: 0.75rem;
-}
-
-.job-modal-actions {
-  margin-top: 1rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid #e5e7eb;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  justify-content: flex-end;
-}
-
-.text-center {
+}.text-center {
   text-align: center;
-}
-
-/* Modal transition */
-.modal-fade-enter-active,
-.modal-fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.modal-fade-enter-from,
-.modal-fade-leave-to {
-  opacity: 0;
-}
-
-.grounding-confirmed { background: #dcfce7; color: #15803d; }
+}.grounding-confirmed { background: #dcfce7; color: #15803d; }
 .grounding-incomplete { background: #fef3c7; color: #b45309; }
 .grounding-not-detected { background: #fee2e2; color: #b91c1c; }
 
@@ -2313,16 +1646,8 @@ async function downloadMarkdownFile(fileId) {
 }
 /* Outcome verdict: located, but only by a partial name match. Blue reads as
    "found, low confidence" rather than the grey of a degraded quote. */
-.grounding-partial-match { background: #dbeafe; color: #1d4ed8; }
-.job-modal-quote {
-  max-width: 26rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.engine-softcite { background: #e0e7ff; color: #3730a3; }
+.grounding-partial-match { background: #dbeafe; color: #1d4ed8; }.engine-softcite { background: #e0e7ff; color: #3730a3; }
 .engine-lm { background: #ede9fe; color: #6d28d9; }
 
 .grounding-fill-empty { color: #9ca3af; font-style: italic; cursor: help; }
-
 </style>

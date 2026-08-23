@@ -32,7 +32,7 @@ async function getDasSuggestions(req, res, next) {
  */
 async function regenerate(req, res, next) {
   try {
-    const result = await dasSuggestionsService.queueDasSuggestions(req.params.id, resolveRound(req));
+    const result = await dasSuggestionsService.queueDasSuggestions(req.params.id, resolveRound(req), req.userId);
 
     // Nothing to check — the author never provided a statement, or extraction
     // was cancelled.

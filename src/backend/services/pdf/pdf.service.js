@@ -21,6 +21,8 @@ const demoDataService = require('../demo-data.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
 const path = require('path');
+const inputFreeze = require('../queue/input-freeze.service');
+const applyService = require('../queue/apply.service');
 
 /**
  * Convert DOCX buffer to PDF buffer using libreoffice-convert
@@ -154,7 +156,8 @@ async function uploadPDF(submissionId, file, userId, round = 1) {
       mimeType: pdfMimeType,
       size: pdfSize,
       version: origVersion,
-      round
+      round,
+      uploadedByUserId: userId || null
     }, { transaction: t });
 
     const fr = await File.create({
@@ -165,7 +168,8 @@ async function uploadPDF(submissionId, file, userId, round = 1) {
       mimeType: pdfMimeType,
       size: workingSize,
       version: pdfVersion,
-      round
+      round,
+      uploadedByUserId: userId || null
     }, { transaction: t });
 
     await ChangeLog.create({
@@ -174,6 +178,7 @@ async function uploadPDF(submissionId, file, userId, round = 1) {
       action: 'upload',
       step: 2,
       round,
+      fileId: fr.id,
       description
     }, { transaction: t });
 
@@ -214,8 +219,9 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
     mimeType: file.mimetype,
     size: file.size,
     version: origVersion,
-    round
-  });
+    round,
+    uploadedByUserId: userId || null
+    });
 
   // --- Get or convert to PDF ---
   let pdfBuffer = file.buffer;
@@ -245,8 +251,9 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
     mimeType: pdfMimeType,
     size: pdfSize,
     version: pdfVersion,
-    round
-  });
+    round,
+    uploadedByUserId: userId || null
+    });
 
   await ChangeLog.create({
     submissionId,
@@ -254,6 +261,7 @@ async function uploadSupplemental(submissionId, file, userId, round = 1) {
     action: 'upload',
     step: 1,
     round,
+    fileId: suppPdfRecord.id,
     description: `Uploaded supplemental methods file: ${file.originalname}${ext !== '.pdf' ? ' (converted to PDF)' : ''}`
   });
 
@@ -505,6 +513,59 @@ async function applyEdit(submissionId, data, modifiedValue, userId, round) {
 }
 
 /**
+ * Record what this extraction found, and offer it to the submission.
+ *
+ * Two fields, meaning different things — and after the apply split, holding
+ * different KINDS of thing:
+ *
+ *   - `extractedDataAvailabilityStatement` — what the LAST extraction found.
+ *     Always overwritten. A projection of the newest extraction execution's
+ *     output, kept on the row for now because the Availability page and the
+ *     report read it directly; it goes when those reads move onto runs.
+ *   - `dataAvailabilityStatement` — the statement the submission STANDS ON.
+ *     No longer written here. Promoting a result into the submission is an
+ *     APPLY: separate, attributed to the execution that produced it, and
+ *     recorded on `change_logs`. The rule about whose text wins moved with it,
+ *     into apply.service, where it can be read beside every other such rule
+ *     instead of being buried in an extractor.
+ *
+ * The bug that rule exists for: extraction wrote the second field every time.
+ * An author whose statement the extractor could not find typed one by hand —
+ * the whole reason the manual path exists — and the next extraction replaced it
+ * with "Not found". The app undid their work and called it an update, with no
+ * record that anything had been lost.
+ *
+ * @param {object} submission - loaded instance; saved here
+ * @param {string} persisted - what extraction produced (NO_DAS_SENTINEL if nothing)
+ * @param {object} [opts]
+ * @param {string} [opts.stepExecutionId] - the execution that produced it
+ * @returns {Promise<{ replaced: boolean, confirmationWithdrawn: boolean }>}
+ */
+async function applyExtractedDas(submission, persisted, { stepExecutionId = null } = {}) {
+  submission.extractedDataAvailabilityStatement = persisted;
+  const hadConfirmation = !!submission.dasConfirmedAt;
+
+  const { applied } = await applyService.applyToSubmission({
+    submission,
+    target: 'data_availability_statement',
+    value: persisted,
+    stepExecutionId,
+    // Nobody chose this. An automatic apply is recorded with the system as the
+    // actor rather than not recorded at all.
+    userId: null,
+    round: submission.currentRound || 1,
+    description: 'Availability Statement filled from the manuscript'
+  });
+
+  // `applyToSubmission` saves only when it writes. The projection above has to
+  // land either way — a reading that was rejected is still a reading, and the
+  // page shows it beside the statement so the two can be compared.
+  if (!applied) await submission.save();
+
+  return { replaced: applied, confirmationWithdrawn: applied && hadConfirmation };
+}
+
+/**
  * Extract Data Availability Statement from the manuscript PDF.
  *
  * Runs the standard external→demo workflow. The DAS text (or "Not found" when
@@ -535,10 +596,9 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
   // extraction was attempted. "Not found" doubles as the empty-but-tried
   // sentinel and as the placeholder shown in the UI.
   const das = result.data?.meta?.das || null;
-  const persisted = das || NO_DAS_SENTINEL;
-  submission.extractedDataAvailabilityStatement = persisted;
-  submission.dataAvailabilityStatement = persisted;
-  await submission.save();
+  await applyExtractedDas(submission, das || NO_DAS_SENTINEL, {
+    stepExecutionId: (await jobLogger?.currentExecutionId?.()) || null
+  });
 
   logger.info('DAS_EXTRACTION done', {
     submissionId,
@@ -564,10 +624,12 @@ async function runDasExtractor(submission, jobLogger) {
   const submissionId = submission.id;
   const round = submission.currentRound || 1;
 
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.DAS_EXTRACTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for DAS extraction (Markdown Convert must run first)');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', {
@@ -587,7 +649,12 @@ async function runDasExtractor(submission, jobLogger) {
     prompt: runInputs.promptRef(repoPath(dasExtractionService.PROMPT_FILE), extracted?.promptDigest || null),
     // The section name is interpolated into the prompt, so a rebuild needs it.
     // Without it the digest could not be reproduced from this file alone.
-    meta: { model: dasExtractionConfig.model, section: dasExtractionConfig.section }
+    meta: { model: dasExtractionConfig.model, section: dasExtractionConfig.section },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: dasExtractionConfig
   });
   jobLogger?.log('das_api_done', 'DAS extractor returned', {
     dasLength: extracted?.content?.length || 0,
@@ -656,6 +723,7 @@ module.exports = {
   concatenatePDFs,
   queueAnalysis,
   extractAndSaveDAS,
+  applyExtractedDas,
   queueDASExtraction,
   // Apply helpers - exported for use by suggestion service
   applyAddRow,

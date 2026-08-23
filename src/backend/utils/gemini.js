@@ -24,6 +24,9 @@
 
 const { isTransientError } = require('./helpers');
 const logger = require('./logger');
+const tokenUsage = require('./token-usage');
+const attemptLog = require('./attempt-log');
+const frozenParams = require('./frozen-params');
 
 const DEFAULTS = { maxRetries: 4, delay: 1000, multiplier: 2, maxDelay: 15000, jitter: 400 };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -76,7 +79,13 @@ function withDefaultGenerationConfig(params) {
 async function generateContentWithRetry(ai, params, options = {}) {
   const { label = 'Gemini', validate = null, retry: retryOverrides = {} } = options;
   const cfg = { ...DEFAULTS, ...retryOverrides };
-  const callParams = withDefaultGenerationConfig(params);
+  // A restart asked to run with a past run's parameters swaps the model here,
+  // in the one place every Gemini call passes through. Per service it would be
+  // twelve chances to miss one, and a module that missed it would run against
+  // today's model while the page said the run had been reproduced.
+  //
+  // A no-op outside a frozen restart, which is the normal path.
+  const callParams = withDefaultGenerationConfig(frozenParams.forModelCall(params));
 
   let lastResponse = null;
   for (let attempt = 1; attempt <= cfg.maxRetries; attempt++) {
@@ -84,14 +93,37 @@ async function generateContentWithRetry(ai, params, options = {}) {
     let transientError = null;
     try {
       response = await ai.models.generateContent(callParams);
+      // Every call, including the ones a retry throws away — they were paid for.
+      tokenUsage.add(response?.usageMetadata);
     } catch (error) {
+      // Recorded before the decision to give up, so a call that failed once and
+      // was not retried still appears. The run's record is about what happened,
+      // not about what the retry policy thought of it.
+      attemptLog.add({ layer: 'client', engine: label, ok: false, error });
       // Non-transient (auth/bad-request) or last attempt → give up immediately.
       if (!isTransientError(error) || attempt === cfg.maxRetries) throw error;
       transientError = error;
     }
 
     if (!transientError) {
-      if (!validate || validate(response)) return response;
+      const usable = !validate || validate(response);
+      // A 200 that cannot be parsed is a failed attempt as far as the run is
+      // concerned: it produced nothing, it was paid for, and it caused a retry.
+      //
+      // A first-attempt success records nothing, matching the shared retry
+      // helper: a run whose record is one "ok" per successful call says nothing
+      // and buries the attempts that matter. A success AFTER a failure is
+      // recorded, because "and then it worked" is half the story.
+      if (!usable || attempt > 1) {
+        attemptLog.add({
+          layer: 'client',
+          engine: label,
+          ok: usable,
+          error: usable ? null : 'empty or unparseable response',
+          httpStatus: 200
+        });
+      }
+      if (usable) return response;
       // 200 but empty/unparseable. Keep it as best-effort and retry.
       lastResponse = response;
       if (attempt === cfg.maxRetries) {

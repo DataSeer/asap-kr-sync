@@ -15,6 +15,11 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import { describeJobStatus } from '@/utils/job-status'
+import { formatDateTime } from '@/utils/format-date'
+import jobService from '@/services/job.service'
+import { useAuthStore } from '@/stores/auth.store'
+import { useNotificationStore } from '@/stores/notification.store'
+import { downstreamOf } from '@/utils/restart-plan'
 import ModuleExplainer from '@/components/modules/ModuleExplainer.vue'
 import GroundingTable from '@/components/modules/GroundingTable.vue'
 import DetectionsTable from '@/components/modules/DetectionsTable.vue'
@@ -38,6 +43,7 @@ import {
 import configService from '@/services/config.service'
 import orcidService from '@/services/orcid.service'
 import markdownService from '@/services/markdown.service'
+import PipelineIssues from '@/components/submission/PipelineIssues.vue'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { useSubmissionStore } from '@/stores/submission.store'
@@ -49,7 +55,10 @@ const jobType = computed(() => route.params.type)
 const resourceTypesStore = useResourceTypesStore()
 const submissionStore = useSubmissionStore()
 
-const { jobs } = useJobPoller(submissionId)
+const authStore = useAuthStore()
+const notificationStore = useNotificationStore()
+
+const { jobs, issues, refresh: refreshJobs } = useJobPoller(submissionId)
 
 /**
  * What state this module's run is in, in a sentence.
@@ -60,11 +69,144 @@ const { jobs } = useJobPoller(submissionId)
  * reader infers, and infers wrong. One line under the title removes the
  * guessing.
  */
-const runStatus = computed(() => describeJobStatus((jobs.value || {})[jobType.value] || null))
+const runStatus = computed(() => describeJobStatus(job.value))
+
+/**
+ * When what is on screen was produced.
+ *
+ * Shown on EVERY run, not only past ones. This page is a record of a run, while
+ * the KRT editor a click away is live — so a page that silently shows the table
+ * as it was three runs ago reads as a lost edit. Saying "as at" is what makes
+ * the difference visible rather than surprising.
+ */
+const asAt = computed(() => {
+  const when = job.value?.completedAt || job.value?.startedAt
+  if (!when) return null
+  const n = job.value?.runNumber
+  const total = runCount.value
+  const run = n ? (total > 1 ? `Run ${n} of ${total}` : `Run ${n}`) : 'This run'
+  return `${run} · as at ${formatDateTime(when)}`
+})
 
 
-const job = computed(() => (jobs.value || {})[jobType.value] || null)
+/**
+ * Which run this page is showing.
+ *
+ * `null` means the latest, served straight from the poller — the normal case,
+ * and it costs no extra request. Anything else is a past run fetched on demand.
+ *
+ * Everything on this page renders from `job.result.data.*`, so swapping what
+ * `job` resolves to swaps the whole page: tables, counts, evidence, the status
+ * line and the METADATA column all follow. That is why the endpoint returns a
+ * run already shaped like a job — one rendering path, not two.
+ */
+const selectedRunNumber = ref(null)
+const selectedRun = ref(null)
+const runs = ref([])
+const runsState = ref('idle')   // idle | loading | ready | error
+
+const liveJob = computed(() => (jobs.value || {})[jobType.value] || null)
+const job = computed(() => selectedRun.value || liveJob.value)
+
+/** True while the page is showing something other than the current run. */
+const viewingPastRun = computed(() => !!selectedRun.value && selectedRun.value.isLatest === false)
+
+/**
+ * The run on screen holds a result an EARLIER run produced.
+ *
+ * Read from the selected run when one is open, and otherwise from the newest
+ * entry in the list — because the latest run is exactly where this is easiest
+ * to misread: restart one detector, come to this page, and the run number is
+ * current while the result is not.
+ */
+const carriedOverNotice = computed(() => {
+  const entry = selectedRun.value || runs.value.find((r) => r.isLatest)
+  if (!entry?.carriedOver || !entry.producedByRun) return null
+  return { runNumber: entry.runNumber, producedByRun: entry.producedByRun }
+})
+
+/**
+ * Authors read the latest run and nothing else — the same audience rule the
+ * run endpoints enforce. Hiding the control without the server gate would be
+ * decoration; both exist.
+ */
+const canBrowseRuns = computed(() => authStore.canViewJobInternals)
+
+/** How many runs this step has had, from whichever source is loaded. */
+const runCount = computed(() => runs.value.length || liveJob.value?.runCount || 1)
+
+async function loadRuns() {
+  if (!canBrowseRuns.value) return
+  runsState.value = 'loading'
+  try {
+    const data = await jobService.getRuns(submissionId.value, jobType.value)
+    runs.value = data.runs || []
+    runsState.value = 'ready'
+  } catch {
+    // Not fatal: the page still shows the current run, which is what it showed
+    // before this control existed.
+    runs.value = []
+    runsState.value = 'error'
+  }
+}
+
+/**
+ * One run, as the selector names it.
+ *
+ * A run that did not re-execute this step says so HERE, not only once it is
+ * open: picking between runs is exactly when it matters that two of them hold
+ * the same result.
+ *
+ * @param {object} r - a run-list entry
+ * @returns {string}
+ */
+function runLabel(r) {
+  const parts = [`${r.runNumber} of ${runCount.value}${r.isLatest ? ' — latest' : ''}`]
+  if (r.carriedOver && r.producedByRun) parts.push(`carried over from run ${r.producedByRun}`)
+  // A run that reproduced an earlier one's prompts is not comparable with a
+  // live run on the same footing, and the selector is where runs get compared.
+  if (r.paramsSource === 'frozen') parts.push('earlier settings')
+  parts.push(r.status === 'not_started'
+    ? 'not run yet'
+    : formatDateTime(r.completedAt || r.startedAt))
+  return parts.join(' · ')
+}
+
+async function showRun(runNumber) {
+  // Selecting the latest returns to the live job, so the page keeps polling and
+  // keeps updating — a frozen copy of the current run would go stale on screen.
+  //
+  // Decided by the entry's own `isLatest`, not by comparing the number to a
+  // count. Run numbers belong to the PIPELINE run now, and a step that was
+  // carried over appears under a number that is not its own — so "the highest
+  // number is the current one" stopped being something this page can assume.
+  const latest = runs.value.find((r) => r.isLatest)
+  if (!runNumber || (latest && runNumber === latest.runNumber)) {
+    selectedRunNumber.value = null
+    selectedRun.value = null
+    return
+  }
+  selectedRunNumber.value = runNumber
+  try {
+    const { run } = await jobService.getRun(submissionId.value, jobType.value, runNumber)
+    selectedRun.value = run
+  } catch {
+    selectedRunNumber.value = null
+    selectedRun.value = null
+    notificationStore.error('That run could not be loaded')
+  }
+}
 const explainer = computed(() => explainerFor(jobType.value))
+
+// The step strip navigates between modules without remounting the parent, and
+// "run 2" means something different for each step — so a change of step drops
+// the selection and reloads the list rather than carrying a stale run across.
+watch(jobType, () => {
+  selectedRunNumber.value = null
+  selectedRun.value = null
+  runs.value = []
+  loadRuns()
+})
 
 /**
  * Every step, in pipeline order, so the tab strip shows the whole shape rather
@@ -81,6 +223,24 @@ const explainer = computed(() => explainerFor(jobType.value))
 const submission = ref(null)
 const latestFiles = ref({})
 
+/**
+ * The documents this page is about — the ones the RUN was contemporaneous with,
+ * not the ones the submission holds today.
+ *
+ * A run records the KRT, PDF and markdown as they stood when it opened, by
+ * reference. The download endpoint takes a file id and an older version is its
+ * own row, so asking for the recorded id returns exactly that version even
+ * after the author has replaced it.
+ *
+ * Falls back to the current files for a run that predates this record — a link
+ * to today's PDF is better than none, and the "as at" line says which run the
+ * page is showing.
+ */
+const runDocuments = computed(() => {
+  const recorded = job.value?.documents
+  return recorded && Object.keys(recorded).length ? recorded : latestFiles.value
+})
+
 const steps = ref([])
 onMounted(async () => {
   submissionStore.fetchSubmission(submissionId.value).then((sub) => {
@@ -93,6 +253,7 @@ onMounted(async () => {
   // lands in one tab. The panel loads them because its parent view does; a page
   // opened directly, which is the whole point of these being pages, does not.
   resourceTypesStore.fetchResourceTypeNames().catch(() => {})
+  loadRuns()
   try {
     steps.value = (await configService.getPipeline()).nodes
   } catch {
@@ -102,6 +263,90 @@ onMounted(async () => {
 
 
 const label = computed(() => labelFor(jobType.value))
+
+// ── Retry ───────────────────────────────────────────────────────────────────
+// Not a restart. A restart re-runs this step AND everything built on it, and
+// lives on the pipeline page where several steps can be chosen together. This is
+// the narrower thing that comes up after an external service is fixed: the
+// pipeline is stuck behind one failure, and what is wanted is to unblock it.
+//
+// Offered only while nothing downstream has run since. That is what makes
+// running this step alone safe — nothing was built on its absence, so nothing is
+// left stale afterwards. Once a later step HAS run, retrying alone would leave
+// its result built on the failure, and the button says so rather than hiding.
+const retrying = ref(false)
+
+/** Every step that depends on this one, directly or through another. */
+const downstreamTypes = computed(() => downstreamOf(steps.value, jobType.value))
+
+const retryState = computed(() => {
+  if (!authStore.canRestartJobs) return { show: false }
+  const current = (jobs.value || {})[jobType.value]
+  if (current?.status !== 'failed' || viewingPastRun.value) return { show: false }
+
+  const ran = downstreamTypes.value.filter((t) => {
+    const d = (jobs.value || {})[t]
+    return d && d.status !== 'waiting'
+  })
+
+  return ran.length
+    ? {
+      show: true,
+      enabled: false,
+      reason: `${ran.map(labelFor).join(', ')} already ran after this failed, so their `
+        + 'results are built on it. Restart this step from the pipeline page, which re-runs them too.'
+    }
+    : {
+      show: true,
+      enabled: true,
+      reason: 'Run this step again. Nothing else changes — it reads the same documents '
+        + 'this round has been using.'
+    }
+})
+
+/**
+ * The other answer: carry on without this step's data.
+ *
+ * Offered on the same failure as Retry, and only while something is actually
+ * held behind it — a failure blocking nothing needs no decision, and a button
+ * that records one anyway would put a skip-marker on the record for no reason.
+ */
+const continuing = ref(false)
+
+const canContinue = computed(() => {
+  if (!retryState.value.show) return false
+  const current = (jobs.value || {})[jobType.value]
+  if (current?.issueAcknowledgedAt) return false
+  return downstreamTypes.value.some((t) => (jobs.value || {})[t]?.status === 'waiting')
+})
+
+async function continueWithout() {
+  if (continuing.value) return
+  continuing.value = true
+  try {
+    const result = await jobService.continueWithout(submissionId.value, jobType.value)
+    notificationStore.info(result?.message || 'Continuing without this step')
+    await refreshJobs()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Could not continue past this step')
+  } finally {
+    continuing.value = false
+  }
+}
+
+async function retry() {
+  if (!retryState.value.enabled || retrying.value) return
+  retrying.value = true
+  try {
+    const result = await jobService.retryJob(submissionId.value, jobType.value)
+    notificationStore.info(result?.message || 'Running again')
+    await refreshJobs()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Could not retry this step')
+  } finally {
+    retrying.value = false
+  }
+}
 
 /**
  * What "no result" means for THIS module.
@@ -187,6 +432,17 @@ const authorsError = ref('')
  */
 onMounted(async () => {
   if (jobType.value !== 'orcid_extraction') return
+  // The run's own list wins. `submissions.authors` holds only the newest run's
+  // — the next run overwrites it — so reading it for a past run would show
+  // whoever the LATEST run found under an older run's timestamp. Older runs
+  // recorded no list, and fall back to the live one with the "as at" line
+  // saying which run is on screen.
+  const recorded = job.value?.result?.data?.items
+  if (Array.isArray(recorded) && recorded.length) {
+    authors.value = recorded
+    authorsLoading.value = false
+    return
+  }
   authorsLoading.value = true
   try {
     authors.value = (await orcidService.getAuthors(submissionId.value))?.authors || []
@@ -223,22 +479,36 @@ const markdownFileName = ref('converted manuscript')
 const markdown = ref('')
 const markdownLoading = ref(false)
 const markdownError = ref('')
-// Mount-time for the same reason as the author list above: the route is keyed.
-onMounted(async () => {
+/**
+ * The text THIS run produced, not the newest conversion.
+ *
+ * Re-read when the selected run changes: showing run 1's statistics above run
+ * 3's text is the page contradicting itself on the one thing it exists to show.
+ */
+async function loadMarkdown() {
   if (jobType.value !== 'markdown_convert') return
   markdownLoading.value = true
+  markdownError.value = ''
   try {
-    const data = await markdownService.getContent(submissionId.value)
+    const data = await markdownService.getContent(submissionId.value, markdownFileId.value)
     markdown.value = data?.content || ''
     if (data?.fileName) markdownFileName.value = data.fileName
   } catch (e) {
     markdownError.value = e?.response?.status === 404
-      ? 'No converted text is stored for this submission yet.'
+      ? (markdownFileId.value
+        // A run whose converted file has since been removed. Said plainly,
+        // rather than quietly falling back to a different run's text.
+        ? 'The text this run produced is no longer stored.'
+        : 'No converted text is stored for this submission yet.')
       : 'The converted text could not be loaded.'
   } finally {
     markdownLoading.value = false
   }
-})
+}
+
+// Mount-time for the same reason as the author list above: the route is keyed.
+onMounted(loadMarkdown)
+watch(markdownFileId, loadMarkdown)
 
 /**
  * The converted text, as the stored file rather than the raw LM artefact — this
@@ -476,12 +746,97 @@ const tabConflicts = computed(() => {
       <span v-if="tabConflicts.all > 0" class="mrv-conflicts">
         ⚠ {{ tabConflicts.all }} conflict{{ tabConflicts.all === 1 ? '' : 's' }}
       </span>
+      <!-- Which run is on screen. Only from the second run onward: a selector
+           offering one option is furniture. Hidden from authors entirely — they
+           read the latest run, which is also what the endpoint behind this
+           enforces. -->
+      <label v-if="canBrowseRuns && runs.length > 1" class="mrv-runs">
+        <span class="mrv-runs-label">Run</span>
+        <select
+          class="mrv-runs-select"
+          :value="selectedRunNumber ?? runCount"
+          @change="showRun(Number($event.target.value))"
+        >
+          <!-- Built as one string rather than interleaved expressions: the
+               template's own newlines and indentation land inside an <option>
+               and the browser renders them, so a conditional clause that is
+               empty leaves a visible gap. -->
+          <option v-for="r in runs" :key="r.runNumber" :value="r.runNumber">{{ runLabel(r) }}</option>
+        </select>
+      </label>
+
+      <!-- Shown only on a failure, and enabled only while nothing downstream
+           has run since. Disabled-with-a-reason rather than hidden: "why can I
+           not retry this" is the question, and hiding the control answers it
+           with silence. -->
+      <button
+        v-if="retryState.show"
+        type="button"
+        class="mrv-retry"
+        :class="{ 'mrv-retry-off': !retryState.enabled }"
+        :disabled="!retryState.enabled || retrying"
+        v-tooltip="retryState.reason"
+        @click="retry"
+      >
+        <svg class="mrv-retry-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        {{ retrying ? 'Starting…' : 'Retry' }}
+      </button>
+      <!-- The second answer. Beside Retry rather than hidden behind it: the
+           choice is between two things, and a user who cannot fix the service
+           needs to see that carrying on is allowed. -->
+      <button
+        v-if="canContinue"
+        type="button"
+        class="mrv-retry"
+        :disabled="continuing"
+        v-tooltip="'The steps waiting on this one will run without its data. Recorded, so the report can say it was skipped rather than empty.'"
+        @click="continueWithout"
+      >
+        {{ continuing ? 'Continuing…' : 'Continue without it' }}
+      </button>
+
       <!-- The two documents every result on this page is a claim about. -->
       <SubmissionFileLinks
         class="mrv-files-links"
         :submission-id="submissionId"
-        :files="latestFiles"
+        :files="runDocuments"
       />
+    </div>
+
+    <!-- Selecting a past run must never look like restoring it. This sits above
+         the status line, stays put while the run is open, and offers the way
+         back — otherwise someone picks run 2, sees it render, and reasonably
+         concludes the pipeline is now using it. -->
+    <PipelineIssues
+      :submission-id="submissionId"
+      :issues="issues"
+      :actionable="!viewingPastRun"
+      compact
+      @resolved="refreshJobs"
+    />
+
+    <div v-if="viewingPastRun" class="mrv-past" role="status">
+      <span class="mrv-past-badge">Past run</span>
+      <span class="mrv-past-text">
+        Viewing run {{ selectedRun.runNumber }} of {{ runCount }} — <strong>this is not the
+        current result</strong>. It is kept exactly as this run produced it.
+      </span>
+      <button type="button" class="mrv-past-btn" @click="showRun(null)">Back to the latest run</button>
+    </div>
+
+    <!-- A run that did not re-execute this step. Shown on the LATEST run too,
+         which is the case that matters: someone restarts one detector, comes
+         here, and reads a number that is real beside a result that predates it.
+         Without this line the only honest reading of the page is wrong. -->
+    <div v-if="carriedOverNotice" class="mrv-carried" role="status">
+      <span class="mrv-carried-badge">Carried over</span>
+      <span class="mrv-carried-text">
+        This step did not run again in run {{ carriedOverNotice.runNumber }}. What is below was
+        produced by <strong>run {{ carriedOverNotice.producedByRun }}</strong> and kept, because
+        nothing it depends on changed.
+      </span>
     </div>
 
     <!-- Directly under the title, before anything that could be mistaken for a
@@ -491,6 +846,9 @@ const tabConflicts = computed(() => {
       <span class="mrv-status-text">
         {{ runStatus.title }}
         <span v-if="runStatus.detail" class="mrv-status-detail">{{ runStatus.detail }}</span>
+        <!-- What is below is this run's record, not the submission as it stands
+             now. The KRT editor next door is live; this is not. -->
+        <span v-if="asAt" class="mrv-status-asat">{{ asAt }}</span>
       </span>
     </div>
 
@@ -553,7 +911,7 @@ const tabConflicts = computed(() => {
       </div>
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -596,7 +954,7 @@ const tabConflicts = computed(() => {
       <SuggestionsTable :rows="visibleDecisionRows" :search="search" />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -627,7 +985,7 @@ const tabConflicts = computed(() => {
       />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -643,7 +1001,7 @@ const tabConflicts = computed(() => {
       </div>
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -656,7 +1014,7 @@ const tabConflicts = computed(() => {
       </p>
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -683,7 +1041,7 @@ const tabConflicts = computed(() => {
       <DasSuggestionsTable :rows="visibleDasRows" :search="search" />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       />
     </template>
 
@@ -696,7 +1054,7 @@ const tabConflicts = computed(() => {
       />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
-        :jobs="jobs || {}" :files="latestFiles"
+        :jobs="jobs || {}" :files="runDocuments"
       >
         <template v-if="markdownFileId" #files>
           <ul class="mrv-filelist">
@@ -722,6 +1080,99 @@ const tabConflicts = computed(() => {
 .mrv-files { margin-bottom: 0.5rem; }
 .mrv-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 
+
+.mrv-runs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-left: 0.75rem;
+}
+
+.mrv-runs-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7280;
+}
+
+.mrv-runs-select {
+  font-size: 0.8125rem;
+  padding: 0.125rem 0.375rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  background: #fff;
+  color: #374151;
+  max-width: 20rem;
+}
+
+/* Amber, and it stays on screen for as long as a past run is open. The colour
+   the app already uses for "this needs your attention". */
+.mrv-past {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0 0 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #fcd34d;
+  border-radius: 0.5rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.mrv-past-badge {
+  flex: none;
+  padding: 0.0625rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.mrv-past-text { flex: 1; }
+
+.mrv-carried {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid #bfdbfe;
+  border-left: 4px solid #3b82f6;
+  border-radius: 0.5rem;
+  background: #eff6ff;
+}
+.mrv-carried-badge {
+  flex-shrink: 0;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.mrv-carried-text { font-size: 0.83rem; color: #1e3a8a; }
+
+.mrv-past-btn {
+  flex: none;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid #92400e;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: #92400e;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mrv-past-btn:hover { background: rgba(146, 64, 14, 0.08); }
+
 .mrv-status {
   display: flex;
   align-items: flex-start;
@@ -746,6 +1197,13 @@ const tabConflicts = computed(() => {
 }
 
 .mrv-status-detail { display: block; opacity: 0.9; }
+
+.mrv-status-asat {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
 
 /* The palette the processes panel and the pipeline page use — one status must
    not be green in one place and grey in another. */
@@ -846,4 +1304,21 @@ const tabConflicts = computed(() => {
   font-size: 0.82rem; line-height: 1.55; color: #111827;
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: min(60vh, 40rem); overflow: auto;
 }
+
+/* Retry, beside the title — the one action this page offers. */
+.mrv-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  background: #fff;
+  color: #374151;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.mrv-retry:hover:not(:disabled) { background: #f9fafb; border-color: #9ca3af; }
+.mrv-retry-icon { width: 0.9rem; height: 0.9rem; }
+.mrv-retry-off, .mrv-retry:disabled { opacity: 0.55; cursor: not-allowed; }
 </style>

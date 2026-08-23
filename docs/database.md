@@ -112,8 +112,10 @@ Managed on the **Projects** admin page (CRUD + CSV import/export).
 | `project` | VARCHAR(10) | 2-letter grant code auto-extracted from `manuscript_id`; not FK-validated. Filter/label only — does not drive visibility (owner's teams do). |
 | `title` | VARCHAR(500) | Required |
 | `manuscript_id` | VARCHAR(100) | Optional, validated against the ASAP pattern |
-| `data_availability_statement` | TEXT | User-edited DAS |
-| `extracted_data_availability_statement` | TEXT | AI-extracted DAS |
+| `data_availability_statement` | TEXT | The statement the submission **stands on**. Filled from extraction *only while empty*; once it holds anything it belongs to whoever put it there. `"Not found"` counts as empty. |
+| `extracted_data_availability_statement` | TEXT | What the **last extraction** found. Always overwritten — it is a record of what the extractor said, not of what the submission claims. |
+| `das_confirmed_at` | TIMESTAMPTZ | When somebody vouched for the statement. The Availability check will not run without it. Cleared when extraction rewrites the field, and on a new round. |
+| `das_confirmed_by_user_id` | UUID (FK) | Who vouched for it. Set by `POST /:id/das/confirm`, and by writing the statement — authoring it says the same thing. |
 | `status` | ENUM | See status values below |
 | `notes` | TEXT | Optional notes |
 | `current_round` | INTEGER | Default 1; incremented by `POST /:id/new-round` |
@@ -199,13 +201,124 @@ draft → step_krt → step_pdf → step_review → step_as → step_report → 
 | `round` | INTEGER | Default 1 |
 | `logs` | JSONB | Structured log entries from job execution (`[]` default) |
 | `triggered_by_user_id` | UUID (FK, nullable) | Who asked for this step to run — **not** the submission's owner. `ON DELETE SET NULL`, though accounts are anonymised rather than deleted so it should never fire. NULL means the row predates the column or no user was involved. |
+| `run_count` | INTEGER | How many times this step has EXECUTED in this round. Not the run number — a run can carry a step over rather than re-executing it, so "which run is this" and "how many times has this step run" are different questions. Counts from 0. |
 | `started_at` / `completed_at` | TIMESTAMPTZ | |
+
+The job row carries no history and no decisions. Both live on the execution —
+see `step_executions` below.
+
+#### `pipeline_runs`
+
+**One row per attempt at processing a round.** The unit a user means by "run 2":
+every step is either executed by that run, or carried over from its parent by
+link.
+
+Runs used to be numbered per STEP — software run 3 beside materials run 1 — and
+that number could not say which runs belonged together, so a result on screen
+was a mix with no name for the set.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | |
+| `submission_id`, `round` | | |
+| `run_number` | INTEGER | 1-based per (submission, round); allocated inside the INSERT. `UNIQUE (submission_id, round, run_number)` |
+| `cause` | VARCHAR(32) | `create_submission` \| `retry` \| `restart` \| `new_document` \| `replay`. A string, not an enum: the set will grow and Postgres cannot drop an enum value |
+| `caused_by_user_id` | UUID (FK, nullable) | Null for automatic causes |
+| `parent_run_id` | UUID (FK, nullable) | What it was derived from |
+| `status` | ENUM | `running` \| `paused` \| `complete` \| `superseded`. `paused` means something needs a person; `superseded` means it was replaced before it finished, which is neither complete nor abandoned |
+| `shape` | JSONB | The step list, each step's dependencies and required set, and each step's config, as they stood when the run was created. Not redundant with a step's own config: that is written when a module FINISHES, so a step that never ran has none |
+| `pipeline_version` | INTEGER | Manual. Bumped when the structure changes enough that old runs are unreadable — **not** for a new module or a prompt change |
+| `app_version` | VARCHAR(64) | Automatic. Provenance only; never read to decide compatibility |
+| `params_source` | VARCHAR(16) | `live` (default) — today's prompts and config — or `frozen`, meaning each re-executed step ran with the parameters its parent's execution recorded. On the run, not per step: one choice for one restart |
+| `created_at` / `completed_at` | TIMESTAMPTZ | |
+
+#### `pipeline_run_steps`
+
+**Membership: what a run contains**, by reference. One row per step per run,
+created with the run — a run that listed only what had finished could not be
+read while it was running.
+
+Restarting one detector must not re-run the other eleven, so run N+1 legitimately
+holds executions run N created and says so by POINTING at them. Copying would
+duplicate megabytes per restart and create two records of one event.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `pipeline_run_id`, `job_type` | | `UNIQUE` together |
+| `step_execution_id` | UUID (FK, nullable) | Null until the step executes. **`ON DELETE RESTRICT`** — retention may prune executions, and may not do it by hollowing out a run that still contains them |
+| `carried_over` | BOOLEAN | True when it points at an execution another run created. The UI must always say so |
+
+#### `step_executions`
+
+**One row per step actually doing work.** Formerly `submission_job_runs`; renamed
+because "run" now means the collection.
+
+Output is immutable once the execution finishes. Its *disposition* — the decision
+attached to it, its membership in later runs — is append-only, because a decision
+is recorded after the execution ends.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | |
+| `pipeline_run_id` | UUID (FK) | The run that CREATED it. **NOT NULL** — an execution belonging to no run is unreachable from the model every screen is built on |
+| `submission_job_id` | UUID (FK) | Cascades |
+| `submission_id`, `job_type`, `round` | | Denormalised, so history is queryable without a join |
+| `status` | ENUM | This execution's terminal status — its own enum type, distinct from `submission_jobs.status` |
+| `outcome_state` / `outcome_source` / `fail_reason` / `external_error` | | The service snapshot, flattened so it can be filtered on. `outcome_state` includes `partial` |
+| `attempts` | JSONB | Every try, at BOTH retry layers: `[{ n, at, layer, delivery, ok, engine, error, httpStatus }]`. `retry_count` alone cannot say "two 529s, then it succeeded" |
+| `decision` | JSONB | `{ at, byUserId, choice }` — what was decided about THIS execution. Here rather than on the job row, so it travels with the result it is about and a re-executed step has nothing to clear |
+| `config` | JSONB | The config as this execution saw it; may differ from the run's `shape` |
+| `skip_reason` | JSONB | `{ missing: [jobType] }` when a required input produced nothing |
+| `cancelled_at` / `cancelled_by_user_id` | | A cancel interrupts; this records who and when |
+| `discarded` | JSONB | Answers that arrived AFTER the cancel and were thrown away, with their token cost. The external call cannot be stopped — it completes and is billed — so "did we pay for something we threw away" is answerable |
+| `triggered_by_user_id` | UUID (FK, nullable) | Who asked. `ON DELETE SET NULL` |
+| `trigger_kind` | VARCHAR(16) | `manual` \| `pipeline` \| `reconciler` |
+| `started_at` / `completed_at` / `duration_ms` | | `duration_ms` is stored rather than derived, so a later purge of timestamps cannot take it too |
+| `retry_count` | INTEGER | pg-boss re-deliveries within this execution |
+| `counts` / `result` / `logs` / `inputs` | JSONB | The payload. **Nullable on purpose**: the record above is small and kept forever, the payload can be pruned without losing the history |
+| `s3_prefix` | TEXT | `jobs/<jobType>/run-<pipelineRunNumber>` |
+
+`UNIQUE (pipeline_run_id, job_type)`: a step executes at most once in a run, and
+a second attempt is a new run. This replaced `UNIQUE (submission_job_id,
+run_number)` when the per-step number was retired, and states the same invariant
+directly.
+
+#### `submission_input_freezes`
+
+What one round is being processed from. **One row per (submission, round, input
+kind)**, created by the FIRST step that reads that input; every later reader in
+the round is handed the same thing.
+
+Before this, nine services each ran their own `File.findOne({ type }, order:
+version DESC)`, so "the input" meant whatever was newest when each step happened
+to run. Replacing a file mid-run split the round, and nothing recorded it. See
+[background-jobs.md](./background-jobs.md#one-round-one-pdf-one-krt).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | |
+| `submission_id` | UUID (FK) | Cascades |
+| `round` | INTEGER | |
+| `input_kind` | VARCHAR(32) | `pdf` \| `markdown` \| `krt`. Not an enum: adding a kind should not need a migration that rewrites a type |
+| `file_id` | UUID (FK, nullable) | File inputs, **by reference** — a File row is immutable once written. `ON DELETE SET NULL` |
+| `file_version` / `s3_key` / `bytes` | | Copied rather than joined, so "what did this run read" survives the file row being removed |
+| `sha256` | VARCHAR(64) | Unused here — hashing would mean downloading the object just to freeze a reference. The column exists for run inputs, which hash the buffer anyway |
+| `payload` | JSONB | Row inputs, **by value**. The KRT only: `krt_data` rows are the live editing surface and have no version to point at, so the snapshot IS the reference |
+| `row_count` | INTEGER | What `stale` is computed from. A count cannot see an edited cell, and the app says only what it can stand behind |
+| `frozen_by_job_type` | VARCHAR(64) | Which step read it first. For the re-freeze rule, not for display |
+| `frozen_at` | TIMESTAMPTZ | |
+
+`UNIQUE (submission_id, round, input_kind)` is load-bearing: two detectors
+starting in the same millisecond both find no freeze and both try to create one.
+The constraint decides, and the loser takes the winner's answer — the point is
+that the round agrees on one input, not that a particular step wins.
 
 ### Supporting Tables
 
 | Table | Purpose |
 |-------|---------|
-| `change_logs` | Audit trail for all KRT changes (action, source, metadata) |
+| `submission_archives` | The tombstone for an archived submission — what left, when, by whom, where it went, and the checksum of its manifest. **No foreign key to `submissions`**, because what it names is gone; written before the delete, so a half-failed delete leaves a visible inconsistency rather than a silent disappearance; and closed rather than removed on restore. See [archiving.md](./archiving.md) |
+| `change_logs` | Audit trail for all KRT changes (action, source, metadata). `file_id` ties an upload entry to the exact file version it describes — before it, the narrative and the file could only be matched by timestamp. `step_execution_id` records which execution's output a value came from, for `action: 'apply'` rows; `user_id` is nullable because an automatic apply has the system as its actor |
 | `reports` | Generated reports (`type` ENUM `excel`/`pdf`, `file_url`, `metadata` JSONB, `round`) |
 | `user_hidden_submissions` | Per-user submission visibility preferences |
 | `resource_types` | Configurable resource type catalog (name, description, active, sort_order, `type` ∈ `dataset/software/protocol/lab_material`) |

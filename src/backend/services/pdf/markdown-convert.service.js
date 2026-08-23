@@ -8,6 +8,7 @@
  */
 
 const { Submission, File, SubmissionJob } = require('../../models');
+const inputFreeze = require('../queue/input-freeze.service');
 const s3Service = require('../storage/s3.service');
 const pdfMarkdownClient = require('./pdf-markdown-client.service');
 const markdownFilter = require('./markdown-filter.service');
@@ -81,10 +82,12 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const pdfFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.PDF, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const pdfFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.PDF, { jobType: JOB_TYPES.MARKDOWN_CONVERT }
+  );
   if (!pdfFile) throw new Error('No PDF file found for markdown conversion');
 
   jobLogger?.log('download_pdf', 'Downloading PDF from S3', { fileName: pdfFile.fileName, s3Key: pdfFile.s3Key });
@@ -95,7 +98,12 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
   const convertStartTime = Date.now();
   await runInputs.saveRunInputs(jobLogger, {
     documents: { pdf: runInputs.fileRef(pdfFile, pdfBuffer) },
-    meta: { provider: markdownConfig.provider }
+    meta: { provider: markdownConfig.provider },
+    // No prompt and no model to pin here — the conversion is somebody else's
+    // service. The CONVERTER and the endpoint are still ours, and they change
+    // the markdown every later step reads: same PDF, different converter,
+    // different document. Recording them is the most this step can freeze.
+    call: markdownConfig
   });
 
   const rawMarkdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile.fileName);
@@ -180,9 +188,7 @@ async function uploadMarkdownAsFile(submission, markdownText, mdFileName) {
 async function persistJobData(submissionId, jobType, round, helperResult) {
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 

@@ -17,14 +17,17 @@
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { SubmissionJob, Submission } = require('../../models');
+const { SubmissionJob, Submission, ChangeLog, sequelize } = require('../../models');
 const jobQueue = require('./job-queue.service');
 const orchestrator = require('./orchestrator.service');
 const { JOB_TYPES } = require('../../config/constants');
+const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
 
 // ── a job row that behaves like the model instance the code writes to ────────
 let saved;      // every row .save() was called on, in order
 let enqueued;   // every queue name addJob() was called with
+let pipelineRuns; // what mockDb recorded about the runs that were opened
+let applied;    // every change-log row a reset hook wrote
 
 function row(jobType, over = {}) {
   const r = {
@@ -67,6 +70,11 @@ function pipelineRows(over = {}) {
 const A_STATEMENT = 'Data are available at Zenodo.';
 
 function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: A_STATEMENT }) {
+  // Every entry point opens a pipeline run before it enqueues anything. These
+  // tests are about the SCHEDULER — which row is reused, what advances, who is
+  // credited — so the run layer is recorded rather than exercised. The returned
+  // state is what the "one restart is one run" tests below assert on.
+  pipelineRuns = fakePipelineRuns(t);
   t.mock.method(SubmissionJob, 'getForSubmission', async () => [...rows.values()]);
   // runAllProcesses reads the round's existing rows before deciding whether to
   // create any, so this has to answer too.
@@ -89,6 +97,14 @@ function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAva
     return created;
   });
   t.mock.method(Submission, 'findByPk', async () => submission);
+  // cascadeRestart reads each downstream row through findOne, inside a real
+  // transaction with a row lock. Both have to be answered or the call reaches
+  // for a connection.
+  t.mock.method(SubmissionJob, 'findOne', async ({ where }) => rows.get(where.jobType) || null);
+  t.mock.method(sequelize, 'transaction', async (fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }));
+  // A step's reset hook records what it destroyed. These tests are not about
+  // the log, but an unmocked create reaches for a connection.
+  t.mock.method(ChangeLog, 'create', async (row) => { applied.push(row); return row; });
   t.mock.method(jobQueue, 'addJob', async (queueName) => {
     enqueued.push(queueName);
     return `pgboss-${enqueued.length}`;
@@ -118,8 +134,8 @@ function completeUpstreamOf(rows, jobType) {
   walk(jobType);
 }
 
-beforeEach(() => { saved = []; enqueued = []; });
-afterEach(() => { saved = []; enqueued = []; });
+beforeEach(() => { saved = []; enqueued = []; applied = []; });
+afterEach(() => { saved = []; enqueued = []; applied = []; });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // computeDownstreamSet — what a re-run invalidates
@@ -298,9 +314,11 @@ test('an empty conversion starts nothing that reads the manuscript', async (t) =
   assert.ok([...rows.values()].every((r) => r.status !== 'queued'));
 });
 
-test('a step whose dependency FAILED still advances — failure is terminal too', async (t) => {
-  // Otherwise one failed detector strands the whole run in `waiting`, and the
-  // curator sees a pipeline that never finishes rather than a partial result.
+test('a step whose dependency FAILED waits for a person', async (t) => {
+  // This used to advance: `failed` counted as terminal alongside `complete`, so
+  // the consolidator ran and built a Generated KRT from four detectors instead
+  // of five — with nothing anywhere saying so. A quietly thinner answer is worse
+  // than a visible stall, because the reader cannot tell it happened.
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
   rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
@@ -309,7 +327,41 @@ test('a step whose dependency FAILED still advances — failure is terminal too'
 
   await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-1');
 
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting');
+  assert.equal(enqueued.length, 0, 'and nothing is spent while it waits');
+});
+
+test('acknowledging the failure lets the rest of the pipeline through', async (t) => {
+  // The other half of the choice: carry on without that step's data. Recorded on
+  // the row, so the run history can answer "who decided this report would be
+  // built without datasets detection".
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
+  failed.status = 'failed';
+  failed.result = null;
+  failed.decision = { at: '2026-08-22T12:00:00Z', byUserId: 'user-1' };
+  mockDb(t, rows);
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-1');
+
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+});
+
+test('one unacknowledged failure is enough to hold a step', async (t) => {
+  // Two detectors failed and only one was waved through. The consolidator still
+  // waits — a decision about datasets says nothing about materials.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
+    status: 'failed', result: null, decision: { at: new Date().toISOString(), byUserId: 'user-1' }
+  });
+  Object.assign(rows.get(JOB_TYPES.MATERIALS_DETECTION), { status: 'failed', result: null });
+  mockDb(t, rows);
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting');
 });
 
 test('a cancelled dependency cancels the step rather than leaving it waiting', async (t) => {
@@ -367,44 +419,873 @@ test('the reconciler changes nothing when the pipeline is already correct', asyn
 test('a dependency being retried is not treated as finished', async (t) => {
   // The bug this pins: workers wrote `failed` on non-final attempts too, and
   // `failed` is terminal to the orchestrator. A sweep landing inside the retry
-  // backoff read DAS extraction as finished, evaluated PDF Analysis's gate
+  // backoff read DAS extraction as finished, evaluated its dependent's gate
   // against a result that was not there yet, and parked it in `pending_input` —
   // which nothing revisits. When the retry then succeeded, the advance found
-  // PDF Analysis no longer `waiting` and did nothing. Only a manual advance
+  // the dependent no longer `waiting` and did nothing. Only a manual advance
   // recovered it.
   //
   // A retrying job now stays `processing`, so the dependents stay `waiting`.
   const rows = pipelineRows();
-  // Everything PDF Analysis needs is done — except DAS extraction, which is
-  // between attempts and has no result yet.
-  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  // Everything the Availability check needs is done — except DAS extraction,
+  // which is between attempts and has no result yet.
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
   rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'processing';
   rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
   rows.get(JOB_TYPES.DAS_EXTRACTION).errorMessage = 'Gemini 503 — retrying';
-  mockDb(t, rows);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
+  });
 
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
 
-  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting',
-    'PDF Analysis must wait for the retry, not be parked awaiting input');
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'waiting',
+    'the check must wait for the retry, not be parked awaiting input');
 });
 
-test('a dependency that has genuinely failed does release its dependents', async (t) => {
-  // The other half of the rule: once pg-boss has given up, `failed` IS terminal
-  // and the pipeline must move rather than wait for ever. DAS extraction is the
-  // case that matters — it fails, PDF Analysis's gate finds no statement, and
-  // the step parks in `pending_input` asking the user to type one. That is the
-  // designed path, and it is only reachable because the failure is terminal.
+test('a dependency that has genuinely failed holds its dependents until acknowledged', async (t) => {
+  // The other half of the retry rule. A retrying job stays `processing` and the
+  // dependent waits for the retry; a job that has genuinely failed also makes it
+  // wait — but for a PERSON, not for the queue. Once the failure is
+  // acknowledged the dependent proceeds, and DAS Suggestions then parks in
+  // `pending_input` asking the author to confirm the statement, which is the
+  // designed path.
   const rows = pipelineRows();
-  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
-  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'failed';
-  rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
-  mockDb(t, rows);
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  const extraction = rows.get(JOB_TYPES.DAS_EXTRACTION);
+  extraction.status = 'failed';
+  extraction.result = null;
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
+  });
 
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'waiting',
+    'held for a decision, not run against a statement extraction never produced');
 
-  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'pending_input',
-    'a terminal failure must not leave the dependent waiting for ever');
+  extraction.decision = { at: new Date().toISOString(), byUserId: 'user-1' };
+  await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'pending_input',
+    'and once the decision is made it moves, rather than waiting for ever');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// onManualRestart — a step clearing what its last run produced
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('re-running DAS extraction by hand clears the statement it will replace', async (t) => {
+  // Otherwise the button appears to do nothing. The working statement is only
+  // filled while it is empty — that is what stops extraction overwriting the
+  // author — so a re-extraction on a submission that already has one would
+  // write to the extracted field alone and leave the page unchanged.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_EXTRACTION);
+  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'complete';
+  const saves = [];
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    dasConfirmedAt: new Date('2026-08-20T09:00:00Z'),
+    dasConfirmedByUserId: 'user-1',
+    save: async () => { saves.push(true); }
+  };
+  mockDb(t, rows, submission);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_EXTRACTION, 1, 'user-2');
+
+  assert.equal(submission.dataAvailabilityStatement, null, 'room is made for the new reading');
+  assert.equal(submission.dasConfirmedAt, null, 'and there is nothing left to have confirmed');
+  assert.equal(submission.dasConfirmedByUserId, null);
+  assert.equal(saves.length, 1, 'the reset has to be persisted, not just held in memory');
+
+  // And it has to say what it destroyed. A user who typed that statement and
+  // pressed "re-run" has just lost it; the log is the only place that says so.
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].oldValue, 'Data are at Zenodo.');
+  assert.equal(applied[0].newValue, null);
+  assert.equal(applied[0].userId, 'user-2', 'credited to whoever asked for the re-run');
+});
+
+test('the pipeline running extraction on its own does NOT clear it', async (t) => {
+  // A normal round must not wipe a statement somebody has already dealt with.
+  // Only somebody asking for a fresh reading gets one.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_EXTRACTION);
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    dasConfirmedAt: new Date('2026-08-20T09:00:00Z'),
+    dasConfirmedByUserId: 'user-1',
+    save: async () => {}
+  };
+  mockDb(t, rows, submission);
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-2');
+
+  assert.equal(submission.dataAvailabilityStatement, 'Data are at Zenodo.');
+  assert.equal(submission.dasConfirmedByUserId, 'user-1');
+});
+
+test('re-running a step with no reset hook leaves the submission alone', async (t) => {
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.MATERIALS_DETECTION);
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    dasConfirmedAt: new Date('2026-08-20T09:00:00Z'),
+    save: async () => { throw new Error('nothing should be saved'); }
+  };
+  mockDb(t, rows, submission);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, 'user-2');
+
+  assert.equal(submission.dataAvailabilityStatement, 'Data are at Zenodo.');
+});
+
+test('a reset that throws does not stop the run the user asked for', async (t) => {
+  // The run is the request; the reset is housekeeping around it. Refusing to
+  // run because the tidy-up failed would be the wrong trade.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_EXTRACTION);
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'Data are at Zenodo.',
+    save: async () => { throw new Error('database is down'); }
+  };
+  mockDb(t, rows, submission);
+
+  const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_EXTRACTION, 1, 'user-2');
+
+  assert.equal(job.status, 'queued');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// restartSteps — several steps as ONE restart
+//
+// A loop over requeueStep is not the same thing, and the difference costs money.
+// Restart the software detector: everything downstream is reset, and software
+// runs. If it finishes before the SECOND restart is issued, grounding finds
+// every dependency terminal — materials is still `complete` from the previous
+// round — and starts. The second restart then resets it, so grounding runs twice
+// and both runs are paid for. The first is invisible rather than harmless,
+// because the second answer is the one that sticks.
+//
+// So: reset every selected step's downstream FIRST, then enqueue.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TWO_DETECTORS = [JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.MATERIALS_DETECTION];
+
+/**
+ * Every row complete, as after a finished round, with the seams a batch restart
+ * touches: `findOne` and a transaction, both used by cascadeRestart.
+ */
+function finishedRound(t, submission = { id: 'sub-1', status: 'step_as' }) {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  // The detectors are gated on there being converted text; without a length the
+  // gate holds them at `waiting` and the restart looks like it did nothing.
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 64925 } };
+  mockDb(t, rows, submission);
+  t.mock.method(SubmissionJob, 'findOne', async ({ where }) => rows.get(where.jobType) || null);
+  t.mock.method(require('../../models').sequelize, 'transaction',
+    async (fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }));
+  return rows;
+}
+
+test('nothing is enqueued until every downstream step has been reset', async (t) => {
+  // Asserted on the CONSEQUENCE rather than the call order: at the moment the
+  // first job is enqueued, grounding must already be `waiting`. If it were
+  // still `complete`, a detector finishing could release it into a run the next
+  // reset would throw away.
+  const rows = finishedRound(t);
+
+  const groundingAtEnqueue = [];
+  t.mock.method(jobQueue, 'addJob', async (queueName) => {
+    groundingAtEnqueue.push([queueName, rows.get(JOB_TYPES.KRT_GROUNDING).status]);
+    return 'pgboss-1';
+  });
+
+  await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-1');
+
+  assert.ok(groundingAtEnqueue.length > 0, 'something must have been enqueued');
+  for (const [queueName, groundingStatus] of groundingAtEnqueue) {
+    assert.notEqual(groundingStatus, 'complete',
+      `grounding was still complete when ${queueName} was enqueued`);
+  }
+});
+
+test('both selected steps are queued, and the shared downstream waits once', async (t) => {
+  const rows = finishedRound(t);
+
+  const { restarted, reset } = await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-1');
+
+  assert.deepEqual(restarted, TWO_DETECTORS);
+  for (const jobType of TWO_DETECTORS) {
+    assert.equal(rows.get(jobType).status, 'queued', `${jobType} runs again`);
+  }
+  assert.equal(rows.get(JOB_TYPES.KRT_GROUNDING).status, 'waiting',
+    'it depends on both, so it waits for both — one run, not two');
+  assert.ok(reset.includes(JOB_TYPES.KRT_GROUNDING));
+});
+
+test('a detector NOT selected keeps its result', async (t) => {
+  // The point of choosing: re-running two detectors must not throw away the
+  // other three, which is what "restart from here" on their shared consumer
+  // would have done.
+  const rows = finishedRound(t);
+
+  await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.PROTOCOLS_DETECTION).status, 'complete');
+  assert.equal(rows.get(JOB_TYPES.DATASETS_DETECTION).status, 'complete');
+});
+
+test('a step named twice runs once', async (t) => {
+  // A UI can send a duplicate; paying for the model twice should not be the
+  // consequence.
+  const rows = finishedRound(t);
+
+  const { restarted } = await orchestrator.restartSteps(
+    'sub-1', [JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.SOFTWARE_DETECTION], 1, 'user-1'
+  );
+
+  assert.deepEqual(restarted, [JOB_TYPES.SOFTWARE_DETECTION]);
+  assert.equal(enqueued.filter((q) => q === jobQueue.QUEUES.SOFTWARE_DETECTION).length, 1);
+});
+
+test('a selected step is not also reported as debris', async (t) => {
+  // Grounding is downstream of the detectors. Selecting it too must not put it
+  // in `reset` as well as `restarted` — two categories that mean opposite
+  // things.
+  const rows = finishedRound(t);
+
+  const { restarted, reset } = await orchestrator.restartSteps(
+    'sub-1', [...TWO_DETECTORS, JOB_TYPES.KRT_GROUNDING], 1, 'user-1'
+  );
+
+  assert.ok(restarted.includes(JOB_TYPES.KRT_GROUNDING));
+  assert.ok(!reset.includes(JOB_TYPES.KRT_GROUNDING));
+});
+
+test('every run it starts is credited to whoever asked', async (t) => {
+  const rows = finishedRound(t);
+
+  await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-7');
+
+  for (const jobType of TWO_DETECTORS) {
+    assert.equal(rows.get(jobType).triggeredByUserId, 'user-7');
+  }
+});
+
+test('an unknown step is refused, and nothing is touched', async (t) => {
+  // Half a restart is worse than none: the caller would have to work out which
+  // half ran.
+  const rows = finishedRound(t);
+
+  await assert.rejects(
+    () => orchestrator.restartSteps('sub-1', [JOB_TYPES.SOFTWARE_DETECTION, 'not_a_step'], 1, 'user-1'),
+    /Unknown pipeline step/
+  );
+  assert.equal(rows.get(JOB_TYPES.SOFTWARE_DETECTION).status, 'complete');
+  assert.equal(enqueued.length, 0);
+});
+
+test('an empty selection is refused', async (t) => {
+  const rows = finishedRound(t);
+
+  await assert.rejects(() => orchestrator.restartSteps('sub-1', [], 1, 'user-1'), /No steps/);
+  assert.equal(enqueued.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// One act, one pipeline run
+//
+// Every entry point is the same operation with a different set of steps to
+// re-execute, and each one is ONE attempt. Getting the count wrong is not
+// cosmetic: a run superseded before anything in it executed is a record of an
+// attempt that never happened, and the history then shows three restarts where
+// the user pressed one button.
+//
+// The run must also exist BEFORE anything is enqueued — an execution files
+// itself under the round's current run, so a step enqueued first is recorded
+// against the run this one replaces.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a batch restart is one run, not one per step', async (t) => {
+  finishedRound(t);
+
+  await orchestrator.restartSteps('sub-1', TWO_DETECTORS, 1, 'user-1');
+
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].cause, 'restart');
+  assert.deepEqual(pipelineRuns.created[0].reRun, TWO_DETECTORS);
+  assert.equal(pipelineRuns.created[0].userId, 'user-1');
+});
+
+test('a retry is a run of its own, named as a retry', async (t) => {
+  const rows = pipelineRows({
+    [JOB_TYPES.MARKDOWN_CONVERT]: { status: 'failed', decision: null }
+  });
+  mockDb(t, rows);
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-2');
+
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].cause, 'retry');
+  assert.deepEqual(pipelineRuns.created[0].reRun, [JOB_TYPES.MARKDOWN_CONVERT]);
+});
+
+test('re-running one step by hand opens one run', async (t) => {
+  const rows = finishedRound(t);
+  completeUpstreamOf(rows, JOB_TYPES.SOFTWARE_DETECTION);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-3');
+
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].cause, 'restart');
+});
+
+test('starting the round opens a run before a single step is enqueued', async (t) => {
+  const rows = pipelineRows();
+  mockDb(t, rows);
+  // Recorded at the moment of the call: an execution resolves the round's
+  // CURRENT run, so ordering is the whole property here.
+  let runsWhenFirstEnqueued = null;
+  t.mock.method(jobQueue, 'addJob', async (queueName) => {
+    if (runsWhenFirstEnqueued === null) runsWhenFirstEnqueued = pipelineRuns.created.length;
+    enqueued.push(queueName);
+    return 'pgboss-1';
+  });
+
+  await orchestrator.runAllProcesses('sub-1', 'user-4', 1);
+
+  assert.equal(runsWhenFirstEnqueued, 1, 'the run must exist before anything is queued');
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].reRun, 'all');
+});
+
+test('a replaced manuscript says so, rather than passing as a restart', async (t) => {
+  mockDb(t, pipelineRows());
+
+  await orchestrator.runAllProcesses('sub-1', 'user-5', 1, { cause: 'new_document' });
+
+  assert.equal(pipelineRuns.created[0].cause, 'new_document');
+});
+
+test('re-queueing a step that is already running opens no run at all', async (t) => {
+  const rows = pipelineRows({ [JOB_TYPES.SOFTWARE_DETECTION]: { status: 'processing' } });
+  mockDb(t, rows);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-6');
+
+  // Nothing re-executes, so there is no attempt to record — and a run opened
+  // here would supersede the live one while its steps carried on writing to it.
+  assert.equal(pipelineRuns.created.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// retryStep — unblocking one failure, changing nothing else
+//
+// After an external service is fixed, what is wanted is to unblock the pipeline,
+// not to re-run the round. The condition that makes that legitimate is not "did
+// it fail" but "has anything consumed the failure yet": while everything
+// downstream is still `waiting`, nothing was built on its absence, so running it
+// alone leaves nothing stale.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a failure nothing has run past is retryable', async (t) => {
+  // Markdown Convert failed and every detector is behind the markdown gate.
+  // This is the case a blocked pipeline is in.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  const { retryable } = orchestrator.describeRetry(JOB_TYPES.MARKDOWN_CONVERT, rows);
+
+  assert.equal(retryable, true);
+});
+
+test('a failure something HAS run past is not', async (t) => {
+  // Retrying alone would leave grounding's result built on the failure while
+  // this step's is not. That needs a restart, which resets it too.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SOFTWARE_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.KRT_GROUNDING).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  const { retryable, reason } = orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows);
+
+  assert.equal(retryable, false);
+  assert.equal(reason, 'downstream_already_ran');
+});
+
+test('a step with no downstream is retryable — there is nothing to leave stale', async (t) => {
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SUGGESTION_GENERATION).status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SUGGESTION_GENERATION, rows).retryable, true);
+});
+
+test('a step with no issue is not retryable', async (t) => {
+  // A clean run: "do it again" is a restart, and it is offered where restarts
+  // are. Retry is for putting an issue right.
+  const rows = pipelineRows();
+  Object.assign(rows.get(JOB_TYPES.SOFTWARE_DETECTION), {
+    status: 'complete',
+    result: { service: { outcome: { state: 'done' } } }
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows).reason, 'no_issue');
+});
+
+test('a PARTIAL is retryable — and now, cheaply', async (t) => {
+  // Before issues paused, retrying a partial meant re-running everything that
+  // had already consumed it. Now nothing downstream has run yet, so it is as
+  // cheap as retrying a failure.
+  const rows = pipelineRows();
+  Object.assign(rows.get(JOB_TYPES.SOFTWARE_DETECTION), {
+    status: 'complete',
+    result: { service: { outcome: { state: 'partial', failReason: 'lm_failed' } } }
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows).retryable, true);
+});
+
+test('a cancelled downstream step blocks a retry', async (t) => {
+  // Cancelled is run-and-stopped, not never-run. Retrying past it would leave a
+  // cancelled step sitting behind a running one, which nothing revisits.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SOFTWARE_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.KRT_GROUNDING).status = 'cancelled';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  assert.equal(orchestrator.describeRetry(JOB_TYPES.SOFTWARE_DETECTION, rows).retryable, false);
+});
+
+test('retrying resets the row and runs it', async (t) => {
+  const rows = pipelineRows();
+  const job = rows.get(JOB_TYPES.MARKDOWN_CONVERT);
+  Object.assign(job, {
+    status: 'failed',
+    errorMessage: 'Converter 503',
+    result: { status: { detected: false } },
+    retryCount: 3,
+    pgBossJobId: 'old-job'
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-3');
+
+  assert.equal(job.status, 'queued');
+  assert.equal(job.errorMessage, null, 'the previous failure must not show against the new run');
+  assert.equal(job.result, null);
+  assert.equal(job.retryCount, 0, 'the attempts belonged to the run that failed');
+  assert.equal(job.triggeredByUserId, 'user-3');
+});
+
+test('a retry does NOT release the round\'s input freezes', async (t) => {
+  // The round is mid-flight and the steps that did run read the frozen
+  // documents. A retry taking fresh ones would split the round — the failure the
+  // freeze exists to prevent, arriving through the repair path.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+  const released = [];
+  t.mock.method(require('./input-freeze.service'), 'releaseForRestart', async (...args) => {
+    released.push(args);
+    return [];
+  });
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-3');
+
+  assert.deepEqual(released, []);
+});
+
+test('a retry does not reset anything downstream', async (t) => {
+  // There is nothing to reset — that is the precondition — and touching a
+  // downstream row would make a retry a restart wearing a smaller name.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).status = 'failed';
+  rows.get(JOB_TYPES.ORCID_EXTRACTION).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-3');
+
+  assert.equal(rows.get(JOB_TYPES.ORCID_EXTRACTION).status, 'complete',
+    'an unrelated finished step is left alone');
+});
+
+test('retrying DAS extraction keeps the statement', async (t) => {
+  // `onManualRestart` clears it, because asking for a fresh reading is what a
+  // RESTART means. A retry after the service came back must not throw away a
+  // statement the author typed while it was down.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'failed';
+  const submission = {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: 'All data are in the supplement.',
+    dasConfirmedAt: new Date('2026-08-20T09:00:00Z'),
+    save: async () => {}
+  };
+  mockDb(t, rows, submission);
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.DAS_EXTRACTION, 1, 'user-3');
+
+  assert.equal(submission.dataAvailabilityStatement, 'All data are in the supplement.');
+  assert.ok(submission.dasConfirmedAt, 'and its confirmation');
+});
+
+test('a refused retry says what to do instead', async (t) => {
+  // "Cannot retry" with no way forward is a dead end; the restart that WOULD
+  // work is on another page and the user has to be told which.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.SOFTWARE_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.KRT_GROUNDING).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await assert.rejects(
+    () => orchestrator.retryStep('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-3'),
+    /Restart it from the pipeline page/
+  );
+  assert.equal(rows.get(JOB_TYPES.SOFTWARE_DETECTION).status, 'failed', 'and changes nothing');
+});
+
+test('an unknown step is refused', async (t) => {
+  const rows = pipelineRows();
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await assert.rejects(
+    () => orchestrator.retryStep('sub-1', 'not_a_step', 1, 'user-3'),
+    /Unknown pipeline step/
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// acknowledgeIssue — carrying on without a step's data
+//
+// The second answer a paused pipeline asks for. It re-runs nothing and does not
+// pretend the step succeeded: the row stays `failed`, and what is recorded is
+// that a person decided the rest should proceed without it. Recorded, because a
+// report built without software detection looks exactly like one where software
+// detection found nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('the decision is recorded with who made it and when', async (t) => {
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+
+  // On the EXECUTION, not the job row. That is what makes the decision travel
+  // with the result it is about — and what removes the field three call sites
+  // had to remember to clear on a re-run.
+  const decision = pipelineRuns.executions[JOB_TYPES.DATASETS_DETECTION].decision;
+  assert.ok(decision.at);
+  assert.equal(decision.byUserId, 'user-5');
+  assert.equal(decision.choice, 'continue');
+});
+
+test('the step stays failed — this is not a pretend success', async (t) => {
+  const rows = pipelineRows();
+  const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
+  failed.status = 'failed';
+  failed.errorMessage = 'Gemini 503';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.errorMessage, 'Gemini 503', 'and it still says why');
+});
+
+test('it releases what was held behind it', async (t) => {
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.DATASETS_DETECTION).result = null;
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting', 'precondition');
+
+  await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5');
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+});
+
+test('a step that finished cleanly cannot be carried past', async (t) => {
+  // There is nothing to decide about, and recording a decision would put a
+  // skip-marker on a step that ran perfectly well.
+  const rows = pipelineRows();
+  rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'complete';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await assert.rejects(
+    () => orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-5'),
+    /nothing to decide about/
+  );
+});
+
+test('a PARTIAL can be carried past — same decision, same record', async (t) => {
+  // The module produced a real answer with one of its engines dead. That is a
+  // decision, not a failure, and it is logged the same way: "this report was
+  // built with software detection missing its Softcite half, and a person chose
+  // that" is unanswerable otherwise.
+  const rows = pipelineRows();
+  const partial = rows.get(JOB_TYPES.PROTOCOLS_DETECTION);
+  partial.status = 'complete';
+  partial.result = { service: { outcome: { state: 'partial', failReason: 'lm_failed' } } };
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  const job = await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.PROTOCOLS_DETECTION, 1, 'user-5');
+
+  const decision = pipelineRuns.executions[JOB_TYPES.PROTOCOLS_DETECTION].decision;
+  assert.ok(decision.at);
+  assert.equal(decision.byUserId, 'user-5');
+  assert.equal(job.status, 'complete', 'it completed — that does not change');
+});
+
+test('deciding twice is not an error, and does not rewrite who decided', async (t) => {
+  // Two people looking at the same stalled pipeline both press Continue. The
+  // second must not overwrite the first's name on the record.
+  const rows = pipelineRows();
+  const failed = rows.get(JOB_TYPES.DATASETS_DETECTION);
+  failed.status = 'failed';
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+  // On the EXECUTION, which is where the guard looks. The job row's copy is
+  // hydrated from it and would be the wrong thing to seed.
+  const first = { at: '2026-08-22T09:00:00Z', byUserId: 'user-first', choice: 'continue' };
+  pipelineRuns.decide(JOB_TYPES.DATASETS_DETECTION, first);
+
+  await orchestrator.acknowledgeIssue('sub-1', JOB_TYPES.DATASETS_DETECTION, 1, 'user-9');
+
+  assert.deepEqual(pipelineRuns.executions[JOB_TYPES.DATASETS_DETECTION].decision, first);
+});
+
+test('a retried step is not still carrying the decision about its failure', async (t) => {
+  // The decision was about a failure this run is replacing. It used to be two
+  // columns on the job row, cleared in three places — and `runAllProcesses`,
+  // the one that re-runs everything, did not clear them, so a decision about
+  // run 1's failure silently waved run 2's through.
+  //
+  // There is nothing to clear now. A retry opens a run that RE-EXECUTES this
+  // step, so the execution the round holds for it is a new one, and a new
+  // execution has never been decided about. The bug is not fixed here; it is
+  // unrepresentable.
+  const rows = pipelineRows();
+  const failed = rows.get(JOB_TYPES.MARKDOWN_CONVERT);
+  Object.assign(failed, {
+    status: 'failed',
+    decision: { at: '2026-08-22T09:00:00Z', byUserId: 'user-1' }
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.retryStep('sub-1', JOB_TYPES.MARKDOWN_CONVERT, 1, 'user-5');
+
+  // The run that was opened re-executes the step, which is what guarantees a
+  // fresh execution.
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.deepEqual(pipelineRuns.created[0].reRun, [JOB_TYPES.MARKDOWN_CONVERT]);
+  assert.equal(pipelineRuns.created[0].cause, 'retry');
+});
+
+test('which failures are holding a step is reported by name', async (t) => {
+  // "Waiting" tells a user nothing; "waiting because Datasets Detection failed"
+  // tells them where to go.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  rows.get(JOB_TYPES.DATASETS_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.MATERIALS_DETECTION).status = 'failed';
+  rows.get(JOB_TYPES.MATERIALS_DETECTION).decision = { at: new Date().toISOString(), byUserId: 'u' };
+
+  const blocking = orchestrator.blockingIssues(JOB_TYPES.PDF_ANALYSIS, rows);
+
+  assert.deepEqual(blocking, [JOB_TYPES.DATASETS_DETECTION],
+    'only the one still undecided');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The four cases a finished step can be in
+//
+//   1. no error, results        → clean, carry on
+//   2. no error, nothing found  → clean. A detector finding nothing IS an answer
+//   3. partial error            → a person decides
+//   4. total error              → a person decides
+//
+// 3 and 4 differ only in what is left behind, so one predicate covers both —
+// and it also swallows what used to slip through: a step reaching `complete`
+// while its outcome was `fail`, which a rule keyed on status alone let past.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const withOutcome = (state, extra = {}) => ({
+  jobType: JOB_TYPES.DATASETS_DETECTION,
+  status: 'complete',
+  result: { service: { outcome: { state, ...extra } }, data: { items: [] } }
+});
+
+test('case 1 — a clean run with results needs nobody', () => {
+  assert.equal(orchestrator.issueOf(withOutcome('done')).needed, false);
+});
+
+test('case 2 — a detector that found nothing is an ANSWER, not an issue', () => {
+  // The distinction the whole thing turns on. "No datasets in this manuscript"
+  // is a result, and stopping the round to ask about it would make the pipeline
+  // unusable on half the papers it sees.
+  const empty = withOutcome('done');
+  empty.result.data.items = [];
+
+  assert.equal(orchestrator.issueOf(empty).needed, false);
+  assert.equal(orchestrator.producedOutput(empty), true, 'it produced an answer');
+});
+
+test('case 3 — a partial asks', () => {
+  const { needed, kind } = orchestrator.issueOf(withOutcome('partial', { failReason: 'lm_failed' }));
+
+  assert.equal(needed, true);
+  assert.equal(kind, 'partial');
+});
+
+test('case 4 — a total error asks', () => {
+  const failed = { jobType: JOB_TYPES.DATASETS_DETECTION, status: 'failed', result: null };
+
+  assert.equal(orchestrator.issueOf(failed).kind, 'failure');
+});
+
+test('and so does a run that COMPLETED while producing nothing usable', () => {
+  // The hole the old rule left: status `complete`, outcome `fail`. Nothing
+  // paused, and the consolidator built on it.
+  const { needed, kind } = orchestrator.issueOf(
+    withOutcome('fail', { failReason: 'external_failed_demo_disabled' })
+  );
+
+  assert.equal(needed, true);
+  assert.equal(kind, 'unusable');
+});
+
+test('a tolerated engine does not ask', () => {
+  // Softcite dying leaves the LM pass, which read the manuscript. It happens
+  // often and stopping the round for it would be noise — so it is declared,
+  // per module and per engine, rather than inferred.
+  const partial = {
+    jobType: JOB_TYPES.SOFTWARE_DETECTION,
+    status: 'complete',
+    result: { service: { outcome: { state: 'partial', failReason: 'softcite_failed' } } }
+  };
+
+  assert.equal(orchestrator.issueOf(partial).needed, false);
+});
+
+test('but the same module asks when the OTHER engine dies', () => {
+  // The LM dying leaves name-matching with no reading behind it — a different
+  // kind of incomplete, and worth a question.
+  const partial = {
+    jobType: JOB_TYPES.SOFTWARE_DETECTION,
+    status: 'complete',
+    result: { service: { outcome: { state: 'partial', failReason: 'lm_failed' } } }
+  };
+
+  assert.equal(orchestrator.issueOf(partial).kind, 'partial');
+});
+
+test('a partial holds the steps that come after it', async (t) => {
+  // The change from before: a partial used to sail through, and the
+  // consolidator ran on an answer missing half its engine.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
+  Object.assign(rows.get(JOB_TYPES.MATERIALS_DETECTION), {
+    status: 'complete',
+    result: { service: { outcome: { state: 'partial', failReason: 'lm_failed' } } }
+  });
+  mockDb(t, rows, { id: 'sub-1', status: 'step_as' });
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'waiting');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skipping — what "continue" means when the missing data was REQUIRED
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a step whose required input produced nothing is SKIPPED, not run', () => {
+  // Running it would fail, and so would everything after it: nine unexplained
+  // failures in place of the one real one.
+  const detector = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.DATASETS_DETECTION);
+
+  assert.ok(!(detector.optional || []).includes(JOB_TYPES.MARKDOWN_CONVERT));
+});
+
+test('but a step whose OPTIONAL input is missing still runs', () => {
+  // The consolidator unions what it is given and carries every author row
+  // through regardless, so a dead detector costs it coverage, not the ability
+  // to run.
+  const analysis = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.PDF_ANALYSIS);
+
+  for (const detector of [JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.KRT_GROUNDING]) {
+    assert.ok(analysis.optional.includes(detector), `${detector} is optional to the consolidator`);
+  }
+});
+
+test('the issue list says what continuing would cost', () => {
+  // The difference between "these will run with less" and "these cannot run at
+  // all" is the whole reason Continue is not a gamble.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'waiting';
+  rows.set(JOB_TYPES.MARKDOWN_CONVERT, {
+    jobType: JOB_TYPES.MARKDOWN_CONVERT, status: 'complete',
+    result: { data: { markdownLength: 0 } }
+  });
+
+  const [issue] = orchestrator.describeIssues(rows);
+
+  assert.equal(issue.jobType, JOB_TYPES.MARKDOWN_CONVERT);
+  assert.equal(issue.kind, 'unusable');
+  assert.ok(issue.wouldSkip.includes(JOB_TYPES.DATASETS_DETECTION),
+    'the detectors cannot run without text');
+  assert.ok(!issue.wouldSkip.includes(JOB_TYPES.PDF_ANALYSIS),
+    'the consolidator can — every one of its dependencies is optional');
+});
+
+test('a decided issue is still listed, but no longer blocking', () => {
+  // It stays in the record — "software detection was carried past, by Nicolas,
+  // on the 22nd" is the thing the report needs — while ceasing to hold anything.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  // Conversion needs a length or it is an issue in its own right — which is the
+  // rule working, and would put a second entry in this list.
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 64925 } };
+  Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
+    status: 'failed',
+    decision: { at: '2026-08-22T12:00:00Z', byUserId: 'user-5' }
+  });
+
+  const issues = orchestrator.describeIssues(rows);
+  assert.equal(issues.length, 1, 'only the one that was decided about');
+  const [issue] = issues;
+
+  assert.equal(issue.blocking, false);
+  assert.equal(issue.decided.byUserId, 'user-5');
+});
+
+test('a clean pipeline has no issues at all', () => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) {
+    r.status = 'complete';
+    r.result = { service: { outcome: { state: 'done' } } };
+  }
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = {
+    service: { outcome: { state: 'done' } }, data: { markdownLength: 64925 }
+  };
+
+  assert.deepEqual(orchestrator.describeIssues(rows), []);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -573,61 +1454,131 @@ test('every step is declared exactly once', () => {
   }
 });
 
-test('every step that reads the manuscript waits for BOTH gates', () => {
+test('every step that reads the manuscript waits for the KRT and requires the text', () => {
+  // Two conditions, and they are now different KINDS of condition — which is
+  // the point of the split. Waiting for the author to finish curating is a fact
+  // about the SUBMISSION, so it stays a gate. Needing converted text is a fact
+  // about a DEPENDENCY, so it is a required edge, and the "is there any text"
+  // question lives once on the conversion rather than five times here.
   const readsManuscript = [
     JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.DATASETS_DETECTION,
     JOB_TYPES.MATERIALS_DETECTION, JOB_TYPES.PROTOCOLS_DETECTION,
     JOB_TYPES.IDENTIFIER_DETECTION
   ];
   for (const jobType of readsManuscript) {
-    const gates = orchestrator.PIPELINE.find((s) => s.jobType === jobType).gate;
-    assert.deepEqual([...gates].sort(), ['krt_curated', 'markdown_ready'],
-      `${jobType} must wait for a converted manuscript AND a curated KRT`);
+    const step = orchestrator.PIPELINE.find((s) => s.jobType === jobType);
+
+    assert.deepEqual([...step.gate].sort(), ['krt_curated'],
+      `${jobType} waits for the author to finish curating`);
+    assert.ok(step.dependsOn.includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${jobType} depends on the conversion`);
+    assert.ok(!(step.optional || []).includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${jobType} cannot run without the text, so the conversion is required`);
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The DAS gate on pdf_analysis — the rule that parks a run awaiting the user
-// ─────────────────────────────────────────────────────────────────────────────
+test('every step that READS the manuscript depends on the conversion', () => {
+  // The invariant that would have caught a live regression: KRT Grounding reads
+  // the manuscript but declared no dependency on the conversion — it had been
+  // relying on the `markdown_ready` gate. When that moved onto the conversion
+  // as `produced`, grounding was left with no protection and started on a round
+  // whose text never existed.
+  //
+  // `reads` and `dependsOn` were two lists that could disagree. Now they cannot.
+  for (const step of orchestrator.PIPELINE) {
+    if (!(step.reads || []).includes('markdown')) continue;
+    if (step.jobType === JOB_TYPES.MARKDOWN_CONVERT) continue;   // it produces it
 
-test('no Availability Statement parks the consolidator awaiting input', async (t) => {
-  const rows = pipelineRows();
-  completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
-  rows.get(JOB_TYPES.DAS_EXTRACTION).result = { status: { detected: false } };
-  mockDb(t, rows);
-
-  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
-
-  assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'pending_input',
-    'the user has to supply the statement — this is not a failure');
-  assert.equal(enqueued.length, 0);
+    assert.ok(step.dependsOn.includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${step.jobType} reads the manuscript, so it must depend on the conversion`);
+    assert.ok(!(step.optional || []).includes(JOB_TYPES.MARKDOWN_CONVERT),
+      `${step.jobType} cannot read a manuscript that was never produced`);
+  }
 });
 
-test('a DAS extraction that completed without a verdict also parks it', async (t) => {
-  // `detected` must be exactly true. A result missing the field is not consent
-  // to run — that is how a half-written result would slip through.
-  for (const result of [null, {}, { status: {} }, { status: { detected: 'yes' } }]) {
+test('every step that READS the KRT can say where it comes from', () => {
+  // The same shape of check for the other document. The KRT has no producing
+  // STEP — the author uploads it — so this only asserts the declaration exists,
+  // which is what the input freeze keys off.
+  for (const step of orchestrator.PIPELINE) {
+    if (!(step.reads || []).includes('krt')) continue;
+    assert.ok(Array.isArray(step.reads), `${step.jobType} declares what it reads`);
+  }
+});
+
+test('the "is there any text" question is asked once, on the conversion', () => {
+  // It used to be a gate function repeated across seven readers. A reader added
+  // later without it would have run on an empty document, and nothing would
+  // have said so.
+  const convert = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.MARKDOWN_CONVERT);
+
+  assert.equal(typeof convert.produced, 'function');
+  assert.equal(convert.produced({ result: { data: { markdownLength: 0 } } }), false);
+  assert.equal(convert.produced({ result: { data: { markdownLength: 42 } } }), true);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The Availability Statement is NOT an input to the consolidator
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a missing Availability Statement no longer blocks the consolidator', async (t) => {
+  // PDF Analysis used to depend on DAS extraction and refuse to advance until a
+  // statement existed, parking in `pending_input` until somebody typed one.
+  //
+  // It was the wrong step to ask. The consolidator merges the KRT detectors'
+  // findings; it never reads the statement. So a field that only the
+  // Availability step uses was holding up the entire KRT half of the pipeline —
+  // and holding it in `pending_input`, which nothing revisits, so a run that
+  // parked there needed a manual advance even after the author supplied one.
+  //
+  // Every shape of "no statement" must now advance it, including the ones that
+  // used to be treated as an unfinished result.
+  const noStatement = [
+    { status: { detected: false } },
+    null,
+    {},
+    { status: {} },
+    { status: { detected: 'yes' } }
+  ];
+
+  for (const result of noStatement) {
     const rows = pipelineRows();
     completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
     rows.get(JOB_TYPES.DAS_EXTRACTION).result = result;
-    mockDb(t, rows);
+    mockDb(t, rows, { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: null });
 
     await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
 
-    assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'pending_input',
-      `result ${JSON.stringify(result)} must not auto-advance`);
+    assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued',
+      `result ${JSON.stringify(result)} must not hold up the consolidator`);
     t.mock.restoreAll();
   }
 });
 
-test('a found Availability Statement lets the consolidator run', async (t) => {
+test('a failed DAS extraction does not hold up the consolidator either', async (t) => {
+  // The strongest form: extraction is not merely empty, it errored. The
+  // consolidator still has everything it needs.
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
-  mockDb(t, rows);
+  rows.get(JOB_TYPES.DAS_EXTRACTION).status = 'failed';
+  rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
+  mockDb(t, rows, { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: null });
 
   await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
+});
+
+test('the consolidator does not list DAS extraction as a dependency', async (t) => {
+  // Pinned on the declaration, not just the behaviour: re-adding the dependency
+  // would restore the coupling even if the gate stayed gone, because a step
+  // waits for every dependency to reach a terminal state.
+  const step = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.PDF_ANALYSIS);
+  assert.ok(step, 'PDF Analysis must be in the pipeline');
+  assert.ok(!step.dependsOn.includes(JOB_TYPES.DAS_EXTRACTION),
+    'the consolidator does not read the Availability Statement');
+  assert.equal(step.canAutoAdvance, undefined,
+    'and it has no condition of its own — its dependencies are the whole rule');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -684,16 +1635,59 @@ test('finishing DAS extraction does NOT start the check before the Availability 
   assert.equal(enqueued.length, 0);
 });
 
-test('reaching the Availability step releases it', async (t) => {
+test('reaching the Availability step, with the statement confirmed, releases it', async (t) => {
   // This is what the status-change handler does: re-drive the pipeline once the
   // submission moves.
   const rows = pipelineRows();
   completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
-  mockDb(t, rows, { id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT });
+  mockDb(t, rows, {
+    id: 'sub-1',
+    status: 'step_as',
+    dataAvailabilityStatement: A_STATEMENT,
+    dasConfirmedAt: new Date('2026-08-22T10:00:00Z')
+  });
 
   await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'queued');
+});
+
+test('an unconfirmed statement parks it awaiting the author', async (t) => {
+  // The statement is there and the step has been reached — but nobody has said
+  // it is the right statement. Extraction pulls it out of the PDF automatically
+  // and gets it wrong often enough to matter; checking a paragraph the author
+  // has never read spends an LM call to answer the wrong question, and the
+  // answer is then reported as theirs.
+  //
+  // `pending_input`, not `waiting`: this needs a person, and the panel says so.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
+  });
+
+  await orchestrator.reconcileSubmission('sub-1', 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'pending_input');
+  // The sweep releases the rest of the pipeline in the same pass, so the check
+  // is that THIS queue stayed empty — not that nothing ran at all.
+  assert.ok(!enqueued.includes(jobQueue.QUEUES.DAS_SUGGESTIONS), 'and nothing was spent on it');
+});
+
+test('but a person asking for it by name is the confirmation', async (t) => {
+  // canAutoAdvance governs AUTO advancing. A manual run is somebody clicking
+  // the step, next to the statement they are looking at — parking that in
+  // `pending_input`, which nothing revisits, would strand a job the user just
+  // asked for.
+  const rows = pipelineRows();
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as', dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: null
+  });
+
+  const job = await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_SUGGESTIONS, 1, 'user-1');
+
+  assert.equal(job.status, 'queued');
 });
 
 test('but not without a statement to check', async (t) => {
@@ -837,4 +1831,171 @@ test('a failed enqueue puts the claim back instead of stranding the row', async 
   const analysis = rows.get(JOB_TYPES.PDF_ANALYSIS);
   assert.equal(analysis.status, 'waiting', 'the claim must be released');
   assert.equal(analysis.pgBossJobId, null);
+});
+
+test('releasing a gated step continues the run rather than starting a new one', async (t) => {
+  // Found by running the real pipeline. `das_suggestions` waits behind the
+  // Availability step and never starts on its own, so confirming the statement
+  // arrives here — and opened run 2, superseding run 1, purely to run a step
+  // run 1 had never got to. The history then claimed a restart the user never
+  // asked for, and relabelled eleven finished steps as carried over.
+  const rows = pipelineRows({ [JOB_TYPES.DAS_SUGGESTIONS]: { status: 'waiting' } });
+  completeUpstreamOf(rows, JOB_TYPES.DAS_SUGGESTIONS);
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as',
+    dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: new Date()
+  });
+  pipelineRuns.neverRan(JOB_TYPES.DAS_SUGGESTIONS);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.DAS_SUGGESTIONS, 1, 'user-1');
+
+  assert.equal(pipelineRuns.created.length, 0, 'the run is reaching the step, not repeating it');
+  assert.equal(rows.get(JOB_TYPES.DAS_SUGGESTIONS).status, 'queued', 'and it still runs');
+});
+
+test('but re-running a step that HAS already run in this run is a new run', async (t) => {
+  const rows = finishedRound(t);
+  completeUpstreamOf(rows, JOB_TYPES.SOFTWARE_DETECTION);
+
+  await orchestrator.requeueStep('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-1');
+
+  assert.equal(pipelineRuns.created.length, 1);
+  assert.equal(pipelineRuns.created[0].cause, 'restart');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A run reaches a state of its own
+//
+// Found by running the real pipeline: all twelve steps finished and the run
+// still said `running`. That is the same shape of lie `superseded` was added to
+// avoid — a status describing an attempt that stopped happening some time ago.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a run whose every step has finished is complete', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  mockDb(t, rows);
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'complete');
+  assert.ok(pipelineRuns.current.completedAt);
+});
+
+test('a run held behind an undecided failure is paused, not complete', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  // Terminal, so every step has "finished" — and still needs a person.
+  Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), { status: 'failed', decision: null });
+  mockDb(t, rows);
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'paused');
+  assert.equal(pipelineRuns.current.completedAt, null);
+});
+
+test('a run with a step still going stays running', async (t) => {
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  rows.get(JOB_TYPES.PDF_ANALYSIS).status = 'processing';
+  mockDb(t, rows);
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'running');
+});
+
+test('a run that was already superseded is left alone', async (t) => {
+  // It was replaced before it finished. Marking it complete afterwards would
+  // erase the one fact that distinguishes it from a run that ran to the end.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  mockDb(t, rows);
+  pipelineRuns.current.status = 'superseded';
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'superseded');
+});
+
+test('a failed run still completes — the outcome lives on its steps', async (t) => {
+  // "Complete" is about the ATTEMPT, not about whether it went well. A run
+  // whose steps failed and were carried past has finished; a run-level verdict
+  // would be a second, coarser answer to a question the executions answer
+  // better.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  Object.assign(rows.get(JOB_TYPES.DATASETS_DETECTION), {
+    status: 'failed',
+    decision: { at: '2026-08-22T12:00:00Z', byUserId: 'user-1' }
+  });
+  mockDb(t, rows);
+
+  await orchestrator.settleRun('sub-1', 1, rows);
+
+  assert.equal(pipelineRuns.current.status, 'complete');
+});
+
+test('the LAST step finishing settles the run, though nothing depends on it', async (t) => {
+  // The hole in the first version of settleRun: checkAndAdvance returned early
+  // when a step had no dependents, which is precisely the final step of a run.
+  // The run that had just finished sat at `running` until the five-minute
+  // reconciler noticed. Seen on the first live run.
+  const rows = pipelineRows();
+  for (const r of rows.values()) r.status = 'complete';
+  rows.get(JOB_TYPES.MARKDOWN_CONVERT).result = { data: { markdownLength: 5000 } };
+  mockDb(t, rows, {
+    id: 'sub-1', status: 'step_as',
+    dataAvailabilityStatement: A_STATEMENT, dasConfirmedAt: new Date()
+  });
+
+  // das_suggestions is the tail: no step declares it as a dependency.
+  const tail = orchestrator.PIPELINE.filter(
+    (s) => orchestrator.PIPELINE.some((o) => o.dependsOn.includes(s.jobType))
+  ).map((s) => s.jobType);
+  assert.ok(!tail.includes(JOB_TYPES.DAS_SUGGESTIONS), 'das_suggestions must have no dependents');
+
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.DAS_SUGGESTIONS, 1);
+
+  assert.equal(pipelineRuns.current.status, 'complete');
+});
+
+test('restarting a step revives the dependents a cancel had stopped', async (t) => {
+  // Found live: cancel the pipeline, restart the step, and its cancelled
+  // dependents sat `cancelled` for ever while the step they were waiting for
+  // ran to completion. Asking for a step to run again is asking for what
+  // depends on it to run again, whatever stopped them last time.
+  const rows = pipelineRows({
+    [JOB_TYPES.SOFTWARE_DETECTION]: { status: 'cancelled' },
+    [JOB_TYPES.KRT_GROUNDING]: { status: 'cancelled' },
+    [JOB_TYPES.PDF_ANALYSIS]: { status: 'cancelled' },
+    [JOB_TYPES.SUGGESTION_GENERATION]: { status: 'cancelled' }
+  });
+  mockDb(t, rows);
+
+  const reset = await orchestrator.cascadeRestart('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-1');
+
+  for (const jobType of [JOB_TYPES.KRT_GROUNDING, JOB_TYPES.PDF_ANALYSIS, JOB_TYPES.SUGGESTION_GENERATION]) {
+    assert.equal(rows.get(jobType).status, 'waiting', `${jobType} must be revived`);
+    assert.ok(reset.includes(jobType));
+  }
+});
+
+test('but a dependent still in flight is left alone', async (t) => {
+  // Resetting it would abandon work already under way and pay for it twice.
+  const rows = pipelineRows({
+    [JOB_TYPES.SOFTWARE_DETECTION]: { status: 'complete' },
+    [JOB_TYPES.KRT_GROUNDING]: { status: 'processing' }
+  });
+  mockDb(t, rows);
+
+  await orchestrator.cascadeRestart('sub-1', JOB_TYPES.SOFTWARE_DETECTION, 1, 'user-1');
+
+  assert.equal(rows.get(JOB_TYPES.KRT_GROUNDING).status, 'processing');
 });

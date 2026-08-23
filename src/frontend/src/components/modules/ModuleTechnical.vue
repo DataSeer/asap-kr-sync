@@ -10,12 +10,14 @@
  * Everything is read from the stored result. Nothing is recomputed, so what is
  * shown is what the run actually recorded.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.store'
 import fileService from '@/services/file.service'
 import jobService from '@/services/job.service'
+import { describeJobStatus } from '@/utils/job-status'
+import { formatDateTime } from '@/utils/format-date'
 import { labelFor } from '@/components/modules/module-meta'
-import { RouterLink } from 'vue-router'
 
 const props = defineProps({
   job: { type: Object, required: true },
@@ -43,7 +45,16 @@ const authStore = useAuthStore()
  */
 const canViewInternals = computed(() => authStore.canViewJobInternals)
 
-const open = ref(false)
+/**
+ * Open on arrival.
+ *
+ * It used to start collapsed, which made the run's own record — who ran it,
+ * what it read, what it spent — something you had to know was there. On a page
+ * whose subject IS one run, that is the wrong default: the result is the claim
+ * and this is the evidence for it, and evidence behind a disclosure gets read
+ * by nobody.
+ */
+const open = ref(true)
 
 /**
  * What the prompt DOES, per module. The file name alone does not say whether it
@@ -74,13 +85,24 @@ const PROMPT_LABELS = {
  */
 const prompts = ref([])
 const promptsState = ref('idle') // idle | loading | ready | error
-const openPrompt = ref(null)
+
+// Switching run must re-read the prompt, not keep the previous one on screen.
+watch(() => props.job?.runNumber, () => {
+  promptsState.value = 'idle'
+  prompts.value = []
+  if (open.value) loadPrompts()
+})
 
 async function loadPrompts() {
   if (promptsState.value !== 'idle') return
   promptsState.value = 'loading'
   try {
-    const data = await jobService.getJobPrompts(props.submissionId, props.jobType, props.job?.round)
+    // The prompt must be the one THIS run used. Asking without the run number
+    // answers for the latest, which put run 3's prompt beside run 1's results.
+    const data = await jobService.getJobPrompts(
+      props.submissionId, props.jobType, props.job?.round,
+      props.job?.isLatest === false ? props.job?.runNumber : null
+    )
     prompts.value = (data.prompts || []).map((p) => ({
       ...p,
       label: PROMPT_LABELS[p.key] || PROMPT_LABELS[props.jobType] || 'Detection prompt',
@@ -94,6 +116,9 @@ async function loadPrompts() {
 
 // Only when the panel is actually opened.
 watch(open, (isOpen) => { if (isOpen) loadPrompts() })
+// The watcher only fires on a CHANGE, and the panel now starts open — so
+// without this the prompts of the first module you land on never load.
+onMounted(() => { if (open.value) loadPrompts() })
 
 const result = computed(() => props.job?.result || {})
 /**
@@ -160,14 +185,90 @@ const degraded = computed(() => {
  */
 const DEGRADED_ENGINE_COUNTS = { softcite: ['total'] }
 
+/**
+ * What each number means, in words.
+ *
+ * The list used to be whatever numeric keys the module happened to record,
+ * camelCase turned into Title Case: "Total 9, Unique 2" over a run that checked
+ * nine rules and found two to act on. Nobody could tell what was being counted,
+ * and a number nobody understands is not evidence — it is decoration that looks
+ * like evidence.
+ *
+ * So every key gets a name and a sentence. `total` and `unique` mean genuinely
+ * different things per module — raw mentions vs deduplicated for a detector,
+ * rules checked vs rules that apply for the Availability check — so those are
+ * overridden per module rather than given one vague description that fits none
+ * of them.
+ *
+ * A key with no entry still shows, title-cased and without an explanation: a
+ * missing sentence is a gap to fill, not a reason to hide a number the run
+ * recorded.
+ */
+const STAT_META = {
+  total: { label: 'Found', explain: 'Every mention the module picked up, including the same thing named more than once.' },
+  unique: { label: 'Distinct', explain: 'What is left after the same thing mentioned several times is counted once.' },
+  enriched: { label: 'Enriched', explain: 'How many were matched to a known catalogue entry, adding an identifier or a canonical name.' },
+  highRelevance: { label: 'High confidence', explain: 'How many the module judged clearly relevant, rather than a possible mention.' },
+  resources: { label: 'Rows produced', explain: 'Rows in the Generated Key Resources Table this run built.' },
+  contributors: { label: 'Contributing modules', explain: 'How many detection modules fed rows into that table.' },
+  multiSource: { label: 'Corroborated rows', explain: 'Rows more than one module found independently — usually the most reliable ones.' },
+  authors: { label: 'Authors', explain: 'Authors read from the manuscript.' },
+  orcids: { label: 'With an ORCID', explain: 'How many of those authors had an ORCID identifier that could be resolved.' },
+  // Grounding: the whole first, then how it divides.
+  authorRows: { label: 'Your KRT rows', explain: 'Rows in your Key Resources Table that this run checked against the manuscript. Everything below is a share of this.' },
+  confirmed: { label: 'Confirmed', explain: 'Your rows the module found in the manuscript, matching what you wrote.' },
+  incomplete: { label: 'Incomplete', explain: 'Your rows found in the manuscript but missing something the checklist expects, such as an identifier.' },
+  notDetected: { label: 'Not found', explain: 'Your rows the module could not find in the manuscript. Not necessarily wrong — it may simply not be described there.' },
+  conflicts: { label: 'Conflicts', explain: 'Rows where what you wrote and what the manuscript says disagree — these need your decision.' },
+  present: { label: 'Present in the text', explain: 'Your rows located by searching the manuscript directly, rather than by matching a detector\'s finding. A second, independent measure of the same table.' },
+  absent: { label: 'Absent from the text', explain: 'Your rows that direct search of the manuscript did not locate.' },
+  unmatchedCandidates: { label: 'Found but not in your table', explain: 'Resources the detectors found in the manuscript that no row of yours accounts for. Not a share of your rows — these are additions to consider.' }
+}
+
+/** Where a key means something different from module to module. */
+const STAT_OVERRIDES = {
+  das_suggestions: {
+    total: { label: 'Checks run', explain: 'How many of the ASAP availability rules were evaluated against your statement.' },
+    unique: { label: 'Need action', explain: 'How many of those rules your statement does not yet satisfy.' }
+  },
+  identifier_detection: {
+    total: { label: 'Identifiers found', explain: 'Every identifier matched in the manuscript — RRIDs, DOIs, accession numbers — including repeats.' },
+    unique: { label: 'Distinct identifiers', explain: 'What is left after the same identifier appearing several times is counted once.' }
+  }
+}
+
+const statMeta = (key) => STAT_OVERRIDES[props.jobType]?.[key] || STAT_META[key] || null
+
+/**
+ * Reading order, which is not the order the modules happen to record them in.
+ *
+ * A breakdown before its denominator reads as a list of unrelated numbers:
+ * grounding recorded "Absent 51, Present 60, Confirmed 94 … Your KRT rows 111",
+ * so the total everything is a share OF came fifth. The order below is the
+ * order of `STAT_META` — the whole first, then how it divides — and anything
+ * not named there keeps its position at the end rather than being dropped.
+ */
+const STAT_ORDER = Object.keys(STAT_META)
+const statRank = (key) => {
+  const i = STAT_ORDER.indexOf(key)
+  return i === -1 ? STAT_ORDER.length : i
+}
+
 const stats = computed(() => {
   const blanked = degraded.value ? (DEGRADED_ENGINE_COUNTS[degraded.value.engine] || []) : []
   return Object.entries(counts.value)
     .filter(([, v]) => typeof v === 'number')
-    .map(([k, v]) => [
-      k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
-      blanked.includes(k) ? '—' : v
-    ])
+    .sort(([a], [b]) => statRank(a) - statRank(b))
+    .map(([k, v]) => {
+      const known = statMeta(k)
+      return {
+        label: known?.label || k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
+        value: blanked.includes(k) ? '—' : v,
+        explain: blanked.includes(k)
+          ? 'This engine failed on this run, so its share of the count is not known.'
+          : (known?.explain || null)
+      }
+    })
 })
 
 /**
@@ -175,25 +276,167 @@ const stats = computed(() => {
  * "Total 67" now, and two rows labelled "Total" say nothing.
  */
 const timings = computed(() => [
-  ['Total time', ms(result.value.timing?.totalMs ?? meta.value.totalMs)],
-  ['Model call time', ms(meta.value.geminiMs)]
-].filter(([, v]) => v))
+  {
+    label: 'Duration',
+    // The module's own measure first, then the run record's. Not every module
+    // times itself — DAS extraction records none — and "how long did this take"
+    // should not depend on which module you happen to be looking at when the
+    // run row has known it all along.
+    value: ms(result.value.timing?.totalMs ?? meta.value.totalMs ?? props.job?.elapsedMs),
+    explain: 'How long this run took from start to finish, including time spent waiting on an external service.'
+  },
+  {
+    label: 'Model call',
+    value: ms(meta.value.geminiMs ?? result.value.timing?.apiMs),
+    explain: 'How much of that was the language model or detection API answering. The rest is reading the document, matching and storing results.'
+  }
+].filter((row) => row.value))
 
 /**
- * Who asked for this run.
+ * Who ran this, when, and under what configuration.
  *
- * Shown here rather than only in the job popup, because that popup never opens
- * for a finished step — a completed tile is a link to this page — and a
- * finished run is exactly the one whose origin you want to check.
+ * First column, before the counts: a reader who meets the numbers first has
+ * already assumed they are the current, complete answer. This says which run
+ * produced them and whether the module was even switched on.
  *
- * Empty when the orchestrator advanced the step itself, which is the normal
- * case: naming the round's starter for a step nobody asked for by hand would
- * read as a claim about a decision they did not make.
+ * Everything here is the RUN's own record — the frozen config, not the current
+ * one. A module disabled during this run and enabled since must still read as
+ * disabled here, or the record claims it looked at the manuscript when it never
+ * ran.
  */
-const provenance = computed(() => {
-  const by = props.job?.triggeredBy
-  if (!by) return []
-  return [['Requested by', by.name || 'a user who has since been removed']]
+const CONFIG_STATE_LABEL = { on: 'on', demo: 'demo data', off: 'off' }
+const TRIGGER_LABEL = {
+  manual: 'manual re-run',
+  pipeline: 'started by the pipeline',
+  reconciler: 'recovered by the reconciler'
+}
+
+/**
+ * A PAST run whose artefacts were not kept apart from later runs.
+ *
+ * Only past runs: the latest run wrote last, so whatever is in the shared
+ * folder is genuinely its own.
+ */
+const artefactsNotOwn = computed(() =>
+  props.job?.isLatest === false && props.job?.artefactsAreOwn === false)
+
+/**
+ * What a stored prompt actually is.
+ *
+ * The TEXT below is this run's copy, frozen when the run started. The PATH is
+ * where that file lives in the repository — today. Printing them together as
+ * "src/backend/data/prompts/das-suggestions.txt · 3874 bytes" read as though the
+ * panel were showing you the file, so a prompt edited since the run looked like
+ * the prompt this run used. Prompts are edited exactly as often as results are
+ * re-read, which is what makes the confusion worth a sentence.
+ *
+ * @param {object} p - the prompt or attachment record
+ * @returns {string}
+ */
+function promptProvenance(p) {
+  const when = props.job?.startedAt ? ` on ${formatDateTime(props.job.startedAt)}` : ''
+  const size = p.bytes ? ` · ${p.bytes} bytes` : ''
+  return `Copy of ${p.file} as it was${when}${size}. The file may have changed since.`
+}
+
+/**
+ * What the run spent at the model.
+ *
+ * Absent when no model was called — a row of zeroes on Markdown Convert would
+ * be noise on every page it appears — and absent on runs that predate the
+ * tally, which is honest: they were not measured.
+ *
+ * Tokens rather than money on purpose. The provider does not return a price,
+ * and one derived here from a rate card would be a number the app cannot stand
+ * behind: rates change, tiers differ, and nobody would know when it went stale.
+ */
+const tokens = computed(() => {
+  const t = result.value.tokens
+  if (!t?.totalTokens) return []
+  const detail = `${t.promptTokens.toLocaleString()} sent, ${t.outputTokens.toLocaleString()} returned`
+    + `, over ${t.calls} call${t.calls === 1 ? '' : 's'}`
+  return [{
+    label: 'Tokens used',
+    value: t.totalTokens.toLocaleString(),
+    explain: `What this run cost the language model, in tokens: ${detail}. `
+      + 'Retries are included — a call that was made and thrown away was still paid for.'
+  }]
+})
+
+/**
+ * Counts, durations and spend in one list — all three answer "what did this run
+ * do", and a column of its own for two timings was a column too many.
+ */
+const statRows = computed(() => [...stats.value, ...timings.value, ...tokens.value])
+
+/**
+ * How many tries this run took, and what went wrong on the way.
+ *
+ * `retryCount + 1` was all there was: it counts pg-boss re-deliveries and
+ * nothing else, and the error text was overwritten each time — so "the first
+ * two attempts returned 529, then it succeeded" was unanswerable, which is the
+ * difference between an upstream that is flaky and one that is broken.
+ *
+ * Two layers retry and they are counted separately, because adding them
+ * together produces a number that means nothing: a delivery contains calls.
+ * When the external service was retried, THAT is the interesting count; when it
+ * was not, the deliveries are.
+ *
+ * Nothing is shown for a run that worked first time — a row saying "1" on every
+ * module is noise on every page.
+ *
+ * @param {object} job
+ * @returns {string|null}
+ */
+function describeAttempts(job) {
+  const attempts = Array.isArray(job.attempts) ? job.attempts : []
+  if (!attempts.length) {
+    return job.retryCount > 0 ? String(job.retryCount + 1) : null
+  }
+
+  const calls = attempts.filter((a) => a.layer === 'client')
+  const deliveries = attempts.filter((a) => a.layer === 'queue')
+  const tries = calls.length || deliveries.length
+  const failed = attempts.filter((a) => !a.ok)
+  if (tries <= 1 && !failed.length) return null
+
+  // Distinct statuses rather than one per failure: three 503s are one fact.
+  const statuses = [...new Set(failed.map((a) => a.httpStatus).filter(Boolean))]
+  if (!failed.length) return String(tries)
+  return `${tries} — ${failed.length} failed`
+    + (statuses.length ? ` (${statuses.join(', ')})` : '')
+}
+
+const metadata = computed(() => {
+  const job = props.job || {}
+  const svc = job.result?.service || {}
+  const by = job.triggeredBy
+  const rows = []
+
+  if (job.runNumber) {
+    const round = job.round ?? 1
+    rows.push(['Run', job.runCount > 1
+      ? `${job.runNumber} of ${job.runCount} (round ${round})`
+      : `${job.runNumber} (round ${round})`])
+  }
+  rows.push(['Status', describeJobStatus(job).label])
+  if (by) {
+    rows.push(['Requested by', by.name || 'a user who has since been removed'])
+  } else if (job.status) {
+    // Not "unknown" — nobody asked, the pipeline advanced it.
+    rows.push(['Requested by', 'the pipeline'])
+  }
+  if (job.triggerKind && TRIGGER_LABEL[job.triggerKind]) {
+    rows.push(['How', TRIGGER_LABEL[job.triggerKind]])
+  }
+  if (job.startedAt) rows.push(['Started', formatDateTime(job.startedAt)])
+  if (job.completedAt) rows.push(['Finished', formatDateTime(job.completedAt)])
+  const attemptsRow = describeAttempts(job)
+  if (attemptsRow) rows.push(['Attempts', attemptsRow])
+  if (svc.config?.state) {
+    rows.push(['Configuration', CONFIG_STATE_LABEL[svc.config.state] || svc.config.state])
+  }
+  return rows
 })
 
 // ── what went in ───────────────────────────────────────────────────────
@@ -261,54 +504,85 @@ const inputCounts = computed(() => INPUT_COUNTS
  * plainly rather than omitted, because "no link" and "no input" are very
  * different facts.
  */
+/**
+ * What this run was given — and nothing else.
+ *
+ * Every entry is either a FROZEN file (the S3 object this run read, opened in a
+ * new tab) or a description of something whose exact bytes are in the run's
+ * `inputs` artefact below. Nothing here links to a step page.
+ *
+ * It used to. A step page shows the CURRENT state of that step, so "Your
+ * Availability Statement ↗" took you to whatever the statement says today —
+ * beside a result computed from what it said during the run. The panel exists
+ * to say what a run actually did, and half its links quietly said something
+ * else.
+ *
+ * `props.files` is the run's own document record (`job.documents`), not the
+ * submission's current files, so an older version is its own row and asking for
+ * that id returns exactly the file this run read.
+ */
 const inputs = computed(() => {
   const out = []
+  const doc = (name) => props.files?.[name] || null
+
   for (const kind of (READS[props.jobType] || [])) {
-    if (kind === 'pdf' && props.files?.pdf) {
-      out.push({ label: 'The manuscript PDF', fileId: props.files.pdf.id, note: 'as uploaded' })
+    if (kind === 'pdf') {
+      const pdf = doc('pdf')
+      out.push({
+        label: 'The manuscript PDF',
+        fileId: pdf?.id || null,
+        note: pdf?.version ? `version ${pdf.version}, frozen for this run` : 'not recorded for this run'
+      })
     } else if (kind === 'markdown') {
-      const md = jobOf('markdown_convert')
-      const len = md?.result?.data?.markdownLength
+      const md = doc('markdown')
+      const len = jobOf('markdown_convert')?.result?.data?.markdownLength
       out.push({
         label: 'The converted manuscript text',
-        fileId: md?.result?.data?.fileId || null,
-        route: { name: 'submission-module', params: { id: props.submissionId, type: 'markdown_convert' } },
-        note: len ? `${len.toLocaleString()} characters` : 'not converted'
+        fileId: md?.id || null,
+        note: md?.version
+          ? `version ${md.version}, frozen for this run${len ? ` · ${len.toLocaleString()} characters` : ''}`
+          : 'not recorded for this run'
       })
     } else if (kind === 'krt' || kind === 'seeds') {
+      const krt = doc('krt')
+      const seedsEmpty = kind === 'seeds' && meta.value.seedCount === 0
       out.push({
         label: kind === 'seeds' ? 'Your KRT rows, as prompt seeds' : 'Your Key Resources Table',
-        fileId: props.files?.krt?.id || null,
-        note: kind === 'seeds' && meta.value.seedCount === 0
+        fileId: krt?.id || null,
+        note: seedsEmpty
           ? 'no rows to seed with — the discovery prompt was used instead'
-          : 'the file you uploaded'
+          : (krt?.version ? `version ${krt.version}, frozen for this run` : 'not recorded for this run')
       })
     } else if (kind === 'candidates') {
+      // Another step's findings, as this run received them. There is no file to
+      // open: the copy this run was handed is in the `inputs` artefact below,
+      // and today's version of that step is a different thing.
       for (const t of CANDIDATE_SOURCES) {
         const j = jobOf(t)
         if (!j) continue
         out.push({
-          label: labelFor(t),
+          label: `${labelFor(t)} findings`,
+          // To the module that produced them, where its own frozen record is —
+          // its run, its inputs, its artefacts. Not a claim that this is the
+          // copy this run read, which is why the note still says what it does:
+          // the exact bytes are in the `inputs` artefact below.
           route: { name: 'submission-module', params: { id: props.submissionId, type: t } },
-          note: `${j.result?.data?.items?.length ?? 0} items`
+          note: `${j.result?.data?.items?.length ?? 0} items, as handed to this run`
         })
       }
     } else if (kind === 'das') {
       const j = jobOf('das_extraction')
-      const detected = j?.result?.status?.detected
       out.push({
         label: 'Your Availability Statement',
-        route: { name: 'submission-module', params: { id: props.submissionId, type: 'das_extraction' } },
-        note: detected === false
-          ? 'not found in the manuscript — whatever you entered by hand'
-          : 'as extracted, plus any edit you made on the Availability step'
+        note: j?.result?.status?.detected === false
+          ? 'not found in the manuscript — the text as it stood for this run'
+          : 'the text as it stood for this run'
       })
     } else if (kind === 'generatedKrt') {
       const j = jobOf('pdf_analysis')
       out.push({
         label: 'The Generated KRT',
-        route: { name: 'submission-module', params: { id: props.submissionId, type: 'pdf_analysis' } },
-        note: `${j?.result?.data?.items?.length ?? 0} rows`
+        note: `${j?.result?.data?.items?.length ?? 0} rows, as handed to this run`
       })
     }
   }
@@ -364,6 +638,25 @@ async function openFile(fileId) {
   }
 }
 
+/**
+ * Open a stored prompt in a new tab.
+ *
+ * The text is this run's frozen copy and lives in the run record, not in S3 —
+ * so there is no URL to link to and the tab is served a blob built from it. The
+ * alternative was linking to the file in the repository, which is the one thing
+ * this must not do: that file is today's, and the whole point of the copy is
+ * that the two can differ.
+ *
+ * The object URL is released on a timer rather than immediately: revoking it in
+ * the same tick can beat the new tab to it, and the reader gets a blank page.
+ */
+function openPromptFile(p) {
+  if (!p?.text) return
+  const url = URL.createObjectURL(new Blob([p.text], { type: 'text/plain;charset=utf-8' }))
+  window.open(url, '_blank', 'noopener,noreferrer')
+  setTimeout(() => URL.revokeObjectURL(url), 60000)
+}
+
 const responseUrl = (name) =>
   `/api/submissions/${props.submissionId}/jobs/${props.jobType}`
   + `/responses/${encodeURIComponent(name)}?redirect=1`
@@ -384,18 +677,29 @@ const responseUrl = (name) =>
         re-run the step once the service is back.
         <span v-if="degraded.error" class="mt-degraded-error">{{ degraded.error }}</span>
       </div>
+      <div v-if="metadata.length" class="mt-block mt-narrow">
+        <h3>Metadata</h3>
+        <dl><template v-for="([k, v]) in metadata" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
+      </div>
       <div v-if="config.length" class="mt-block mt-narrow">
         <h3>Configuration</h3>
         <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
       </div>
-      <div v-if="stats.length || timings.length || provenance.length" class="mt-block mt-narrow">
+      <div v-if="statRows.length" class="mt-block mt-narrow">
         <h3>Statistics</h3>
         <!-- Durations sit with the counts: both are "what this run did", and a
              column of its own for two numbers was a column too many. -->
+        <!-- Every label carries its explanation. The app's own tooltip, never
+             the browser's: a `title` attribute waits a second, cannot be
+             styled, and does not appear on touch at all. -->
         <dl>
-          <template v-for="([k, v]) in stats" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
-          <template v-for="([k, v]) in timings" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
-          <template v-for="([k, v]) in provenance" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
+          <template v-for="row in statRows" :key="row.label">
+            <dt
+              :class="{ 'mt-stat-explained': row.explain }"
+              v-tooltip="row.explain || undefined"
+            >{{ row.label }}</dt>
+            <dd>{{ row.value }}</dd>
+          </template>
         </dl>
       </div>
       <div
@@ -408,7 +712,17 @@ const responseUrl = (name) =>
             <button v-if="i.fileId" type="button" class="mt-linkish" @click="openFile(i.fileId)">
               {{ i.label }} ↗
             </button>
-            <RouterLink v-else-if="i.route" :to="i.route">{{ i.label }} ↗</RouterLink>
+            <!-- The producing module's own page, which opens on its technical
+                 record. A step page for a DOCUMENT would show today's version
+                 beside this run's result, which is why those are gone; a link
+                 to the module that produced a finding is navigation between
+                 records, and the note beside it still says the exact bytes are
+                 in the `inputs` artefact. -->
+            <RouterLink
+              v-else-if="i.route"
+              :to="i.route"
+              v-tooltip="'Opens that module\'s own record — its run, inputs and outputs'"
+            >{{ i.label }} ↗</RouterLink>
             <span v-else>{{ i.label }}</span>
             <span v-if="i.note" class="mt-files-note">{{ i.note }}</span>
           </li>
@@ -423,31 +737,45 @@ const responseUrl = (name) =>
         <p v-else-if="promptsState === 'ready' && !prompts.length" class="mt-files-note">
           This run recorded no prompt.
         </p>
+        <!-- Opened in a tab of its own rather than expanded here. A prompt is
+             a page of text; read inside a panel inside a page it is a keyhole,
+             and it pushed everything below it far off screen.
+             Files the prompt cannot work without get their own line for the
+             same reason: LangExtract's few-shot examples are handed to the
+             extractor separately and never enter the prompt text, so the
+             template alone would show only part of what the run was given. -->
         <ul v-if="prompts.length" class="mt-files">
-          <li v-for="p in prompts" :key="p.file">
-            <button
-              type="button"
-              class="mt-linkish"
-              v-tooltip="p.file"
-              @click="openPrompt = openPrompt === p.file ? null : p.file"
-            >
-              {{ p.name }} {{ openPrompt === p.file ? '▾' : '▸' }}
-            </button>
-            <span class="mt-files-note">{{ p.label }}</span>
-            <div v-if="openPrompt === p.file" class="mt-prompt">
-              <p class="mt-prompt-path">{{ p.file }}<span v-if="p.bytes"> · {{ p.bytes }} bytes</span></p>
-              <pre v-if="p.text" class="mt-prompt-text">{{ p.text }}</pre>
-              <p v-else class="mt-files-note">This run did not store the prompt text.</p>
-              <!-- Files the prompt cannot work without. LangExtract's few-shot
-                   examples are handed to the extractor separately and never
-                   enter the prompt text, so the template alone would show only
-                   part of what the run was given. -->
-              <div v-for="a in p.attachments || []" :key="a.file" class="mt-prompt-attachment">
-                <p class="mt-prompt-path">{{ a.file }}<span v-if="a.bytes"> · {{ a.bytes }} bytes</span></p>
-                <pre v-if="a.text" class="mt-prompt-text">{{ a.text }}</pre>
-              </div>
-            </div>
-          </li>
+          <template v-for="p in prompts" :key="p.file">
+            <li>
+              <button
+                v-if="p.text"
+                type="button"
+                class="mt-linkish"
+                v-tooltip="'Opens this run\'s copy in a new tab'"
+                @click="openPromptFile(p)"
+              >
+                {{ p.name }} ↗
+              </button>
+              <span v-else>{{ p.name }}</span>
+              <span class="mt-files-note">{{ p.label }}</span>
+              <p class="mt-prompt-path">
+                {{ p.text ? promptProvenance(p) : 'This run did not store the prompt text.' }}
+              </p>
+            </li>
+            <li v-for="a in p.attachments || []" :key="a.file">
+              <button
+                v-if="a.text"
+                type="button"
+                class="mt-linkish"
+                v-tooltip="'Opens this run\'s copy in a new tab'"
+                @click="openPromptFile(a)"
+              >
+                {{ (a.file || '').split('/').pop() }} ↗
+              </button>
+              <span class="mt-files-note">handed to the model alongside the prompt</span>
+              <p class="mt-prompt-path">{{ promptProvenance(a) }}</p>
+            </li>
+          </template>
         </ul>
         <ul v-if="inputArtefacts.length" class="mt-files">
           <li v-for="name in inputArtefacts" :key="name">
@@ -459,25 +787,29 @@ const responseUrl = (name) =>
           <template v-for="([k, v]) in inputCounts" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
         </dl>
         <p class="mt-note">
-          Every module freezes what it was given, and that record is the
-          <code>inputs</code> file above. The documents beside it are shown as they are stored
-          <em>now</em>, so an edit made after the run appears there even though the run never saw it —
-          when the two disagree, the frozen record is what happened.
+          Everything here is what this run was given, not what the submission holds today.
+          Each file opens the exact version this run read; anything without a link had its
+          exact bytes recorded in the <code>inputs</code> file above.
         </p>
       </div>
       <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
         <h3>Module outputs</h3>
+        <p v-if="artefactsNotOwn" class="mt-note mt-note-warn">
+          This run's stored files were not kept separately from later runs of the same
+          step, so they are not shown — they would be a later run's evidence wearing this
+          run's timestamp. Runs from here on keep their own.
+        </p>
         <!-- What the module produced and stored. A slot rather than a prop:
              only the caller knows what its module kept and how to hand it over. -->
         <slot name="files" />
         <!-- Real links: ctrl-click opens one in a tab like anything else, and
              the browser handles the download rather than a click handler. -->
-        <ul v-if="canViewInternals && artefacts.length" class="mt-files">
+        <ul v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-files">
           <li v-for="name in artefacts" :key="name">
             <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
           </li>
         </ul>
-        <p v-if="canViewInternals && artefacts.length" class="mt-note">
+        <p v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-note">
           These are what the module sent to, or received from, the external service — the
           unedited record of this run.
         </p>
@@ -487,6 +819,14 @@ const responseUrl = (name) =>
 </template>
 
 <style scoped>
+.mt-note-warn {
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.625rem;
+}
+
 .mt-degraded {
   margin-bottom: 0.875rem;
   padding: 0.625rem 0.75rem;
@@ -530,19 +870,36 @@ const responseUrl = (name) =>
 .mt-body {
   padding: 0 0.9rem 0.9rem 2rem;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 1.5rem 2rem;
   align-items: start;
 }
 .mt-block { min-width: 0; }
-/* Configuration and Statistics: short label/value lists. */
+/* THE ROW MUST ADD UP: every block sits on ONE row, and the spans total the
+   track count.
+
+     Metadata 1 + Configuration 1 + Statistics 1 + inputs 2 + outputs 2 = 7
+
+   It stopped adding up when Metadata was added as a fourth short list and the
+   spans were left alone — 1+1+1+2+2 = 7 in a six-track grid, so Module outputs
+   could not fit in the one track that remained and wrapped to a row of its own,
+   leaving the row above ragged and half empty. The grid grew a track rather
+   than the blocks losing one: the five headings are five columns, and they
+   should read as five columns.
+
+   `module-technical-grid.test.js` re-does this arithmetic, because the next
+   block anyone adds will break it the same way and it is invisible until
+   someone opens the section on a wide screen.
+
+   Metadata, Configuration and Statistics: short label/value lists. */
 .mt-narrow { grid-column: span 1; }
 /* Module inputs and outputs: lines of links with an explanatory note under
-   them, which is what was wrapping while the two lists sat half empty. */
+   them, so they need more room than a label/value list. */
 .mt-wide { grid-column: span 2; }
 
-/* Below the six-column width each track would be narrower than a file name, so
-   drop to two: the short lists side by side, each wide block on its own row. */
+/* Below the seven-column width each track would be narrower than a file name,
+   so drop to two: the short lists side by side, each wide block on its own
+   row. */
 @media (max-width: 1099px) {
   .mt-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mt-wide { grid-column: span 2; }
@@ -551,6 +908,12 @@ const responseUrl = (name) =>
 @media (max-width: 640px) {
   .mt-body { grid-template-columns: minmax(0, 1fr); }
   .mt-narrow, .mt-wide { grid-column: span 1; }
+}
+/* A label with something to say, marked so the reader knows to hover. */
+.mt-stat-explained {
+  text-decoration: underline dotted #d1d5db;
+  text-underline-offset: 0.2em;
+  cursor: help;
 }
 .mt-block h3 {
   font-size: 0.68rem; font-weight: 700; color: #9ca3af;

@@ -21,6 +21,8 @@ const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
 const runInputs = require('../queue/run-inputs.service');
+const inputFreeze = require('../queue/input-freeze.service');
+const applyService = require('../queue/apply.service');
 
 /** Max authors to search via ORCID API fallback */
 const ORCID_API_MAX_AUTHORS = 10;
@@ -65,17 +67,27 @@ async function processOrcidExtraction(submissionId, jobLogger = null, { isFinalA
     jobLogger
   });
 
-  // Authors are stored on the Submission (not the SubmissionJob) — preserve
-  // existing reads from submission.authors.
+  // Authors live on the Submission, not the SubmissionJob — existing reads of
+  // `submission.authors` are unchanged. What changed is that putting them there
+  // is now an APPLY: attributed to the execution that produced them and
+  // recorded on `change_logs`, so an author list that appears out of nowhere on
+  // somebody's paper can be traced to the run that found it.
+  //
   // Only on success. `fail` resolves rather than throwing, and its data.items
-  // is [] — so a GROBID outage on the final attempt replaced a previously
-  // extracted author list with nothing.
+  // is [] — so a GROBID outage on the final attempt used to replace a good
+  // author list with nothing. The apply's own rule refuses an empty list too,
+  // which makes that guard belt and braces rather than the only thing standing
+  // between an outage and a wiped author list.
   if (result.status === 'done') {
-    submission.authors = {
-      items: result.data.items || [],
-      meta: result.data.meta || {}
-    };
-    await submission.save();
+    await applyService.applyToSubmission({
+      submission,
+      target: 'authors',
+      value: { items: result.data.items || [], meta: result.data.meta || {} },
+      stepExecutionId: (await jobLogger?.currentExecutionId?.()) || null,
+      userId: null,
+      round: submission.currentRound || 1,
+      description: 'Authors extracted from the manuscript'
+    });
   }
 
   return result;
@@ -88,10 +100,12 @@ async function extractAuthorsForSubmission(submission, jobLogger) {
   const submissionId = submission.id;
   const round = submission.currentRound || 1;
 
-  const pdfFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.PDF, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const pdfFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.PDF, { jobType: JOB_TYPES.ORCID_EXTRACTION }
+  );
   if (!pdfFile) throw new Error('No PDF file found for ORCID extraction');
 
   logger.debug('ORCID extraction: downloading PDF from S3', {
@@ -104,7 +118,11 @@ async function extractAuthorsForSubmission(submission, jobLogger) {
   jobLogger?.log('grobid_start', 'Sending PDF to GROBID for header extraction');
   await runInputs.saveRunInputs(jobLogger, {
     documents: { pdf: runInputs.fileRef(pdfFile, pdfBuffer) },
-    meta: { engines: ['grobid', 'openalex', 'orcid_api'] }
+    meta: { engines: ['grobid', 'openalex', 'orcid_api'] },
+    // Three services, no model to pin — but their endpoints and timeouts are
+    // ours, and a GROBID version change is exactly the kind of thing that
+    // explains a different author list.
+    call: { grobid: grobidConfig, orcid: orcidApiConfig }
   });
 
   const grobidResult = await grobidClient.extractHeader(pdfBuffer, pdfFile.fileName);

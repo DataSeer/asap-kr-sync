@@ -20,6 +20,7 @@ const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { getPipeline } = require('../../config/pipelines');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
@@ -41,7 +42,13 @@ function getPrompt(override) {
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
 // Author KRT fields exposed to the LM (and matched on the way back). Keep the
@@ -487,7 +494,12 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
       authorCount: authorRows.length,
       generatedCount: generatedKrt.length,
       groundedRowCount: groundingOutcomes.length
-    }
+    },
+    // Everything asked of the external service, sanitised: secrets redacted,
+    // anything large replaced by its digest. Recorded whole rather than
+    // hand-picked — a hand-picked list is one somebody has to remember to
+    // extend, which is how four modules came to record no model at all.
+    call: krtComparisonConfig
   });
 
   const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, groundingOutcomes);
@@ -615,9 +627,7 @@ async function processSuggestionGeneration(submissionId, jobLogger = null /*, op
   if (job) {
     // meta goes INSIDE data, which is where every other module puts it and
     // where the UI reads it from.
-    job.result = { ...(job.result || {}), data: { ...result.data, meta: result.meta } };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData({ ...result.data, meta: result.meta });
   }
   return result;
 }

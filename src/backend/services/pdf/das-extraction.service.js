@@ -22,6 +22,7 @@ const { GoogleGenAI } = require('@google/genai');
 const dasConfig = require('../../config/das-extraction-api');
 const { ExternalServiceError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/das-extraction.txt');
@@ -49,7 +50,9 @@ function getPrompt(override) {
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded DAS extraction prompt', { file: PROMPT_FILE, length: _promptCache.length });
   }
-  return _promptCache;
+  // See the note in materials.service getPrompt: a frozen restart uses the
+  // run's own template rather than the file as it stands today.
+  return frozenParams.prompt(_promptCache);
 }
 
 /**

@@ -14,6 +14,7 @@ const { pickBestEvidence } = require('./evidence.service');
 const { computeDedupKey } = require('./identifier-normalize.service');
 const { mergeAdditionalInfo } = require('./merge-detections.service');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
 const { cleanReason } = require('../../utils/lm-reason');
@@ -194,7 +195,8 @@ const PROMPT_FILE = require('path').join(__dirname, '../../data/prompts/pdf-anal
 async function callGeminiForKrt(candidates) {
   const fs = require('fs');
   const ai = new GoogleGenAI({ apiKey: krtGenConfig.apiKey });
-  const prompt = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
+  // A frozen restart uses the run's own template — see materials.service getPrompt.
+  const prompt = frozenParams.prompt(fs.readFileSync(PROMPT_FILE, 'utf-8').trim());
   const payload = { candidates: candidates.map((c, i) => candidateForPrompt(c, i)) };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
   const { sha256 } = require('../queue/run-inputs.service');

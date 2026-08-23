@@ -18,7 +18,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { SubmissionJob } = require('./index');
+const models = require('./index');
+const { SubmissionJob } = models;
 
 const at = (iso) => new Date(iso);
 
@@ -171,6 +172,8 @@ function instance(over = {}) {
   };
   r.markFailed = SubmissionJob.prototype.markFailed.bind(r);
   r.markRetrying = SubmissionJob.prototype.markRetrying.bind(r);
+  r.markComplete = SubmissionJob.prototype.markComplete.bind(r);
+  r.changed = () => {};
   return r;
 }
 
@@ -213,4 +216,94 @@ test('markRetrying clears a completedAt left by an earlier attempt', async () =>
   await r.markRetrying('transient');
 
   assert.equal(r.completedAt, null, 'a job in flight has not completed');
+});
+
+test('a job that succeeds on its third try does not keep the second try\'s error', async () => {
+  // Nothing ever cleared it, so a completed run showed a red error string
+  // beside a green tick — and the error being shown was from an attempt that
+  // had been superseded. The attempts array is where the earlier failures
+  // belong now, and they are there.
+  const r = instance({ errorMessage: 'Gemini 503', retryCount: 2 });
+
+  await r.markComplete({ counts: { unique: 4 } });
+
+  assert.equal(r.status, 'complete');
+  assert.equal(r.errorMessage, null);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decisions come from the execution, not from the job row
+//
+// They used to be two columns here, cleared in three places when a step re-ran
+// — and `runAllProcesses`, the one that re-runs everything, did not clear them.
+// A decision about run 1's failure silently waved run 2's through.
+//
+// Hydrating here rather than in each caller is deliberate: a caller that forgot
+// would see a step with no decision and hold the pipeline for a question
+// somebody had already answered. A failure by absence, which is the kind nobody
+// notices.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('the round\'s decisions are attached to the jobs that carry them', async (t) => {
+  const rows = [
+    { jobType: 'datasets_detection', id: 'a', createdAt: new Date('2026-08-22T10:00:00Z') },
+    { jobType: 'protocols_detection', id: 'b', createdAt: new Date('2026-08-22T10:00:00Z') }
+  ];
+  t.mock.method(SubmissionJob, 'findAll', async () => rows);
+  let sql = null;
+  t.mock.method(models.sequelize, 'query', async (text) => {
+    sql = text;
+    return [[{
+      job_type: 'protocols_detection',
+      decision: { at: '2026-08-22T12:00:00Z', byUserId: 'u1' },
+      cancelled_by_user_id: null,
+      discarded: []
+    }]];
+  });
+
+  const jobs = await SubmissionJob.getForSubmission('sub-1', 1);
+
+  assert.equal(jobs.find((j) => j.jobType === 'datasets_detection').decision, null);
+  assert.deepEqual(jobs.find((j) => j.jobType === 'protocols_detection').decision,
+    { at: '2026-08-22T12:00:00Z', byUserId: 'u1' });
+
+  // Through the run's MEMBERSHIP, not the executions' own pipeline_run_id: a
+  // carried-over execution belongs to the run that created it, so looking it up
+  // by that column would drop its decision the moment anything was restarted.
+  assert.match(sql, /pipeline_run_steps/);
+  assert.match(sql, /MAX\(run_number\)/, 'and only from the run the round is in');
+});
+
+test('a decision that cannot be read holds the pipeline rather than releasing it', async (t) => {
+  // The conservative outcome: the question gets asked again, instead of being
+  // silently answered by a lookup that failed.
+  t.mock.method(SubmissionJob, 'findAll', async () => [
+    { jobType: 'datasets_detection', id: 'a', createdAt: new Date() }
+  ]);
+  t.mock.method(models.sequelize, 'query', async () => { throw new Error('db is on fire'); });
+
+  const jobs = await SubmissionJob.getForSubmission('sub-1', 1);
+
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].decision, undefined);
+});
+
+test('a cancelled step arrives knowing who stopped it and what was thrown away', async (t) => {
+  // The module page reads a step's state from the jobs payload, so this has to
+  // ride along with the decision — otherwise a cancelled step says "cancelled"
+  // and cannot say by whom, or that a call it had paid for landed afterwards.
+  t.mock.method(SubmissionJob, 'findAll', async () => [
+    { jobType: 'software_detection', id: 'a', createdAt: new Date() }
+  ]);
+  t.mock.method(models.sequelize, 'query', async () => [[{
+    job_type: 'software_detection',
+    decision: null,
+    cancelled_by_user_id: 'user-9',
+    discarded: [{ at: '2026-08-22T10:00:00Z', outcome: 'done', tokens: { totalTokens: 33286 } }]
+  }]]);
+
+  const [job] = await SubmissionJob.getForSubmission('sub-1', 1);
+
+  assert.equal(job.cancelledByUserId, 'user-9');
+  assert.equal(job.discarded[0].tokens.totalTokens, 33286);
 });

@@ -19,16 +19,24 @@ import { useRoute } from 'vue-router'
 import { useJobPoller } from '@/composables'
 import { outcomeStateOf } from '@/utils/job-status'
 import configService from '@/services/config.service'
+import jobService from '@/services/job.service'
 import { labelFor, purposeFor, stageLabel, hasModulePage } from '@/components/modules/module-meta'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { setSubmissionTitle } from '@/router'
+import { useAuthStore } from '@/stores/auth.store'
+import { useNotificationStore } from '@/stores/notification.store'
+import { restartPlan, downstreamOf } from '@/utils/restart-plan'
+import RestartFromHereDialog from '@/components/submission/RestartFromHereDialog.vue'
+import PipelineIssues from '@/components/submission/PipelineIssues.vue'
 
 const route = useRoute()
 const submissionId = computed(() => route.params.id)
-const { jobs } = useJobPoller(submissionId)
+const authStore = useAuthStore()
+const notificationStore = useNotificationStore()
+const { jobs, inputs, issues, refresh: refreshJobs } = useJobPoller(submissionId)
 
 
 
@@ -86,6 +94,127 @@ const GATE_LABELS = {
 const gateLabel = (name) => GATE_LABELS[name] || name
 
 const jobFor = (jobType) => (jobs.value || {})[jobType] || null
+
+// ── Restart from here ───────────────────────────────────────────────────────
+// This page is the map of the pipeline, so it is where someone looking at a
+// step that failed — or that ran before they replaced the manuscript — decides
+// to run it again. Sending them into the module page first to find the button
+// made the map a read-only thing.
+//
+// The dialog is the same one the module page uses: it names the steps whose
+// results a restart replaces, what it keeps, and which documents come along.
+const pendingRestart = ref(null)
+const restarting = ref(false)
+
+const canRestart = computed(() => authStore.canRestartJobs)
+
+// Every step in the graph can be restarted — the graph IS the pipeline, and the
+// server validates the names again. There was a per-module map of trigger
+// functions here; the batch endpoint replaced it, and with it eleven service
+// imports that existed only to be looked up by job type.
+function askToRestart(jobType) {
+  pendingRestart.value = restartPlan(graph.value.nodes, jobType, labelFor)
+}
+
+// ── Choosing several ────────────────────────────────────────────────────────
+// Restarting the five detectors one at a time is not the same as restarting
+// them together, and it costs more: the first to finish releases grounding,
+// which then runs and is thrown away by the next reset. Selecting them makes it
+// one restart — the shared work runs once, after all of them.
+//
+// The other half of the point is what is NOT selected. "Restart from here" on
+// their shared consumer would re-run every detector; picking two keeps the
+// other three's results.
+const selected = ref(new Set())
+
+const selectedCount = computed(() => selected.value.size)
+
+function toggleSelected(jobType) {
+  // Replaced rather than mutated: a Set mutated in place is the same object, and
+  // computeds reading it would not re-evaluate.
+  const next = new Set(selected.value)
+  if (next.has(jobType)) next.delete(jobType)
+  else next.add(jobType)
+  selected.value = next
+}
+
+const clearSelection = () => { selected.value = new Set() }
+
+function askToRestartSelected() {
+  if (!selected.value.size) return
+  pendingRestart.value = restartPlan(graph.value.nodes, [...selected.value], labelFor)
+}
+
+async function confirmRestart({ paramsSource = 'live' } = {}) {
+  const jobTypes = pendingRestart.value?.jobTypes || []
+  if (!jobTypes.length) return
+  restarting.value = true
+  try {
+    // One request for the whole selection, even when it is one step. The server
+    // resets every selected step's downstream BEFORE enqueueing any of them —
+    // which a loop of single restarts cannot do, because the first step can
+    // finish and release the shared work before the second request arrives.
+    const result = await jobService.restartProcesses(submissionId.value, jobTypes, paramsSource)
+    // What the SERVER said: a restart asked for while a step is already running
+    // is deliberately a no-op, and it says so rather than claiming a new run.
+    notificationStore.info(result?.message
+      || (paramsSource === 'frozen' ? 'Re-started with the earlier settings' : 'Re-started'))
+    pendingRestart.value = null
+    clearSelection()
+  } catch (err) {
+    notificationStore.error(err.response?.data?.error || 'Could not restart those steps')
+  } finally {
+    restarting.value = false
+  }
+}
+
+// ── What this round was processed from ──────────────────────────────────────
+// Every step in a round reads one PDF, one converted manuscript and one KRT:
+// the first step to need each freezes it, and the rest are handed the same one.
+// That is what stops a file replaced mid-run from splitting a round in two.
+//
+// The consequence has to be said out loud, though. When the live document has
+// moved on, the results on this page describe the older one — and without a
+// note, an author reads an analysis of a manuscript they have already replaced
+// as though it were about the current version.
+const INPUT_LABELS = {
+  pdf: 'manuscript PDF',
+  markdown: 'converted manuscript',
+  krt: 'Key Resources Table'
+}
+const staleInputs = computed(() => (inputs.value || []).filter((i) => i.stale))
+
+function inputDetail(input) {
+  const label = INPUT_LABELS[input.inputKind] || input.inputKind
+  const detail = input.inputKind === 'krt'
+    ? `${input.rowCount} rows when this ran, ${input.liveRowCount} now`
+    : `version ${input.version} when this ran, version ${input.liveVersion} now`
+  return `the ${label} has changed (${detail})`
+}
+
+// Assembled here rather than in the template: `v-for` with punctuation between
+// the items leaves the whitespace of the source in the rendered sentence, and
+// it showed as "112 now) ." on the page.
+const staleSentence = computed(() =>
+  `${staleInputs.value.map(inputDetail).join('; ')}.`
+)
+
+/**
+ * The configuration this step RAN under — `off`, `demo`, or on.
+ *
+ * From the run's own frozen snapshot, never the live service status. A module
+ * disabled during the run and switched on afterwards must still read as off
+ * here, or the page claims it looked at the manuscript when it never ran.
+ *
+ * Returns null for a normal run: "on" is the unremarkable case and a badge on
+ * every card would say nothing.
+ */
+function configOf(jobType) {
+  const state = jobFor(jobType)?.result?.service?.config?.state
+  if (state === 'off') return { text: 'was off', cls: 'pv-cfg-off' }
+  if (state === 'demo') return { text: 'demo data', cls: 'pv-cfg-demo' }
+  return null
+}
 
 /** Status as one word plus a colour, from the job if it has run. */
 function statusOf(jobType) {
@@ -193,6 +322,15 @@ function groupsForStage(nodes) {
 }
 
 /** Where the pipeline currently is, in one line. */
+/**
+ * Which attempt at this round the page is showing.
+ *
+ * The same for every step, because a run is one attempt at the whole pipeline —
+ * which is exactly why it belongs here and not on each tile. Read off any job:
+ * the poller reports the round's current run on all of them.
+ */
+const runNumber = computed(() => Object.values(jobs.value || {})[0]?.runNumber || 1)
+
 const state = computed(() => {
   // Every step counts here: this page describes the whole run, and a step that
   // has not run yet is exactly what a reader wants to see. (The KRT and PDF
@@ -250,8 +388,50 @@ const activeStage = computed(() => {
       Steps shown side by side run at the same time.
     </p>
 
+    <!-- Everything needing a person, from the server's own list. This page was
+         the first consumer and kept its own copy of the rules for a while; the
+         component is now the only place they live. -->
+    <PipelineIssues
+      :submission-id="submissionId"
+      :issues="issues"
+      :actionable="canRestart"
+      @resolved="refreshJobs"
+    />
+
+    <!-- Said before any result is shown, because it changes what they mean. -->
+    <div v-if="staleInputs.length" class="pv-stale" role="status">
+      <svg class="pv-stale-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <div class="pv-stale-body">
+        <p class="pv-stale-title">This analysis used an earlier version of your data</p>
+        <p class="pv-stale-sub">
+          {{ staleSentence }} Restart a step to run it against what is there now.
+        </p>
+      </div>
+    </div>
+
+    <!-- What the selection will do, while it is being built. Sticky, because
+         the steps being picked are spread down a long page and a count you have
+         to scroll to find is a count you stop trusting. -->
+    <div v-if="selectedCount" class="pv-selbar" role="status">
+      <span class="pv-selbar-count">
+        <strong>{{ selectedCount }}</strong>
+        {{ selectedCount === 1 ? 'step selected' : 'steps selected' }}
+      </span>
+      <span class="pv-selbar-hint">their shared later steps run once, after all of them</span>
+      <button type="button" class="pv-selbar-clear" @click="clearSelection">Clear</button>
+      <button type="button" class="pv-selbar-go" @click="askToRestartSelected">
+        ⟳ Restart {{ selectedCount === 1 ? 'it' : 'them' }}
+      </button>
+    </div>
+
     <!-- Where the pipeline is right now, before any of the detail. -->
     <div v-if="graph.nodes.length" class="pv-state">
+      <!-- The run this round is in. Once, here, rather than on each tile: a run
+           is one attempt at the WHOLE pipeline, so the number is the same on
+           every step, and twelve copies of it would say less than one. -->
+      <span v-if="runNumber > 1" class="pv-state-item pv-state-run">Run {{ runNumber }}</span>
       <span class="pv-state-item"><b>{{ state.done }}</b> of {{ state.total }} done</span>
       <span v-if="state.running" class="pv-state-item st-run">{{ state.running }} running</span>
       <span v-if="state.pending" class="pv-state-item st-pending">{{ state.pending }} needs input</span>
@@ -310,6 +490,14 @@ const activeStage = computed(() => {
               >
                 <div class="pv-card-head">
                   <span class="pv-card-name">{{ labelFor(node.jobType) }}</span>
+                  <!-- Without this, a step that was switched off during the run
+                       is indistinguishable from one that ran and found nothing. -->
+                  <span
+                    v-if="configOf(node.jobType)"
+                    class="pv-cfg"
+                    :class="configOf(node.jobType).cls"
+                    v-tooltip="'The configuration this step ran under, as recorded by the run itself — not the current setting.'"
+                  >{{ configOf(node.jobType).text }}</span>
                   <span class="pv-status" :class="statusOf(node.jobType).cls">{{ statusOf(node.jobType).text }}</span>
                 </div>
 
@@ -336,6 +524,31 @@ const activeStage = computed(() => {
                   >gated</span>
                   <span v-if="!node.autoAdvances" class="pv-gate" v-tooltip="'Can pause and wait for you before it runs.'">may pause</span>
                   <span v-if="hasModulePage(node.jobType)" class="pv-open">open ↗</span>
+                  <!-- Inside a card that is itself a link, so the click must be
+                       stopped AND prevented: without both, restarting a step
+                       also navigates away from the page you wanted to watch it
+                       from. -->
+                  <button
+                    v-if="canRestart"
+                    type="button"
+                    class="pv-restart"
+                    v-tooltip="'Run this step again — and everything that depends on it'"
+                    @click.stop.prevent="askToRestart(node.jobType)"
+                  >
+                    ⟳ Restart from here
+                  </button>
+                  <!-- Ticking is not restarting: it builds a selection that one
+                       button then restarts together. Same click-swallowing as
+                       the button — the card is a link. -->
+                  <label
+                    v-if="canRestart"
+                    class="pv-pick"
+                    v-tooltip="'Include this step in a restart of several'"
+                    @click.stop.prevent="toggleSelected(node.jobType)"
+                  >
+                    <input type="checkbox" :checked="selected.has(node.jobType)" tabindex="-1" />
+                    <span>pick</span>
+                  </label>
                 </div>
               </component>
             </div>
@@ -346,6 +559,13 @@ const activeStage = computed(() => {
       </li>
     </ol>
   </div>
+
+    <RestartFromHereDialog
+      :plan="pendingRestart"
+      :busy="restarting"
+      @confirm="confirmRestart"
+      @cancel="pendingRestart = null"
+    />
 </template>
 
 <style scoped>
@@ -364,6 +584,9 @@ const activeStage = computed(() => {
   font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 0.3rem;
   background: #f3f4f6; color: #4b5563;
 }
+/* After .pv-state-item, not before: same specificity, so the later rule is the
+   one that wins. */
+.pv-state-run { font-weight: 600; color: #3730a3; background: #e0e7ff; }
 
 /* Top to bottom: the manuscript flows down the page, and an ordered list is
    what this actually is — which a screen reader then reads correctly. */
@@ -443,6 +666,18 @@ const activeStage = computed(() => {
 .st-run { background: #dbeafe; color: #1d4ed8; }
 .st-wait { background: #fef3c7; color: #92400e; }
 .st-pending { background: #ffedd5; color: #c2410c; }
+.pv-cfg {
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.pv-cfg-off { background: #f3f4f6; color: #4b5563; }
+.pv-cfg-demo { background: #ede9fe; color: #6d28d9; }
+
 .st-partial { background: #fef3c7; color: #92400e; }
 .st-fail { background: #fee2e2; color: #b91c1c; }
 .st-idle { background: #f3f4f6; color: #6b7280; }
@@ -451,4 +686,83 @@ const activeStage = computed(() => {
   .pv-group, .pv-group-boxed { flex: 1 1 100%; }
   .pv-card { flex: 1 1 100%; }
 }
+
+/* Said plainly rather than styled as an error: nothing has gone wrong, the
+   results simply describe a document that is no longer the current one. */
+.pv-stale {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #fcd34d;
+  border-left: 4px solid #f59e0b;
+  border-radius: 0.5rem;
+  background: #fffbeb;
+}
+.pv-stale-icon { width: 1.1rem; height: 1.1rem; flex-shrink: 0; margin-top: 0.1rem; color: #b45309; }
+.pv-stale-body { min-width: 0; }
+.pv-stale-title { font-weight: 600; color: #78350f; font-size: 0.9rem; }
+.pv-stale-sub { margin-top: 0.15rem; font-size: 0.82rem; color: #92400e; }
+
+/* Restart, on the card it restarts. Quiet until hovered — the page is a map
+   first, and an action on every tile competes with reading it. */
+.pv-restart {
+  margin-left: auto;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: #fff;
+  color: #6b7280;
+  font-size: 0.62rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pv-restart:hover { border-color: #93c5fd; color: #1d4ed8; background: #eff6ff; }
+
+/* Pick + selection bar */
+.pv-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: #fff;
+  color: #6b7280;
+  font-size: 0.62rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pv-pick:hover { border-color: #93c5fd; color: #1d4ed8; }
+.pv-pick input { width: 0.7rem; height: 0.7rem; pointer-events: none; }
+
+.pv-selbar {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.5rem;
+  background: #eff6ff;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.1);
+}
+.pv-selbar-count { font-size: 0.85rem; color: #1e3a8a; }
+.pv-selbar-hint { flex: 1; min-width: 0; font-size: 0.78rem; color: #3b82f6; }
+.pv-selbar-clear {
+  padding: 0.25rem 0.6rem; border-radius: 0.3rem;
+  border: 1px solid #bfdbfe; background: #fff; color: #1d4ed8;
+  font-size: 0.78rem; font-weight: 500;
+}
+.pv-selbar-go {
+  padding: 0.25rem 0.7rem; border-radius: 0.3rem;
+  background: #2563eb; color: #fff; font-size: 0.78rem; font-weight: 600;
+}
+.pv-selbar-go:hover { background: #1d4ed8; }
+
+
 </style>

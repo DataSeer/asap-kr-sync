@@ -1,17 +1,24 @@
 /**
  * What "Cancel" means for a module that is already talking to an external API.
  *
- * The rule: **a running module is never interrupted.** It finishes its call and
- * records its real result — a Gemini request that has already been paid for
- * should produce a stored answer rather than be thrown away — but the pipeline
- * stops there. Nothing downstream starts, because it was cancelled.
+ * The rule: **a cancel interrupts.** Every step that has not finished becomes
+ * `cancelled`, unusable, and must be re-run — including the one actually
+ * running. It used to be left alone to finish and record its real result, which
+ * meant pressing Cancel on the one thing burning money did nothing a user could
+ * see: the module carried on and the pipeline treated its answer as a success.
  *
- * That splits into four properties, and each is easy to break independently:
+ * What genuinely cannot be interrupted is the external CALL. The promise is
+ * abandoned, the call completes, and it is billed. So the answer is recorded on
+ * the execution as DISCARDED, with what it cost — dropping it silently means
+ * the money was spent and the record says nothing.
  *
- *   1. a `processing` job is left alone by the cancel;
- *   2. everything not yet started is marked `cancelled`;
- *   3. when the in-flight module then finishes, its result is kept;
- *   4. and its dependents still do not run.
+ * Five properties, each breakable on its own:
+ *
+ *   1. a `processing` job is cancelled like the rest;
+ *   2. its queue entry is pulled, so no retry re-starts the work;
+ *   3. everything not yet started is cancelled too;
+ *   4. the late answer is recorded as discarded, not as a result;
+ *   5. and dependents still do not run.
  */
 
 'use strict';
@@ -24,6 +31,7 @@ const jobQueue = require('../services/queue/job-queue.service');
 const orchestrator = require('../services/queue/orchestrator.service');
 const controller = require('./jobs.controller');
 const { callController } = require('../test-helpers/fake-transaction');
+const runHistory = require('../services/queue/run-history.service');
 const { JOB_TYPES } = require('../config/constants');
 
 const SUBMISSION_ID = 'sub-1';
@@ -45,7 +53,7 @@ function row(jobType, status, over = {}) {
     // cancelled while this worker held its own copy. Here the test's row IS the
     // row, so the reload is a no-op and the status is already current.
     async reload() { return this; },
-    async markCancelled() { this.status = 'cancelled'; },
+    async markCancelled(userId) { this.status = 'cancelled'; this.cancelledBy = userId || null; },
     async markPendingInput() { this.status = 'pending_input'; },
     changed() { /* the real markComplete calls this */ },
     ...over
@@ -77,28 +85,32 @@ const request = () => ({
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('a module mid-call is left running — the external work is not thrown away', async (t) => {
+test('a module mid-call is cancelled like everything else', async (t) => {
   const running = row(JOB_TYPES.MATERIALS_DETECTION, 'processing');
   const rows = [running, row(JOB_TYPES.PDF_ANALYSIS, 'waiting')];
   mockQueue(t, rows);
 
   const { body } = await callController(controller.cancelProcessing, request());
 
-  assert.equal(running.status, 'processing', 'a paid-for Gemini call must be allowed to finish');
-  assert.equal(body.stillRunning, 1, 'and the user is told one is still going');
+  assert.equal(running.status, 'cancelled', 'Cancel must stop the thing actually running');
+  assert.equal(body.cancelled, 2);
+  // Still reported, because its answer is still coming and will be recorded as
+  // discarded — the user is told there is a call they have already paid for.
+  assert.equal(body.stillRunning, 1);
 });
 
-test('the queue entry of a running module is not pulled either', async (t) => {
+test('its queue entry is pulled, so no retry re-starts the work', async (t) => {
+  // The call in flight cannot be stopped. A pg-boss RETRY of it can, and would
+  // be a second call the user has already said they do not want.
   const running = row(JOB_TYPES.MATERIALS_DETECTION, 'processing');
   const cancelledInQueue = mockQueue(t, [running, row(JOB_TYPES.PDF_ANALYSIS, 'waiting')]);
 
   await callController(controller.cancelProcessing, request());
 
-  assert.ok(!cancelledInQueue.includes('pgboss-materials_detection'),
-    'pulling it from the queue is how you interrupt work that is already under way');
+  assert.ok(cancelledInQueue.includes('pgboss-materials_detection'));
 });
 
-test('everything not yet started is cancelled', async (t) => {
+test('everything not yet started is cancelled too', async (t) => {
   const rows = [
     row(JOB_TYPES.MATERIALS_DETECTION, 'processing'),
     row(JOB_TYPES.PDF_ANALYSIS, 'waiting'),
@@ -109,23 +121,46 @@ test('everything not yet started is cancelled', async (t) => {
 
   const { body } = await callController(controller.cancelProcessing, request());
 
-  assert.equal(body.cancelled, 3);
-  for (const r of rows.slice(1)) {
+  assert.equal(body.cancelled, 4);
+  for (const r of rows) {
     assert.equal(r.status, 'cancelled', `${r.jobType} must not start after a cancel`);
   }
 });
 
-test('the in-flight module keeps its result when it finishes', async (t) => {
-  // It was never marked cancelled, so markComplete's guard does not apply — the
-  // work is recorded, which is the whole reason for not interrupting it.
+test('the late answer is recorded as discarded, not kept as the result', async (t) => {
+  // The call completed and was billed. Dropping it silently means the money was
+  // spent and the record says nothing — "did we pay for something we threw
+  // away" is the question this exists to answer.
   const running = row(JOB_TYPES.MATERIALS_DETECTION, 'processing');
   mockQueue(t, [running, row(JOB_TYPES.PDF_ANALYSIS, 'waiting')]);
+  const discarded = [];
+  t.mock.method(runHistory, 'recordDiscarded', async (job, what) => {
+    discarded.push({ jobType: job.jobType, ...what });
+  });
 
   await callController(controller.cancelProcessing, request());
-  await running.markComplete({ data: { items: [1, 2, 3] } });
+  await running.markComplete({ counts: { unique: 3 }, data: { items: [1, 2, 3] } });
 
-  assert.equal(running.status, 'complete');
-  assert.deepEqual(running.result, { data: { items: [1, 2, 3] } });
+  assert.equal(running.status, 'cancelled', 'the cancel stands');
+  assert.equal(running.result, null, 'and the answer is not its result');
+  assert.deepEqual(discarded, [
+    { jobType: JOB_TYPES.MATERIALS_DETECTION, outcome: 'done', counts: { unique: 3 } }
+  ]);
+});
+
+test('a failure arriving after the cancel is recorded too', async (t) => {
+  // It is still something that happened, and still something that was paid for.
+  const running = row(JOB_TYPES.MATERIALS_DETECTION, 'processing');
+  running.markFailed = SubmissionJob.prototype.markFailed.bind(running);
+  mockQueue(t, [running, row(JOB_TYPES.PDF_ANALYSIS, 'waiting')]);
+  const discarded = [];
+  t.mock.method(runHistory, 'recordDiscarded', async (job, what) => discarded.push(what));
+
+  await callController(controller.cancelProcessing, request());
+  await running.markFailed('Gemini 503');
+
+  assert.equal(running.status, 'cancelled', 'not `failed` — the failure is a consequence of the cancel');
+  assert.deepEqual(discarded, [{ outcome: 'fail', error: 'Gemini 503' }]);
 });
 
 test('...and the next module still does not start', async (t) => {
@@ -151,6 +186,7 @@ test('...and the next module still does not start', async (t) => {
   mockQueue(t, rows);
   t.mock.method(jobQueue, 'addJob', async (queue) => { enqueued.push(queue); return 'x'; });
 
+  t.mock.method(runHistory, 'recordDiscarded', async () => {});
   await callController(controller.cancelProcessing, request());
   await running.markComplete({ data: { items: [] } });
   await orchestrator.checkAndAdvance(SUBMISSION_ID, JOB_TYPES.MATERIALS_DETECTION, 1, 'user-1');
@@ -166,6 +202,7 @@ test('a worker that finishes after the cancel cannot resurrect a cancelled job',
   const cancelled = row(JOB_TYPES.PDF_ANALYSIS, 'queued');
   mockQueue(t, [row(JOB_TYPES.MATERIALS_DETECTION, 'processing'), cancelled]);
 
+  t.mock.method(runHistory, 'recordDiscarded', async () => {});
   await callController(controller.cancelProcessing, request());
   assert.equal(cancelled.status, 'cancelled');
 
@@ -191,4 +228,16 @@ test('a round with nothing cancelled is not treated as cancelled', async (t) => 
   t.mock.method(SubmissionJob, 'findAll', async () => rows);
 
   assert.equal(await SubmissionJob.isRoundCancelled(SUBMISSION_ID, 1), false);
+});
+
+test('who cancelled is recorded, so the interruption is attributable', async (t) => {
+  // "This run was stopped" needs a name on it for the same reason the decision
+  // to continue past a failure does: the alternative is a result that is
+  // missing for a reason nobody can find.
+  const running = row(JOB_TYPES.MATERIALS_DETECTION, 'processing');
+  mockQueue(t, [running, row(JOB_TYPES.PDF_ANALYSIS, 'waiting')]);
+
+  await callController(controller.cancelProcessing, request());
+
+  assert.equal(running.cancelledBy, 'user-1');
 });

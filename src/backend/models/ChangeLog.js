@@ -21,12 +21,36 @@ module.exports = (sequelize) => {
         key: 'id'
       }
     },
+    /**
+     * Null when the system is the actor.
+     *
+     * An automatic apply — the extractor filling an empty statement — has
+     * nobody behind it. The alternatives were to invent a user or to skip the
+     * log, and skipping is how those writes became invisible in the first
+     * place.
+     */
     userId: {
       type: DataTypes.UUID,
-      allowNull: false,
+      allowNull: true,
       field: 'user_id',
       references: {
         model: 'users',
+        key: 'id'
+      }
+    },
+    /**
+     * The execution whose output this row promoted. Null for a hand-typed edit.
+     *
+     * This is what makes a value's origin answerable: "the statement came from
+     * run 2's extraction, accepted by Nicolas at 14:02" is one row, rather than
+     * a guess from timestamps.
+     */
+    stepExecutionId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'step_execution_id',
+      references: {
+        model: 'step_executions',
         key: 'id'
       }
     },
@@ -80,6 +104,18 @@ module.exports = (sequelize) => {
       type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 1
+    },
+    /**
+     * The file this entry is about, when it is about one.
+     *
+     * The upload entries carried only a free-text description, so the narrative
+     * could not be tied to the exact version it described.
+     */
+    fileId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'file_id',
+      references: { model: 'files', key: 'id' }
     }
   }, {
     tableName: 'change_logs',

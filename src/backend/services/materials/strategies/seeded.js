@@ -26,6 +26,7 @@ const fs = require('fs');
 const { repoPath } = require('../../detection/repo-path');
 const { loadAuthorSeeds } = require('../../krt/author-krt-seeds.service');
 const { GROUP } = require('../../detection/resource-groups');
+const { JOB_TYPES } = require('../../../config/constants');
 
 const SEEDED_PROMPT = path.join(__dirname, '../../../data/prompts/seeded/materials-detection.txt');
 const DISCOVERY_PROMPT = path.join(__dirname, '../../../data/prompts/blind/materials-detection.txt');
@@ -40,7 +41,7 @@ module.exports = {
   async shouldRun() { return { run: true }; },
 
   async buildInput({ submissionId, round, options = {} }) {
-    let seeds = await loadAuthorSeeds(submissionId, round, GROUP.material);
+    let seeds = await loadAuthorSeeds(submissionId, round, GROUP.material, { jobType: JOB_TYPES.MATERIALS_DETECTION });
     if (typeof options.filterSeeds === 'function') seeds = seeds.filter(options.filterSeeds);
 
     // No seeds → the seeded prompt would instruct the model to enrich a list

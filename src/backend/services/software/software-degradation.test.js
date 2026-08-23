@@ -28,6 +28,7 @@ const softwareLm = require('./software-lm.service');
 const s3Service = require('../storage/s3.service');
 const models = require('../../models');
 const { FILE_TYPES } = require('../../config/constants');
+const inputFreeze = require('../queue/input-freeze.service');
 
 const SUBMISSION = { id: 'sub-1', currentRound: 1 };
 
@@ -51,9 +52,14 @@ const lmResource = (name) => ({
  * the engine it is about.
  */
 function harness(t, { softcite, lmEnabled = true, hasMarkdown = true, lmResources = [] } = {}) {
-  t.mock.method(models.File, 'findOne', async ({ where }) => {
-    if (where.type === FILE_TYPES.PDF) return { fileName: 'p.pdf', s3Key: 'pdf-key', id: 'f1' };
-    if (where.type === FILE_TYPES.MARKDOWN) return hasMarkdown ? { fileName: 'p.md', s3Key: 'md-key', id: 'f2' } : null;
+  // Detection reads the round's FROZEN documents, so the seam is the freeze
+  // service rather than the File model: every step in a run is handed the same
+  // PDF and the same markdown, whatever has been uploaded since.
+  t.mock.method(inputFreeze, 'resolveFile', async (_sub, _round, inputKind) => {
+    if (inputKind === inputFreeze.INPUT_KINDS.PDF) return { fileName: 'p.pdf', s3Key: 'pdf-key', id: 'f1' };
+    if (inputKind === inputFreeze.INPUT_KINDS.MARKDOWN) {
+      return hasMarkdown ? { fileName: 'p.md', s3Key: 'md-key', id: 'f2' } : null;
+    }
     return null;
   });
   t.mock.method(s3Service, 'downloadFile', async () => Buffer.from(MARKDOWN, 'utf-8'));

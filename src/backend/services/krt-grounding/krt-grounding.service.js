@@ -11,7 +11,7 @@
  * never drop one" — so the model could echo a seed it had never located, and
  * the output looked identical either way. That made grounding unverifiable and
  * suppressed discovery at the same time. Here the two are separate: detection
- * is KRT-blind (see docs/design-krt-detection-two-modes.md), and the author's
+ * is KRT-blind (see docs/background-modules.md), and the author's
  * table arrives here as a QUERY, never as a seed.
  *
  * Per author row the outcome is one of:
@@ -38,6 +38,7 @@ const { GoogleGenAI } = require('@google/genai');
 // matching comment in protocols.service.js for the rationale.
 const fs = require('fs');
 const path = require('path');
+const inputFreeze = require('../queue/input-freeze.service');
 const s3Service = require('../storage/s3.service');
 const groundingConfig = require('../../config/krt-grounding-api');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
@@ -49,6 +50,7 @@ const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
 const { sanitizeJsonEscapes, extractJsonBlock, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { repoPath } = require('../detection/repo-path');
 const runInputs = require('../queue/run-inputs.service');
 
@@ -92,7 +94,13 @@ function getPrompt(override) {
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
 /**
@@ -332,7 +340,12 @@ async function groundSubmission(submission, jobLogger) {
       // there is no single assembled prompt to digest. The batch size is what a
       // rebuilder needs to reproduce the same split from the frozen rows.
       secondLookBatchSize: SECOND_LOOK_BATCH_SIZE
-    }
+    },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: groundingConfig
   });
 
   // ── Step 2: presence — the manuscript searched directly, independent of what
@@ -420,8 +433,14 @@ async function groundSubmission(submission, jobLogger) {
  * @returns {Promise<object[]>}
  */
 async function loadAuthorKrtRows(submissionId, round) {
-  const { KRTData } = require('../../models');
-  const rows = await KRTData.findAll({ where: { submissionId, round } });
+  // The round's frozen table. Grounding judges the detectors' findings against
+  // the author's rows, and those detectors were seeded from this same snapshot
+  // — reading the live table here would grade one table's detections against
+  // another.
+  const inputFreeze = require('../queue/input-freeze.service');
+  const rows = await inputFreeze.resolveKrtRows(submissionId, round, {
+    jobType: JOB_TYPES.KRT_GROUNDING
+  });
   return rows.map((row) => ({
     id: row.id,
     resourceType: row.resourceType || '',
@@ -626,10 +645,12 @@ function usableHits(hits) {
  */
 async function loadMarkdown(submissionId, round) {
   const { File } = require('../../models');
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.KRT_GROUNDING }
+  );
   if (!mdFile) return null;
   const buffer = await s3Service.downloadFile(mdFile.s3Key);
   return buffer.toString('utf-8');
@@ -668,9 +689,7 @@ async function persistJobData(submissionId, jobType, round, data) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(data);
   }
 }
 

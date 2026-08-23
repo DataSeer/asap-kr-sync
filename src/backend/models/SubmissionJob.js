@@ -4,6 +4,14 @@
  */
 
 const { DataTypes, Op } = require('sequelize');
+const tokenUsage = require('../utils/token-usage');
+
+/**
+ * Lazily required: the history service requires the models back, and resolving
+ * that at module load is a cycle. Every call is wrapped so a history failure
+ * logs and lets the run continue — see run-history.service.
+ */
+const runHistory = () => require('../services/queue/run-history.service');
 
 module.exports = (sequelize) => {
   const SubmissionJob = sequelize.define('SubmissionJob', {
@@ -27,7 +35,7 @@ module.exports = (sequelize) => {
       field: 'job_type'
     },
     status: {
-      type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed', 'cancelled'),
+      type: DataTypes.ENUM('waiting', 'pending_input', 'queued', 'processing', 'complete', 'failed', 'cancelled', 'skipped'),
       allowNull: false,
       defaultValue: 'queued'
     },
@@ -64,6 +72,35 @@ module.exports = (sequelize) => {
         key: 'id'
       }
     },
+    /**
+     * When somebody decided to carry on despite this step's issue.
+     *
+     * An issue — a failure, a partial, or a run that completed producing nothing
+     * usable — holds everything downstream at `waiting` until this is set. The
+     * alternative, which is what used to happen, is a Generated KRT built from
+     * four detectors instead of five with nothing anywhere saying so.
+     *
+     * Timestamped and attributed rather than a boolean, because the question is
+     * "who decided this report would be built without software detection, and
+     * when" and a boolean cannot answer it.
+     *
+     * ── It lives on the EXECUTION, not here ─────────────────────────────────
+     *
+     * It used to be two columns on this row, cleared on retry and on restart
+     * because the decision was about one run's issue and not about the step.
+     * Three places had to remember to clear them, and `runAllProcesses` — the
+     * one that re-runs everything — did not: a decision made about run 1's
+     * failure silently waved through run 2's.
+     *
+     * A decision now belongs to the execution it was made about. A re-executed
+     * step gets a new execution, which was never decided about, so there is no
+     * field left to forget to clear; a carried-over step keeps the same
+     * execution and therefore the same decision, which is also right — you kept
+     * the result, you kept what was decided about it.
+     *
+     * `getForSubmission` attaches it as `job.decision`, so the orchestrator's
+     * hot path reads one object rather than issuing a query per step.
+     */
     result: {
       type: DataTypes.JSONB,
       allowNull: true
@@ -78,6 +115,31 @@ module.exports = (sequelize) => {
       allowNull: false,
       defaultValue: 0,
       field: 'retry_count'
+    },
+    /**
+     * How many times this step has EXECUTED in this round.
+     *
+     * Denormalised from `step_executions` so the panel and the report can say
+     * so without an aggregate on a table polled every few seconds. Written by
+     * run-history's openRun — which silently did nothing until this attribute
+     * existed, because Sequelize drops unknown fields from `update` and the
+     * history writes are deliberately guarded.
+     *
+     * Zero, not one. It used to be SET to the step's own run number, so a
+     * default of 1 meant "the first run"; it is INCREMENTED now, and the same
+     * default made a step that had run once report two. A step that has not run
+     * has executed zero times, which is also the honest answer for a step a run
+     * has not reached.
+     *
+     * NOT the run number. A run can carry a step over rather than re-executing
+     * it, so "which run is this" and "how many times has this step run" are
+     * different questions, and this answers the second.
+     */
+    runCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'run_count'
     },
     round: {
       type: DataTypes.INTEGER,
@@ -136,27 +198,111 @@ module.exports = (sequelize) => {
     this.startedAt = new Date();
     this.retryCount = retryCount;
     this.errorMessage = null; // Clear previous error on retry
-    return this.save();
+    const saved = await this.save();
+    await runHistory().touchRun(this, { status: 'processing', startedAt: this.startedAt, retryCount });
+    return saved;
   };
 
   /**
    * Mark job as complete with result data (merged with existing result)
    * @param {object} result - Standardized result: { status, counts, timing, data, files }
    */
+  /**
+   * The step will not run: something it required produced nothing.
+   *
+   * Not `cancelled` — that word means a person stopped it, and a report has to
+   * tell "skipped because the conversion produced no text" apart from "stopped
+   * deliberately". Not left `waiting` either: `allProcessesFinished` would never
+   * become true and the submission's own Continue button would stay disabled,
+   * trapping the user in the step with no way out.
+   *
+   * Records WHAT was missing, because "skipped" without a cause is the same
+   * silence this whole mechanism exists to remove.
+   *
+   * @param {string[]} missing - the required dependencies that produced nothing
+   */
+  SubmissionJob.prototype.markSkipped = async function(missing = []) {
+    await this.reload();
+    if (['cancelled', 'complete'].includes(this.status)) return this;
+    this.status = 'skipped';
+    this.completedAt = new Date();
+    this.result = { ...(this.result || {}), skipped: { missing, at: new Date().toISOString() } };
+    this.changed('result', true);
+    return this.save();
+  };
+
   SubmissionJob.prototype.markComplete = async function(result = null) {
     // Reload from DB to pick up any result changes made by the service
     // (the service may use a different instance via getLatest())
     await this.reload();
     // Never resurrect a cancelled job: if the user cancelled this run while a
-    // worker had already dequeued this job, honor the cancel and drop the
-    // now-irrelevant result rather than flipping it back to 'complete'.
-    if (this.status === 'cancelled') return this;
+    // worker had already dequeued this job, honour the cancel rather than
+    // flipping it back to 'complete'.
+    //
+    // But the answer is RECORDED before it is dropped. The external call could
+    // not be stopped — it completed and was billed — so discarding it silently
+    // means the money was spent and the record says nothing. This is what makes
+    // "did we pay for something we threw away" answerable.
+    if (this.status === 'cancelled') {
+      await runHistory().recordDiscarded(this, {
+        outcome: result?.service?.outcome?.state || 'done',
+        counts: result?.counts ?? null
+      });
+      return this;
+    }
     this.status = 'complete';
+    // A step that succeeded on its third attempt used to carry the second
+    // attempt's error into its record, because nothing ever cleared it — so the
+    // module page showed a completed run beside a red error string. The
+    // attempts array is where that error belongs now, and it is there.
+    this.errorMessage = null;
     if (result) {
       this.result = { ...(this.result || {}), ...result };
     }
+    // What this run spent, read from the ambient tally rather than passed in by
+    // each of the nine services that call a model. Here because this is the one
+    // place every job's result is written, so a service added later reports its
+    // usage without knowing this exists.
+    //
+    // Absent when no model was called: a row of zeroes on Markdown Convert
+    // would be noise on every page it appears.
+    const tokens = tokenUsage.current();
+    if (tokens) this.result = { ...(this.result || {}), tokens };
     this.changed('result', true);
     this.completedAt = new Date();
+    const saved = await this.save();
+    await runHistory().closeRun(this);
+    return saved;
+  };
+
+  /**
+   * Store what this step produced, before it is marked complete.
+   *
+   * Nine services need this — downstream steps read a module's output through
+   * `getLatest`, not through the execution — and all nine used to do it by hand:
+   * read the row, spread `result`, set `changed`, save. Identical four-line
+   * blocks, which is how they all came to share one bug.
+   *
+   * ── The bug ─────────────────────────────────────────────────────────────
+   *
+   * None of them checked for a cancel. `markComplete` did, and refused to
+   * record a cancelled step's answer — but this runs BEFORE it, so the answer
+   * the user threw away landed on the row anyway, and every page rendered it as
+   * the step's result beside a status line saying the run was cancelled. Seen
+   * live: software detection cancelled mid-call, 32 items on screen.
+   *
+   * The reload is what makes the check work: the worker's instance was loaded
+   * before the handler started, so a cancel that landed in between is invisible
+   * in memory — the same reason markComplete reloads.
+   *
+   * @param {object} data - the module's `data` payload
+   * @returns {Promise<SubmissionJob>}
+   */
+  SubmissionJob.prototype.persistData = async function(data) {
+    await this.reload();
+    if (this.status === 'cancelled') return this;
+    this.result = { ...(this.result || {}), data };
+    this.changed('result', true);
     return this.save();
   };
 
@@ -176,11 +322,18 @@ module.exports = (sequelize) => {
     // only cancelled row — `isRoundCancelled` flipped back to false, which
     // un-suppressed the retry and restarted the external work they had stopped.
     await this.reload();
-    if (this.status === 'cancelled') return this;
+    if (this.status === 'cancelled') {
+      // A failure that arrived after the cancel is still something that
+      // happened, and something that was paid for. See markComplete.
+      await runHistory().recordDiscarded(this, { outcome: 'fail', error: errorMessage });
+      return this;
+    }
     this.status = 'failed';
     this.errorMessage = errorMessage;
     this.completedAt = new Date();
-    return this.save();
+    const saved = await this.save();
+    await runHistory().closeRun(this);
+    return saved;
   };
 
   /**
@@ -207,18 +360,44 @@ module.exports = (sequelize) => {
     this.status = 'processing';
     this.errorMessage = errorMessage;
     this.completedAt = null;
-    return this.save();
+    const saved = await this.save();
+    // The SAME run, one attempt further in. Opening a new run here would count
+    // a pg-boss retry as a user-visible re-run, which it is not.
+    await runHistory().touchRun(
+      this,
+      { retryCount: this.retryCount ?? 0, externalError: errorMessage },
+      // This delivery is over and it failed. Recorded now rather than at the
+      // end: pg-boss hands the next delivery a fresh attempt store, so anything
+      // still sitting in this one would be lost.
+      { ok: false, error: errorMessage, delivery: (this.retryCount ?? 0) + 1 }
+    );
+    return saved;
   };
 
   /**
-   * Mark a job as cancelled by the user (terminal). Only applied to jobs that
-   * had NOT started — a job already 'processing' is left to finish and record
-   * its real done/failed status (see the cancel controller).
+   * Mark a job as cancelled by the user. Terminal.
+   *
+   * Applied to a RUNNING step as well as a waiting one. A cancel interrupts:
+   * the execution becomes `cancelled`, is unusable, and the step must be re-run.
+   * It used to leave a `processing` job alone to finish and record its real
+   * status, which meant pressing Cancel on the one thing actually burning money
+   * did nothing a user could see.
+   *
+   * What cannot be interrupted is the external call itself — the promise is
+   * abandoned, the call completes, and it is billed. So the answer, when it
+   * arrives, is recorded as discarded rather than dropped: see markComplete.
+   *
+   * @param {string} [userId] - who stopped it
    */
-  SubmissionJob.prototype.markCancelled = async function() {
+  SubmissionJob.prototype.markCancelled = async function(userId = null) {
     this.status = 'cancelled';
     this.completedAt = new Date();
-    return this.save();
+    const saved = await this.save();
+    // A cancelled run is still a run: "this was attempted and stopped" is
+    // exactly the kind of thing an audit asks about.
+    await runHistory().closeRun(this);
+    await runHistory().recordCancellation(this, { userId });
+    return saved;
   };
 
   /**
@@ -279,8 +458,68 @@ module.exports = (sequelize) => {
       where: { id: Array.from(latestIdByType.values()) },
       order: [['createdAt', 'DESC']]
     });
+
+    await attachDecisions(jobs, submissionId, round);
     return jobs;
   };
+
+  /**
+   * Attach each step's decision and cancellation, from the run the round is in.
+   *
+   * Done HERE rather than in each caller, deliberately. A caller that forgot
+   * would not see an error — it would see a step with no decision, and would
+   * hold the pipeline for a question somebody has already answered. That is a
+   * failure by absence, which is the kind nobody notices.
+   *
+   * One query, through the run's MEMBERSHIP rather than the executions' own
+   * `pipeline_run_id`: a carried-over execution belongs to the run that created
+   * it, and looking it up by that column would drop its decision the moment
+   * anything else was restarted. Going through membership is also what makes
+   * "decisions carry over" true without any code saying so.
+   *
+   * The cancellation rides along on the same query: the module page reads a
+   * step's state from the jobs payload, so a cancelled step could otherwise say
+   * "cancelled" without saying by whom, or that a call it had paid for landed
+   * afterwards and was thrown away.
+   *
+   * Never throws. A decision that could not be read holds the pipeline, which is
+   * the conservative outcome — the question gets asked again rather than
+   * silently answered.
+   *
+   * @param {object[]} jobs - mutated in place
+   * @param {string} submissionId
+   * @param {number} round
+   */
+  async function attachDecisions(jobs, submissionId, round) {
+    if (round === undefined || !jobs.length) return;
+    try {
+      const { sequelize: db } = require('./index');
+      const [rows] = await db.query(`
+        SELECT prs.job_type, se.decision, se.cancelled_by_user_id, se.discarded
+        FROM "pipeline_run_steps" prs
+        JOIN "step_executions" se ON se.id = prs.step_execution_id
+        JOIN "pipeline_runs" pr ON pr.id = prs.pipeline_run_id
+        WHERE pr.submission_id = :submissionId
+          AND pr.round = :round
+          AND pr.run_number = (
+            SELECT MAX(run_number) FROM "pipeline_runs"
+            WHERE submission_id = :submissionId AND round = :round
+          )
+      `, { replacements: { submissionId, round } });
+
+      const byType = new Map(rows.map((row) => [row.job_type, row]));
+      for (const job of jobs) {
+        const found = byType.get(job.jobType);
+        job.decision = found?.decision || null;
+        job.cancelledByUserId = found?.cancelled_by_user_id || null;
+        job.discarded = found?.discarded || [];
+      }
+    } catch (error) {
+      require('../utils/logger').error('Could not read this round\'s decisions', {
+        submissionId, round, error: error.message
+      });
+    }
+  }
 
   /**
    * Get the latest job of a specific type for a submission

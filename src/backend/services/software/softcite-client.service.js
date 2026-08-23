@@ -82,6 +82,7 @@ async function detectSoftware(pdfBuffer, fileName = 'article.pdf') {
         return response.data;
       },
       {
+        label: 'Softcite',
         maxRetries: softciteConfig.retryConfig.maxRetries,
         delay: softciteConfig.retryConfig.retryDelay,
         multiplier: softciteConfig.retryConfig.retryDelayMultiplier,

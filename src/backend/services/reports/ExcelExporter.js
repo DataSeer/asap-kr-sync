@@ -64,7 +64,7 @@ class ExcelExporter extends ReportExporter {
    * @returns {ExcelJS.Workbook}
    */
   buildWorkbook(data) {
-    const { submission, krtRows = [], changes = [], suggestions } = data;
+    const { submission, krtRows = [], changes = [], suggestions, pipeline = [] } = data;
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'ASAP KR-Sync';
     workbook.created = submission.createdAt instanceof Date ? submission.createdAt : new Date(0);
@@ -72,6 +72,7 @@ class ExcelExporter extends ReportExporter {
     this.buildSummarySheet(workbook, submission, krtRows, changes, suggestions);
     this.buildKrtSheet(workbook, krtRows);
     this.buildChangeHistorySheet(workbook, changes);
+    this.buildPipelineSheet(workbook, pipeline);
     if (suggestions && suggestions.length > 0) {
       this.buildSuggestionsSheet(workbook, suggestions);
     }
@@ -205,7 +206,57 @@ class ExcelExporter extends ReportExporter {
     return sheet;
   }
 
-  // ── Sheet 4: Suggestions ──────────────────────────────────────────────
+  // ── Sheet 4: Pipeline ─────────────────────────────────────────────────
+  //
+  // How this result came to be. Every other sheet shows the OUTPUT, and a
+  // report built without software detection looks exactly like one where
+  // software detection found nothing — this is the only place the difference
+  // is written down.
+
+  buildPipelineSheet(workbook, pipeline) {
+    const sheet = workbook.addWorksheet('Pipeline');
+    if (!pipeline.length) {
+      sheet.addRow(['No pipeline record for this round']);
+      return sheet;
+    }
+
+    const rows = pipeline.map((step) => ({
+      Step: this.humanJobType(step.jobType),
+      Outcome: step.outcome,
+      Detail: step.detail || '',
+      // Empty for a step nobody had to decide about, which is most of them.
+      'Carried on by': step.decidedBy || '',
+      'Decided at': step.decidedAt ? new Date(step.decidedAt).toISOString() : '',
+      Runs: step.runCount || '',
+      'Duration (s)': step.durationMs ? Math.round(step.durationMs / 100) / 10 : '',
+      Tokens: step.totalTokens || ''
+    }));
+
+    sheet.columns = Object.keys(rows[0]).map((k) => ({ header: k, key: k }));
+    rows.forEach((r) => sheet.addRow(r));
+    this.applyColumnWidths(sheet, [24, 30, 46, 18, 22, 8, 14, 12]);
+    this.styleHeaderRow(sheet);
+    sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    return sheet;
+  }
+
+  /**
+   * `software_detection` → `Software Detection`, and `das_extraction` → `DAS
+   * Extraction` rather than `Das Extraction`.
+   *
+   * Title-casing alone produced "Das Extraction", "Krt Grounding", "Pdf
+   * Analysis" and "Orcid Extraction" — four of the twelve steps misspelt in a
+   * document that goes to reviewers.
+   */
+  humanJobType(jobType) {
+    const ACRONYMS = { das: 'DAS', krt: 'KRT', pdf: 'PDF', orcid: 'ORCID', ai: 'AI' };
+    return String(jobType || '')
+      .split('_')
+      .map((w) => ACRONYMS[w] || w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  }
+
+  // ── Sheet 5: Suggestions ──────────────────────────────────────────────
 
   buildSuggestionsSheet(workbook, suggestions) {
     const sheet = workbook.addWorksheet('Suggestions');

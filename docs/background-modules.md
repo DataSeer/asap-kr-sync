@@ -95,7 +95,7 @@ processes panel turns that into a banner where the progress bar would be, rather
 > with the author's rows; `blind-v1` (admin-only, not enabled for anyone yet) shows the detectors nothing and
 > reconciles afterwards in `krt_grounding`. The measured trade-off is real in both directions: seeding suppresses
 > discovery by about 24%, while the blind arm confirms fewer author rows. Which prompts a run used is recorded on
-> the run itself — see §2.1f. Design: [design-krt-detection-two-modes.md](./design-krt-detection-two-modes.md).
+> the run itself — see §2.1f.
 
 ---
 

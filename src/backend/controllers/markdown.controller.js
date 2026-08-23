@@ -24,10 +24,19 @@ async function getMarkdown(req, res, next) {
     const submission = req.submission;
     const round = submission.currentRound || 1;
 
-    const file = await File.findOne({
-      where: { submissionId: submission.id, type: FILE_TYPES.MARKDOWN, round },
-      order: [['version', 'DESC']]
-    });
+    // `?fileId=` asks for the version a particular RUN read, rather than the
+    // newest. Without it, viewing run 1 of Markdown Convert showed run 1's
+    // statistics above the text of run 3 — the page contradicting itself on the
+    // one thing it exists to show.
+    //
+    // Scoped to this submission on purpose: the id comes from the client, so it
+    // is checked against the submission the caller has already been authorised
+    // for rather than trusted.
+    const where = { submissionId: submission.id, type: FILE_TYPES.MARKDOWN };
+    if (req.query.fileId) where.id = req.query.fileId;
+    else where.round = round;
+
+    const file = await File.findOne({ where, order: [['version', 'DESC']] });
     if (!file) throw new NotFoundError('Converted markdown');
 
     const buffer = await s3Service.downloadFile(file.s3Key);

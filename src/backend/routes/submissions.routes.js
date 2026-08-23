@@ -91,6 +91,14 @@ router.get('/:id/das-suggestions',
   dasSuggestionsController.getDasSuggestions
 );
 
+// POST /api/submissions/:id/das/confirm - the author agrees the statement the
+// check will read is the right one. No LM limiter: confirming spends nothing
+// itself, and rate-limiting a "yes" would leave the pipeline parked.
+router.post('/:id/das/confirm',
+  canAccessSubmission,
+  submissionsController.confirmDas
+);
+
 // POST /api/submissions/:id/das-suggestions/regenerate - re-run the DAS check
 router.post('/:id/das-suggestions/regenerate',
   // Access first, THEN the budget — see the note on the limiters above. A
@@ -492,6 +500,34 @@ router.post('/:id/processes/run',
   jobsController.runProcesses
 );
 
+// POST /api/submissions/:id/jobs/:jobType/continue - Proceed without a failed
+// step's data. No LM limiter: it starts nothing itself — it releases steps that
+// were already going to run.
+router.post('/:id/jobs/:jobType/continue',
+  canAccessSubmission,
+  jobsController.continueWithoutJob
+);
+
+// POST /api/submissions/:id/jobs/:jobType/retry - Run a failed step again and
+// change nothing else. Behind the LM budget like the restarts: it starts real
+// model work, even though it starts only one step's worth.
+router.post('/:id/jobs/:jobType/retry',
+  canAccessSubmission,
+  lmApiLimiter,
+  lmApiDailyLimiter,
+  jobsController.retryJob
+);
+
+// POST /api/submissions/:id/processes/restart - Re-run a chosen set of steps as
+// ONE restart. Behind the LM budget like `run`: it starts real model work, and
+// a selection of five detectors is five detectors' worth of it.
+router.post('/:id/processes/restart',
+  canAccessSubmission,
+  lmApiLimiter,
+  lmApiDailyLimiter,
+  jobsController.restartProcesses
+);
+
 // POST /api/submissions/:id/processes/cancel - Cancel all in-flight processing (#15)
 router.post('/:id/processes/cancel',
   canAccessSubmission,
@@ -523,6 +559,35 @@ router.get('/:id/jobs/:jobType/responses/:responseName',
   canAccessSubmission,
   canViewJobInternals,
   jobsController.getJobResponse
+);
+
+// GET /api/submissions/:id/runs - Every pipeline run of this round, with what
+// each one contains. The submission-wide view: "run 2" as one number across
+// every module rather than a different number per module. Same audience as the
+// rest of the internals.
+router.get('/:id/runs',
+  canAccessSubmission,
+  canViewJobInternals,
+  jobsController.listPipelineRuns
+);
+
+// GET /api/submissions/:id/jobs/:jobType/runs - Every run of this step, newest
+// first, metadata only. Same audience as the rest of the internals: an author
+// reads the latest run and nothing else, which is why the selector that uses
+// this is not rendered for them either.
+router.get('/:id/jobs/:jobType/runs',
+  canAccessSubmission,
+  canViewJobInternals,
+  jobsController.listRuns
+);
+
+// GET /api/submissions/:id/jobs/:jobType/runs/:runNumber - One run in full.
+// Shaped like a job, so the module page renders a past run through exactly the
+// same path as the current one.
+router.get('/:id/jobs/:jobType/runs/:runNumber',
+  canAccessSubmission,
+  canViewJobInternals,
+  jobsController.getRun
 );
 
 // GET /api/submissions/:id/jobs/:jobType/prompts - The prompt(s) this run used,

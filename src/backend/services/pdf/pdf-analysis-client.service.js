@@ -54,6 +54,7 @@ async function request(pdfBuffer, krtData) {
         return result.data;
       },
       {
+        label: 'PDF Analysis',
         maxRetries: pdfAnalysisConfig.retryConfig.maxRetries,
         delay: pdfAnalysisConfig.retryConfig.retryDelay,
         multiplier: pdfAnalysisConfig.retryConfig.retryDelayMultiplier,

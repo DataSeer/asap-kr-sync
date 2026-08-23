@@ -13,6 +13,9 @@ const { NotFoundError, ConflictError, ValidationError } = require('../../utils/e
 const { NO_DAS_SENTINEL } = require('../das-suggestions/das-suggestions.service');
 const jobQueue = require('./job-queue.service');
 const logger = require('../../utils/logger');
+const runHistory = require('./run-history.service');
+const pipelineRuns = require('./pipeline-run.service');
+const { CAUSES } = require('../../models/PipelineRun');
 
 // Jobs younger than this are left alone by the reconciler — their dependencies
 // may simply still be running, and we don't want to race a checkAndAdvance that
@@ -89,35 +92,6 @@ const GATES = {
     if (!['step_as', 'step_report', 'completed'].includes(submission.status)) return false;
     const das = (submission.dataAvailabilityStatement || '').trim();
     return das.length > 0 && das !== NO_DAS_SENTINEL;
-  },
-
-  // Nothing that reads the manuscript may run when there is no manuscript text.
-  //
-  // Conversion is fail-soft: when the converter errors or returns nothing, the
-  // job still completes, with `markdownLength: 0` and `detected: false`. Every
-  // downstream module then ran happily against an empty document and reported
-  // zero findings — which reads as "your manuscript mentions none of this",
-  // when the truth is that the app never read the manuscript. Observed on a
-  // real run: 11/11 steps "complete", 0 datasets, 0 materials, 0 protocols, and
-  // all 12 author rows reported as not detected.
-  //
-  // So the detectors hold in `waiting` instead. Re-running conversion releases
-  // them automatically; until then the panel says the pipeline is blocked and
-  // why.
-  markdown_ready: (submission, jobsByType) => {
-    const job = jobsByType?.get(JOB_TYPES.MARKDOWN_CONVERT);
-    // No conversion job in this map (e.g. a partial view): do not claim to
-    // know. The dependency check already keeps the step waiting.
-    if (!job) return true;
-    // A conversion that FAILED is the same situation as one that produced
-    // nothing, and it was slipping through: the gate only ever inspected
-    // `complete` rows, while the dependency check counts `failed` as terminal.
-    // So a failed conversion released every detector to read a manuscript that
-    // does not exist — the exact outcome this gate was added to prevent, by the
-    // one route that skipped it.
-    if (['failed', 'cancelled'].includes(job.status)) return false;
-    if (job.status !== 'complete') return true;
-    return (job.result?.data?.markdownLength || 0) > 0;
   }
 };
 
@@ -141,7 +115,38 @@ const PIPELINE = [
   // DAS extraction now reads the converted markdown (Gemini-based, replaces
   // the Modal Llama fine-tune that ate the PDF directly), so it depends on
   // MARKDOWN_CONVERT just like the other Gemini-based detectors.
-  { jobType: JOB_TYPES.DAS_EXTRACTION,     dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: 'markdown_ready' },
+  {
+    jobType: JOB_TYPES.DAS_EXTRACTION,
+    reads: ['markdown'],
+    dependsOn: [JOB_TYPES.MARKDOWN_CONVERT],
+
+    // Asking for extraction again is asking for a fresh reading of the
+    // manuscript, so the working statement is cleared to make room for it.
+    //
+    // Without this the module would run and change nothing visible: the working
+    // field is only filled while it is empty (see apply.service), so a
+    // re-extraction on a submission that already has a statement — every new
+    // round, every replaced PDF — would write to the extracted field alone and
+    // look like it had done nothing.
+    //
+    // Only on a MANUAL restart. The pipeline running extraction as part of a
+    // normal round must not wipe a statement somebody has already dealt with.
+    //
+    // Through the apply service rather than as three assignments, because this
+    // DESTROYS data: a user who typed their own statement and then pressed
+    // "re-run" loses it. Correct — they asked — but it is exactly the silent
+    // pipeline write the apply split exists to end, so what was there is
+    // recorded against whoever asked.
+    async onManualRestart(submission, { userId, round } = {}) {
+      await require('./apply.service').clearFromPipeline({
+        submission,
+        target: 'data_availability_statement',
+        userId,
+        round,
+        description: 'Availability Statement cleared for a fresh extraction'
+      });
+    }
+  },
   // Softcite reads the PDF and could start immediately, but the module's second
   // engine — the LM pass — reads the converted markdown, and without this
   // dependency it would race conversion and skip on nearly every run. Waiting
@@ -149,19 +154,37 @@ const PIPELINE = [
   // KRT_GROUNDING, which waits for the markdown-dependent detectors regardless.
   // Gated with the rest of detection so the whole detection stage starts at one
   // moment rather than trickling in around the KRT step.
-  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
-  { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [] },
-  { jobType: JOB_TYPES.MARKDOWN_CONVERT,   dependsOn: [] },
+  { jobType: JOB_TYPES.SOFTWARE_DETECTION,  dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['pdf', 'markdown', 'krt'] },
+  { jobType: JOB_TYPES.ORCID_EXTRACTION,   dependsOn: [], reads: ['pdf'] },
+  {
+    jobType: JOB_TYPES.MARKDOWN_CONVERT,
+    dependsOn: [],
+    reads: ['pdf'],
+    /**
+     * Conversion can finish cleanly and produce nothing.
+     *
+     * This used to be the `markdown_ready` GATE, repeated on the seven steps
+     * that read the manuscript. It belongs here: "did the conversion produce
+     * usable text" is a fact about the conversion, not something each of its
+     * readers should be trusted to remember to ask.
+     *
+     * Observed on a real run before the gate existed: 11/11 steps "complete",
+     * 0 datasets, 0 materials, 0 protocols, and all 12 author rows reported as
+     * not detected — every module had happily read an empty document and
+     * reported that the manuscript mentions none of this.
+     */
+    produced: (job) => (job.result?.data?.markdownLength || 0) > 0
+  },
   // Every text detector waits for BOTH the markdown and the curated KRT: the
   // seeded prompts carry the author's rows, so starting earlier would seed
   // from a table the author is still editing.
-  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
-  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
-  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  { jobType: JOB_TYPES.DATASETS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['markdown', 'krt'] },
+  { jobType: JOB_TYPES.MATERIALS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['markdown', 'krt'] },
+  { jobType: JOB_TYPES.PROTOCOLS_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['markdown', 'krt'] },
   // Identifier detection scans the post-conversion markdown against the
   // curated enrichment list. Cross-category — produces software/materials/
   // datasets/protocols items in one pass and lets pdf-analysis consolidate.
-  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['markdown_ready', 'krt_curated'] },
+  { jobType: JOB_TYPES.IDENTIFIER_DETECTION, dependsOn: [JOB_TYPES.MARKDOWN_CONVERT], gate: ['krt_curated'], reads: ['markdown', 'krt'] },
   {
     // Grounding reconciles the author's KRT against the candidate pool: for
     // every author row it decides confirmed / incomplete / not_detected, and
@@ -169,19 +192,48 @@ const PIPELINE = [
     // KRT step; with no KRT at all it still runs and reports zero author rows,
     // so the pipeline shape is identical in both modes.
     jobType: JOB_TYPES.KRT_GROUNDING,
+    reads: ['markdown', 'krt'],
+    // It grounds whatever candidates exist, and searches the manuscript
+    // directly for the author's rows besides — so a missing detector costs it
+    // coverage, not the ability to run.
+    optional: [
+      JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.DATASETS_DETECTION,
+      JOB_TYPES.MATERIALS_DETECTION, JOB_TYPES.PROTOCOLS_DETECTION,
+      JOB_TYPES.IDENTIFIER_DETECTION
+    ],
     dependsOn: [
+      // It reads the manuscript, so it depends on the conversion. It did not
+      // say so before, because the `markdown_ready` GATE covered it — and when
+      // that gate moved onto the conversion as `produced`, grounding was left
+      // with no protection at all and started on a round whose text never
+      // existed. Found by a live Continue; pinned now by "every step that reads
+      // the manuscript depends on the conversion".
+      //
+      // No ordering change: it already sat behind the detectors, which sit
+      // behind the conversion. The edge makes a requirement that was always
+      // true visible to the rule that acts on it.
+      JOB_TYPES.MARKDOWN_CONVERT,
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
       JOB_TYPES.MATERIALS_DETECTION,
       JOB_TYPES.PROTOCOLS_DETECTION,
       JOB_TYPES.IDENTIFIER_DETECTION
     ],
-    gate: ['markdown_ready', 'krt_curated']
+    gate: ['krt_curated']
   },
   {
     // PDF Analysis is the consolidator: it merges every detection's items
     // into the Generated KRT. So it depends on every detection that
-    // contributes resources (DAS is kept as a soft gate via canAutoAdvance).
+    // contributes resources.
+    //
+    // It does NOT depend on DAS extraction. It used to, and parked in
+    // `pending_input` unless a statement had been found — for a statement it
+    // never reads: there is no reference to `dataAvailabilityStatement`, or to
+    // the extraction result, anywhere in pdf-analysis.service. So a manuscript
+    // with no Availability Statement blocked the Generated KRT behind a state
+    // only a human could clear, and `pending_input` is the state nothing
+    // revisits (see the retry tests below). The statement is confirmed by the
+    // author on the Availability step, where the one module that reads it runs.
     //
     // It also depends on KRT_GROUNDING even though it does not read the
     // outcomes itself: SUGGESTION_GENERATION does, and it reaches this table
@@ -189,8 +241,16 @@ const PIPELINE = [
     // grounding verdicts exist by the time suggestions are built — and it is
     // how PDF_ANALYSIS inherits the krt_curated gate.
     jobType: JOB_TYPES.PDF_ANALYSIS,
+    reads: ['krt'],
+    // It consolidates what it is given, and seed retention carries every author
+    // row through regardless — so with no detector output at all it still
+    // produces the author's KRT rather than nothing.
+    optional: [
+      JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.DATASETS_DETECTION,
+      JOB_TYPES.MATERIALS_DETECTION, JOB_TYPES.PROTOCOLS_DETECTION,
+      JOB_TYPES.IDENTIFIER_DETECTION, JOB_TYPES.KRT_GROUNDING
+    ],
     dependsOn: [
-      JOB_TYPES.DAS_EXTRACTION,
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
       JOB_TYPES.MATERIALS_DETECTION,
@@ -198,11 +258,6 @@ const PIPELINE = [
       JOB_TYPES.IDENTIFIER_DETECTION,
       JOB_TYPES.KRT_GROUNDING
     ],
-    canAutoAdvance(dependencyJobs) {
-      const dasJob = dependencyJobs.get(JOB_TYPES.DAS_EXTRACTION);
-      // Auto-advance only if DAS was actually extracted (existing gate)
-      return dasJob?.result?.status?.detected === true;
-    }
   },
   {
     // LM comparison of author KRT vs Generated KRT → suggestions. Runs after
@@ -210,6 +265,8 @@ const PIPELINE = [
     // KRT is complete by the time this starts (ORCID is author metadata, not a
     // KRT contributor, so it isn't a dependency). Also re-triggerable on demand.
     jobType: JOB_TYPES.SUGGESTION_GENERATION,
+    // Reads only PDF Analysis's output — no document of its own.
+    reads: [],
     dependsOn: [JOB_TYPES.PDF_ANALYSIS]
   }
   ,
@@ -230,8 +287,29 @@ const PIPELINE = [
     // stage 1) but its gate makes it the last thing that happens, and a reader
     // following the page top to bottom should find it where it actually runs.
     jobType: JOB_TYPES.DAS_SUGGESTIONS,
+    reads: ['krt'],
+    // It reads the submission's statement, which the author can type by hand —
+    // extraction failing is why the manual path exists, not a reason to skip
+    // the check.
+    optional: [JOB_TYPES.DAS_EXTRACTION],
     dependsOn: [JOB_TYPES.DAS_EXTRACTION],
     gate: ['availability_ready'],
+    /**
+     * The author confirms the statement before this spends anything.
+     *
+     * This is the only module that reads the Availability Statement, and the
+     * extractor's answer is a proposal: it can find the wrong paragraph, or
+     * nothing at all. Running first and asking later spends a model call on
+     * text nobody has looked at, and produces advice about the wrong statement.
+     *
+     * So the step parks in `pending_input` until the author confirms — which is
+     * what the Availability page asks them to do — and `advanceJob` releases it.
+     * `dasConfirmedAt` is set when they confirm and cleared when they edit, so
+     * an edited statement is re-confirmed rather than silently re-used.
+     */
+    canAutoAdvance(dependencyJobs, submission) {
+      return !!submission?.dasConfirmedAt;
+    },
     displayStage: 4
   }
 ];
@@ -248,10 +326,33 @@ const { JOB_TYPE_TO_QUEUE } = jobQueue;
  * @param {string} submissionId
  * @param {string} userId
  * @param {number} round
+ * @param {object} [opts]
+ * @param {string} [opts.cause] - why this run exists. Left out, it is
+ *   `create_submission` for the round's first run and `restart` after that; a
+ *   replaced manuscript passes `new_document`, which is the one distinction the
+ *   caller knows and this function cannot infer.
  * @returns {Promise<object[]>} Created SubmissionJob records
  */
-async function runAllProcesses(submissionId, userId, round) {
+async function runAllProcesses(submissionId, userId, round, { cause } = {}) {
   const jobs = [];
+
+  // The run comes first, before anything is enqueued: `openRun` resolves the
+  // round's current run to file each execution under, so a step enqueued
+  // beforehand would be recorded against the run this one replaces.
+  await pipelineRuns.newRun({
+    submissionId,
+    round: round ?? 1,
+    pipeline: PIPELINE,
+    reRun: 'all',
+    cause,
+    userId
+  });
+
+  // Every step in the round is about to run, so every input is re-taken. This
+  // is the call a PDF upload makes, and it is what lets a replaced manuscript
+  // reach the pipeline: without it the round would keep reading the file it
+  // froze the first time, for ever.
+  await releaseInputFreezes(submissionId, round, PIPELINE.map((step) => step.jobType));
 
   // One row per (step, round), reused if it is already there.
   //
@@ -310,6 +411,9 @@ async function runAllProcesses(submissionId, userId, round) {
       const pgBossJobId = await jobQueue.addJob(queueName, jobData);
       submissionJob.pgBossJobId = pgBossJobId;
       await submissionJob.save();
+      // A run begins here, at the enqueue — not when data appears. Starting the
+      // round is a manual act; the steps this later releases are 'pipeline'.
+      await runHistory.openRun(submissionJob, { userId, triggerKind: 'manual' });
     }
 
     jobs.push(submissionJob);
@@ -343,7 +447,10 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
     step => step.dependsOn.includes(completedJobType)
   );
 
-  if (dependentSteps.length === 0) return;
+  // No early return when nothing depends on this step. That is exactly the LAST
+  // step of a run — nothing follows it, so an early return here meant the run
+  // that had just finished never settled, and sat at `running` until the
+  // five-minute reconciler noticed. Seen on the first live run of this code.
 
   // Get all current jobs for this submission/round
   const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
@@ -352,11 +459,66 @@ async function checkAndAdvance(submissionId, completedJobType, round, userId) {
   // Submission state is needed to evaluate step gates
   const submission = await Submission.findByPk(submissionId, {
     // `availability_ready` reads the statement itself, not just the status.
-    attributes: ['id', 'status', 'dataAvailabilityStatement']
+    attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
 
   for (const step of dependentSteps) {
     await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, completedJobType);
+  }
+
+  await settleRun(submissionId, round, jobsByType);
+}
+
+/**
+ * Move the run to the state its steps say it is in.
+ *
+ * Without this a finished run stays `running` for ever, which is the same
+ * shape of lie the `superseded` state was added to avoid — a status that
+ * describes an attempt that stopped happening some time ago.
+ *
+ * Three states, decided by the steps and nothing else:
+ *
+ *   paused    something is holding the pipeline and needs a person
+ *   complete  every step has finished, one way or another
+ *   running   still going
+ *
+ * `complete` does not mean "everything worked". A run whose steps failed, were
+ * skipped or were carried past is still a completed ATTEMPT, and the outcome
+ * lives on the executions where it can be read per step. A run-level "did it go
+ * well" would be a second, coarser answer to a question already answered
+ * better.
+ *
+ * Never throws. Getting the run's own status wrong is a cosmetic fault; failing
+ * a step that succeeded because its bookkeeping threw is not.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {Map<string, object>} jobsByType
+ */
+async function settleRun(submissionId, round, jobsByType) {
+  try {
+    const run = await pipelineRuns.currentRun(submissionId, round ?? 1);
+    if (!run || ['superseded', 'complete'].includes(run.status)) return;
+
+    const jobs = PIPELINE.map((step) => jobsByType.get(step.jobType));
+    // A step with no row at all has not run, so the round is not finished.
+    const finished = jobs.every((job) => job && TERMINAL_STATUSES.includes(job.status));
+    const held = jobs.some((job) => job && holdsPipeline(job));
+
+    const status = held ? 'paused' : (finished ? 'complete' : 'running');
+    if (status === run.status) return;
+
+    await run.update({
+      status,
+      completedAt: status === 'complete' ? new Date() : null
+    });
+    logger.info('Pipeline run settled', {
+      submissionId, round, runNumber: run.runNumber, status
+    });
+  } catch (error) {
+    logger.error('Could not settle the pipeline run\'s status', {
+      submissionId, round, error: error.message
+    });
   }
 }
 
@@ -393,18 +555,52 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
 
-  // Check if ALL dependencies are in a terminal state
+  // ── What this step's dependencies leave it able to do ───────────────────
+  //
+  // Three questions, in this order, because each only makes sense once the
+  // previous one is settled.
+
+  // 1. Has everything finished? A dependency still running has not "produced
+  //    nothing" — it has produced nothing YET, and the two must not be confused.
   const allDependenciesDone = step.dependsOn.every(depType => {
     const depJob = jobsByType.get(depType);
-    return depJob && (depJob.status === 'complete' || depJob.status === 'failed');
+    return depJob && TERMINAL_STATUSES.includes(depJob.status);
   });
-
   if (!allDependenciesDone) return false;
+
+  // 2. Is anything waiting on a person? A dependency that did not finish
+  //    cleanly — failed, unusable, or degraded in a way worth asking about —
+  //    holds this step until somebody chooses retry or continue.
+  const blockedBy = step.dependsOn.filter(depType => holdsPipeline(jobsByType.get(depType)));
+  if (blockedBy.length) {
+    logger.debug('Pipeline step held behind an unresolved issue', {
+      submissionId, jobType: step.jobType, blockedBy, triggeredBy
+    });
+    return false;
+  }
+
+  // 3. Can it run at all? A decision has been made, but a dependency this step
+  //    REQUIRES produced nothing — there is no manuscript text to read. Running
+  //    it would fail, and so would everything after it: nine unexplained
+  //    failures in place of the one real one. Skipping says what happened and,
+  //    unlike waiting, lets the round finish.
+  const missing = step.dependsOn.filter(
+    depType => isRequired(step, depType) && !producedOutput(jobsByType.get(depType))
+  );
+  if (missing.length) {
+    await job.markSkipped(missing);
+    logger.info('Pipeline step skipped: something it requires produced nothing', {
+      submissionId, jobType: step.jobType, missing, triggeredBy
+    });
+    return false;
+  }
 
   // Submission-state gate: unsatisfied → stay `waiting` (NOT pending_input);
   // the status-change handler / reconciler re-drives once the state changes.
   // Debug level: the reconciler sweep re-checks gated jobs every interval and
   // an info log per sweep per job would be pure noise.
+  const isManual = triggeredBy === 'manual';
+
   const blocked = blockingGate(step, submission, jobsByType);
   if (blocked) {
     logger.debug('Pipeline step gated, staying in waiting', {
@@ -414,8 +610,18 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     return false;
   }
 
-  // Check if this step has a conditional gate
-  if (step.canAutoAdvance && !step.canAutoAdvance(jobsByType)) {
+  // Check if this step has a conditional gate.
+  //
+  // `submission` is passed too: the DAS confirmation is a fact about the
+  // submission, not about a dependency's result.
+  //
+  // Skipped for a manual run, and the name says why — it governs AUTO
+  // advancing. The condition exists to stop the pipeline spending an LM call on
+  // a statement nobody has agreed to; a person clicking the step by name has
+  // agreed to it, by clicking. Applying it anyway would park a job somebody
+  // just asked for in `pending_input`, which nothing revisits — the same dead
+  // end that once stranded PDF Analysis behind a retrying extraction.
+  if (!isManual && step.canAutoAdvance && !step.canAutoAdvance(jobsByType, submission)) {
     // Gate condition not met — park job as pending_input
     await job.markPendingInput({ reason: 'Auto-advance condition not met' });
 
@@ -452,7 +658,6 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
   // would quietly overwrite the curator who did. A worker-driven advance
   // carries no user at all and keeps whatever is already there.
   const claim = { status: 'queued' };
-  const isManual = triggeredBy === 'manual';
   if (userId && isManual) claim.triggeredByUserId = userId;
   const [claimed] = await SubmissionJob.update(
     claim,
@@ -474,6 +679,14 @@ async function tryAdvanceStep(step, jobsByType, submission, submissionId, round,
     const pgBossJobId = await jobQueue.addJob(queueName, jobData);
     job.pgBossJobId = pgBossJobId;
     await job.save();
+    // Opened only once the enqueue has actually succeeded: a run that was
+    // never queued is not a run. `triggeredBy` carries the provenance —
+    // 'manual' when a person asked for this step by name, the completed job
+    // type when a worker released it, 'reconciler' for the sweep.
+    await runHistory.openRun(job, {
+      userId: isManual ? userId : null,
+      triggerKind: isManual ? 'manual' : (triggeredBy === 'reconciler' ? 'reconciler' : 'pipeline')
+    });
   } catch (err) {
     // Nothing is going to run this row: put the claim back rather than leave
     // it `queued` with no queue job behind it, which no reconciler heals — it
@@ -506,16 +719,33 @@ async function reconcileSubmission(submissionId, round, userId, submission = nul
 
   const sub = submission || await Submission.findByPk(submissionId, {
     // `availability_ready` reads the statement itself, not just the status.
-    attributes: ['id', 'status', 'dataAvailabilityStatement']
+    attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
 
+  // Repeated passes until nothing moves.
+  //
+  // One pass was enough while the only outcome was "enqueue it". Skipping
+  // cascades — a step skipped because the conversion produced nothing makes
+  // everything that required IT skippable too — and PIPELINE is not in
+  // topological order, so a single pass would leave the tail of a cascade
+  // waiting until the next sweep. Bounded by the pipeline's length, which is
+  // the longest chain it could possibly have.
   let advanced = 0;
-  for (const step of PIPELINE) {
-    const didAdvance = await tryAdvanceStep(
-      step, jobsByType, sub, submissionId, round, userId, 'reconciler'
-    );
-    if (didAdvance) advanced++;
+  for (let pass = 0; pass < PIPELINE.length; pass++) {
+    const before = [...jobsByType.values()].map((j) => j.status).join(',');
+    for (const step of PIPELINE) {
+      const didAdvance = await tryAdvanceStep(
+        step, jobsByType, sub, submissionId, round, userId, 'reconciler'
+      );
+      if (didAdvance) advanced++;
+    }
+    if ([...jobsByType.values()].map((j) => j.status).join(',') === before) break;
   }
+
+  // The reconciler is the sweep that catches whatever the per-step advance
+  // missed, so it is also where a run that finished while nobody was looking
+  // gets its status.
+  await settleRun(submissionId, round, jobsByType);
   return advanced;
 }
 
@@ -678,6 +908,7 @@ async function advanceJob(submissionId, jobType, round, userId) {
   // released the step, whoever started the round.
   if (userId) job.triggeredByUserId = userId;
   await job.save();
+  await runHistory.openRun(job, { userId, triggerKind: 'manual' });
 
   logger.info('Pipeline advanced manually: job enqueued', {
     submissionId,
@@ -736,6 +967,126 @@ function buildJobData(jobType, submissionId, userId, submissionJob) {
  * @param {string} rootJobType
  * @returns {Set<string>}
  */
+/**
+ * ── The four cases a finished step can be in ────────────────────────────────
+ *
+ *   1. no error, results          → clean, the pipeline carries on by itself
+ *   2. no error, nothing found    → clean. A detector finding nothing IS an
+ *                                   answer, and a common one
+ *   3. partial error              → a person decides
+ *   4. total error                → a person decides
+ *
+ * Cases 3 and 4 differ only in what is left behind, so they are one rule here:
+ * a dependency holds its dependents unless it finished CLEANLY. That single
+ * predicate also swallows what used to be a hole — a step that reached
+ * `complete` while its outcome was `fail`, which slipped past a rule keyed on
+ * status alone and let the consolidator build on nothing.
+ */
+
+/**
+ * Engines whose failure is not worth stopping the round for.
+ *
+ * A module that runs two engines and loses one still has a real answer, and
+ * whether that is worth a human's attention depends on WHICH engine. Softcite
+ * dying leaves the LM pass, which read the manuscript; the LM dying leaves
+ * name-matching with no reading behind it. The first happens often and is
+ * tolerable, the second is worth a question.
+ *
+ * The engine is already in the record — a degrading module sets
+ * `meta.degraded = { engine }` and the outcome carries `failReason:
+ * '<engine>_failed'` — so this is a lookup, not an inference.
+ *
+ * Code rather than configuration on purpose: it is a judgement about which
+ * engine matters, it belongs beside the module, and it should be reviewed when
+ * it changes.
+ */
+const PARTIAL_AUTO_CONTINUE = {
+  [JOB_TYPES.SOFTWARE_DETECTION]: ['softcite']
+};
+
+/**
+ * Statuses a step will not move on from by itself.
+ *
+ * `skipped` belongs here for the same reason `cancelled` does: nothing is going
+ * to run it, so anything waiting on it must stop waiting.
+ */
+const TERMINAL_STATUSES = ['complete', 'failed', 'cancelled', 'skipped'];
+
+/** The outcome a run recorded about itself: 'done' | 'partial' | 'fail'. */
+const outcomeOf = (job) => job?.result?.service?.outcome?.state || 'done';
+
+/** Which engine degraded it, from `failReason: '<engine>_failed'`. */
+function degradedEngine(job) {
+  const reason = job?.result?.service?.outcome?.failReason || '';
+  const match = /^(.+)_failed$/.exec(reason);
+  return match ? match[1] : null;
+}
+
+/**
+ * Did this step produce something the steps after it can use?
+ *
+ * Not the same question as "did it finish", and not the same as "did it find
+ * anything" — a detector that found nothing produced a usable answer. This asks
+ * whether there is OUTPUT. A step may override it (`produced` on the step) when
+ * finishing cleanly is not enough; conversion is the case that matters, because
+ * it can complete with zero characters.
+ *
+ * @param {object} job
+ * @returns {boolean}
+ */
+function producedOutput(job) {
+  if (!job) return false;
+  if (['failed', 'cancelled', 'skipped'].includes(job.status)) return false;
+  if (job.status !== 'complete') return false;
+  if (outcomeOf(job) === 'fail') return false;
+
+  const step = PIPELINE.find((s) => s.jobType === job.jobType);
+  return step?.produced ? !!step.produced(job) : true;
+}
+
+/**
+ * Does this step's outcome need a person to decide before the pipeline moves?
+ *
+ * @param {object} job
+ * @returns {{needed: boolean, kind: string|null}}
+ */
+function issueOf(job) {
+  if (!job) return { needed: false, kind: null };
+  if (job.status === 'failed') return { needed: true, kind: 'failure' };
+  if (job.status !== 'complete') return { needed: false, kind: null };
+
+  const outcome = outcomeOf(job);
+  if (outcome === 'fail') return { needed: true, kind: 'unusable' };
+  if (outcome === 'partial') {
+    const engine = degradedEngine(job);
+    const auto = PARTIAL_AUTO_CONTINUE[job.jobType] || [];
+    // An engine on the auto list is a known, tolerated degradation: the answer
+    // is incomplete in a way somebody has already decided not to be asked about.
+    if (engine && auto.includes(engine)) return { needed: false, kind: null };
+    return { needed: true, kind: 'partial' };
+  }
+  // A step that produced nothing usable while reporting `done` — conversion with
+  // zero characters. Nobody errored, but nothing downstream can be built on it.
+  if (!producedOutput(job)) return { needed: true, kind: 'unusable' };
+  return { needed: false, kind: null };
+}
+
+/** Undecided issues are what hold the pipeline; a decided one does not. */
+/**
+ * Does this step hold what comes after it?
+ *
+ * `job.decision` is attached by `getForSubmission` from the execution the
+ * round's current run holds for this step. A step re-executed since the
+ * decision was made has a new execution and therefore no decision, which is the
+ * whole reason the field moved off the job row.
+ */
+const holdsPipeline = (job) => issueOf(job).needed && !job?.decision?.at;
+
+/** Is this dependency one the step cannot run without? */
+function isRequired(step, depType) {
+  return !(step.optional || []).includes(depType);
+}
+
 function computeDownstreamSet(rootJobType) {
   const downstream = new Set();
   let frontier = new Set([rootJobType]);
@@ -773,6 +1124,56 @@ function computeDownstreamSet(rootJobType) {
  *   keeps the credit it already had.
  * @returns {Promise<string[]>} List of jobTypes that were reset.
  */
+/**
+ * Every step that reads each input, keyed by input kind.
+ *
+ * Derived from the `reads` declarations rather than listed somewhere: a step
+ * added without updating a hand-written list would silently make the re-freeze
+ * rule wrong, and the symptom — one module reading a different document from
+ * its siblings — is exactly the failure the freeze exists to prevent.
+ *
+ * @returns {Map<string, string[]>}
+ */
+function readersByInput() {
+  const readers = new Map();
+  for (const step of PIPELINE) {
+    for (const inputKind of step.reads || []) {
+      if (!readers.has(inputKind)) readers.set(inputKind, []);
+      readers.get(inputKind).push(step.jobType);
+    }
+  }
+  return readers;
+}
+
+/**
+ * Release the round's input freezes that this restart is entitled to re-take.
+ *
+ * An input is re-frozen only when EVERY step that reads it is being re-run.
+ * Restarting Markdown Convert cascades through every markdown reader, so the
+ * markdown freeze goes and the next run picks up the current file. Restarting
+ * one detector does not: its siblings keep results built from the frozen
+ * markdown, and handing the restarted one a different document would split the
+ * round — the failure the freeze exists to prevent.
+ *
+ * Never throws. A freeze left in place is the conservative outcome (the restart
+ * re-reads what the round was already using), and it is not worth failing a run
+ * the user asked for.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string[]} restartingJobTypes - the restarted step plus its cascade
+ */
+async function releaseInputFreezes(submissionId, round, restartingJobTypes) {
+  try {
+    const inputFreeze = require('./input-freeze.service');
+    await inputFreeze.releaseForRestart(submissionId, round, restartingJobTypes, readersByInput());
+  } catch (err) {
+    logger.error('Could not release input freezes for a restart', {
+      submissionId, round, restartingJobTypes, error: err.message
+    });
+  }
+}
+
 async function cascadeRestart(submissionId, restartedJobType, round, userId) {
   const downstream = computeDownstreamSet(restartedJobType);
   if (downstream.size === 0) return [];
@@ -793,10 +1194,21 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
         lock: t.LOCK.UPDATE
       });
       if (!job) continue;
-      // Leave in-flight jobs alone, and don't revive a cancelled job to
-      // 'waiting' (that would strand it waiting on cancelled deps). Only
-      // terminal complete/failed downstream is reset to re-run.
-      if (job.status === 'queued' || job.status === 'processing' || job.status === 'cancelled') continue;
+      // Leave in-flight jobs alone. Everything else downstream is reset,
+      // CANCELLED INCLUDED.
+      //
+      // Cancelled used to be skipped too, for fear of stranding a step waiting
+      // on a dependency that was still cancelled. That fear is handled
+      // elsewhere now — `tryAdvanceStep` cancels a step whose dependency is
+      // cancelled rather than leaving it waiting — and skipping had a worse
+      // cost: after a cancel, restarting the step left its cancelled dependents
+      // stuck for ever. Seen live: cancel, restart software detection, and
+      // grounding, PDF analysis and suggestions sat `cancelled` while the step
+      // they were waiting for ran to completion.
+      //
+      // The user asking for a step to run again is asking for what depends on
+      // it to run again, whatever stopped them last time.
+      if (job.status === 'queued' || job.status === 'processing') continue;
       job.status = 'waiting';
       job.pgBossJobId = null;
       // Same rule as requeueStep, and it was missing here: a job queued to run
@@ -808,6 +1220,8 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
       // re-run had already reset it.
       job.result = null;
       job.errorMessage = null;
+      // Nothing to clear about the decision: it lives on the execution, and
+      // this step is about to get a new one that was never decided about.
       if (userId) job.triggeredByUserId = userId;
       await job.save({ transaction: t });
       reset.push(jobType);
@@ -848,7 +1262,292 @@ async function cascadeRestart(submissionId, restartedJobType, round, userId) {
  * @param {string} userId
  * @returns {Promise<object>} the step's SubmissionJob row
  */
-async function requeueStep(submissionId, jobType, round, userId) {
+/** Why a retry was refused, in words the UI can show as-is. */
+const RETRY_REFUSALS = {
+  never_run: 'This step has not run yet, so there is nothing to retry.',
+  no_issue: 'This step finished cleanly — there is nothing to retry.',
+  downstream_already_ran:
+    'Later steps have already run since this one failed, so retrying it alone '
+    + 'would leave their results built on the failure. Restart it from the '
+    + 'pipeline page instead, which re-runs them too.'
+};
+
+/**
+ * Carry on despite a step's issue.
+ *
+ * The second of the two answers an issue asks for — the other being Retry. It
+ * does NOT re-run anything and does not pretend the step succeeded: the row
+ * keeps the status it had, and what is recorded is that a person decided the
+ * rest of the pipeline should proceed anyway.
+ *
+ * Covers all three kinds. A FAILURE left nothing behind; an UNUSABLE run
+ * finished while producing nothing a later step can read; a PARTIAL produced a
+ * real answer with one of its engines dead. The decision is the same shape in
+ * each case, and so is the record of it — what differs is what happens next,
+ * which the dependency rules work out on their own: with data, the steps below
+ * run; without data they are skipped.
+ *
+ * Recorded with who and when because the consequence outlives the decision. A
+ * report built without software detection looks exactly like a report where
+ * software detection found nothing, and the difference is only knowable if
+ * somebody wrote it down.
+ *
+ * @param {string} submissionId
+ * @param {string} jobType - the failed step
+ * @param {number} round
+ * @param {string} [userId] - who decided
+ * @returns {Promise<object>} the job row
+ */
+async function acknowledgeIssue(submissionId, jobType, round, userId) {
+  const step = PIPELINE.find((s) => s.jobType === jobType);
+  if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
+
+  const job = await SubmissionJob.getLatest(submissionId, jobType, round);
+  if (!job) throw new NotFoundError('Job');
+  if (!issueOf(job).needed) {
+    throw new ValidationError('This step finished cleanly — there is nothing to decide about.');
+  }
+
+  // Onto the EXECUTION the current run holds for this step, not onto the job
+  // row. That is what makes the decision travel with the result it is about:
+  // re-execute the step and the new execution was never decided about; carry it
+  // over and the decision comes with it.
+  const entry = await pipelineRuns.currentStepInRun(submissionId, round ?? 1, jobType);
+  if (!entry?.execution) {
+    throw new ValidationError('There is no run of this step to decide about yet.');
+  }
+  if (entry.execution.decision?.at) return job;   // already decided; not an error
+
+  // NOT wrapped in the history layer's swallow-everything guard. Background
+  // history writes must never break a run; a decision is not a background
+  // write — the orchestrator is about to act on it, and a failure that is
+  // logged and ignored would release the pipeline on a decision nobody made.
+  await entry.execution.update({
+    decision: { at: new Date().toISOString(), byUserId: userId || null, choice: 'continue' }
+  });
+  job.decision = entry.execution.decision;
+
+  logger.info('Issue acknowledged — the pipeline proceeds', {
+    submissionId, jobType, round, userId, execution: entry.execution.id
+  });
+
+  // Release whatever was held behind it — or skip it, if this step was the
+  // required input it never got. Non-fatal: the decision is recorded either
+  // way, and the reconciler re-drives waiting jobs within a sweep.
+  try {
+    await reconcileSubmission(submissionId, round, userId);
+  } catch (err) {
+    logger.error('Could not re-drive the pipeline after acknowledging an issue', {
+      submissionId, jobType, error: err.message
+    });
+  }
+  return job;
+}
+
+/**
+ * Is this failure safe to retry on its own?
+ *
+ * The condition is not "did it fail" but "has anything consumed the failure
+ * yet". A step that failed while everything downstream is still `waiting` can be
+ * run again alone: nothing was built on its absence, so nothing is left stale
+ * afterwards. That is the case a blocked pipeline is in — `markdown_convert`
+ * fails and every detector sits behind the `markdown_ready` gate, waiting for
+ * text that never arrived.
+ *
+ * Once a downstream step HAS run, retrying alone would leave its results built
+ * on the failure while this step's are not. That needs a restart, which resets
+ * them too — a different, more expensive thing, and the caller is told to use it.
+ *
+ * A step with no downstream is trivially safe: there is nothing to leave stale.
+ *
+ * @param {string} jobType
+ * @param {Map<string, object>} jobsByType
+ * @returns {{retryable: boolean, reason: string|null}}
+ */
+function describeRetry(jobType, jobsByType) {
+  const job = jobsByType.get(jobType);
+  if (!job) return { retryable: false, reason: 'never_run' };
+  // Any issue, not only a failure. A partial is a run worth doing again — the
+  // module produced a real answer with one of its engines dead — and now that
+  // issues pause, nothing downstream has consumed it yet, so retrying one is
+  // exactly as cheap and as safe as retrying a failure.
+  if (!issueOf(job).needed) return { retryable: false, reason: 'no_issue' };
+
+  const consumed = [...computeDownstreamSet(jobType)].filter((t) => {
+    const d = jobsByType.get(t);
+    // `waiting` is the only state that means "has not run since". `cancelled`
+    // counts as run-and-stopped: un-cancelling it is a restart's job, not a
+    // retry's, or the retry would leave a cancelled step behind a running one.
+    return d && d.status !== 'waiting';
+  });
+
+  if (consumed.length) return { retryable: false, reason: 'downstream_already_ran' };
+  return { retryable: true, reason: null };
+}
+
+/**
+ * Run a failed step again, and change nothing else.
+ *
+ * The narrow sibling of `restartSteps`, for the case that comes up after an
+ * external service has been fixed: the pipeline is stuck behind one failure, and
+ * what is wanted is to unblock it, not to re-run the round.
+ *
+ * Three things it deliberately does NOT do:
+ *
+ *   - **release the input freezes.** The round is mid-flight and the steps that
+ *     did run read the frozen documents. A retry that took fresh ones would
+ *     split the round — the failure this whole freeze mechanism exists to
+ *     prevent, arriving through the repair path.
+ *   - **cascade.** There is nothing downstream to reset; that is the
+ *     precondition, checked rather than assumed.
+ *   - **run `onManualRestart`.** Asking for a fresh reading is what a restart
+ *     means. A retry of DAS extraction must not clear a statement the author
+ *     typed while the service was down.
+ *
+ * @param {string} submissionId
+ * @param {string} jobType
+ * @param {number} round
+ * @param {string} [userId] - credited with the run
+ * @returns {Promise<object>} the job row
+ */
+async function retryStep(submissionId, jobType, round, userId) {
+  const step = PIPELINE.find((s) => s.jobType === jobType);
+  if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
+
+  const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
+  const jobsByType = new Map(allJobs.map((j) => [j.jobType, j]));
+  const { retryable, reason } = describeRetry(jobType, jobsByType);
+
+  if (!retryable) {
+    throw new ValidationError(RETRY_REFUSALS[reason] || 'This step cannot be retried.');
+  }
+
+  // A retry is a new attempt at the round, not a second life for the old one.
+  // Everything that finished cleanly is carried over by link; only this step
+  // executes again. The decision that was made about the failed execution stays
+  // on THAT execution, which is what stops a stale acknowledgement waving the
+  // next failure through.
+  await pipelineRuns.newRun({
+    submissionId,
+    round: round ?? 1,
+    pipeline: PIPELINE,
+    reRun: [jobType],
+    cause: CAUSES.RETRY,
+    userId
+  });
+
+  const job = jobsByType.get(jobType);
+  job.status = 'waiting';
+  job.pgBossJobId = null;
+  job.result = null;
+  job.errorMessage = null;
+  // The attempts belong to the run that failed. Left in place, the panel would
+  // show a fresh run already on its third try.
+  job.retryCount = 0;
+  // The decision needs no clearing. It was recorded against the execution that
+  // failed, and the retry above opened a run that re-executes this step — so
+  // the execution the round now holds for it is a new one, about which nothing
+  // has been decided. This is the case three call sites had to remember, and
+  // the one that re-runs everything did not.
+  if (userId) job.triggeredByUserId = userId;
+  await job.save();
+
+  const submission = await Submission.findByPk(submissionId, {
+    attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
+  });
+  await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, 'manual');
+
+  logger.info('Retried a blocked step', { submissionId, jobType, round, status: job.status, userId });
+  return job;
+}
+
+/**
+ * Restart several steps as ONE restart.
+ *
+ * Not a loop over `requeueStep`, and the difference is not cosmetic. Restarting
+ * the software detector resets everything downstream of it — grounding, the
+ * consolidator, the suggestions — and then software runs. If it finishes before
+ * the SECOND restart is issued, grounding finds every dependency terminal
+ * (materials is still `complete` from the previous round) and starts. The
+ * second restart then resets it again, so grounding runs twice and both runs
+ * are paid for. The second answer is the right one, which makes the first
+ * invisible rather than harmless.
+ *
+ * So the order is: reset every selected step's downstream FIRST, then enqueue.
+ * Between the two loops nothing is running that could release a downstream
+ * step, because every one of them is `waiting` on a selected step that has not
+ * started.
+ *
+ * Freezes are released once, over the union — a larger set than any single step
+ * would compute, and the reason `requeueStep` is told to skip its own release.
+ * Five detectors restarting together may re-read the markdown; one of them
+ * alone must not.
+ *
+ * @param {string} submissionId
+ * @param {string[]} jobTypes - the steps to run again
+ * @param {number} round
+ * @param {string} [userId] - credited with every run this starts
+ * @param {object} [opts]
+ * @param {string} [opts.paramsSource] - 'live' (default) uses today's prompts
+ *   and config; 'frozen' uses the parameters each step's previous execution
+ *   recorded, so a disagreement cannot be blamed on a prompt edited since.
+ * @returns {Promise<{restarted: string[], reset: string[]}>}
+ */
+async function restartSteps(submissionId, jobTypes, round, userId, { paramsSource = 'live' } = {}) {
+  const selected = [...new Set(jobTypes)];
+  const unknown = selected.filter((t) => !PIPELINE.some((s) => s.jobType === t));
+  if (unknown.length) throw new ValidationError(`Unknown pipeline step(s): ${unknown.join(', ')}`);
+  if (!selected.length) throw new ValidationError('No steps to restart');
+
+  // The union of everything the selection carries with it, minus the selection
+  // itself — those are enqueued explicitly and must not be treated as debris.
+  const downstream = new Set();
+  for (const jobType of selected) {
+    for (const dep of computeDownstreamSet(jobType)) downstream.add(dep);
+  }
+  for (const jobType of selected) downstream.delete(jobType);
+
+  await releaseInputFreezes(submissionId, round, [...selected, ...downstream]);
+
+  // ONE run for the whole batch. Opening one per step would number the same
+  // restart three times and leave two of those runs superseded before anything
+  // in them executed — the batch is a single attempt, and the model should say
+  // so. `newRun` expands the selection downstream itself, so the set it records
+  // is the same union computed above.
+  await pipelineRuns.newRun({
+    submissionId,
+    round: round ?? 1,
+    pipeline: PIPELINE,
+    reRun: selected,
+    cause: CAUSES.RESTART,
+    userId,
+    paramsSource
+  });
+
+  // Reset first, every one of them, before anything is enqueued.
+  for (const jobType of selected) {
+    await cascadeRestart(submissionId, jobType, round, userId);
+  }
+
+  const restarted = [];
+  for (const jobType of selected) {
+    await requeueStep(submissionId, jobType, round, userId, {
+      releaseFreezes: false,
+      newPipelineRun: false
+    });
+    restarted.push(jobType);
+  }
+
+  logger.info('Batch restart', {
+    submissionId, round, restarted, reset: [...downstream], userId
+  });
+  return { restarted, reset: [...downstream] };
+}
+
+async function requeueStep(submissionId, jobType, round, userId, {
+  releaseFreezes = true,
+  newPipelineRun = true
+} = {}) {
   const step = PIPELINE.find((s) => s.jobType === jobType);
   if (!step) throw new ValidationError(`Unknown pipeline step: ${jobType}`);
 
@@ -859,11 +1558,15 @@ async function requeueStep(submissionId, jobType, round, userId) {
     });
   } else if (['queued', 'processing'].includes(job.status)) {
     // Already on its way — re-queueing would duplicate the work it is doing.
+    // Deliberately BEFORE the run is opened: a run that re-executes nothing is
+    // an attempt that never happened, and it would supersede the live one.
     return job;
   } else {
     job.status = 'waiting';
     job.pgBossJobId = null;
     job.result = null;
+    // No decision to clear — see retryStep. A re-executed step has a new
+    // execution, and a decision belongs to the execution it was about.
     // `errorMessage`, not `error` — the model has no `error` field, so this
     // set a plain JS property Sequelize ignores and the previous run's
     // failure text stayed on the row. The panel then showed a stale error
@@ -875,12 +1578,82 @@ async function requeueStep(submissionId, jobType, round, userId) {
     await job.save();
   }
 
+  // A new run, but only when this step has ALREADY executed in the current one.
+  //
+  // Otherwise this is the run REACHING the step, not a new attempt at the
+  // round. The case that showed it: `das_suggestions` is gated behind the
+  // Availability step and never starts on its own, so confirming the statement
+  // comes through here — and opened run 2, superseding run 1, purely to run a
+  // step run 1 had never got to. The history then said the user restarted the
+  // pipeline when they had pressed "confirm", and eleven finished steps were
+  // relabelled as carried over.
+  //
+  // Skipped entirely when a BATCH restart is driving: it opened one run for the
+  // whole selection, and a second here would supersede it before the first step
+  // ran.
+  if (newPipelineRun) {
+    const inRun = await pipelineRuns.currentStepInRun(submissionId, round ?? 1, jobType);
+    // No run at all is a submission that predates the model, or one whose run
+    // creation failed. Opening one is the recoverable answer; leaving the step
+    // unreachable from any run is not.
+    if (!inRun || inRun.execution) {
+      await pipelineRuns.newRun({
+        submissionId,
+        round: round ?? 1,
+        pipeline: PIPELINE,
+        reRun: [jobType],
+        cause: CAUSES.RESTART,
+        userId
+      });
+    }
+  }
+
   const allJobs = await SubmissionJob.getForSubmission(submissionId, round);
   const jobsByType = new Map(allJobs.map((j) => [j.jobType, j]));
   jobsByType.set(jobType, job);
   const submission = await Submission.findByPk(submissionId, {
-    attributes: ['id', 'status', 'dataAvailabilityStatement']
+    attributes: ['id', 'status', 'dataAvailabilityStatement', 'dasConfirmedAt']
   });
+
+  // Release the freezes this restart is entitled to re-take, BEFORE the step is
+  // advanced — a step that starts first would re-freeze what it just read.
+  //
+  // The set is the step plus everything downstream of it, which is what a
+  // restart re-runs. One residual race stays, and predates this: a downstream
+  // step already `processing` is deliberately left alone by cascadeRestart, so
+  // it finishes against the input the round was using while the restart takes a
+  // newer one. Its own run record still says which document it read.
+  //
+  // Skipped when a BATCH restart is driving: it has already released over the
+  // union of every selected step, which is a larger set than any one of them
+  // would compute. Releasing per step would under-release — five detectors
+  // restarting together may re-read the markdown, while one of them alone must
+  // not.
+  if (releaseFreezes) {
+    await releaseInputFreezes(submissionId, round, [jobType, ...computeDownstreamSet(jobType)]);
+  }
+
+  // A step may need to clear what its previous run produced before running
+  // again — otherwise "re-run this module" is a button that appears to do
+  // nothing. Non-fatal: the run is what the user asked for, and a failure to
+  // reset is better reported than turned into a refusal to run at all.
+  //
+  // The hook PERSISTS its own reset. It used to mutate and leave the saving
+  // here, which stopped working the moment a reset also had to be recorded —
+  // the record and the write have to land together or the log describes
+  // something that did not happen.
+  if (submission && step.onManualRestart) {
+    try {
+      // `round` explicitly: the submission is loaded with a narrow attribute
+      // list that does not include currentRound, so a hook reaching for it
+      // would find undefined and the log row would refuse to write.
+      await step.onManualRestart(submission, { userId, round });
+    } catch (resetErr) {
+      logger.error('Manual restart could not reset the step\'s previous output', {
+        submissionId, jobType, error: resetErr.message
+      });
+    }
+  }
 
   await tryAdvanceStep(step, jobsByType, submission, submissionId, round, userId, 'manual');
   return job;
@@ -894,6 +1667,81 @@ async function requeueStep(submissionId, jobType, round, userId) {
  * @param {object} submission - needs `status`
  * @returns {boolean}
  */
+/**
+ * Everything about this round that needs a person, in one list.
+ *
+ * Computed here, once, rather than on each page. Five surfaces show these now —
+ * the PDF step, the Availability step, the pipeline, a module's page, and a
+ * read-only badge everywhere else — and the last time a rule like this lived on
+ * the client, the pipeline page asked for a field the API never sent and
+ * rendered failed steps as green ticks for weeks.
+ *
+ * @param {Map<string, object>} jobsByType
+ * @returns {object[]}
+ */
+function describeIssues(jobsByType) {
+  const issues = [];
+
+  for (const step of PIPELINE) {
+    const job = jobsByType.get(step.jobType);
+    const { needed, kind } = issueOf(job);
+    if (!needed) continue;
+
+    // What this step's absence costs. A dependant that REQUIRES it cannot run
+    // at all and will be skipped; one that merely reads it runs with less.
+    const downstream = [...computeDownstreamSet(step.jobType)];
+    const wouldSkip = producedOutput(job)
+      ? []
+      : downstream.filter((t) => {
+        const dependant = PIPELINE.find((x) => x.jobType === t);
+        return dependant?.dependsOn.includes(step.jobType) && isRequired(dependant, step.jobType);
+      });
+
+    issues.push({
+      jobType: step.jobType,
+      kind,
+      /** Undecided issues hold the pipeline; a decided one is history. */
+      decided: job.decision?.at
+        ? { at: job.decision.at, byUserId: job.decision.byUserId || null }
+        : null,
+      blocking: !job.decision?.at && downstream.some(
+        (t) => jobsByType.get(t)?.status === 'waiting'
+      ),
+      /** Everything stuck behind it right now. */
+      holding: downstream.filter((t) => jobsByType.get(t)?.status === 'waiting'),
+      /**
+       * What "continue" would cost. Empty means the steps below can still run,
+       * just with less to work from; a non-empty list means they cannot run at
+       * all and continuing skips them.
+       */
+      wouldSkip,
+      /** Whether anything downstream can still be produced from what it left. */
+      producedOutput: producedOutput(job),
+      detail: job.errorMessage || job.result?.service?.outcome?.externalError || null,
+      failReason: job.result?.service?.outcome?.failReason || null,
+      engine: degradedEngine(job)
+    });
+  }
+
+  return issues;
+}
+
+/**
+ * Which of this step's dependencies raised an issue nobody has decided about.
+ *
+ * The client needs the names, not just the fact: "waiting" tells a user
+ * nothing, "waiting because Datasets Detection failed" tells them where to go.
+ *
+ * @param {string} jobType
+ * @param {Map<string, object>} jobsByType
+ * @returns {string[]}
+ */
+function blockingIssues(jobType, jobsByType) {
+  const step = PIPELINE.find(s => s.jobType === jobType);
+  if (!step) return [];
+  return step.dependsOn.filter(depType => holdsPipeline(jobsByType.get(depType)));
+}
+
 function isGateBlocked(jobType, submission, jobsByType) {
   const step = PIPELINE.find(s => s.jobType === jobType);
   if (!step) return null;
@@ -904,12 +1752,22 @@ module.exports = {
   PIPELINE,
   runAllProcesses,
   requeueStep,
+  restartSteps,
+  retryStep,
+  acknowledgeIssue,
+  describeRetry,
   failStrandedProcessingJobs,
   checkAndAdvance,
   reconcileSubmission,
   reconcileStuckJobs,
   advanceJob,
+  settleRun,
   cascadeRestart,
   computeDownstreamSet,
-  isGateBlocked
+  isGateBlocked,
+  blockingIssues,
+  describeIssues,
+  producedOutput,
+  issueOf,
+  holdsPipeline
 };

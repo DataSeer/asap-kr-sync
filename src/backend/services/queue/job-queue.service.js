@@ -6,6 +6,9 @@
 const PgBoss = require('pg-boss');
 const logger = require('../../utils/logger');
 const { JOB_TYPES } = require('../../config/constants');
+const tokenUsage = require('../../utils/token-usage');
+const attemptLog = require('../../utils/attempt-log');
+const frozenParams = require('../../utils/frozen-params');
 
 let boss = null;
 
@@ -290,6 +293,57 @@ function buildWorkerOptions(options = {}) {
  * @param {function} handler - Async function to process jobs
  * @param {object} options - Worker options
  */
+/**
+ * The parameters this job should run with, if its run says `frozen`.
+ *
+ * Null for every live run, which is almost all of them — so the lookup is one
+ * cheap read of the run row, and only a frozen restart pays for the S3 fetch.
+ *
+ * Never throws: a frozen restart that cannot resolve its parent's parameters
+ * runs live and says so in the log. Failing a run the user asked for, over an
+ * artefact that may simply predate the feature, would be the worse answer.
+ *
+ * @param {object} data - the job payload, carrying submissionId/jobType/round
+ * @returns {Promise<object|null>}
+ */
+async function resolveFrozenParams(data) {
+  // The payload carries `submissionJobId`, not the job type or the round — it
+  // is what the handlers need and nothing more. Read the row for both rather
+  // than guessing: the first version of this guarded on `data.jobType`, which
+  // is never set, so every frozen restart silently ran live. A primary-key read
+  // per job is nothing beside the model call that follows it.
+  if (!data?.submissionJobId) return null;
+  try {
+    const { SubmissionJob } = require('../../models');
+    const job = await SubmissionJob.findByPk(data.submissionJobId, {
+      attributes: ['id', 'submissionId', 'jobType', 'round']
+    });
+    if (!job) return null;
+
+    const pipelineRuns = require('./pipeline-run.service');
+    const run = await pipelineRuns.currentRun(job.submissionId, job.round);
+    if (run?.paramsSource !== 'frozen') return null;
+
+    const frozen = await pipelineRuns.frozenParamsFor(job.submissionId, job.round, job.jobType);
+    if (!frozen) {
+      logger.warn('Frozen restart: no recorded parameters for this step, running live', {
+        submissionId: job.submissionId, jobType: job.jobType, round: job.round
+      });
+      return null;
+    }
+    logger.info('Frozen restart: running with an earlier run\'s parameters', {
+      submissionId: job.submissionId, jobType: job.jobType, fromRun: frozen.fromRun,
+      prompt: frozen.promptText ? 'frozen' : 'live', model: frozen.call?.model || null
+    });
+    return frozen;
+  } catch (error) {
+    logger.warn('Frozen restart: parameter lookup failed, running live', {
+      submissionJobId: data.submissionJobId, error: error.message
+    });
+    return null;
+  }
+}
+
 async function registerHandler(queueName, handler, options = {}) {
   const instance = getInstance();
 
@@ -303,8 +357,23 @@ async function registerHandler(queueName, handler, options = {}) {
     });
 
     try {
-      // Pass both job.data and the full pg-boss job object to the handler
-      const result = await handler(job.data, job);
+      // A run asked to reproduce its parent uses that run's prompts and model.
+      // Resolved once, here, rather than by each service: the model is read
+      // where the client is called and the prompt in a per-service loader, and
+      // threading a flag to both in twelve services is twelve chances to miss
+      // one. Null on the normal path, which makes `frozenParams.run` a no-op.
+      const frozen = await resolveFrozenParams(job.data);
+
+      // Pass both job.data and the full pg-boss job object to the handler.
+      //
+      // Wrapped in a token tally so every model call underneath is counted
+      // against THIS job, and in an attempt list so every try underneath is
+      // kept. Both stores are per-delivery, so two workers running side by side
+      // cannot see each other's — which a module-level counter would have got
+      // wrong, silently and only under load.
+      const result = await tokenUsage.run(() => attemptLog.run(
+        () => frozenParams.run(frozen, () => handler(job.data, job))
+      ));
       logger.info('Job completed', { queue: queueName, jobId: job.id });
       return result;
     } catch (error) {

@@ -102,14 +102,20 @@ module.exports = {
     'approve_change',
     'reject_change',
     'import_findings',
-    'new_round'
+    'new_round',
+    // A pipeline result promoted into the submission's own data. Distinct from
+    // `edit` on purpose: "the extractor filled this in" and "a person typed
+    // this" are the two facts the Availability step exists to tell apart, and
+    // one enum value for both buries the distinction in a mixed list.
+    'apply'
   ],
 
   // Change log sources (what triggered the change)
   CHANGE_SOURCES: [
     'manual',           // User manually edited the value
     'ai_suggestion',    // User accepted an AI/LM suggestion
-    'krt_validation'    // User accepted a KRT validation fix
+    'krt_validation',   // User accepted a KRT validation fix
+    'pipeline'          // A step's output, promoted with nobody behind it
   ],
 
   // Job types for the unified SubmissionJob tracking system

@@ -17,7 +17,7 @@
  *
  * Detection is KRT-blind: the author's own rows are NOT fed to the model. They
  * are reconciled against this output later, by the krt_grounding module. See
- * docs/design-krt-detection-two-modes.md.
+ * docs/background-modules.md.
  *
  * Note: the curated enrichment list is no longer applied here — only the
  * Identifier Detection module consults the enrichment lists now.
@@ -38,6 +38,7 @@ const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const inputFreeze = require('../queue/input-freeze.service');
 const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
 const runInputs = require('../queue/run-inputs.service');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
@@ -45,6 +46,7 @@ const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembl
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
@@ -92,7 +94,13 @@ function getPrompt(override) {
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded protocols detection prompt', { file: PROMPT_FILE, length: _promptCache.length });
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
 /**
@@ -173,10 +181,12 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.PROTOCOLS_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for protocols detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', { fileName: mdFile.fileName, s3Key: mdFile.s3Key });
@@ -225,7 +235,12 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
       strategy: resolved.strategy.id,
       model: protocolsConfig.model,
       seedCount: resolved.input.meta?.seedCount ?? 0
-    }
+    },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: protocolsConfig
   });
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
 
@@ -432,9 +447,7 @@ async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 

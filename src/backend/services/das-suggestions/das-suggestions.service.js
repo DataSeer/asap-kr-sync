@@ -23,6 +23,7 @@ const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const { sanitizeJsonEscapes, extractJsonBlock } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const runInputs = require('../queue/run-inputs.service');
 const { repoPath } = require('../detection/repo-path');
 
@@ -49,7 +50,13 @@ function getPrompt(override) {
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
 /**
@@ -280,7 +287,12 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
   const submission = await Submission.findByPk(submissionId);
   const rawDas = submission?.dataAvailabilityStatement || '';
   const dasText = rawDas === NO_DAS_SENTINEL ? '' : rawDas;
-  const krtRows = await KRTData.findAll({ where: { submissionId, round } });
+  // The round's frozen table: the signals handed to the checker as ground truth
+  // must describe the KRT the rest of the run was built from.
+  const inputFreeze = require('../queue/input-freeze.service');
+  const krtRows = await inputFreeze.resolveKrtRows(submissionId, round, {
+    jobType: JOB_TYPES.DAS_SUGGESTIONS
+  });
   const signals = computeKrtSignals(krtRows);
 
   jobLogger?.log('das_suggestions_start', 'Checking DAS against the rulebook', {
@@ -304,7 +316,12 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
       model: dasSuggestionsConfig.model,
       dasLength: dasText.length,
       krtRowCount: krtRows.length
-    }
+    },
+    // Everything asked of the external service, sanitised: secrets redacted,
+    // anything large replaced by its digest. Recorded whole rather than
+    // hand-picked — a hand-picked list is one somebody has to remember to
+    // extend, which is how four modules came to record no model at all.
+    call: dasSuggestionsConfig
   });
 
   const suggestions = buildSuggestions(findings, signals, dasText);
@@ -351,9 +368,7 @@ async function processDasSuggestions(submissionId, jobLogger = null /*, opts */)
     // one reader that walks every module — the Technical detail panel — found
     // nothing: this module's statistics and input counts were blank while the
     // others' were fine.
-    job.result = { ...(job.result || {}), data: { ...result.data, meta: result.meta } };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData({ ...result.data, meta: result.meta });
   }
   return result;
 }
@@ -374,7 +389,7 @@ async function processDasSuggestions(submissionId, jobLogger = null /*, opts */)
  * @returns {Promise<{queued: boolean, reason: 'no_statement'|'gated'|null,
  *   status?: string, jobId?: string|null, submissionJobId?: string}>}
  */
-async function queueDasSuggestions(submissionId, round = 1) {
+async function queueDasSuggestions(submissionId, round = 1, userId = null) {
   const { SubmissionJob, Submission } = require('../../models');
 
   // Nothing to check without a Data Availability Statement — this happens when
@@ -407,8 +422,11 @@ async function queueDasSuggestions(submissionId, round = 1) {
   const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_SUGGESTIONS, round);
   const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
 
+  // The caller is the trigger: somebody clicked "re-run this check". Passing
+  // null here left the run credited to whoever last touched the row, which for
+  // a reconciler-driven pipeline is nobody at all.
   const job = await orchestrator.requeueStep(
-    submissionId, JOB_TYPES.DAS_SUGGESTIONS, round, null
+    submissionId, JOB_TYPES.DAS_SUGGESTIONS, round, userId
   );
   logger.info('DAS suggestions re-queued', {
     submissionId, submissionJobId: job.id, status: job.status, alreadyInFlight

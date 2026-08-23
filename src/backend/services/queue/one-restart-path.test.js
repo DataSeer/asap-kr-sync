@@ -27,19 +27,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const SERVICES_DIR = path.join(__dirname, '..');
-
-/** Every service file, recursively, excluding tests. */
-function serviceFiles(dir = SERVICES_DIR, acc = []) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) serviceFiles(full, acc);
-    else if (entry.name.endsWith('.js') && !entry.name.includes('.test.')) acc.push(full);
-  }
-  return acc;
-}
-
-const rel = (f) => path.relative(SERVICES_DIR, f);
+const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
+const { serviceFiles, rel } = require('../../test-helpers/service-files');
 
 test('no service creates a SubmissionJob row except the orchestrator', () => {
   // The orchestrator is the one place allowed to: `runAllProcesses` seeds the
@@ -203,6 +192,7 @@ test('re-starting the pipeline reuses the round\'s rows instead of adding a set'
   const { SubmissionJob } = require('../../models');
   const orchestrator = require('./orchestrator.service');
   const jobQueue = require('./job-queue.service');
+  fakePipelineRuns(t);
 
   const rows = orchestrator.PIPELINE.map((step) => ({
     id: `${step.jobType}-row`,
@@ -237,6 +227,7 @@ test('a submission with no rows yet still gets its full set', async (t) => {
   const { SubmissionJob } = require('../../models');
   const orchestrator = require('./orchestrator.service');
   const jobQueue = require('./job-queue.service');
+  fakePipelineRuns(t);
 
   const created = [];
   t.mock.method(SubmissionJob, 'findAll', async () => []);
@@ -246,4 +237,68 @@ test('a submission with no rows yet still gets its full set', async (t) => {
   await orchestrator.runAllProcesses('sub-1', 'user-1', 1);
 
   assert.equal(created.length, orchestrator.PIPELINE.length, 'one row per pipeline step');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// One way to store what a step produced, too
+//
+// Nine services wrote `job.result.data` by hand — read the row, spread, set
+// changed, save — and all nine shared one bug: none checked for a cancel. The
+// answer a user had just thrown away landed on the row anyway, and every page
+// rendered it as the step's result beside a status line saying the run was
+// cancelled.
+//
+// Textual for the same reason as the rule above: the property is structural,
+// and a tenth service added tomorrow is exactly the case a behavioural test
+// per service would miss.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('no service STORES a result by hand', () => {
+  // Clearing one is a different act and stays allowed: the orchestrator nulls
+  // `result` when it resets a step for a re-run, which is the opposite of
+  // recording an answer and has no cancel to guard against.
+  const offenders = serviceFiles()
+    // `=(?!\s*null)`, not `=\s*(?!null)`: the second lets `\s*` match zero
+    // characters and the lookahead then lands on the space, which is not
+    // "null", so every clear matched too.
+    .filter((f) => /\bjob\.result\s*=(?!\s*null)/.test(fs.readFileSync(f, 'utf8')))
+    .map(rel);
+
+  assert.deepEqual(offenders, [],
+    'these store a result without the cancel guard — use job.persistData(data)');
+});
+
+test('persistData refuses a cancelled step', async (t) => {
+  // The guard itself, not just that it is called. A version that reloaded and
+  // then wrote anyway would pass the check above.
+  const { SubmissionJob } = require('../../models');
+  const row = {
+    status: 'cancelled', result: null, saves: 0,
+    async reload() { return this; },
+    async save() { this.saves++; return this; },
+    changed() {}
+  };
+  row.persistData = SubmissionJob.prototype.persistData.bind(row);
+
+  await row.persistData({ items: [1, 2, 3] });
+
+  assert.equal(row.result, null);
+  assert.equal(row.saves, 0);
+});
+
+test('and stores it for a step that is still running', async (t) => {
+  const { SubmissionJob } = require('../../models');
+  const row = {
+    status: 'processing', result: { files: { a: 'k' } }, saves: 0,
+    async reload() { return this; },
+    async save() { this.saves++; return this; },
+    changed() {}
+  };
+  row.persistData = SubmissionJob.prototype.persistData.bind(row);
+
+  await row.persistData({ items: [1] });
+
+  // Merged, not replaced: `files` is written by the logger and must survive.
+  assert.deepEqual(row.result, { files: { a: 'k' }, data: { items: [1] } });
+  assert.equal(row.saves, 1);
 });

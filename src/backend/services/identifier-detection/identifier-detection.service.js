@@ -38,6 +38,7 @@ const publishedProtocolScanner = require('./published-protocol-scanner.service')
 const identifierConfig = require('../../config/identifier-detection-api');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const inputFreeze = require('../queue/input-freeze.service');
 const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
 const runInputs = require('../queue/run-inputs.service');
@@ -276,10 +277,12 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
   const startTime = Date.now();
 
   // 1. Latest markdown for this round.
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.IDENTIFIER_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for identifier detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', {
@@ -327,7 +330,12 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
         catalogTokens: index?.catalogTokens?.size ?? null
       }
     },
-    meta: { engine: 'local-scan', scannedLength, referencesCutoff }
+    meta: { engine: 'local-scan', scannedLength, referencesCutoff },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: identifierConfig
   });
 
   // Persist raw scan output for forensics.
@@ -420,9 +428,7 @@ async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 

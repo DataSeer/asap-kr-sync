@@ -14,8 +14,8 @@ import FilesInfoModal from './FilesInfoModal.vue'
 import StepHelpPanel from './StepHelpPanel.vue'
 import fileService from '@/services/file.service'
 import krtService from '@/services/krt.service'
-import jobService from '@/services/job.service'
 import { useNotificationStore } from '@/stores/notification.store'
+import { useSubmissionStore } from '@/stores/submission.store'
 import { statusToStep } from '@/utils/submission'
 
 // Optional injection — provided by KRTView (step 2) and PDFView (step 3), the
@@ -25,9 +25,21 @@ import { statusToStep } from '@/utils/submission'
 // does not reach here.
 const injectedJobs = inject('submissionJobs', ref({}))
 
-const pdfAnalysisPendingInput = computed(() => {
-  const j = injectedJobs.value?.pdf_analysis
+// The Availability Statement check is the one step that waits on a person: it
+// will not spend an LM call on a statement nobody has confirmed. It used to be
+// the consolidator that parked here, which was the wrong step to ask — it never
+// reads the statement, and holding it stalled the whole KRT half of the run.
+const dasNeedsConfirmation = computed(() => {
+  const j = injectedJobs.value?.das_suggestions
   return j?.status === 'pending_input'
+})
+
+// While extraction is in flight the statement is about to be overwritten, so
+// the editor says so rather than letting somebody type into a field that is
+// seconds from changing under them.
+const dasExtractionRunning = computed(() => {
+  const status = injectedJobs.value?.das_extraction?.status
+  return status === 'queued' || status === 'processing'
 })
 
 const props = defineProps({
@@ -81,6 +93,7 @@ const props = defineProps({
 const emit = defineEmits(['go-back', 'go-next'])
 
 const notificationStore = useNotificationStore()
+const submissionStore = useSubmissionStore()
 
 // Show blocked reason tooltip on click for disabled Continue button
 const showBlockedTooltip = ref(false)
@@ -152,10 +165,10 @@ function openEditModal() {
 }
 
 /**
- * Handler for the DAS pending-input banner — opens the metadata editor so the
- * user can enter the Data Availability Statement.
+ * Handler for the Availability Statement banner — opens the metadata editor,
+ * where the statement can be read, corrected and confirmed.
  */
-async function handleDasBannerClick() {
+function handleDasBannerClick() {
   openEditModal()
 }
 
@@ -164,30 +177,24 @@ function handleDasModalClosed() {
 }
 
 /**
- * After metadata is saved, advance pdf_analysis ONLY when it is awaiting input
- * AND the DAS content was actually changed to a non-empty value. Any other
- * metadata change (title, notes, manuscript ID, or DAS edits while the job is
- * not pending_input) has no effect on the pipeline. The `dasChanged`/`das`
- * flags come from the modal so detection doesn't depend on prop-update timing.
+ * Saving metadata no longer starts anything.
+ *
+ * It used to release the consolidator, on the theory that a typed statement was
+ * the missing input. It was not — the consolidator never read it. Editing the
+ * statement now withdraws its confirmation instead (the server does that), and
+ * the Availability check waits for the author to confirm the new text, which is
+ * a decision they make on purpose rather than a side-effect of hitting Save.
  */
-async function handleMetadataSaved(_submission, meta) {
-  if (!(pdfAnalysisPendingInput.value && meta?.dasChanged && meta?.das)) return
-  try {
-    await jobService.advanceJob(props.submission.id, 'pdf_analysis')
-    notificationStore.success('PDF analysis is starting')
-  } catch (err) {
-    const message = err?.response?.data?.error || err?.message || 'Could not start PDF analysis'
-    notificationStore.error(message)
-  }
+function handleMetadataSaved() {
+  if (props.submission?.id) submissionStore.fetchSubmission(props.submission.id)
 }
 
 function openFilesModal() {
   showFilesModal.value = true
 }
 
-// Exposed so parent views (e.g. PDFView) can trigger the metadata/DAS editor
-// from outside this component — for example when the JobStatusPanel emits
-// `edit-das` from its modal.
+// Exposed so parent views can trigger the metadata/DAS editor from outside this
+// component.
 defineExpose({ openEditModal })
 
 async function handleFileDownload(file) {
@@ -387,19 +394,22 @@ async function downloadCurrentKRT(round) {
       </div>
     </div><!-- /.submission-sticky-bar -->
 
-    <!-- DAS pending-input banner — surfaces from step 2 onward whenever the
-         consolidator is waiting for a manually-entered Availability Statement.
-         Resolves anywhere in the flow so the user doesn't have to jump to
-         step 5 just to unblock the pipeline. -->
-    <div v-if="pdfAnalysisPendingInput" class="das-pending-banner" role="alert">
+    <!-- Availability Statement confirmation — surfaces from step 2 onward
+         whenever the check is waiting for somebody to agree that the statement
+         it is about to read is the right one. Resolves anywhere in the flow so
+         the user doesn't have to jump to step 5 to deal with it. -->
+    <div v-if="dasNeedsConfirmation" class="das-pending-banner" role="alert">
       <svg class="das-pending-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
       </svg>
       <div class="das-pending-body">
-        <p class="das-pending-title">Availability Statement not found in the PDF</p>
-        <p class="das-pending-sub">PDF analysis is paused until you enter it. You can resolve this from any step.</p>
+        <p class="das-pending-title">Your Availability Statement needs a check</p>
+        <p class="das-pending-sub">
+          We pulled it out of your manuscript automatically. Confirm it is the right text and we will
+          review it — you can do this from any step.
+        </p>
       </div>
-      <button type="button" class="das-pending-btn" @click="handleDasBannerClick">Enter it now</button>
+      <button type="button" class="das-pending-btn" @click="handleDasBannerClick">Review it</button>
     </div>
 
     <!-- ─── REST — page title, description, help panel (NOT sticky) ─── -->

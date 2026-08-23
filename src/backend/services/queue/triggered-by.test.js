@@ -24,6 +24,7 @@ const { SubmissionJob, Submission, sequelize } = require('../../models');
 const orchestrator = require('./orchestrator.service');
 const jobQueue = require('./job-queue.service');
 const { JOB_TYPES } = require('../../config/constants');
+const { fakePipelineRuns } = require('../../test-helpers/fake-pipeline-runs');
 
 const STARTER = 'user-who-started';
 const CURATOR = 'user-who-restarted';
@@ -55,6 +56,9 @@ function pipelineRows(over = {}) {
 }
 
 function mockDb(t, rows, submission = { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: 'Data are available at Zenodo.' }) {
+  // Credit is what these tests are about; opening a pipeline run is not, and
+  // it reaches for a connection on every entry point.
+  fakePipelineRuns(t);
   t.mock.method(SubmissionJob, 'getForSubmission', async () => [...rows.values()]);
   t.mock.method(SubmissionJob, 'findAll', async () => [...rows.values()]);
   t.mock.method(SubmissionJob, 'getLatest', async (_s, jobType) => rows.get(jobType) || null);
@@ -173,13 +177,12 @@ test('a cascade with no user attached re-credits nobody', async (t) => {
 });
 
 test('a cascade does not credit a step it left alone', async (t) => {
-  // In-flight and cancelled rows are deliberately skipped by the reset. A row
-  // this cascade did not touch must not be attributed to it either — otherwise
-  // the credit says someone re-ran a result that is in fact the older run's.
+  // An in-flight row is deliberately skipped by the reset. A row this cascade
+  // did not touch must not be attributed to it either — otherwise the credit
+  // says someone re-ran a result that is in fact the older run's.
   const rows = pipelineRows();
   for (const r of rows.values()) { r.triggeredByUserId = STARTER; r.status = 'complete'; }
   rows.get(JOB_TYPES.PDF_ANALYSIS).status = 'processing';
-  rows.get(JOB_TYPES.SUGGESTION_GENERATION).status = 'cancelled';
   mockDb(t, rows);
 
   const reset = await orchestrator.cascadeRestart('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, CURATOR);
@@ -187,8 +190,22 @@ test('a cascade does not credit a step it left alone', async (t) => {
   assert.ok(!reset.includes(JOB_TYPES.PDF_ANALYSIS));
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).triggeredByUserId, STARTER,
     'a running step keeps its own run\'s credit');
-  assert.equal(rows.get(JOB_TYPES.SUGGESTION_GENERATION).triggeredByUserId, STARTER,
-    'a cancelled step is not revived, so it is not re-credited');
+});
+
+test('a cancelled step IS revived, and credited to whoever revived it', async (t) => {
+  // Cancelled used to be skipped alongside in-flight, which left a cancelled
+  // dependent stuck for ever once the step it waited on was restarted. It is
+  // reset now, so it is also re-credited: this person caused it to run.
+  const rows = pipelineRows();
+  for (const r of rows.values()) { r.triggeredByUserId = STARTER; r.status = 'complete'; }
+  rows.get(JOB_TYPES.SUGGESTION_GENERATION).status = 'cancelled';
+  mockDb(t, rows);
+
+  const reset = await orchestrator.cascadeRestart('sub-1', JOB_TYPES.MATERIALS_DETECTION, 1, CURATOR);
+
+  assert.ok(reset.includes(JOB_TYPES.SUGGESTION_GENERATION));
+  assert.equal(rows.get(JOB_TYPES.SUGGESTION_GENERATION).status, 'waiting');
+  assert.equal(rows.get(JOB_TYPES.SUGGESTION_GENERATION).triggeredByUserId, CURATOR);
 });
 
 test('an automatic advance keeps the credit it already had', async (t) => {
