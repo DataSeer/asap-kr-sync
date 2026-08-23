@@ -104,8 +104,44 @@ describe('restarting from the pipeline map', () => {
     await wrapper.find('.restart-go').trigger('click')
     await flushPromises()
 
-    expect(restartProcesses).toHaveBeenCalledWith('sub-1', ['markdown_convert'])
+    // `live` by default: the common restart is "I changed the prompt, run it
+    // again", and defaulting to the frozen ones would make that do nothing.
+    expect(restartProcesses).toHaveBeenCalledWith('sub-1', ['markdown_convert'], 'live')
     expect(wrapper.find('.restart-dialog').exists()).toBe(false)
+  })
+
+  it('can run with the settings those steps last used', async () => {
+    // A restart already re-reads the round's frozen inputs but has always used
+    // today's prompt and model — so a re-run that disagrees with the original
+    // cannot be told apart from a prompt somebody edited in between, which is
+    // exactly what a re-run is usually asked to settle.
+    restartProcesses.mockResolvedValue({ message: 're-started', paramsSource: 'frozen' })
+    const wrapper = await mountPage()
+    await restartOn(wrapper, 'Markdown Convert').trigger('click')
+
+    await wrapper.find('input[value="frozen"]').setValue()
+    await wrapper.find('.restart-go').trigger('click')
+    await flushPromises()
+
+    expect(restartProcesses).toHaveBeenCalledWith('sub-1', ['markdown_convert'], 'frozen')
+  })
+
+  it('forgets the choice when the dialog is reopened', async () => {
+    // A sticky `frozen` is the dangerous default: the next restart would
+    // silently ignore the prompt the user had just edited.
+    restartProcesses.mockResolvedValue({ message: 're-started' })
+    const wrapper = await mountPage()
+
+    await restartOn(wrapper, 'Markdown Convert').trigger('click')
+    await wrapper.find('input[value="frozen"]').setValue()
+    await wrapper.find('.restart-cancel').trigger('click')
+    await flushPromises()
+
+    await restartOn(wrapper, 'Markdown Convert').trigger('click')
+    await wrapper.find('.restart-go').trigger('click')
+    await flushPromises()
+
+    expect(restartProcesses).toHaveBeenLastCalledWith('sub-1', ['markdown_convert'], 'live')
   })
 
   it('keeps the dialog open when the restart fails', async () => {

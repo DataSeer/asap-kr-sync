@@ -26,6 +26,7 @@ const { isTransientError } = require('./helpers');
 const logger = require('./logger');
 const tokenUsage = require('./token-usage');
 const attemptLog = require('./attempt-log');
+const frozenParams = require('./frozen-params');
 
 const DEFAULTS = { maxRetries: 4, delay: 1000, multiplier: 2, maxDelay: 15000, jitter: 400 };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -78,7 +79,13 @@ function withDefaultGenerationConfig(params) {
 async function generateContentWithRetry(ai, params, options = {}) {
   const { label = 'Gemini', validate = null, retry: retryOverrides = {} } = options;
   const cfg = { ...DEFAULTS, ...retryOverrides };
-  const callParams = withDefaultGenerationConfig(params);
+  // A restart asked to run with a past run's parameters swaps the model here,
+  // in the one place every Gemini call passes through. Per service it would be
+  // twelve chances to miss one, and a module that missed it would run against
+  // today's model while the page said the run had been reproduced.
+  //
+  // A no-op outside a frozen restart, which is the normal path.
+  const callParams = withDefaultGenerationConfig(frozenParams.forModelCall(params));
 
   let lastResponse = null;
   for (let attempt = 1; attempt <= cfg.maxRetries; attempt++) {

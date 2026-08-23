@@ -817,6 +817,29 @@ executed in the current one. Otherwise this is the run REACHING the step.
 submission is a separate, attributed act — see [the apply
 system](#the-apply-system) below.
 
+**A restart chooses which parameters to run with.** `pipeline_runs.params_source`
+is `live` (today's prompts and config, the default) or `frozen` (the ones each
+step's previous execution recorded). A restart already re-read the round's
+frozen INPUTS but always used today's prompt, so a re-run that disagreed with
+the original could not be told apart from a prompt somebody edited in between —
+which is the question a re-run is usually asked to settle.
+
+Frozen resolution happens in the worker, once per job, and is applied at two
+choke points rather than in each service: the shared Gemini wrapper swaps the
+model, and every prompt loader goes through `frozenParams.prompt()`. There is no
+shared prompt loader, so `run-inputs-freeze.test.js` reads the source to check
+that none of the nine skips it — a loader that did would run the current prompt
+while the page said the run had been reproduced.
+
+Only the TEMPLATE is stored, not the assembled prompt. Assembling the frozen
+template over the frozen inputs reproduces it, and `prompt.assembledSha256`
+proves the reproduction. What was actually restored — and any frozen parameter
+this version no longer has — is recorded on the run's inputs as `restoredFrom`.
+
+What it cannot pin is the external service's own version: `gemini-2.5-flash` is
+an alias and Modal's image moves. Recording what was asked for is the most any
+of this can promise.
+
 **An execution begins at ENQUEUE**, not when data is produced: `runAllProcesses`,
 `tryAdvanceStep`'s atomic claim (which covers `checkAndAdvance`, `requeueStep`
 and the reconciler) and `advanceJob`. That is the moment somebody — or the

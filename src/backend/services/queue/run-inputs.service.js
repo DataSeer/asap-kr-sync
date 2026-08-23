@@ -91,6 +91,18 @@ function promptRef(repoRelative, assembled = null, attachments = []) {
     // A prompt that cannot be read is a bigger problem than a missing digest,
     // and the caller has already failed by the time it matters.
   }
+
+  // What was USED, which on a frozen restart is not what the file says now.
+  // Recorded from the same resolver every loader goes through, so the record
+  // cannot disagree with the call: the first version read the file here and
+  // reported today's template for a run that had deliberately used an older
+  // one — the record contradicting the run it described.
+  const used = require('../../utils/frozen-params').prompt(resolvedTemplate);
+  if (used !== resolvedTemplate) {
+    resolvedTemplate = used;
+    templateSha = sha256(used);
+    templateBytes = Buffer.byteLength(used);
+  }
   return {
     promptFile: repoRelative,
     // The prompt itself, as the module resolved it. This is what the UI shows,
@@ -306,6 +318,10 @@ function mergeFrozen(live, frozen) {
 async function saveRunInputs(jobLogger, parts = {}) {
   if (!jobLogger) return;
   const { call, ...rest } = parts;
+  // What this run reproduced from an earlier one, and what it could not.
+  // Null on the live path, so "ran live" and "ran frozen and changed nothing"
+  // stay distinguishable.
+  const restoredFrom = require('../../utils/frozen-params').current();
   await jobLogger.saveRawResponse('inputs', {
     capturedAt: new Date().toISOString(),
     // How to read this file, for whoever opens it without the code to hand.
@@ -318,7 +334,8 @@ async function saveRunInputs(jobLogger, parts = {}) {
       + 'is REMOVED and named under `call._omitted`, so these parameters can be '
       + 'merged back over the live config without poisoning it.',
     ...rest,
-    ...(call ? { call: sanitise(call) } : {})
+    ...(call ? { call: sanitise(call) } : {}),
+    ...(restoredFrom ? { restoredFrom } : {})
   });
 }
 

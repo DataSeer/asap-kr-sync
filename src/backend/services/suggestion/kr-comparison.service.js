@@ -20,6 +20,7 @@ const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { computeDedupKey } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { getPipeline } = require('../../config/pipelines');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock } = require('../../utils/gemini-json');
@@ -41,7 +42,13 @@ function getPrompt(override) {
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
 // Author KRT fields exposed to the LM (and matched on the way back). Keep the

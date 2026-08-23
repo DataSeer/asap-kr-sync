@@ -208,3 +208,29 @@ test('nothing in a real config leaks a value from the environment', () => {
 
   assert.deepEqual(leaked, [], 'a credential reached a downloadable artefact');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Running with a past run's parameters
+//
+// A loader that skipped the resolver would run the CURRENT prompt while the
+// page said the run had been reproduced — the worst possible failure here,
+// because the user would compare two results believing one variable had been
+// held still. There is no shared prompt loader, so this is checked structurally.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('every prompt loader resolves through the frozen-params store', () => {
+  const offenders = serviceFiles()
+    .filter((f) => /readFileSync\((?:CONSOLIDATION_)?PROMPT_FILE/.test(fs.readFileSync(f, 'utf8')))
+    .filter((f) => !/frozenParams\.prompt\(/.test(fs.readFileSync(f, 'utf8')))
+    .map((f) => path.relative(SERVICES_DIR, f));
+
+  assert.deepEqual(offenders, [],
+    'these read their prompt from disk without offering the run\'s own — use frozenParams.prompt()');
+});
+
+test('and there are enough of them to be the real list', () => {
+  const wired = serviceFiles()
+    .filter((f) => /frozenParams\.prompt\(/.test(fs.readFileSync(f, 'utf8')));
+
+  assert.ok(wired.length >= 9, `expected a loader per prompted step, found ${wired.length}`);
+});

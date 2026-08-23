@@ -149,6 +149,9 @@ function captureShape(pipeline) {
  *   later one `restart`. A caller that knows better — a replaced manuscript is
  *   `new_document`, not a restart — says so.
  * @param {string} [params.userId] - null when nobody asked
+ * @param {string} [params.paramsSource] - 'live' (default) | 'frozen'. Frozen
+ *   runs each re-executed step with the parameters its parent's execution
+ *   recorded, so a disagreement cannot be blamed on a prompt edited since.
  * @param {object} [params.transaction]
  * @returns {Promise<{run: object, reRun: string[], carriedOver: string[], parent: object|null}>}
  */
@@ -159,6 +162,7 @@ async function newRun({
   reRun,
   cause,
   userId = null,
+  paramsSource = 'live',
   transaction
 }) {
   const { PipelineRun, PipelineRunStep, sequelize } = require('../../models');
@@ -207,7 +211,8 @@ async function newRun({
       causedByUserId: userId || null,
       parentRunId: parent?.id || null,
       shape: captureShape(pipeline),
-      appVersion: appVersion()
+      appVersion: appVersion(),
+      paramsSource
     }, { transaction: t });
 
     // One membership row per step, from the start. A run that lists only what
@@ -229,6 +234,7 @@ async function newRun({
       round,
       runNumber: created.runNumber,
       cause: created.cause,
+      paramsSource: created.paramsSource,
       parentRun: parent?.runNumber ?? null,
       executing: toExecute.length,
       carriedOver: carriedOver.length
@@ -431,6 +437,52 @@ async function stepInRun(submissionId, round, jobType, runNumber) {
 }
 
 /**
+ * The parameters a step should run with, when its run says `frozen`.
+ *
+ * Read from the PARENT run's execution — the one being replaced. The record is
+ * on S3 in the run's frozen inputs, so this is one fetch per step and only on a
+ * frozen restart.
+ *
+ * Never throws. A frozen restart that cannot find its parent's record runs
+ * live, and says so: the alternative is failing a run the user asked for over
+ * an artefact that may simply predate the feature.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} jobType
+ * @returns {Promise<{call: object|null, promptText: string|null, assembledSha256: string|null, fromRun: number}|null>}
+ */
+async function frozenParamsFor(submissionId, round, jobType) {
+  const logger = require('../../utils/logger');
+  try {
+    const run = await currentRun(submissionId, round);
+    if (!run?.parentRunId) return null;
+
+    const { PipelineRun } = require('../../models');
+    const parent = await PipelineRun.findByPk(run.parentRunId);
+    if (!parent) return null;
+
+    const entry = await stepInRun(submissionId, round, jobType, parent.runNumber);
+    const key = entry?.execution?.result?.files?.inputs;
+    if (!key) return null;
+
+    const s3 = require('../storage/s3.service');
+    const inputs = JSON.parse((await s3.downloadFile(key)).toString('utf-8'));
+    return {
+      call: inputs.call || null,
+      promptText: inputs.prompt?.templateText || null,
+      assembledSha256: inputs.prompt?.assembledSha256 || null,
+      fromRun: parent.runNumber
+    };
+  } catch (error) {
+    logger.warn('Frozen restart: could not read the parent run\'s parameters', {
+      submissionId, round, jobType, error: error.message
+    });
+    return null;
+  }
+}
+
+/**
  * One step, as it stands in the run the round is currently in.
  *
  * The common case, spelled once: "which execution does this step have right
@@ -515,6 +567,7 @@ module.exports = {
   appVersion,
   runsForStep,
   stepInRun,
+  frozenParamsFor,
   currentStepInRun,
   runsForSubmission
 };

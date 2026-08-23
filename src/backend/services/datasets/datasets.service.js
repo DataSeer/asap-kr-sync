@@ -42,6 +42,7 @@ const inputFreeze = require('../queue/input-freeze.service');
 const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
@@ -85,7 +86,9 @@ function getConsolidationPrompt(override) {
       length: _consolidationPromptCache.length
     });
   }
-  return _consolidationPromptCache;
+  // See the note in materials.service getPrompt: a frozen restart uses the
+  // run's own template.
+  return frozenParams.prompt(_consolidationPromptCache);
 }
 
 /**

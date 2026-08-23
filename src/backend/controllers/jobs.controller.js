@@ -286,8 +286,13 @@ async function restartProcesses(req, res, next) {
       throw new ValidationError(`At most ${PIPELINE_STEP_LIMIT} steps can be restarted at once`);
     }
 
+    // Which parameters to run with. Default `live`: the common restart is "I
+    // changed the prompt, run it again", and defaulting to frozen would make
+    // that button quietly do nothing.
+    const paramsSource = req.body?.paramsSource === 'frozen' ? 'frozen' : 'live';
+
     const { restarted, reset } = await orchestrator.restartSteps(
-      submission.id, jobTypes, submission.currentRound, req.userId
+      submission.id, jobTypes, submission.currentRound, req.userId, { paramsSource }
     );
 
     res.json({
@@ -297,7 +302,8 @@ async function restartProcesses(req, res, next) {
       restarted,
       // What the restart carried with it. The UI already told the user, but the
       // reply is what a script or a log has to go on.
-      reset
+      reset,
+      paramsSource
     });
   } catch (error) {
     next(error);

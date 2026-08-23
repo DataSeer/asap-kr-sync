@@ -1487,9 +1487,13 @@ async function retryStep(submissionId, jobType, round, userId) {
  * @param {string[]} jobTypes - the steps to run again
  * @param {number} round
  * @param {string} [userId] - credited with every run this starts
+ * @param {object} [opts]
+ * @param {string} [opts.paramsSource] - 'live' (default) uses today's prompts
+ *   and config; 'frozen' uses the parameters each step's previous execution
+ *   recorded, so a disagreement cannot be blamed on a prompt edited since.
  * @returns {Promise<{restarted: string[], reset: string[]}>}
  */
-async function restartSteps(submissionId, jobTypes, round, userId) {
+async function restartSteps(submissionId, jobTypes, round, userId, { paramsSource = 'live' } = {}) {
   const selected = [...new Set(jobTypes)];
   const unknown = selected.filter((t) => !PIPELINE.some((s) => s.jobType === t));
   if (unknown.length) throw new ValidationError(`Unknown pipeline step(s): ${unknown.join(', ')}`);
@@ -1516,7 +1520,8 @@ async function restartSteps(submissionId, jobTypes, round, userId) {
     pipeline: PIPELINE,
     reRun: selected,
     cause: CAUSES.RESTART,
-    userId
+    userId,
+    paramsSource
   });
 
   // Reset first, every one of them, before anything is enqueued.

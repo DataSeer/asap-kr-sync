@@ -145,7 +145,7 @@ function askToRestartSelected() {
   pendingRestart.value = restartPlan(graph.value.nodes, [...selected.value], labelFor)
 }
 
-async function confirmRestart() {
+async function confirmRestart({ paramsSource = 'live' } = {}) {
   const jobTypes = pendingRestart.value?.jobTypes || []
   if (!jobTypes.length) return
   restarting.value = true
@@ -154,10 +154,11 @@ async function confirmRestart() {
     // resets every selected step's downstream BEFORE enqueueing any of them —
     // which a loop of single restarts cannot do, because the first step can
     // finish and release the shared work before the second request arrives.
-    const result = await jobService.restartProcesses(submissionId.value, jobTypes)
+    const result = await jobService.restartProcesses(submissionId.value, jobTypes, paramsSource)
     // What the SERVER said: a restart asked for while a step is already running
     // is deliberately a no-op, and it says so rather than claiming a new run.
-    notificationStore.info(result?.message || 'Re-started')
+    notificationStore.info(result?.message
+      || (paramsSource === 'frozen' ? 'Re-started with the earlier settings' : 'Re-started'))
     pendingRestart.value = null
     clearSelection()
   } catch (err) {

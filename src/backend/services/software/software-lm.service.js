@@ -27,6 +27,7 @@ const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
 const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock, hasParseableBody } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/software-detection.txt');
 let _promptCache = null;
@@ -56,7 +57,13 @@ function getPrompt(override) {
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded software detection prompt', { file: PROMPT_FILE, length: _promptCache.length });
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
 /**

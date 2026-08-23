@@ -229,6 +229,7 @@ was a mix with no name for the set.
 | `shape` | JSONB | The step list, each step's dependencies and required set, and each step's config, as they stood when the run was created. Not redundant with a step's own config: that is written when a module FINISHES, so a step that never ran has none |
 | `pipeline_version` | INTEGER | Manual. Bumped when the structure changes enough that old runs are unreadable — **not** for a new module or a prompt change |
 | `app_version` | VARCHAR(64) | Automatic. Provenance only; never read to decide compatibility |
+| `params_source` | VARCHAR(16) | `live` (default) — today's prompts and config — or `frozen`, meaning each re-executed step ran with the parameters its parent's execution recorded. On the run, not per step: one choice for one restart |
 | `created_at` / `completed_at` | TIMESTAMPTZ | |
 
 #### `pipeline_run_steps`

@@ -16,14 +16,31 @@
  * Never a native confirm(): this app has none, and a native dialog cannot show
  * a list.
  */
-defineProps({
+import { ref, watch } from 'vue'
+
+const props = defineProps({
   /** The plan from `restartPlan()`, or null when nothing is pending. */
   plan: { type: Object, default: null },
   /** True while the restart request is in flight. */
   busy: { type: Boolean, default: false }
 })
 
-defineEmits(['confirm', 'cancel'])
+const emit = defineEmits(['confirm', 'cancel'])
+
+/**
+ * Which parameters the re-run uses.
+ *
+ * A restart already re-reads the round's frozen INPUTS. It has always used
+ * today's prompts and model, which means a re-run that disagrees with the
+ * original cannot be told apart from a prompt somebody edited in between —
+ * exactly the question a re-run is usually asked to settle.
+ *
+ * Defaults to `live` every time the dialog opens, and deliberately: the common
+ * restart is "I changed the prompt, run it again", and a sticky `frozen` would
+ * make that button quietly do nothing.
+ */
+const paramsSource = ref('live')
+watch(() => props.plan, (plan) => { if (plan) paramsSource.value = 'live' })
 </script>
 
 <template>
@@ -89,11 +106,41 @@ defineEmits(['confirm', 'cancel'])
           Anything typed there by hand is lost.
         </p>
 
+        <!-- Which prompts and model to run with. Above the buttons, not beside
+             them: it changes what the run means, and a control that changes the
+             meaning of a button belongs before it is pressed. -->
+        <fieldset class="restart-params">
+          <legend class="restart-params-legend">Run with</legend>
+          <label class="restart-param">
+            <input v-model="paramsSource" type="radio" value="live" :disabled="busy">
+            <span>
+              <strong>Today's prompts and settings</strong>
+              <em>What you want after changing a prompt or switching model.</em>
+            </span>
+          </label>
+          <label class="restart-param">
+            <input v-model="paramsSource" type="radio" value="frozen" :disabled="busy">
+            <span>
+              <strong>The prompts and settings these steps last used</strong>
+              <em>
+                For telling a flaky answer from a changed one — the only thing
+                that differs is the run itself. A step with nothing recorded
+                runs with today's, and its page says so.
+              </em>
+            </span>
+          </label>
+        </fieldset>
+
         <div class="restart-actions">
           <button type="button" class="restart-cancel" :disabled="busy" @click="$emit('cancel')">
             Cancel
           </button>
-          <button type="button" class="restart-go" :disabled="busy" @click="$emit('confirm')">
+          <button
+            type="button"
+            class="restart-go"
+            :disabled="busy"
+            @click="emit('confirm', { paramsSource })"
+          >
             {{ busy ? 'Starting…' : 'Restart from here' }}
           </button>
         </div>
@@ -103,6 +150,31 @@ defineEmits(['confirm', 'cancel'])
 </template>
 
 <style scoped>
+.restart-params {
+  margin: 0.9rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+}
+.restart-params-legend {
+  padding: 0 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+}
+.restart-param {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  padding: 0.3rem 0;
+  cursor: pointer;
+}
+.restart-param input { margin-top: 0.2rem; flex-shrink: 0; }
+.restart-param strong { display: block; font-size: 0.85rem; font-weight: 600; color: #111827; }
+.restart-param em { display: block; font-style: normal; font-size: 0.78rem; color: #6b7280; }
+
 .restart-overlay {
   position: fixed;
   inset: 0;

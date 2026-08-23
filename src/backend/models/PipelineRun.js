@@ -125,6 +125,24 @@ module.exports = (sequelize) => {
     /** Provenance only. Never read to decide whether a run can be understood. */
     appVersion: { type: DataTypes.STRING(64), allowNull: true, field: 'app_version' },
 
+    /**
+     * Whether this run used today's prompts and config, or its parent's.
+     *
+     * `live` is the default and what a restart has always done. `frozen` runs
+     * each step with the parameters its parent's execution recorded, so a
+     * re-run that disagrees with the original cannot be blamed on a prompt
+     * somebody edited in between.
+     *
+     * On the run, not per step: one choice for one restart.
+     */
+    paramsSource: {
+      type: DataTypes.STRING(16),
+      allowNull: false,
+      defaultValue: 'live',
+      field: 'params_source',
+      validate: { isIn: [['live', 'frozen']] }
+    },
+
     completedAt: { type: DataTypes.DATE, allowNull: true, field: 'completed_at' }
   }, {
     tableName: 'pipeline_runs',
@@ -160,7 +178,7 @@ module.exports = (sequelize) => {
     const [rows] = await sequelize.query(`
       INSERT INTO "pipeline_runs" (
         id, submission_id, round, run_number, cause, caused_by_user_id,
-        parent_run_id, status, shape, pipeline_version, app_version,
+        parent_run_id, status, shape, pipeline_version, app_version, params_source,
         created_at, updated_at
       )
       SELECT
@@ -168,7 +186,7 @@ module.exports = (sequelize) => {
         COALESCE(MAX(r.run_number), 0) + 1,
         :cause, :causedByUserId, :parentRunId,
         'running'::"enum_pipeline_runs_status",
-        CAST(:shape AS JSONB), :pipelineVersion, :appVersion,
+        CAST(:shape AS JSONB), :pipelineVersion, :appVersion, :paramsSource,
         NOW(), NOW()
       FROM "pipeline_runs" r
       WHERE r.submission_id = :submissionId AND r.round = :round
@@ -182,7 +200,8 @@ module.exports = (sequelize) => {
         parentRunId: attrs.parentRunId || null,
         shape: attrs.shape ? JSON.stringify(attrs.shape) : null,
         pipelineVersion: attrs.pipelineVersion ?? PIPELINE_VERSION,
-        appVersion: attrs.appVersion || null
+        appVersion: attrs.appVersion || null,
+        paramsSource: attrs.paramsSource === 'frozen' ? 'frozen' : 'live'
       },
       transaction: options.transaction
     });

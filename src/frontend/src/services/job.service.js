@@ -24,10 +24,13 @@ export default {
    *
    * @param {string} submissionId
    * @param {string[]} jobTypes
-   * @returns {Promise<{message: string, restarted: string[], reset: string[]}>}
+   * @param {string} [paramsSource] - 'live' (default) uses today's prompts and
+   *   settings; 'frozen' uses the ones each step last ran with.
+   * @returns {Promise<{message: string, restarted: string[], reset: string[], paramsSource: string}>}
    */
-  async restartProcesses(submissionId, jobTypes) {
-    const response = await api.post(`/submissions/${submissionId}/processes/restart`, { jobTypes })
+  async restartProcesses(submissionId, jobTypes, paramsSource = 'live') {
+    const response = await api.post(`/submissions/${submissionId}/processes/restart`,
+      { jobTypes, paramsSource })
     return response.data
   },
 
