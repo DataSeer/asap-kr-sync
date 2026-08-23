@@ -135,8 +135,52 @@ restoring it would resurrect a tombstone for a submission that is back.
 `archive.test.js` names the exclusion so it stays a decision rather than an
 oversight.
 
-## Not built yet
+## Retention
 
-**Retention criteria** — age, status, project — producing a list to review.
-Never an automatic sweep: the archive is proven, but choosing what to delete is
-a judgement, and a cron job cannot make it.
+Two halves, kept apart on purpose:
+
+```bash
+node scripts/retention.js --select --project CS --status completed
+node scripts/retention.js --select --untouched-since 2026-01-01 --ids-only > ids.txt
+node scripts/retention.js --archive-from ids.txt --out <dir> --confirm
+```
+
+**Selection reads. Archiving takes ids and nothing else.**
+
+A criterion is a claim about the future: *"everything in project CS"* means
+whatever matches when it runs, which is not necessarily what somebody reviewed
+five minutes earlier — a submission created in between, a status changed by
+someone else. Handing over ids means the thing deleted is the thing that was
+looked at.
+
+It also makes the dangerous call impossible to write by accident. There is no
+argument shape meaning "everything in this project": deleting a hundred
+submissions requires first holding a hundred ids, which is a step a person
+takes deliberately. `retention.test.js` reads the function's own signature and
+fails if a criterion is ever added to it.
+
+Selection criteria, all optional and combining with AND: `--project`, `--user`,
+`--status` (one or several), `--untouched-since`, `--created-before`, `--limit`.
+Results come back least-recently-touched first, since those are the likeliest
+candidates.
+
+### What the archiving half guarantees
+
+- **Export, verify, then delete** — in that order, per submission. The
+  verification re-reads the archive off disk; the export having just written it
+  is not the same thing, and this is the only check that the bytes are readable.
+- **One failure does not stop the batch, and does not delete that submission.**
+  Failures are reported last and set a non-zero exit, because a run that reports
+  only its successes is how a submission goes missing from a list nobody
+  re-reads.
+- **`--confirm` is required above three.** There is no flag that selects and
+  deletes in one go: the review is the feature.
+- **`--dry-run` still writes the archives** — verifying one means reading it
+  back — and only withholds the delete. The output says so rather than letting
+  "dry" imply nothing happened.
+
+### Not built
+
+Nothing schedules this. There is no sweep and no cron: the selection produces a
+list, a person looks at it, and hands it back. That judgement is not one a
+timer can make.
