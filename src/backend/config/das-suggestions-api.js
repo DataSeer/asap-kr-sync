@@ -12,10 +12,10 @@ const logger = require('../utils/logger');
 
 module.exports = {
   // Gemini API key (per-service)
-  apiKey: process.env.DAS_SUGGESTIONS_GEMINI_API_KEY || '',
+  apiKey: process.env.DAS_SUGGESTIONS_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
 
   // Model to use
-  model: process.env.DAS_SUGGESTIONS_GEMINI_MODEL || 'gemini-2.5-flash',
+  model: process.env.DAS_SUGGESTIONS_GEMINI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
 
   // Request timeout
   timeout: parseInt(process.env.DAS_SUGGESTIONS_API_TIMEOUT, 10) || 120000,

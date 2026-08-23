@@ -10,10 +10,10 @@ const logger = require('../utils/logger');
 
 module.exports = {
   // Gemini API key (per-service)
-  apiKey: process.env.KRT_COMPARISON_GEMINI_API_KEY || '',
+  apiKey: process.env.KRT_COMPARISON_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
 
   // Model to use
-  model: process.env.KRT_COMPARISON_GEMINI_MODEL || 'gemini-2.5-flash',
+  model: process.env.KRT_COMPARISON_GEMINI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
 
   // Request timeout
   timeout: parseInt(process.env.KRT_COMPARISON_API_TIMEOUT, 10) || 300000,

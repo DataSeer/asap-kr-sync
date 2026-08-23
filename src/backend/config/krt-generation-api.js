@@ -11,8 +11,8 @@
 const logger = require('../utils/logger');
 
 module.exports = {
-  apiKey: process.env.KRT_GENERATION_GEMINI_API_KEY || '',
-  model: process.env.KRT_GENERATION_GEMINI_MODEL || 'gemini-2.5-flash',
+  apiKey: process.env.KRT_GENERATION_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+  model: process.env.KRT_GENERATION_GEMINI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
   timeout: parseInt(process.env.KRT_GENERATION_API_TIMEOUT, 10) || 300000,
   disabled: process.env.KRT_GENERATION_ENABLED !== 'true',
 

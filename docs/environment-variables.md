@@ -159,6 +159,21 @@ matcher always runs; the LM second look only enriches what it could not settle.
 | `KRT_GROUNDING_API_TIMEOUT` | Request timeout (ms) | `180000` | No |
 | `KRT_GROUNDING_SECOND_LOOK_ENABLED` | Set to `false` to skip the LM pass entirely. The deterministic matcher still runs, so the module never goes dark — it just settles fewer rows | `true` | No |
 
+## Shared Gemini credentials
+
+Nine modules call Gemini. Each still accepts its own `<MODULE>_GEMINI_API_KEY`
+and `<MODULE>_GEMINI_MODEL`, but both now fall back to a shared value, so one
+line configures the whole pipeline and a per-module override is reserved for
+when you actually need a separate quota or a different model.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `GEMINI_API_KEY` | Used by any Gemini module that has no key of its own | — | For every LM module |
+| `GEMINI_MODEL` | Used by any Gemini module that has no model of its own | `gemini-2.5-flash` | No |
+
+Resolution order per module: `<MODULE>_GEMINI_API_KEY` → `GEMINI_API_KEY` → unset
+(the module reports itself `off`).
+
 ## PDF-to-Markdown Conversion
 
 | Variable | Description | Default | Required |
@@ -275,5 +290,11 @@ The following variables were previously documented but are not referenced anywhe
 - `EMAIL_SERVICE`, `EMAIL_API_KEY`, `EMAIL_FROM` — no email service is currently implemented.
 - `GOOGLE_SERVICE_ACCOUNT_KEY_FILE`, `GOOGLE_DRIVE_FOLDER_ID` — no Google Sheets exporter is currently implemented (Excel is the only active report format).
 - `MATERIALS_LANGEXTRACT_*`, `PROTOCOLS_LANGEXTRACT_*` — only datasets detection uses the langextract pipeline.
+- `PDF_ANALYSIS_API_BASE_URL`, `PDF_ANALYSIS_API_KEY` — PDF Analysis calls no
+  service of its own. It consolidates the detectors' findings locally and its LM
+  pass goes through KRT Generation, so these were read only by their own config
+  module. `services/pdf/pdf-analysis-client.service.js` is the dead HTTP client
+  they belonged to; nothing requires it. `PDF_ANALYSIS_ENABLED` still gates the
+  step and stays.
 
 If any of these features land in the future, document the new vars here and add them back to `.env.example` in the same PR.
