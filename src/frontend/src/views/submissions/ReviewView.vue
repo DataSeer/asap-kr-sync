@@ -281,18 +281,38 @@ const isAlreadyApproved = computed(() => {
   return ['step_as', 'step_report', 'completed'].includes(status)
 })
 
+/**
+ * What counts as a change to the TABLE, as opposed to a change to the
+ * submission around it.
+ *
+ * A submission's change log also holds uploads, suggestion decisions and the
+ * pipeline's own applied output. None of those is an edit to a KRT row, and
+ * this page is about KRT rows: its banner says "No changes have been made to
+ * this KRT" on the strength of exactly these three predicates.
+ *
+ * They live here rather than inline so that everything on the page counting
+ * changes counts the same ones. The editors panel and the statistics disagreed
+ * when it had its own idea — the banner said nothing had changed while the
+ * panel named an editor and a count, on a submission whose only entries were
+ * three uploads and two rejected suggestions.
+ */
+const isCellEdit = (c) => c.action === 'edit' && !!c.columnName
+const isRowAdd = (c) => c.action === 'add_row'
+const isRowDelete = (c) => c.action === 'delete_row'
+const isTableChange = (c) => isCellEdit(c) || isRowAdd(c) || isRowDelete(c)
+
 const changeStats = computed(() => {
   // Filter cell updates (edits with column name)
-  const cellUpdates = changes.value.filter(c => c.action === 'edit' && c.columnName)
+  const cellUpdates = changes.value.filter(isCellEdit)
   const cellUpdatesFromAI = cellUpdates.filter(c => c.source === 'ai_suggestion').length
   const cellUpdatesFromValidation = cellUpdates.filter(c => c.source === 'krt_validation').length
 
   // Filter row additions
-  const rowAdds = changes.value.filter(c => c.action === 'add_row')
+  const rowAdds = changes.value.filter(isRowAdd)
   const rowAddsFromAI = rowAdds.filter(c => c.source === 'ai_suggestion').length
 
   // Filter row deletions
-  const rowDeletes = changes.value.filter(c => c.action === 'delete_row')
+  const rowDeletes = changes.value.filter(isRowDelete)
   const rowDeletesFromAI = rowDeletes.filter(c => c.source === 'ai_suggestion').length
 
   return {
@@ -309,6 +329,39 @@ const changeStats = computed(() => {
 const hasChanges = computed(() => {
   return changeStats.value.updated > 0 || changeStats.value.added > 0 || changeStats.value.removed > 0
 })
+
+/**
+ * Who has edited this table, and how much.
+ *
+ * A PM may edit any submission owned by someone in their team, and staff may
+ * edit any submission at all — so the person who submitted a manuscript is not
+ * necessarily the only one who has touched its table. That was always recorded,
+ * but the only way to see it was to open one cell's history at a time, which
+ * means nobody saw it. It is stated on the page instead.
+ *
+ * Only changes to the table itself are counted, by the same predicate the
+ * statistics use — otherwise this panel names an editor on a submission the
+ * page has just called unchanged. Changes the pipeline made carry no user and
+ * are left out too: this answers "which people changed my table", not "what
+ * happened to the submission".
+ */
+const editors = computed(() => {
+  const byId = new Map()
+  for (const change of changes.value) {
+    if (!change.user?.id || !isTableChange(change)) continue
+    const entry = byId.get(change.user.id)
+      || { id: change.user.id, name: change.user.name || 'Unknown', count: 0 }
+    entry.count += 1
+    byId.set(change.user.id, entry)
+  }
+  const ownerId = submission.value?.userId || submission.value?.user?.id
+  return [...byId.values()]
+    .map(e => ({ ...e, isOwner: !!ownerId && e.id === ownerId }))
+    .sort((a, b) => b.count - a.count)
+})
+
+/** The editors worth pointing out: everyone who is not the submitter. */
+const otherEditors = computed(() => editors.value.filter(e => !e.isOwner))
 
 /**
  * A failed load must not read as a finding. This page's empty state is the
@@ -607,6 +660,48 @@ function getCellClass(row, columnKey) {
           </div>
         </div>
       </div>
+    </div>
+
+    <!--
+      Who edited this table. Rendered above the table rather than inside the
+      collapsed summary: a change made by someone other than the submitter is
+      the thing a reviewer most needs to notice before approving, and it should
+      not require opening anything.
+    -->
+    <div v-if="editors.length > 0" class="card">
+      <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
+        <h2 class="text-lg font-medium">Who edited this table</h2>
+        <span
+          v-if="otherEditors.length > 0"
+          class="text-xs font-medium text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-full"
+        >
+          Edited by {{ otherEditors.length }}
+          {{ otherEditors.length === 1 ? 'person' : 'people' }} other than the submitter
+        </span>
+      </div>
+      <ul class="flex flex-wrap gap-2">
+        <li
+          v-for="editor in editors"
+          :key="editor.id"
+          class="flex items-baseline gap-2 border rounded px-3 py-1.5 text-sm"
+          :class="editor.isOwner
+            ? 'bg-gray-50 border-gray-200'
+            : 'bg-amber-50 border-amber-300'"
+        >
+          <span class="font-medium text-gray-900">{{ editor.name }}</span>
+          <span class="text-xs text-gray-500">
+            {{ editor.isOwner ? 'submitter' : 'not the submitter' }}
+          </span>
+          <span class="text-xs text-gray-500">·</span>
+          <span class="text-xs text-gray-600">
+            {{ editor.count }} {{ editor.count === 1 ? 'change' : 'changes' }}
+          </span>
+        </li>
+      </ul>
+      <p class="text-xs text-gray-500 mt-3">
+        Turn on <strong>Show changes</strong> below and click any highlighted cell to see
+        exactly what each person changed.
+      </p>
     </div>
 
     <!-- Rejected AI suggestions (read-only audit trail from step 2) -->

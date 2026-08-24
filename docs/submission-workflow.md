@@ -383,6 +383,22 @@ modal, and warnings never block. See [KRT Validation Rules](./krt-validation-rul
 - Rows Added: "X from AI"
 - Rows Removed: "X from AI"
 
+**"Who edited this table" card** (if any person has edited it): every human
+editor, their change count, and whether they are the submitter. Anyone who is
+not is highlighted, with a badge counting them.
+
+A PM may edit any submission owned by someone in their team, and staff may edit
+any submission at all — so the person approving at Step 3 needs to see that
+someone else has been in the table. It was recorded before but only reachable by
+opening one cell's history at a time, which meant nobody saw it.
+
+Two things it deliberately does not count: changes the pipeline applied (they
+carry no user — `change_logs.user_id` is nullable so the system need not borrow
+someone's name), and log entries that are not edits to the table, such as
+uploads and suggestion decisions. It shares `isTableChange` with the statistics
+above so the two cannot disagree — counting every entry once put "5 changes"
+directly beneath the banner saying nothing had changed.
+
 **KRT table with change visualization:**
 - **Green rows** — newly added
 - **Blue rows** — updated cells
