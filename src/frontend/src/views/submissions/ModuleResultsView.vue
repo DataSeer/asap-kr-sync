@@ -125,18 +125,15 @@ const carriedOverNotice = computed(() => {
   return { runNumber: entry.runNumber, producedByRun: entry.producedByRun }
 })
 
-/**
- * Authors read the latest run and nothing else — the same audience rule the
- * run endpoints enforce. Hiding the control without the server gate would be
- * decoration; both exist.
- */
-const canBrowseRuns = computed(() => authStore.canViewJobInternals)
+// The run selector used to be withheld from authors, which left them unable to
+// see that a step had been re-run at all on work that is theirs. The server
+// scopes these endpoints by ownership alone now, so there is no role condition
+// here — only whether there is more than one run worth choosing between.
 
 /** How many runs this step has had, from whichever source is loaded. */
 const runCount = computed(() => runs.value.length || liveJob.value?.runCount || 1)
 
 async function loadRuns() {
-  if (!canBrowseRuns.value) return
   runsState.value = 'loading'
   try {
     const data = await jobService.getRuns(submissionId.value, jobType.value)
@@ -751,7 +748,7 @@ const tabConflicts = computed(() => {
            offering one option is furniture. Hidden from authors entirely — they
            read the latest run, which is also what the endpoint behind this
            enforces. -->
-      <label v-if="canBrowseRuns && runs.length > 1" class="mrv-runs">
+      <label v-if="runs.length > 1" class="mrv-runs">
         <span class="mrv-runs-label">Run</span>
         <select
           class="mrv-runs-select"

@@ -22,7 +22,6 @@ const { authenticate } = require('../middleware/auth.middleware');
 const { canCreateSubmission, requireRole } = require('../middleware/role.middleware');
 const { ROLES } = require('../config/constants');
 const { canAccessSubmission, attachSubmissionFilter } = require('../middleware/team.middleware');
-const { canViewJobInternals } = require('../middleware/feature-access.middleware');
 const { validateBody, validateQuery } = require('../middleware/validation.middleware');
 const { uploadKRT, uploadPDF, handleMulterError } = require('../middleware/upload.middleware');
 // Two budgets on every route that starts analysis work: `lmApiLimiter` stops
@@ -557,30 +556,38 @@ router.post('/:id/jobs/:jobType/advance',
   jobsController.advanceJob
 );
 
-// GET /api/submissions/:id/jobs/:jobType/responses/:responseName - Download raw response (hidden from authors)
+// GET /api/submissions/:id/jobs/:jobType/responses/:responseName - Download raw
+// response. Access is ownership, not role: whoever may open the submission may
+// read what its runs produced. See the block comment below.
 router.get('/:id/jobs/:jobType/responses/:responseName',
   canAccessSubmission,
-  canViewJobInternals,
   jobsController.getJobResponse
 );
 
+// The five routes here used to carry `canViewJobInternals`, which hid prompts,
+// raw responses and run history from authors regardless of whose submission it
+// was. It was the one guard cutting across ownership rather than along it, and
+// it made the UI lie: the Technical panel rendered a prompt viewer for authors
+// and the endpoint behind it answered 403.
+//
+// Access is now one axis — whose data is it — enforced by canAccessSubmission
+// alone: an author reads their own submission's internals and no one else's, a
+// PM their team's, staff everything. Technical detail stays collapsed by
+// default because most people never open it; that is a UI default, not a
+// permission.
+
 // GET /api/submissions/:id/runs - Every pipeline run of this round, with what
 // each one contains. The submission-wide view: "run 2" as one number across
-// every module rather than a different number per module. Same audience as the
-// rest of the internals.
+// every module rather than a different number per module.
 router.get('/:id/runs',
   canAccessSubmission,
-  canViewJobInternals,
   jobsController.listPipelineRuns
 );
 
 // GET /api/submissions/:id/jobs/:jobType/runs - Every run of this step, newest
-// first, metadata only. Same audience as the rest of the internals: an author
-// reads the latest run and nothing else, which is why the selector that uses
-// this is not rendered for them either.
+// first, metadata only.
 router.get('/:id/jobs/:jobType/runs',
   canAccessSubmission,
-  canViewJobInternals,
   jobsController.listRuns
 );
 
@@ -589,15 +596,13 @@ router.get('/:id/jobs/:jobType/runs',
 // same path as the current one.
 router.get('/:id/jobs/:jobType/runs/:runNumber',
   canAccessSubmission,
-  canViewJobInternals,
   jobsController.getRun
 );
 
 // GET /api/submissions/:id/jobs/:jobType/prompts - The prompt(s) this run used,
-// read from its own frozen inputs. Same audience as the rest of the internals.
+// read from its own frozen inputs.
 router.get('/:id/jobs/:jobType/prompts',
   canAccessSubmission,
-  canViewJobInternals,
   jobsController.getJobPrompts
 );
 

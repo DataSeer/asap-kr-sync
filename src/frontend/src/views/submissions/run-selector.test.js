@@ -8,9 +8,10 @@
  *
  *   - a past run is UNMISTAKABLY read-only, or someone selects run 2, watches
  *     it render, and reasonably concludes the pipeline is now using it;
- *   - authors never get the control, because the endpoint behind it is gated to
- *     the same audience as the other job internals. Hiding a control whose data
- *     is one URL away is decoration, not access control.
+ *   - the control appears whenever there is more than one run to choose between.
+ *     It used to be withheld from authors; the endpoints behind it are scoped by
+ *     who may open the submission, not by role, so the author of a manuscript
+ *     can see that a step on their own work was re-run.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -86,11 +87,15 @@ async function mountPage({ role = 'ds_annotator', runs = [] } = {}) {
 describe('the run selector', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it('is absent for an author, whatever the run count', async () => {
+  it('is offered to an author on their own submission', async () => {
+    // It used to be hidden from authors, which meant the one person whose work
+    // this is could not tell that a step had been re-run at all. Access is
+    // scoped by whose submission it is, and the server already enforces that —
+    // so the role does not decide this.
     const wrapper = await mountPage({ role: 'author', runs: [runRow(2, true), runRow(1, false)] })
 
-    expect(wrapper.find('.mrv-runs-select').exists()).toBe(false)
-    expect(getRuns).not.toHaveBeenCalled()
+    expect(wrapper.find('.mrv-runs-select').exists()).toBe(true)
+    expect(getRuns).toHaveBeenCalled()
   })
 
   it('is absent when there has only ever been one run', async () => {

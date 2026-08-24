@@ -50,10 +50,17 @@ const createForm = ref({
 // Available teams from database
 const availableTeams = computed(() => teamsStore.teamCodes)
 
-const availableRoles = ['author', 'asap_pm', 'ds_annotator', 'admin']
-
 const canManageUsers = computed(() => authStore.canManageUsers)
 const isAdmin = computed(() => authStore.isAdmin)
+
+// Only an admin can create or promote to admin — the server rejects it from
+// anyone else. Offering the option to a ds_annotator just invites a 403, so the
+// list follows the same rule the server applies.
+const availableRoles = computed(() =>
+  isAdmin.value
+    ? ['author', 'asap_pm', 'ds_annotator', 'admin']
+    : ['author', 'asap_pm', 'ds_annotator']
+)
 
 onMounted(async () => {
   // fetchUsers handles its own failure. The team codes only populate a filter
@@ -334,12 +341,16 @@ async function handleCreateUser() {
               <p class="mt-1 text-xs text-gray-500">Click to toggle team assignment</p>
             </div>
 
-            <!-- Password is managed by Auth0 for ASAP Hub accounts, so it can't be set here -->
-            <div v-if="!editingUser?.isAuth0User">
+            <!--
+              Setting someone else's password is admin-only: whoever sets it can then
+              sign in as that person. Auth0 accounts have no password here to set —
+              the identity provider owns it.
+            -->
+            <div v-if="isAdmin && !editingUser?.isAuth0User">
               <label class="label">New Password</label>
               <input v-model="editForm.password" type="password" class="input" placeholder="Leave blank to keep current" />
             </div>
-            <p v-else class="text-xs text-gray-500">
+            <p v-else-if="editingUser?.isAuth0User" class="text-xs text-gray-500">
               This is an ASAP Hub (Auth0) account — its password is managed by the identity provider.
             </p>
 

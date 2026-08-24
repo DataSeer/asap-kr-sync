@@ -24,6 +24,23 @@ function assertCanTouchAdminRole(actor, targetRole) {
 }
 
 /**
+ * Only an admin may set another user's password.
+ *
+ * `password` is optional on this endpoint, so the check is on the field being
+ * present rather than on the route — a ds_annotator editing a name must still
+ * succeed. Users change their own password through /profile, which requires
+ * the current one.
+ *
+ * @param {object} actor - the authenticated user making the request
+ * @param {string} [password] - the password from the validated body, if any
+ */
+function assertCanSetPassword(actor, password) {
+  if (password && actor.role !== ROLES.ADMIN) {
+    throw new AuthorizationError('Only admins can change another user\'s password');
+  }
+}
+
+/**
  * List all users
  * GET /api/users
  */
@@ -225,6 +242,13 @@ async function update(req, res, next) {
     if (role) {
       assertCanTouchAdminRole(req.user, role);
     }
+
+    // Setting someone else's password is admin-only. Whoever sets it knows it,
+    // and can then sign in as that person — so this is account takeover, not a
+    // lesser form of editing. Every other field here is recoverable; this one
+    // hands over the account. Note it is NOT the same as creating a user with
+    // an initial password, which starts an account rather than seizing one.
+    assertCanSetPassword(req.user, password);
 
     if (name) user.name = name;
     if (role) user.role = role;

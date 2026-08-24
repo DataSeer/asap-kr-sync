@@ -141,8 +141,9 @@ describe('a past run whose artefacts were not kept apart', () => {
   })
 
   async function mountRun(over) {
-    // The outputs block is gated on canViewJobInternals, and so is the caveat
-    // inside it — an author sees no outputs, so there is nothing to caveat.
+    // The outputs block carries no role condition — it renders for whoever can
+    // open the submission. A signed-in user is still needed for the rest of the
+    // page, so one is set here; the role is not what decides this.
     useAuthStore().user = { id: 'u1', role: 'ds_annotator', name: 'Curator' }
     const wrapper = mount(ModuleTechnical, {
       props: { job: pastRun(over), jobType: 'software_detection', submissionId: 'sub-1', jobs: {} },

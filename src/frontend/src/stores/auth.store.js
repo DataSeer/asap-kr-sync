@@ -51,11 +51,14 @@ export const useAuthStore = defineStore('auth', () => {
   // Hide/unhide is the author's "delete" proxy — available to everyone
   const canHideSubmission = computed(() => !!user.value)
 
-  // Job internals: hidden from authors only. PM, ds_annotator, admin all see
-  // raw logs and responses (for debugging pipeline behavior).
-  const canViewJobInternals = computed(() =>
-    !!effectiveRole.value && effectiveRole.value !== 'author'
-  )
+  // Job internals — prompts, raw responses, run history — used to be withheld
+  // from authors by `canViewJobInternals`. It was the one rule that cut across
+  // ownership instead of along it, and the UI it produced was dishonest: the
+  // Technical panel offered authors a prompt viewer whose endpoint answered 403.
+  //
+  // There is no such flag now. Whoever may open the submission may read what its
+  // runs did, and the server enforces exactly that. The panel stays collapsed by
+  // default because most people never want it — a default, not a permission.
   /**
    * Re-running a module: anyone signed in who can reach the submission.
    *
@@ -275,7 +278,6 @@ export const useAuthStore = defineStore('auth', () => {
     canManageTeamEmails,
     canDeleteSubmission,
     canHideSubmission,
-    canViewJobInternals,
     canRestartJobs,
     canEditAnyUser,
     canEditAdminUsers,

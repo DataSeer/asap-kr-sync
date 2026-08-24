@@ -72,6 +72,14 @@ Create a user. **admin, ds_annotator only.** Non-admins cannot create admin-role
 ### `PATCH /api/users/:id`
 Update a user. **admin, ds_annotator only.** Body accepts any of `name, role, password, teams[]` (at least one required). Non-admins cannot edit existing admin users or promote anyone to admin. Replaces the full team list when `teams` is provided.
 
+`password` is **admin only** — a 403 for anyone else, even on a user they may
+otherwise edit. Whoever sets a password knows it and can then sign in as that
+person, so this is account takeover rather than a lesser form of editing; every
+other field here is recoverable. Setting it also revokes all of the target's
+sessions. Users change their own password through `PATCH /api/profile`, which
+requires the current one. Creating a user with an initial password is not
+affected — that starts an account rather than seizing one.
+
 ### `DELETE /api/users/:id`
 Delete a user. **admin only.** Self-deletion is blocked (400); an
 already-deleted user is a 409.
@@ -801,8 +809,8 @@ Get a presigned S3 download URL for a job's raw API response file.
 ## Configuration (Public)
 
 ### `GET /api/submissions/:id/jobs/:jobType/prompts`
-The prompt(s) a run used, read back from its own frozen inputs. **Staff only**
-(same audience as the rest of the job internals).
+The prompt(s) a run used, read back from its own frozen inputs. Scoped by
+`canAccessSubmission` — whoever may open the submission may read them.
 - **Returns**: `{ prompts: [{ key, file, text, sha256, bytes, attachments: [{ file, text, sha256, bytes }] }] }`
 - Served from the run's **stored copy** — never from the file on disk, and never
   as a link to GitHub: a deployment is not always at the head of its branch, so

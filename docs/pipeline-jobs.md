@@ -766,10 +766,10 @@ retrying would restart the very external work the user asked to stop.
   The jobs API returns it as `triggeredBy: { id, name }` (null for an automatic
   advance), resolved with one extra query in the controller rather than an
   include on `getForSubmission` — that method is the orchestrator's hot path on
-  every advance and has no use for the join. It is **not** gated on
-  `canViewInternals`: the change log already shows every editor's name to anyone
-  who can open the submission, and "a curator re-ran this on my manuscript" is
-  precisely what an author benefits from knowing.
+  every advance and has no use for the join. It carries no role condition: the
+  change log already shows every editor's name to anyone who can open the
+  submission, and "a curator re-ran this on my manuscript" is precisely what an
+  author benefits from knowing.
 - **The move out of `waiting` is atomic.** `tryAdvanceStep` takes the step with
   a conditional update — `SET status='queued' WHERE id=? AND status='waiting'` —
   and enqueues only if that update touched a row. `checkAndAdvance` runs on
@@ -954,10 +954,12 @@ and change nothing.
 | `GET` | `/api/submissions/:id/jobs/:jobType/runs` | every run, newest first, **metadata only** — the payloads are megabytes and a list shows none of them |
 | `GET` | `/api/submissions/:id/jobs/:jobType/runs/:runNumber` | one run, in full |
 
-Both are `canAccessSubmission` then `canViewJobInternals` — the same audience as
-prompts and raw responses. The module page's run selector is hidden from authors
-for the same reason; hiding a control whose data is one URL away would be
-decoration, so both exist. Pinned by `routes/limiter-ordering.test.js`.
+Both carry `canAccessSubmission` and nothing else, as do prompts and raw
+responses. They used to carry `canViewJobInternals` too, which withheld a
+submission's own run history from the author who owned it; access is scoped by
+ownership alone now, and the run selector follows it. Pinned by
+`routes/limiter-ordering.test.js`, which asserts both halves: these routes must
+keep `canAccessSubmission`, and must not reacquire a role guard.
 
 **The single-run response is shaped like a job.** The module page renders from
 `job.result.data.*`, so a past run goes through exactly the same path as the

@@ -75,27 +75,56 @@ test('the check itself finds the routes it is meant to be checking', () => {
 
 /**
  * The run endpoints expose a step's full history — every past result, every raw
- * response prefix. That is the same material `canViewJobInternals` already
- * withholds from authors, and the module page's run selector is hidden from
- * them for the same reason. If the gate were dropped here, hiding the selector
- * would be decoration: the data would still be one URL away.
+ * response prefix. That is the submission's own data, so the rule is ownership:
+ * `canAccessSubmission` decides it, and an author reading their own submission
+ * is entitled to all of it.
+ *
+ * These routes used to carry `canViewJobInternals` as well, which withheld the
+ * same material from authors on submissions they owned. It was removed
+ * deliberately — access runs along one axis now. What this test protects is the
+ * half that must not go with it: dropping `canAccessSubmission` here would put
+ * every submission's run history one URL away from any signed-in user.
  */
-test('the run-history endpoints are gated to the same audience as the other internals', () => {
+test('the run-history endpoints are scoped to who may open the submission', () => {
   const source = fs.readFileSync(path.join(ROUTES_DIR, 'submissions.routes.js'), 'utf8');
   const ungated = [];
 
   for (const { verb, routePath, middleware } of routeDeclarations(source)) {
     if (!/\/runs/.test(routePath)) continue;
-    const access = middleware.findIndex((m) => m.includes('canAccessSubmission'));
-    const internals = middleware.findIndex((m) => m.includes('canViewJobInternals'));
-    if (access === -1 || internals === -1 || access > internals) {
+    if (!middleware.some((m) => m.includes('canAccessSubmission'))) {
       ungated.push(`${verb.toUpperCase()} ${routePath}`);
     }
   }
 
   assert.ok(ungated.length === 0,
-    `run routes must be canAccessSubmission then canViewJobInternals: ${ungated.join(', ')}`);
+    `run routes must carry canAccessSubmission: ${ungated.join(', ')}`);
   // A guard that matches nothing passes forever.
   const runRoutes = routeDeclarations(source).filter((r) => /\/runs/.test(r.routePath));
-  assert.equal(runRoutes.length, 2, 'expected the list and the single-run routes');
+  // Three: the submission-wide run list, the per-step list, and one run in full.
+  assert.equal(runRoutes.length, 3, 'expected the two lists and the single-run route');
+});
+
+/**
+ * The companion to the above: no submission route may reintroduce a role guard
+ * on the internals. The prompt viewer rendered for authors while its endpoint
+ * answered 403, and that mismatch is exactly what a reinstated guard recreates.
+ */
+test('no submission route gates the internals by role', () => {
+  const source = fs.readFileSync(path.join(ROUTES_DIR, 'submissions.routes.js'), 'utf8');
+  const offenders = [];
+
+  for (const { verb, routePath, middleware } of routeDeclarations(source)) {
+    if (!/\/(runs|prompts|responses)/.test(routePath)) continue;
+    const roleGuard = middleware.find((m) =>
+      /canViewJobInternals|requireRole|requireAdmin/.test(m));
+    if (roleGuard) offenders.push(`${verb.toUpperCase()} ${routePath} -> ${roleGuard}`);
+  }
+
+  assert.deepEqual(offenders, [],
+    'internals are scoped by ownership, not by role');
+  // Assert the scan sees the routes it is meant to police.
+  const internals = routeDeclarations(source)
+    .filter((r) => /\/(runs|prompts|responses)/.test(r.routePath));
+  // Five: three run routes, the prompts route and the raw-response route.
+  assert.equal(internals.length, 5, 'expected the three run routes, prompts and responses');
 });

@@ -219,10 +219,6 @@ onUnmounted(() => {
   if (tickTimer) clearInterval(tickTimer)
 })
 
-// Authors get a simplified modal: status, summary, results — no logs, no raw
-// responses, no timestamps, no queue config, no restart button. PMs and staff
-// see the full technical detail.
-const canViewInternals = computed(() => authStore.canViewJobInternals)
 const canRestartJobs = computed(() => authStore.canRestartJobs)
 
 // All known job types in display order

@@ -21,7 +21,7 @@ const CAPABILITIES = [
   'canCreateSubmission', 'canDeleteSubmission', 'canHideSubmission',
   'canManageUsers', 'canViewUsers', 'canEditAnyUser', 'canEditAdminUsers', 'canDeleteUsers',
   'canManageTeams', 'canManageTeamEmails',
-  'canViewJobInternals', 'canRestartJobs',
+  'canRestartJobs',
   'canManageEnrichments', 'canManageResourceTypes', 'canManageValidationRules'
 ]
 
@@ -36,7 +36,7 @@ const MATRIX = {
     // Re-running is open to everyone who can reach the submission — the
     // server always accepted it, and the author is the person best placed to
     // notice a wrong result. The role limit is a daily BUDGET, not a button.
-    canViewJobInternals: false, canRestartJobs: true,
+    canRestartJobs: true,
     canManageEnrichments: false, canManageResourceTypes: false, canManageValidationRules: false
   },
   asap_pm: {
@@ -45,8 +45,7 @@ const MATRIX = {
     canManageUsers: false, canViewUsers: true, canEditAnyUser: false,
     canEditAdminUsers: false, canDeleteUsers: false,
     canManageTeams: false, canManageTeamEmails: true,
-    // A PM debugs pipeline behaviour, so they see internals.
-    canViewJobInternals: true, canRestartJobs: true,
+    canRestartJobs: true,
     canManageEnrichments: false, canManageResourceTypes: false, canManageValidationRules: false
   },
   ds_annotator: {
@@ -55,8 +54,7 @@ const MATRIX = {
     canManageUsers: true, canViewUsers: true, canEditAnyUser: true,
     // Only an admin may touch an admin account, or delete a user at all.
     canEditAdminUsers: false, canDeleteUsers: false,
-    canManageTeams: true, canManageTeamEmails: true,
-    canViewJobInternals: true, canRestartJobs: true,
+    canManageTeams: true, canManageTeamEmails: true, canRestartJobs: true,
     canManageEnrichments: true, canManageResourceTypes: true, canManageValidationRules: false
   },
   admin: {
@@ -64,8 +62,7 @@ const MATRIX = {
     canCreateSubmission: true, canDeleteSubmission: true, canHideSubmission: true,
     canManageUsers: true, canViewUsers: true, canEditAnyUser: true,
     canEditAdminUsers: true, canDeleteUsers: true,
-    canManageTeams: true, canManageTeamEmails: true,
-    canViewJobInternals: true, canRestartJobs: true,
+    canManageTeams: true, canManageTeamEmails: true, canRestartJobs: true,
     canManageEnrichments: true, canManageResourceTypes: true, canManageValidationRules: true
   }
 }
@@ -121,7 +118,6 @@ describe('viewing as another role', () => {
 
     expect(store.effectiveRole).toBe('author')
     expect(store.canDeleteSubmission).toBe(false)
-    expect(store.canViewJobInternals).toBe(false)
   })
 
   it('does not change who they really are', () => {

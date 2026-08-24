@@ -58,12 +58,13 @@ Team membership can be auto-assigned from an admin-managed email→team roster
 | Trigger AI analysis / re-run a module | own | teammates' | all | all |
 | — capped at, per day | 10 runs | 50 runs | unlimited | unlimited |
 | View job summary status (panel) | ✓ | ✓ | ✓ | ✓ |
-| View job internals (logs, raw responses, timestamps, queue config) | — | ✓ | ✓ | ✓ |
+| View job internals (prompts, raw responses, run history) | own | teammates' | all | all |
 | Cross-submission queue admin (the admin Jobs page) | — | — | — | ✓ |
 | Start a job parked awaiting your own input (`/jobs/:type/advance`) | own | teammates' | all | all |
 | View users (scoped) | — | team | all | all |
 | Create non-admin users | — | — | ✓ | ✓ |
-| Edit non-admin users | — | — | ✓ | ✓ |
+| Edit non-admin users (name, role, teams) | — | — | ✓ | ✓ |
+| Set another user's password | — | — | — | ✓ |
 | Create / edit admin users | — | — | — | ✓ |
 | Delete users | — | — | — | ✓ |
 | List / create / edit teams (lab, by leader name) | — | — | ✓ | ✓ |
@@ -86,9 +87,11 @@ Team membership can be auto-assigned from an admin-managed email→team roster
     (owner ∈ {self, teammates}, minus staff-owned for non-staff).
 - **Coarse role gates** — `src/backend/middleware/role.middleware.js`
   - `requireRole(...roles)`, `requireAdmin`, `canCreateSubmission`.
-- **Feature-specific gates** — `src/backend/middleware/feature-access.middleware.js`
-  - `canViewJobInternals` — blocks authors from `/jobs/:jobType/responses/...`
-    and `/jobs/:jobType/prompts`.
+  - There is no second axis. `canViewJobInternals` used to withhold prompts,
+    raw responses and run history from authors on submissions they owned; it
+    was removed along with `feature-access.middleware.js`, because access runs
+    along ownership only. Technical detail is collapsed by default in the UI —
+    a default, not a permission.
 - **The analysis budget** — `src/backend/middleware/rate-limit.middleware.js`
   - Re-running a module is not a role gate at all. Every trigger route carries
     `canAccessSubmission` plus `lmApiLimiter` (burst) and `lmApiDailyLimiter`
@@ -127,11 +130,13 @@ Team membership can be auto-assigned from an admin-managed email→team roster
   flags that mirror the backend rules. UI components consume these instead of
   hardcoding role strings.
   - Submission: `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`.
-  - Jobs: `canViewJobInternals`, `canRestartJobs` (the latter is true for any
-    signed-in user — what separates the roles is the daily LM budget, not a flag).
-  - (`canManageJobs` is gone: it gated the restart button while the server
-    accepted the request from any owner, so the panel told authors to press a
-    button they could not see.)
+  - Jobs: `canRestartJobs` (true for any signed-in user — what separates the
+    roles is the daily LM budget, not a flag).
+  - (`canManageJobs` and `canViewJobInternals` are both gone. Each gated a
+    control while the server answered differently: the first hid the restart
+    button the server would have accepted, the second showed a prompt viewer
+    the server refused. A flag that disagrees with the server is worse than no
+    flag.)
   - Users: `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`.
   - Teams/projects: `canManageTeams`, `canManageTeamEmails` (admin/ds/pm). Owner
     reassignment lives in `EditMetadataModal.vue`, gated on `isStaff`.

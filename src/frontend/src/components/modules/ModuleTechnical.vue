@@ -12,7 +12,6 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { useAuthStore } from '@/stores/auth.store'
 import fileService from '@/services/file.service'
 import jobService from '@/services/job.service'
 import { describeJobStatus } from '@/utils/job-status'
@@ -37,13 +36,10 @@ const props = defineProps({
   files: { type: Object, default: () => ({}) }
 })
 
-const authStore = useAuthStore()
-/**
- * Raw artefacts are staff-only server-side (canViewJobInternals). Listing
- * links an author cannot follow would only produce 403s, so the section is
- * hidden rather than shown broken.
- */
-const canViewInternals = computed(() => authStore.canViewJobInternals)
+// Raw artefacts used to be staff-only server-side, so this section was hidden
+// from authors rather than shown broken. The server scopes them by ownership
+// now — an author reads their own submission's artefacts — so there is no role
+// condition left here, only whether this run kept any.
 
 /**
  * Open on arrival.
@@ -919,7 +915,7 @@ const responseUrl = (name) =>
             exact bytes recorded in the <code>inputs</code> file above.
           </p>
         </div>
-        <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
+        <div v-if="artefacts.length || $slots.files" class="mt-block mt-wide">
           <h3>Module outputs</h3>
           <p v-if="artefactsNotOwn" class="mt-note mt-note-warn">
             This run's stored files were not kept separately from later runs of the same
@@ -931,12 +927,12 @@ const responseUrl = (name) =>
           <slot name="files" />
           <!-- Real links: ctrl-click opens one in a tab like anything else, and
                the browser handles the download rather than a click handler. -->
-          <ul v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-files">
+          <ul v-if="artefacts.length && !artefactsNotOwn" class="mt-files">
             <li v-for="name in artefacts" :key="name">
               <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
             </li>
           </ul>
-          <p v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-note">
+          <p v-if="artefacts.length && !artefactsNotOwn" class="mt-note">
             These are what the module sent to, or received from, the external service — the
             unedited record of this run.
           </p>
