@@ -884,7 +884,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   `reason` kept for **every** rule (applicable or not, so the UI's "More details" disclosure can explain both
   flagged and passed checks) — alongside the KRT `signals` used (`result.data.signals`) and `result.data.meta`
   (see the [result-shape contract](./pipeline-jobs.md#result-summaries); this module stored its meta beside
-  `data` for one commit and the only symptom was a blank Statistics column on its own page). It also writes the
+  `data` for one commit and the only symptom was a blank results box on its own page). It also writes the
   frozen `inputs` artefact every module writes: the statement as sent, the KRT signals, and the prompt by template
   + assembled digest. Read via `GET /api/submissions/:id/das-suggestions`; re-run via
   `POST /api/submissions/:id/das-suggestions/regenerate`, which returns one of **three** outcomes — queued, or

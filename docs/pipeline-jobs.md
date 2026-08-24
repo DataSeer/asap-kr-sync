@@ -463,11 +463,16 @@ says nothing about materials.
 replaced: a page of steps sitting at `waiting` with no explanation.
 
 `GET /jobs` therefore carries an **`issues`** array — the whole list, computed
-once by `describeIssues()`. One component, `PipelineIssues.vue`, renders it on
-the PDF step, the Availability step, the pipeline and a module's page, all able
-to act; anywhere else can render the same list with `actionable: false`, because
-a page that reports a problem it cannot help with is still how someone finds
-out. None of them re-derives anything: the last time a rule like this lived on
+once by `describeIssues()`. `PipelineIssues.vue` renders it on the Availability
+step, the pipeline page and a module's page, all able to act; anywhere else can
+render the same list with `actionable: false`, because a page that reports a
+problem it cannot help with is still how someone finds out.
+
+The Manuscript step is the exception: it shows the same decision **on the step's
+own tile** inside the pipeline panel, because a box above the panel repeated in
+prose what the tile already showed as a red pill — with the buttons only on the
+copy the reader was not looking at. Both surfaces call the same
+`useIssueDecision`, so what a decision does cannot drift between them. None of them re-derives anything: the last time a rule like this lived on
 the client, the pipeline page asked for a field the API never sent and drew
 failed steps as green ticks for weeks.
 
@@ -1134,7 +1139,7 @@ module has to follow them:
 
 Both are enforced by `services/queue/result-shape.test.js`, because both fail
 **silently**: the DAS check stored its meta beside `data` for one commit, and
-the only symptom was an empty Statistics column on its own page while every
+the only symptom was an empty results box on its own page while every
 other module looked fine. Nothing threw, nothing logged, and the tests passed. The `service` block is `{ config: {state, enabled, demoEnabled}, outcome: {state, source, failReason?, externalError?} }` for every job. The `files` map carries S3 keys for raw API responses captured by the job logger.
 
 | Job Type | Distinguishing keys |
@@ -1309,12 +1314,11 @@ says so instead ("the status of these steps could not be read"), and only while
 there is nothing to show: once a poll has succeeded, a later failure keeps the
 last known state rather than throwing it away.
 
-**`submissionJobs` must be provided by the VIEW.** `SubmissionHeader` injects it
-to know whether `pdf_analysis` is parked on `pending_input` — which is what
-makes saving an Availability Statement release the step. `BackgroundProcesses`
-provides the same key but is the header's *sibling*, and `provide` only travels
-down, so the header silently fell back to its `ref({})` default: no banner, and
-saving a DAS advanced nothing. KRTView (step 2) and PDFView (step 3) each
+**`submissionJobs` must be provided by the VIEW.** `PipelinePanel` provides the
+same key but is the header's *sibling*, and `provide` only travels down, so a
+consumer above it silently falls back to its `ref({})` default rather than
+failing — which is how a header feature once stopped working with nothing
+thrown and nothing logged. KRTView (step 2) and PDFView (step 3) each
 provide it; `components/submission/das-banner-injection.test.js` fails if a view
 that polls jobs and renders the header stops doing so.
 
