@@ -181,7 +181,7 @@ Worth stating explicitly, because the background pipeline does all of these and 
 All of that happens in the background pipeline and reaches the user only as a *suggestion* they must
 accept. The single exception is the Additional Information → Identifier auto-copy described in §3.
 
-See [Background Modules — automatic transformations](./background-modules.md#21b-automatic-transformations-applied-by-the-pipeline)
+See [Background Modules — automatic transformations](./background-modules.md#21e-automatic-transformations-applied-by-the-pipeline)
 for the full list of what the pipeline does silently.
 
 ---

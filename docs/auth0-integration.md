@@ -28,7 +28,7 @@
    - [Router Guard](#router-guard)
    - [API Interceptor](#api-interceptor)
    - [Profile View](#profile-view)
-8. [Database Migration](#database-migration)
+8. [Database schema](#database-schema)
 9. [API Reference](#api-reference)
 10. [Security Considerations](#security-considerations)
 11. [Troubleshooting](#troubleshooting)
