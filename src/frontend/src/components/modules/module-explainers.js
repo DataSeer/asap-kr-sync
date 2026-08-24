@@ -115,11 +115,13 @@ export const MODULE_EXPLAINERS = {
       + 'an ORCID identifier where the paper prints one.',
     points: [
       {
-        q: 'Three sources, in order of trust',
+        q: 'Three sources',
         a: 'GROBID parses the PDF header for authors, the DOI and any ORCIDs printed in the '
           + 'paper. If a DOI was found, OpenAlex supplies verified author↔ORCID pairs. Anything '
           + 'still missing falls back to a capped ORCID public-API lookup that accepts only a '
-          + 'unique match.'
+          + 'unique match. Where GROBID and OpenAlex disagree, OpenAlex wins: a registry record '
+          + 'beats an ORCID read off the page, which is easily mis-parsed. So GROBID alone is '
+          + 'the weakest of the three, not the strongest.'
       },
       {
         q: 'The Source column',
@@ -132,7 +134,8 @@ export const MODULE_EXPLAINERS = {
         q: 'What it cannot do',
         a: 'The ORCID API fallback matches on name, so two researchers who publish under the '
           + 'same name cannot be told apart — that is why it is capped and restricted to unique '
-          + 'matches. Affiliations come out as printed, superscript markers and all.'
+          + 'matches. Affiliation is reduced to the institution name GROBID identified: no '
+          + 'department, no address, and only the first one where an author lists several.'
       }
     ]
   },
@@ -151,9 +154,11 @@ export const MODULE_EXPLAINERS = {
       },
       {
         q: 'It is copied, not summarised',
-        a: 'The statement is extracted as written. If it is vague ("available on reasonable '
-          + 'request"), that vagueness is preserved rather than resolved — which is itself worth '
-          + 'seeing.'
+        a: 'The model is instructed to copy the section rather than paraphrase it, and to drop '
+          + 'fragments that belong to a neighbouring section. Unlike a detection quote, the '
+          + 'result is not checked back against the manuscript word for word — so read it as a '
+          + 'faithful copy rather than a guaranteed one. If the statement is vague ("available '
+          + 'on reasonable request"), that vagueness is preserved rather than resolved.'
       },
       {
         q: 'When nothing is found',
@@ -167,34 +172,45 @@ export const MODULE_EXPLAINERS = {
   krt_grounding: {
     title: 'KRT Grounding',
     doc: '37b-krt_grounding--author-krt--manuscript-reconciliation',
-    summary: 'Checks every row of your Key Resources Table against the manuscript, '
-      + 'and never changes a row. It answers two separate questions per row: is this resource '
-      + 'mentioned in the paper at all, and did our detection modules independently find it?',
+    summary: 'Checks every row of your Key Resources Table against the manuscript, and never '
+      + 'changes a row. The question it answers is whether the resource is mentioned in the '
+      + 'paper at all — searched directly in the converted text, independently of what the '
+      + 'detectors found.',
     points: [
       {
         q: 'Where "Found" comes from',
-        a: 'A direct search of the converted manuscript for the row\'s own RESOURCE NAME and '
-          + 'IDENTIFIER. It does not depend on any detection module, so it means the same thing '
-          + 'whatever the rest of the pipeline did.'
+        a: 'The Yes / No verdicts come from a direct search of the converted manuscript for the '
+          + 'row\'s own RESOURCE NAME and IDENTIFIER. Those depend on no detection module and '
+          + 'mean the same thing whatever the rest of the pipeline did. The two weaker verdicts '
+          + 'do lean on the detectors: "Incoherence" and "Partial match - id" both come from '
+          + 'comparing your row against what the detectors produced, so they can be absent on a '
+          + 'run where detection struggled.'
       },
       {
-        q: 'Yes / Yes - id / Yes - name',
+        q: 'Yes / Yes - id / Yes - name / Yes - partial ids',
         a: 'Which of the two fields was located. "Yes" means both, which is the strongest result. '
-          + '"Yes - id" means the paper cites the identifier but writes the name differently; '
-          + '"Yes - name" the reverse.'
+          + '"Yes - id" means the paper cites the identifier but writes the name differently. '
+          + '"Yes - name" means the name was found and the identifier was not — including when '
+          + 'your row has no identifier in it, so there was nothing to look for; check the cell '
+          + 'before hunting for a discrepancy. "Yes - partial ids" appears when a cell holds '
+          + 'several identifiers and only some were located.'
       },
       {
-        q: 'Punctuation is ignored',
+        q: 'Spacing and hyphens are ignored',
         a: 'The manuscript often breaks words around hyphens and spaces — it may print '
           + '"anti -TagFP" where your row says "anti-TagFP", or "ImageJ" where your row says '
           + '"Image J". Those count as found. The match is still exact once spacing and hyphens '
-          + 'are set aside; nothing is guessed.'
+          + 'are set aside; nothing is guessed. Only spacing, hyphens, dots and underscores are '
+          + 'folded — "Addgene #242904" still will not match "RRID:Addgene_242904", and very '
+          + 'short names are skipped rather than matched loosely.'
       },
       {
-        q: '"Partial match"',
-        a: 'Something related was located but not the row itself — part of the name, or a match '
-          + 'only our targeted LM search could make. Worth a glance: it is weaker evidence than '
-          + 'a direct hit, and occasionally the LM attaches a nearby sentence to the wrong row.'
+        q: '"Partial match - name" and "Partial match - id"',
+        a: 'Something related was located but not the row itself. "- name" means part of the '
+          + 'name matched, or only our targeted LM search could place the row; occasionally that '
+          + 'search attaches a nearby sentence to the wrong row. "- id" means the identifier '
+          + 'matched a resource the detectors found, but was not located in the manuscript text '
+          + 'itself. Both are weaker evidence than a direct hit.'
       },
       {
         q: '"No"',
@@ -204,9 +220,11 @@ export const MODULE_EXPLAINERS = {
       },
       {
         q: '"Incoherence"',
-        a: 'A value in your row disagrees with what the manuscript states — most often an '
-          + 'identifier. One of the two is wrong, and only a human can say which. Your row is '
-          + 'never altered; the differing characters are highlighted so you can see what changed.'
+        a: 'Your row\'s IDENTIFIER disagrees with the one a detection module found for the same '
+          + 'resource — it is the only field compared this way. Note what that means: the other '
+          + 'value comes from a detector, not straight from the manuscript, so a detector that '
+          + 'misread can raise this. One of the two is wrong and only a human can say which. '
+          + 'Your row is never altered; the differing characters are highlighted.'
       },
       {
         q: 'What it cannot do',
@@ -345,13 +363,18 @@ export const MODULE_EXPLAINERS = {
       {
         q: 'Why it spans every resource type',
         a: 'An identifier says what a thing IS, so one scan produces software, datasets, '
-          + 'materials and protocols together. It is the only module whose table fills more '
-          + 'than one type tab — the others each produce a single kind.'
+          + 'materials and protocols together. It is the only DETECTOR that does — the other '
+          + 'four each produce a single kind. (The Generated KRT, AI Suggestions and KRT '
+          + 'Grounding span every type too, but they consolidate rather than detect.)'
       },
       {
         q: 'What it will miss',
-        a: 'Any identifier not on the list, and any resource the manuscript names without '
-          + 'citing an identifier for it.'
+        a: 'A resource the manuscript names without citing an identifier for it, and — for most '
+          + 'kinds — any identifier not on the list. Published protocols are the exception: a '
+          + 'second sweep recognises protocol venues (protocols.io, Nature Protocols, JoVE and '
+          + 'the like) from the shape of the DOI alone, so one of those is found whether or not '
+          + 'anybody curated it. By default the scan also stops at the References heading, so an '
+          + 'identifier cited only in the bibliography is not picked up.'
       }
     ]
   },
@@ -386,9 +409,12 @@ export const MODULE_EXPLAINERS = {
           + 'presented as a quotation unless it was found word for word.'
       },
       {
-        q: 'What was discarded',
-        a: 'Anything whose quote AND whose resource were both absent from the manuscript is '
-          + 'dropped before you see it, rather than shown with a caveat.'
+        q: 'Nothing is dropped from this page',
+        a: 'Every row the model returned is listed here, tagged by how well it is evidenced. A '
+          + 'row whose quote could not be found shows "not verbatim" with the paragraph where '
+          + 'the resource really appears. A row where neither the quote nor the resource could '
+          + 'be located carries no evidence at all — that blank is the warning. Filtering '
+          + 'happens later, when the Generated KRT is assembled, not here.'
       }
     ]
   },
