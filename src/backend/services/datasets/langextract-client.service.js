@@ -13,6 +13,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const apiConfig = require('../../config/datasets-detection-api');
+const { applyGeminiDefaults } = require('../../config/gemini');
 const { ExternalServiceError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
 
@@ -33,7 +35,10 @@ const EXTRACTION_PASSES = parseInt(process.env.DATASETS_LANGEXTRACT_EXTRACTION_P
 const TEMPERATURE = Number.isFinite(parseFloat(process.env.DATASETS_LANGEXTRACT_TEMPERATURE))
   ? parseFloat(process.env.DATASETS_LANGEXTRACT_TEMPERATURE)
   : 0;
-const GEMINI_MODEL = process.env.DATASETS_DETECTION_GEMINI_MODEL || 'gemini-2.5-flash';
+// Read from the config rather than the environment directly: it resolves the
+// shared GEMINI_MODEL fallback too, and a client that skipped it would send
+// one model while every status line in the app named another.
+const GEMINI_MODEL = apiConfig.model;
 
 // Timeout: 10 minutes (langextract processes many chunks in parallel)
 const TIMEOUT_MS = parseInt(process.env.DATASETS_LANGEXTRACT_TIMEOUT, 10) || 600000;
@@ -108,7 +113,7 @@ async function extractSignals(markdownText, { prompt, examples } = {}) {
 
     const child = spawn(PYTHON_BIN, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env }
+      env: buildChildEnv()
     });
 
     // Set timeout. SIGTERM first; escalate to SIGKILL if the process is
@@ -270,8 +275,31 @@ function partitionByGrounding(rows) {
   return { grounded, ungrounded };
 }
 
+/**
+ * The environment the LangExtract child runs in.
+ *
+ * The script reads DATASETS_DETECTION_GEMINI_API_KEY out of its own
+ * environment, and a child process inherits variables, not the expression that
+ * produced them. `server.js` already normalises the whole environment at
+ * startup, so under the app this call has nothing left to do -- but the
+ * detection scripts under `scripts/` load their own .env and never run that
+ * pass, and the child would inherit an environment with the per-module
+ * variable still missing.
+ *
+ * It applies the SAME function startup applies, rather than a second copy of
+ * the rule. One rule, two places it is enforced, no way for them to disagree.
+ *
+ * @returns {Record<string, string>} env for the child process
+ */
+function buildChildEnv() {
+  const env = { ...process.env };
+  applyGeminiDefaults(env);
+  return env;
+}
+
 module.exports = {
   extractSignals,
+  buildChildEnv,
   collectDatasetNames,
   buildExtractedRows,
   partitionByGrounding

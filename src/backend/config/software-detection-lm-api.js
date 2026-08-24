@@ -19,6 +19,7 @@
  */
 
 const logger = require('../utils/logger');
+const { geminiKey, geminiModel } = require('./gemini');
 
 /**
  * Placeholder values shipped in .env.example. Treating one as a real key makes
@@ -35,10 +36,10 @@ function isRealKey(key) {
 
 module.exports = {
   // Gemini API key (per-service)
-  apiKey: process.env.SOFTWARE_DETECTION_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+  apiKey: geminiKey('SOFTWARE_DETECTION'),
 
   // Model to use
-  model: process.env.SOFTWARE_DETECTION_GEMINI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  model: geminiModel('SOFTWARE_DETECTION'),
 
   // Request timeout
   timeout: parseInt(process.env.SOFTWARE_DETECTION_API_TIMEOUT, 10) || 300000,

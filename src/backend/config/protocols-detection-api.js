@@ -6,13 +6,14 @@
  */
 
 const logger = require('../utils/logger');
+const { geminiKey, geminiModel } = require('./gemini');
 
 module.exports = {
   // Gemini API key (per-service)
-  apiKey: process.env.PROTOCOLS_DETECTION_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+  apiKey: geminiKey('PROTOCOLS_DETECTION'),
 
   // Model to use
-  model: process.env.PROTOCOLS_DETECTION_GEMINI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  model: geminiModel('PROTOCOLS_DETECTION'),
 
   // Request timeout (5 minutes — PDF processing can be slow)
   timeout: parseInt(process.env.PROTOCOLS_DETECTION_API_TIMEOUT, 10) || 300000,

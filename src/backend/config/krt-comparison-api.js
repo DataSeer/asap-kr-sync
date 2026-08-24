@@ -7,13 +7,14 @@
  */
 
 const logger = require('../utils/logger');
+const { geminiKey, geminiModel } = require('./gemini');
 
 module.exports = {
   // Gemini API key (per-service)
-  apiKey: process.env.KRT_COMPARISON_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+  apiKey: geminiKey('KRT_COMPARISON'),
 
   // Model to use
-  model: process.env.KRT_COMPARISON_GEMINI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  model: geminiModel('KRT_COMPARISON'),
 
   // Request timeout
   timeout: parseInt(process.env.KRT_COMPARISON_API_TIMEOUT, 10) || 300000,

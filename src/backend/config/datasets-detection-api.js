@@ -2,17 +2,20 @@
  * Datasets Detection API Configuration (Google Gemini)
  *
  * Uses Gemini to detect dataset mentions in manuscript text.
- * Authentication: per-service API key via DATASETS_DETECTION_GEMINI_API_KEY.
+ * Authentication: DATASETS_DETECTION_GEMINI_API_KEY, falling back to the
+ * shared GEMINI_API_KEY. The langextract child process is handed the
+ * resolved value, because it reads the per-service name directly.
  */
 
 const logger = require('../utils/logger');
+const { geminiKey, geminiModel } = require('./gemini');
 
 module.exports = {
   // Gemini API key (per-service)
-  apiKey: process.env.DATASETS_DETECTION_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+  apiKey: geminiKey('DATASETS_DETECTION'),
 
   // Model to use
-  model: process.env.DATASETS_DETECTION_GEMINI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  model: geminiModel('DATASETS_DETECTION'),
 
   // Request timeout (5 minutes — PDF processing can be slow)
   timeout: parseInt(process.env.DATASETS_DETECTION_API_TIMEOUT, 10) || 300000,
@@ -30,7 +33,7 @@ module.exports = {
     if (this.disabled) {
       logger.info('Datasets Detection API: DISABLED (datasets detection skipped)');
     } else if (!this.apiKey) {
-      logger.warn('Datasets Detection API: No API key configured (DATASETS_DETECTION_GEMINI_API_KEY)');
+      logger.warn('Datasets Detection API: no API key configured (DATASETS_DETECTION_GEMINI_API_KEY or GEMINI_API_KEY)');
     } else {
       logger.info('Datasets Detection API: configured', { model: this.model });
     }

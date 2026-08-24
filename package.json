@@ -22,7 +22,7 @@
     "pretest": "npm run lint:check",
     "test": "npm run test:backend && npm run test:frontend",
     "test:backend": "cd src/backend && npm test",
-    "test:backend:noenv": "cd src/backend && node --require ../../scripts/dev/no-dotenv.js --test services controllers middleware utils models",
+    "test:backend:noenv": "cd src/backend && node --require ../../scripts/dev/no-dotenv.js --test config services controllers middleware utils models",
     "test:frontend": "cd src/frontend && npm test",
     "build": "npm run build:frontend",
     "build:frontend": "cd src/frontend && npm run build",

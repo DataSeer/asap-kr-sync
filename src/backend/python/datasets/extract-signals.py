@@ -122,10 +122,20 @@ def load_examples(path):
 def main():
     args = parse_args()
 
-    # Validate API key (per-service var, no fallback)
-    api_key = os.environ.get("DATASETS_DETECTION_GEMINI_API_KEY")
+    # Per-service var first, shared key second. The caller resolves this and
+    # passes the answer in, so the fallback here matters only when the script
+    # is run by hand -- but a script that dies on a key the operator did set,
+    # under a different name, is the kind of failure that costs an afternoon.
+    api_key = (
+        os.environ.get("DATASETS_DETECTION_GEMINI_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+    )
     if not api_key:
-        print("Error: DATASETS_DETECTION_GEMINI_API_KEY environment variable is required", file=sys.stderr)
+        print(
+            "Error: no Gemini API key. Set DATASETS_DETECTION_GEMINI_API_KEY "
+            "or GEMINI_API_KEY.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     # Set GEMINI_API_KEY for langextract (it reads this env var internally)
     os.environ["GEMINI_API_KEY"] = api_key

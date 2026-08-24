@@ -18,6 +18,16 @@ envFiles.forEach(file => {
   require('dotenv').config({ path: path.resolve(__dirname, file) });
 });
 
+// Fill in each Gemini module's key and model from the shared GEMINI_API_KEY /
+// GEMINI_MODEL, unless that module names its own. This runs HERE -- after the
+// .env files, before the first config is required -- because config modules
+// read process.env at require time, and because a child process inherits
+// environment variables rather than the expression that produced them. The
+// LangExtract script that datasets detection spawns reads its per-module
+// variable directly; before this call it found nothing and exited 1 while
+// every Node-side status check reported the module configured.
+require('./config/gemini').applyGeminiDefaults();
+
 /**
  * Validate required environment variables. Note that Auth0 vars are NOT
  * checked here — they are gated by the AUTH0_ENABLED feature flag inside
