@@ -30,6 +30,7 @@ const injectedJobs = inject('submissionJobs', ref({}))
 // the consolidator that parked here, which was the wrong step to ask — it never
 // reads the statement, and holding it stalled the whole KRT half of the run.
 const dasNeedsConfirmation = computed(() => {
+  if (!props.showDasBanner) return false
   const j = injectedJobs.value?.das_suggestions
   return j?.status === 'pending_input'
 })
@@ -62,6 +63,18 @@ const props = defineProps({
   stepDescription: {
     type: String,
     default: ''
+  },
+  /**
+   * Show the Availability Statement banner when the check is waiting.
+   *
+   * On by default, because the point of the banner is that the confirmation can
+   * be dealt with from anywhere. The Availability page itself sets it false:
+   * that page IS the confirmation, so the banner there is the same request made
+   * twice, directly above the control that answers it.
+   */
+  showDasBanner: {
+    type: Boolean,
+    default: true
   },
   /** Show navigation arrows in the status bar */
   showNavigation: {

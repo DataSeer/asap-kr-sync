@@ -137,14 +137,49 @@ const ms = (v) => (typeof v === 'number' ? (v >= 1000 ? `${(v / 1000).toFixed(1)
  * How this run was configured. Named in the terms the app uses elsewhere, so a
  * value here can be searched for in the code or the docs.
  */
+/** `service.config.state`, in words rather than an enum. */
+const MODULE_STATE = {
+  on: 'on — calls its real service',
+  demo: 'demo — canned data, no service call',
+  off: 'off — the step is skipped'
+}
+
+/**
+ * `service.outcome.source`, likewise.
+ *
+ * "internal" is not a lesser answer: a few steps do their work in the app —
+ * KRT Grounding matches text deterministically — and a bare "internal" beside
+ * another module's bare "external" reads as though one of them is misconfigured.
+ */
+const RAN_VIA = {
+  external: 'an external service',
+  internal: 'the app itself — no external service is called',
+  demo: 'demo data, not a live service'
+}
+
+/** Just the file name; the full path is on the Prompt tab. */
+const promptName = (p) => (typeof p === 'string' ? p.split('/').pop() : null)
+
 const config = computed(() => {
   const m = meta.value
+  const state = result.value.service?.config?.state
+  const via = result.value.service?.outcome?.source
+  // Every module reports its state and where the answer came from. The four
+  // rows after that are reported by some and not others, which is why this
+  // panel used to show a single line for PDF Analysis and half a dozen for a
+  // detector — the table only ever asked for fields those detectors happen to
+  // emit. Anything a module does report about how it was configured belongs
+  // here, so the shape of the panel stops depending on which module you opened.
   const rows = [
+    ['Module', MODULE_STATE[state] || state],
     ['Pipeline', m.pipeline],
     ['Strategy', m.strategy],
     ['Model', m.model],
     ['Mode', m.mode],
-    ['Ran via', result.value.service?.outcome?.source]
+    ['Prompt', promptName(m.promptFile)],
+    ['LM pass', m.usedLM === true ? 'used' : m.usedLM === false ? 'not used — rule-based merge'
+      : m.lmEnabled === true ? 'enabled' : m.lmEnabled === false ? 'disabled' : null],
+    ['Ran via', RAN_VIA[via] || via]
   ]
   if (m.grounding) {
     rows.push(['Shows candidate verdicts', m.grounding.surfaceValues ? 'yes' : 'no — the prompts were seeded'])

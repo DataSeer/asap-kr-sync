@@ -88,7 +88,6 @@ const stages = computed(() => {
 /** Gate names, in the words a reader can act on. */
 const GATE_LABELS = {
   krt_curated: 'the Key Resources Table to be validated',
-  markdown_ready: 'the manuscript to be converted to text',
   availability_ready: 'the Availability Statement step, and a statement to check'
 }
 const gateLabel = (name) => GATE_LABELS[name] || name

@@ -63,15 +63,17 @@ const statusUnreadable = computed(() =>
  * document and report zero findings, which reads as "your manuscript mentions
  * none of this" — so the steps hold instead, and this says why.
  */
-const blockedOnMarkdown = computed(() =>
-  jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === 'markdown_missing'))
+const BLOCKED_REASON = 'blocked_by_failure'
+
+const blockedByIssue = computed(() =>
+  jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === BLOCKED_REASON))
 
 /** The pipeline is standing still, and will not start again by itself. */
-const paused = computed(() => blockedOnMarkdown.value)
+const paused = computed(() => blockedByIssue.value)
 
 /** How many steps that has stopped — the scale of the problem, not just its name. */
 const blockedCount = computed(() =>
-  jobList.value.filter((j) => j.status === 'waiting' && j.waitingReason === 'markdown_missing').length)
+  jobList.value.filter((j) => j.status === 'waiting' && j.waitingReason === BLOCKED_REASON).length)
 // Cancel-processing action, provided by BackgroundProcesses (#15).
 const cancelProcessingFn = inject('cancelProcessing', null)
 const cancelling = ref(false)
@@ -791,8 +793,14 @@ function getWaitingFor(job) {
 function getJobDetail(job) {
   if (!job.status) return 'Not started yet'
   if (job.status === 'pending_input') {
-    if (job.type === 'pdf_analysis') {
-      return 'Waiting for Availability Statement — please enter it manually, then start the analysis.'
+    // Only one step can park here: `das_suggestions` is the sole entry in the
+    // pipeline with a `canAutoAdvance`, and it holds until the author confirms
+    // the statement. PDF Analysis used to have a message here too, from when it
+    // depended on the extraction — it was taken off that dependency precisely
+    // because parking it was a dead end, so the message could no longer appear.
+    if (job.type === 'das_suggestions') {
+      return 'Waiting for you to confirm your Availability Statement — until then this check '
+        + 'spends nothing. Confirm it on the Availability step and it runs on its own.'
     }
     return 'Waiting for user input before proceeding.'
   }
@@ -800,13 +808,13 @@ function getJobDetail(job) {
     if (job.waitingReason === 'krt_validation') {
       return 'Waiting for the Key Resources Table to be validated — complete the KRT step to start this analysis.'
     }
-    if (job.waitingReason === 'markdown_missing') {
+    if (job.waitingReason === BLOCKED_REASON) {
       // The message follows the button. Everyone signed in has Restart now, so
       // this reads the same flag rather than assuming — the two drifting apart
       // is what produced an instruction with nothing to act on.
-      return 'Blocked: the manuscript has no converted text. This step is held rather than run against an '
-        + 'empty document — '
-        + (canRestartJobs.value ? 're-run Markdown Convert or re-upload the PDF.' : 're-upload the PDF to try again.')
+      return 'Held behind an earlier step that did not finish cleanly. Read that step for what went '
+        + 'wrong, then '
+        + (canRestartJobs.value ? 'retry it or continue without it.' : 'ask a curator to retry it or continue without it.')
     }
     const deps = getWaitingFor(job)
     if (deps.length) {
@@ -951,7 +959,7 @@ async function downloadRawResponse(jobType, responseName) {
        when the pipeline is paused on the user, red when it cannot continue. -->
   <div
     class="job-status-wrapper job-status-card"
-    :class="{ 'job-status-card-blocked': blockedOnMarkdown }"
+    :class="{ 'job-status-card-blocked': blockedByIssue }"
   >
     <p v-if="statusUnreadable" class="job-status-unreadable" role="status">
       The status of these steps could not be read — the page did not reach the
@@ -984,12 +992,13 @@ async function downloadRawResponse(jobType, responseName) {
              estimate there would be a lie — and this is the line the user
              already reads for "what is happening now". The estimate comes back
              by itself on the next step. -->
-        <span v-if="blockedOnMarkdown" class="job-status-eta-state job-status-eta-state-blocked">
-          <strong>Analysis is blocked: the manuscript could not be converted to text.</strong>
+        <span v-if="blockedByIssue" class="job-status-eta-state job-status-eta-state-blocked">
+          <strong>Analysis is paused: an earlier step needs a decision.</strong>
           {{ blockedCount }} step{{ blockedCount === 1 ? '' : 's' }}
-          {{ blockedCount === 1 ? 'is' : 'are' }} held rather than run against an empty document.
-          <template v-if="canRestartJobs">Re-run <strong>Markdown Convert</strong> below, or re-upload the PDF.</template>
-          <template v-else>Re-upload the PDF to try the conversion again.</template>
+          {{ blockedCount === 1 ? 'is' : 'are' }} held behind it. The step that stopped says what went
+          wrong below;
+          <template v-if="canRestartJobs">retry it, or continue without it.</template>
+          <template v-else>ask a curator to retry it or continue without it.</template>
         </span>
         <span v-else-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
         <div class="job-header-badges">
@@ -1008,7 +1017,17 @@ async function downloadRawResponse(jobType, responseName) {
           <span v-if="jobSummary.cancelled > 0" class="job-summary-badge job-status-cancelled">
             {{ jobSummary.cancelled }} cancelled
           </span>
-          <span class="job-summary-badge job-status-complete">
+          <!-- Eleven, not twelve, and deliberately so: this panel is shown on the
+               KRT and Manuscript steps, and the Availability Statement check
+               belongs to the Availability step. Counting a step the user has
+               not reached would leave the badge permanently short of its own
+               total. The tooltip says which step the twelfth is on, so the
+               difference from the pipeline page reads as a scope rather than a
+               missing step. -->
+          <span
+            v-tooltip="'These are the ' + jobSummary.total + ' steps that read the manuscript and your Key Resources Table, which you handle on steps 1 and 2. The pipeline has one more — the Availability Statement check — and it runs on step 4, once you confirm your statement.'"
+            class="job-summary-badge job-status-complete"
+          >
             {{ jobSummary.done }}/{{ jobSummary.total }} done
           </span>
         </div>

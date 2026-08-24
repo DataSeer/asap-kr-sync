@@ -202,11 +202,28 @@ const latestFiles = computed(() => submissionStore.latestFiles)
 const pdfFile = computed(() => latestFiles.value?.pdf)
 const krtFile = computed(() => latestFiles.value?.krt)
 
+/**
+ * Steps belonging to a LATER step of the submission.
+ *
+ * The Availability Statement check is the twelfth step, and it is gated to the
+ * Availability page — on this page it is `waiting` and will stay that way no
+ * matter how long anyone looks at it. Counting it as outstanding work left the
+ * suggestions panel showing "Analyzing the manuscript…" for ever on a
+ * submission whose eleven other steps had all finished, because
+ * `allProcessesFinished` could never become true.
+ *
+ * `isFutureStepJob` was written and tested for exactly this, and imported here,
+ * and then never called — which is how the bug survived.
+ */
+const processesForThisStep = computed(
+  () => Object.values(jobs.value || {}).filter(j => !isFutureStepJob(j))
+)
+
 // True when every background process has reached a final state (complete or
 // failed). Excludes pending_input and waiting — those are "blocked, not done",
 // and the user should still see the prompt that lets them act on it.
 const allProcessesFinished = computed(() => {
-  const list = Object.values(jobs.value || {})
+  const list = processesForThisStep.value
   if (list.length === 0) return false
   const inFlight = list.some(j =>
     j.status === 'waiting' || j.status === 'queued' ||
@@ -219,10 +236,11 @@ const allProcessesFinished = computed(() => {
 // True as soon as at least one process has produced a final result. Used to
 // reveal the empty-state hint early — the user shouldn't have to wait for the
 // slowest job to learn that nothing has been suggested yet.
-const anyProcessFinished = computed(() => {
-  const list = Object.values(jobs.value || {})
-  return list.some(j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled')
-})
+const anyProcessFinished = computed(
+  () => processesForThisStep.value.some(
+    j => j.status === 'complete' || j.status === 'failed' || j.status === 'cancelled'
+  )
+)
 
 // True if any module in the current round was cancelled. Regenerating
 // suggestions is meaningless in this state (the Generated KRT the comparison

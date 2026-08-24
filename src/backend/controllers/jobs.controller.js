@@ -55,7 +55,6 @@ function resolveRound(req) {
 const WAITING_REASONS = {
   blocked_by_failure: 'blocked_by_failure',
   krt_curated: 'krt_validation',
-  markdown_ready: 'markdown_missing',
   // Not a stall: this step belongs to a later stage of the submission. The
   // client uses this to keep it out of "all processes finished" — a step the
   // user has not reached is not outstanding work for the step they are on.
