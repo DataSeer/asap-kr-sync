@@ -145,6 +145,7 @@ removed). The DAS Extraction job now depends on Markdown Convert.
 | `SOFTCITE_API_ENABLED` | Enable software detection | `false` | No |
 | `SOFTCITE_API_BASE_URL` | Softcite API endpoint | `http://localhost:8050` | If enabled |
 | `SOFTCITE_API_TIMEOUT` | Request timeout (ms) | `600000` | No |
+| `SOFTWARE_DETECTION_LM_ENABLED` | Enable the Gemini second pass over Softcite's findings. Independent of `SOFTCITE_API_ENABLED`: the rule-based pass and the LM pass are turned on separately. | `false` | No |
 | `SOFTWARE_DETECTION_GEMINI_API_KEY` | Gemini key for the software LM pass | — | No |
 | `SOFTWARE_DETECTION_GEMINI_MODEL` | Model for the LM pass | `gemini-2.5-flash` | No |
 | `SOFTWARE_DETECTION_API_TIMEOUT` | Timeout for the LM pass (ms) | `300000` | No |
@@ -176,6 +177,19 @@ when you actually need a separate quota or a different model.
 
 Resolution order per module: `<MODULE>_GEMINI_API_KEY` → `GEMINI_API_KEY` → unset
 (the module reports itself `off`).
+
+The fallback is applied **once at startup**, by `applyGeminiDefaults()` in
+`src/backend/config/gemini.js`: every module's `<MODULE>_GEMINI_API_KEY` and
+`<MODULE>_GEMINI_MODEL` is written into the process environment unless you set
+it yourself. So after boot the per-module variables are really set, not merely
+computed on demand.
+
+That matters for Datasets Detection, the one module that does its work in a
+child process. A child inherits environment variables, not the expression that
+produced them — so while the fallback lived only in JavaScript, a deployment
+with just `GEMINI_API_KEY` had every Node-side check report the module
+configured while the Python script it spawns exited with
+`DATASETS_DETECTION_GEMINI_API_KEY environment variable is required`.
 
 ## PDF-to-Markdown Conversion
 
@@ -337,5 +351,26 @@ Two modules do not fit the pattern, and the exceptions matter:
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `KRT_TEMPLATE_URL` | Google Sheets KRT template URL surfaced as a download link in the SPA | — | No |
+
+## Credentials for the CLI scripts (never put these in `.env`)
+
+Some scripts under `scripts/` sign in to a running instance to do their work.
+They read their credentials from the environment, but they are **operator
+credentials, not application config** — pass them on the command line for the
+one invocation, so they land in neither `.env` nor the app's configuration:
+
+```bash
+ASAP_EMAIL=you@example.org ASAP_PASSWORD='…' node scripts/upload-documents.js --dir DIR
+```
+
+| Variable | Used by | Notes |
+|----------|---------|-------|
+| `ASAP_BASE_URL` | `upload-documents.js` | Target instance. No default — the target is always explicit, so a batch cannot land in the wrong environment by accident. |
+| `ASAP_EMAIL` | `upload-documents.js`, `check-krt.js` | Account the script signs in as. |
+| `ASAP_PASSWORD` | `upload-documents.js`, `check-krt.js` | Its password. Anything written into `.env` outlives the command that needed it and gets read by every later process — including ones that log their configuration. |
+
+`.env` is gitignored (along with every `.env.*` except `.env.example`), and
+`credentials/*.json|pem|key` with it. Nothing in this file should ever hold a
+real secret.
 
 ---

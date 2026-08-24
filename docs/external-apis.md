@@ -43,7 +43,7 @@ Powers the `suggestion_generation` background job. A Gemini call compares the **
 | **Prompt** | `src/backend/data/prompts/krt-comparison.txt` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `KRT_COMPARISON_GEMINI_MODEL`) |
-| **Auth** | API key (`KRT_COMPARISON_GEMINI_API_KEY`) |
+| **Auth** | API key: `KRT_COMPARISON_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 5 minutes (`KRT_COMPARISON_API_TIMEOUT`) |
 | **Depends on** | PDF Analysis (Generated KRT), which already gates on every KRT detector; runs last in the pipeline |
 | **Disable** | `KRT_COMPARISON_ENABLED=false` (no suggestions are generated) |
@@ -63,7 +63,7 @@ Powers the `das_suggestions` background job — a pipeline step gated to the Ava
 | **Prompt** | `src/backend/data/prompts/das-suggestions.txt` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `DAS_SUGGESTIONS_GEMINI_MODEL`) |
-| **Auth** | API key (`DAS_SUGGESTIONS_GEMINI_API_KEY`) |
+| **Auth** | API key: `DAS_SUGGESTIONS_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 2 minutes (`DAS_SUGGESTIONS_API_TIMEOUT`) |
 | **Depends on** | `das_extraction` for the statement, then held by the `availability_ready` gate until the submission reaches `step_as` **and** carries a real statement |
 | **Disable** | `DAS_SUGGESTIONS_ENABLED=false` (frontend falls back to legacy in-browser rules) |
@@ -255,8 +255,8 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 | **Library** | `langextract` (Google, Python) |
 | **Input** | Markdown text (from S3, produced by Markdown Convert job) |
 | **Output** | JSON array of `DATASET_ROW` extractions with `extracted_text` and `attributes` |
-| **Model** | `gemini-2.5-flash` (configurable via `DATASETS_DETECTION_GEMINI_MODEL`) |
-| **Auth** | API key (`DATASETS_DETECTION_GEMINI_API_KEY`) |
+| **Model** | `gemini-2.5-flash` (configurable via `DATASETS_DETECTION_GEMINI_MODEL`, or the shared `GEMINI_MODEL`) |
+| **Auth** | API key: `DATASETS_DETECTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). The subprocess reads the per-module variable out of its own environment, which is why the fallback is written into `process.env` at startup rather than resolved in JavaScript only. |
 | **Timeout** | 10 minutes (`DATASETS_LANGEXTRACT_TIMEOUT`) |
 
 **Key parameters:** `max_workers` (60), `max_char_buffer` (3000), `extraction_passes` (1) — all configurable via env vars.
@@ -272,7 +272,7 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 | **Service** | `src/backend/services/datasets/datasets.service.js` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `DATASETS_DETECTION_GEMINI_MODEL`) |
-| **Auth** | API key (`DATASETS_DETECTION_GEMINI_API_KEY`) |
+| **Auth** | API key: `DATASETS_DETECTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 5 minutes (`DATASETS_DETECTION_API_TIMEOUT`) |
 | **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
 | **Disable** | `DATASETS_DETECTION_ENABLED=false` |
@@ -314,7 +314,7 @@ Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Fo
 | **Service** | `src/backend/services/materials/materials.service.js` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `MATERIALS_DETECTION_GEMINI_MODEL`) |
-| **Auth** | API key (`MATERIALS_DETECTION_GEMINI_API_KEY`) |
+| **Auth** | API key: `MATERIALS_DETECTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 5 minutes (`MATERIALS_DETECTION_API_TIMEOUT`) |
 | **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
 | **Disable** | `MATERIALS_DETECTION_ENABLED=false` |
@@ -339,7 +339,7 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 | **Service** | `src/backend/services/protocols/protocols.service.js` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `PROTOCOLS_DETECTION_GEMINI_MODEL`) |
-| **Auth** | API key (`PROTOCOLS_DETECTION_GEMINI_API_KEY`) |
+| **Auth** | API key: `PROTOCOLS_DETECTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 5 minutes (`PROTOCOLS_DETECTION_API_TIMEOUT`) |
 | **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
 | **Disable** | `PROTOCOLS_DETECTION_ENABLED=false` |
