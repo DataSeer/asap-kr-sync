@@ -696,7 +696,7 @@ Get all background job statuses for a submission.
   for `pending_input` jobs).
 
 ### `POST /api/submissions/:id/processes/run`
-Run (or re-run) all background processes for a submission. Every step in the
+Run (or re-run) the whole pipeline for a submission. Every step in the
 round is about to run, so **every input freeze is released** — this is the call a
 PDF upload makes, and it is what lets a replaced manuscript reach the pipeline.
 

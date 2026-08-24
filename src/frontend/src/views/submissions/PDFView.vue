@@ -565,7 +565,7 @@ async function handleReplacePdfFile(event) {
   replacingPdf.value = true
   try {
     await pdfService.upload(route.params.id, file)
-    notificationStore.success('PDF replaced — background processes are restarting')
+    notificationStore.success('PDF replaced — the pipeline is restarting')
     await submissionStore.fetchSubmission(route.params.id)
     // Backend auto-triggers DAS + PDF analysis pipeline on upload, which is
     // the same as restarting every process.
@@ -1287,7 +1287,7 @@ function scrollToFindingRow(finding) {
         @resolved="refreshAfterDecision"
       />
 
-      <!-- Background processes panel — embeds the wait-time ETA in its
+      <!-- Pipeline panel — embeds the wait-time ETA in its
            header and exposes a "More details" toggle for the per-job grid. -->
       <BackgroundProcesses
         ref="bgProcessesRef"
@@ -1324,7 +1324,7 @@ function scrollToFindingRow(finding) {
               :disabled="analyzing"
               class="btn-secondary text-xs inline-flex items-center"
               :class="{ 'opacity-50 cursor-not-allowed': analyzing }"
-              v-tooltip="'Re-run every background process for this round — all twelve steps'"
+              v-tooltip="'Re-run the whole pipeline for this round — all twelve steps'"
               @click="handleRerunAnalysis"
             >
               <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1394,11 +1394,11 @@ function scrollToFindingRow(finding) {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <p class="text-sm font-medium text-gray-800">Your KRT seems to already contain everything we found.</p>
-            <p class="text-xs text-gray-500 mt-1">No suggestions to review. You can open the background processes panel above to check what was detected.</p>
+            <p class="text-xs text-gray-500 mt-1">No suggestions to review. You can open the pipeline panel above to check what was detected.</p>
           </template>
           <template v-else>
             <p class="text-sm font-medium text-gray-800">Analyzing the manuscript…</p>
-            <p class="text-xs text-gray-500 mt-1">Background processes are still running. New suggestions will appear here as they finish.</p>
+            <p class="text-xs text-gray-500 mt-1">The pipeline is still running. New suggestions will appear here as they finish.</p>
             <div class="mx-auto mt-3 max-w-xs h-1.5 rounded-full bg-primary-100 overflow-hidden">
               <div class="analysis-progress-bar h-full rounded-full bg-primary-500"></div>
             </div>
@@ -1702,7 +1702,7 @@ function scrollToFindingRow(finding) {
         <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
           <h3 class="text-sm font-semibold text-gray-900 mb-2">Replace the PDF?</h3>
           <p class="text-sm text-gray-600 mb-3">
-            Uploading a new PDF will restart every background process — all twelve, from the markdown conversion through every detector to the Generated KRT, AI Suggestions and the Availability Statement check.
+            Uploading a new PDF will restart the whole pipeline — all twelve steps, from the markdown conversion through every detector to the Generated KRT, AI Suggestions and the Availability Statement check.
           </p>
           <p class="text-sm text-gray-600 mb-4">
             Existing AI suggestions will be regenerated against the new manuscript. Any unsaved review work on the current suggestions will be lost.

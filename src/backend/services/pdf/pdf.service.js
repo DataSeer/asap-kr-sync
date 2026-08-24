@@ -671,6 +671,7 @@ async function runDasExtractor(submission, jobLogger) {
       meta: {
         das: null, dasLength: 0,
         promptFile: repoPath(dasExtractionService.PROMPT_FILE),
+        model: dasExtractionConfig.model,
         partialMatch: !!extracted?.partialMatch,
         sectionFragmented: !!extracted?.sectionFragmented
       }
@@ -683,6 +684,7 @@ async function runDasExtractor(submission, jobLogger) {
       das: dasContent,
       dasLength: dasContent.length,
       promptFile: repoPath(dasExtractionService.PROMPT_FILE),
+      model: dasExtractionConfig.model,
       partialMatch: !!extracted.partialMatch,
       sectionFragmented: !!extracted.sectionFragmented
     }

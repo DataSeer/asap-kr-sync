@@ -39,43 +39,11 @@ const emit = defineEmits(['close', 'saved'])
 // now, it does not take the feature away.
 const injectedJobs = inject('submissionJobs', ref({}))
 
-// Extraction writes the statement itself. Typing into the field while it runs
-// means typing into something that is about to be replaced — the save lands
-// first and the extractor overwrites it seconds later, or the reverse, and
-// either way the author cannot tell which text survived.
-const dasExtractionRunning = computed(() => {
-  const status = injectedJobs.value?.das_extraction?.status
-  return status === 'queued' || status === 'processing'
-})
-
-// The Availability check waits for a person to vouch for the statement it will
-// read. Offered here as well as on the Availability page so the pipeline can be
-// unblocked from any step — which is the point of this modal being reachable
-// everywhere.
-//
-// Only for text nobody has touched: editing the field below and saving records
-// the same decision, in the same person's name.
-const dasNeedsConfirmation = computed(() => {
-  const das = (props.submission?.dataAvailabilityStatement || '').trim()
-  return !!das && das !== 'Not found' && !props.submission?.dasConfirmedAt
-})
-const confirmingDas = ref(false)
-
-async function confirmDas() {
-  confirmingDas.value = true
-  try {
-    const { checking } = await submissionStore.confirmDas(props.submission.id)
-    notificationStore.success(
-      checking ? 'Statement confirmed — checking it now' : 'Statement confirmed'
-    )
-  } catch (error) {
-    notificationStore.error(
-      error.response?.data?.error || 'Could not confirm the Availability Statement'
-    )
-  } finally {
-    confirmingDas.value = false
-  }
-}
+// The Availability Statement is NOT edited here. It is confirmed and rewritten
+// on the Availability step alone, because that page is the only place that
+// shows what the check will read and what it said — and a statement edited
+// from a modal three steps away clears its confirmation without the person
+// seeing the consequence.
 
 const submissionStore = useSubmissionStore()
 const notificationStore = useNotificationStore()
@@ -128,11 +96,9 @@ const demoQuery = ref('')
 
 const saving = ref(false)
 // DAS value when the modal opened — used to report whether the user changed it.
-const originalDas = ref('')
 const editForm = ref({
   title: '',
   manuscriptId: '',
-  dataAvailabilityStatement: '',
   notes: ''
 })
 
@@ -142,10 +108,8 @@ watch(() => [props.show, props.submission], ([show, submission]) => {
     editForm.value = {
       title: submission.title || '',
       manuscriptId: submission.manuscriptId || '',
-      dataAvailabilityStatement: submission.dataAvailabilityStatement || '',
       notes: submission.notes || ''
     }
-    originalDas.value = submission.dataAvailabilityStatement || ''
     demoSearchOpen.value = false
     demoQuery.value = ''
     selectedOwnerId.value = submission.userId || ''
@@ -225,19 +189,14 @@ async function saveMetadata() {
   if (!props.submission?.id) return
 
   saving.value = true
-  const newDas = editForm.value.dataAvailabilityStatement || ''
-  const dasChanged = newDas !== (originalDas.value || '')
   try {
     await submissionStore.updateSubmission(props.submission.id, {
       title: editForm.value.title,
       manuscriptId: editForm.value.manuscriptId || null,
-      dataAvailabilityStatement: editForm.value.dataAvailabilityStatement,
       notes: editForm.value.notes || null
     })
     notificationStore.success('Metadata updated successfully')
-    // Second arg lets listeners (e.g. SubmissionHeader) decide whether to
-    // advance pdf_analysis: only when the DAS was actually changed.
-    emit('saved', props.submission, { dasChanged, das: newDas })
+    emit('saved', props.submission)
     closeModal()
   } catch (error) {
     // Show detailed validation errors if available
@@ -335,49 +294,6 @@ async function saveMetadata() {
                   </li>
                 </ul>
               </div>
-            </div>
-          </div>
-
-          <!-- Data Availability Statement -->
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">
-              Data Availability Statement
-            </label>
-            <p
-              v-if="dasExtractionRunning"
-              class="flex items-start gap-2 mb-2 px-3 py-2 rounded-md bg-blue-50 text-sm text-blue-800"
-              role="status"
-            >
-              <svg class="animate-spin h-4 w-4 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              We are reading your manuscript for the Availability Statement. It will appear here in a
-              moment — anything typed now would be overwritten.
-            </p>
-            <textarea
-              v-model="editForm.dataAvailabilityStatement"
-              rows="4"
-              :disabled="dasExtractionRunning"
-              class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-vertical disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
-              placeholder="Describe how and where the data will be made available..."
-            ></textarea>
-            <div
-              v-if="dasNeedsConfirmation && !dasExtractionRunning"
-              class="mt-2 flex items-start gap-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200"
-            >
-              <p class="flex-1 text-sm text-amber-900">
-                This was read out of your manuscript. We will check it against the ASAP requirements
-                once you confirm it is the right passage.
-              </p>
-              <button
-                type="button"
-                class="shrink-0 px-3 py-1.5 rounded-md bg-amber-700 text-white text-sm font-semibold hover:bg-amber-800 disabled:opacity-60 disabled:cursor-not-allowed"
-                :disabled="confirmingDas"
-                @click="confirmDas"
-              >
-                {{ confirmingDas ? 'Confirming…' : 'Confirm' }}
-              </button>
             </div>
           </div>
 

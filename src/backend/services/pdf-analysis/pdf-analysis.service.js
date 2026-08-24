@@ -237,6 +237,10 @@ async function buildGeneratedKrt(submission, jobLogger) {
       // Consolidation falls back to a deterministic merge when the model is
       // unavailable; naming a prompt on that run would be a lie.
       promptFile: usedLM ? repoPath(require('./krt-generation.service').PROMPT_FILE) : null,
+      // The Technical panel shows one row per Gemini module; without this the
+      // consolidator was the only one that called Gemini and did not say which
+      // model it used.
+      model: usedLM ? require('../../config/krt-generation-api').model : null,
       multiSourceCount: multiSource,
       carriedCount: carried.length,
       totalMs: Date.now() - startTime

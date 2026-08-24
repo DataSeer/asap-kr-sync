@@ -771,7 +771,16 @@ async function initializeWorkers() {
           // always does — including in no-KRT mode, where zero author rows is
           // the correct answer rather than a failure.
           status: { detected: true, mode: m.mode },
-          service: buildServiceSnapshot('krt_grounding', { status: 'done', source: 'internal' }),
+          // Both, when the LM second look ran — and it usually does. The blanket
+          // 'internal' here was read as "this module calls nothing", which is
+          // half the story: the presence check is deterministic and local, and
+          // the rows it cannot place are then sent to Gemini. Saying only
+          // "internal" beside every other module's "external" made a mixed
+          // module look like a misconfigured one.
+          service: buildServiceSnapshot('krt_grounding', {
+            status: 'done',
+            source: m.secondLook && m.secondLook.skipped === false ? 'internal+external' : 'internal'
+          }),
           counts: {
             authorRows: m.authorRows || 0,
             confirmed: m.confirmed || 0,

@@ -305,7 +305,7 @@ async function proceedWithSubmit(krtFileToSend) {
     const failures = results.filter(r => r && r.error)
 
     if (failures.length === 0) {
-      notificationStore.success('Submission created — background processes started')
+      notificationStore.success('Submission created — the pipeline has started')
     } else {
       // Submission is created; surface the file failures so the user can
       // retry the individual upload from step 2/3.
@@ -445,7 +445,7 @@ async function proceedWithSubmit(krtFileToSend) {
         <label for="pdfFile" class="label">
           Upload Manuscript <span class="text-red-500">*</span>
         </label>
-        <p class="mb-2 text-sm text-gray-500">PDF or DOCX. Background processes start automatically after upload.</p>
+        <p class="mb-2 text-sm text-gray-500">PDF or DOCX. The pipeline starts automatically after upload.</p>
         <div v-if="!pdfFile">
           <div class="flex items-center">
             <input

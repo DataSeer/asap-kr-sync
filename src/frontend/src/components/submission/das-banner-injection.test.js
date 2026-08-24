@@ -42,29 +42,32 @@ function mountHeader(jobs) {
   })
 }
 
+/**
+ * The header no longer carries an Availability Statement banner.
+ *
+ * It used to prompt for the confirmation from every step, so the pipeline could
+ * be unblocked without navigating. That was withdrawn deliberately: the
+ * statement is now read, edited and confirmed on the Availability step alone,
+ * which is the only page that shows the text the check will read and what it
+ * said about it. A prompt anywhere else had nowhere to send people except a
+ * modal that no longer offers the field.
+ *
+ * Kept as a test rather than deleted because the banner is easy to reintroduce
+ * by accident — it was wired to a job status that still exists.
+ */
 describe('the Availability Statement confirmation banner', () => {
   beforeEach(() => { setActivePinia(createPinia()); vi.clearAllMocks() })
 
-  it('shows when the Availability check is waiting on a person', () => {
-    const wrapper = mountHeader({ das_suggestions: { status: 'pending_input' } })
-    expect(wrapper.find('.das-pending-banner').exists()).toBe(true)
+  it('is not shown, whatever the Availability check is doing', () => {
+    for (const status of ['pending_input', 'processing', 'waiting', 'complete']) {
+      const wrapper = mountHeader({ das_suggestions: { status } })
+      expect(wrapper.find('.das-pending-banner').exists(), status).toBe(false)
+      expect(wrapper.text()).not.toContain('Availability Statement needs a check')
+    }
   })
 
-  it('stays hidden while the check is running normally', () => {
-    const wrapper = mountHeader({ das_suggestions: { status: 'processing' } })
-    expect(wrapper.find('.das-pending-banner').exists()).toBe(false)
-  })
-
-  it('does not key off the consolidator any more', () => {
-    // pdf_analysis no longer has a condition that can park it, and if a future
-    // edit gives it one, that is not this banner's business — the statement is
-    // not its input.
+  it('is not shown for the consolidator either', () => {
     const wrapper = mountHeader({ pdf_analysis: { status: 'pending_input' } })
-    expect(wrapper.find('.das-pending-banner').exists()).toBe(false)
-  })
-
-  it('stays hidden without the injection — the failure the sibling-provide caused', () => {
-    const wrapper = mountHeader(null)   // header mounted with no provider above it
     expect(wrapper.find('.das-pending-banner').exists()).toBe(false)
   })
 

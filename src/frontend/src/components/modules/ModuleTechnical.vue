@@ -147,14 +147,42 @@ const MODULE_STATE = {
 /**
  * `service.outcome.source`, likewise.
  *
- * "internal" is not a lesser answer: a few steps do their work in the app —
- * KRT Grounding matches text deterministically — and a bare "internal" beside
- * another module's bare "external" reads as though one of them is misconfigured.
+ * "internal" is not a lesser answer: some work is done in the app rather than
+ * by a service, and a bare "internal" beside another module's bare "external"
+ * read as though one of them was misconfigured.
  */
 const RAN_VIA = {
-  external: 'an external service',
-  internal: 'the app itself — no external service is called',
+  external: 'a live service',
+  internal: 'the app itself — no service was called',
+  'internal+external': 'both — the app, plus a live service for what it could not settle',
   demo: 'demo data, not a live service'
+}
+
+/**
+ * Which engines actually did the work.
+ *
+ * The Model row answers "which model", but several modules run more than one
+ * engine and some run none — and a reader comparing two module pages could not
+ * tell a module that used no model from one whose model row was simply missing.
+ * Each branch reads a field the module already reports.
+ */
+function enginesFor(jobType, m) {
+  if (jobType === 'krt_grounding') {
+    const lm = m.secondLook
+    return lm && lm.skipped === false
+      ? `deterministic text match, then an LM second look on ${lm.attempted} unplaced row(s)`
+      : 'deterministic text match only — the LM second look did not run'
+  }
+  if (jobType === 'software_detection') {
+    return m.lmEnabled ? 'Softcite, plus an LM pass' : 'Softcite only — the LM pass is off'
+  }
+  if (jobType === 'pdf_analysis') {
+    return m.usedLM ? 'LM consolidation' : 'rule-based merge — the LM was unavailable'
+  }
+  if (jobType === 'identifier_detection') return 'a local scan against the curated lists — no model'
+  if (jobType === 'orcid_extraction') return 'GROBID, OpenAlex and the ORCID public API — no model'
+  if (jobType === 'markdown_convert') return 'the PDF-to-Markdown converter — no model'
+  return null
 }
 
 /** Just the file name; the full path is on the Prompt tab. */
@@ -176,6 +204,7 @@ const config = computed(() => {
     ['Strategy', m.strategy],
     ['Model', m.model],
     ['Mode', m.mode],
+    ['Engines', enginesFor(props.jobType, m)],
     ['Prompt', promptName(m.promptFile)],
     ['LM pass', m.usedLM === true ? 'used' : m.usedLM === false ? 'not used — rule-based merge'
       : m.lmEnabled === true ? 'enabled' : m.lmEnabled === false ? 'disabled' : null],

@@ -101,7 +101,7 @@ async function handleCancelProcessing() {
   if (!cancelProcessingFn || cancelling.value) return
   if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
     const ok = window.confirm(
-      'Stop all background processing for this document? ' +
+      'Stop the pipeline for this document? ' +
       'Every step still to run is cancelled too, not just the one in progress, and each has to be started again. ' +
       'A request already sent to an outside service cannot be recalled — its answer is discarded, but it is still charged.'
     )
@@ -384,7 +384,7 @@ function formatEtaDuration(ms) {
 
 const etaLabel = computed(() => {
   if (anyPendingInput.value && !anyInFlight.value) return 'Waiting for input'
-  if (allDone.value) return 'All processes complete'
+  if (allDone.value) return 'Pipeline complete'
   if (!anyInFlight.value) return 'Finishing up…'
 
   const typical = remainingTypicalMs.value
@@ -985,7 +985,7 @@ async function downloadRawResponse(jobType, responseName) {
           v-tooltip="'See the whole pipeline: every step, what it waits for, and what it produced'"
           @click.stop
         >
-          Background processes ↗
+          Pipeline ↗
         </RouterLink>
         <!-- The remaining time's slot says why there is no remaining time.
              Nothing is going to finish while the pipeline is paused, so an
@@ -1060,7 +1060,7 @@ async function downloadRawResponse(jobType, responseName) {
           type="button"
           class="job-status-cancel-btn"
           :disabled="cancelling"
-          v-tooltip="'Stop all running background processes for this document'"
+          v-tooltip="'Stop every pipeline step still to run for this document'"
           @click="handleCancelProcessing"
         >
           {{ cancelling ? 'Cancelling…' : 'Cancel processing' }}

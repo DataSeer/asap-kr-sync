@@ -222,6 +222,8 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
       // Only when the pass ran: a prompt link on a run that never called the
       // model would claim something that did not happen.
       promptFile: lm.enabled ? repoPath(softwareLm.PROMPT_FILE) : null,
+      // Named only when the LM pass ran; Softcite alone uses no model.
+      model: lm.enabled ? require('../../config/software-detection-lm-api').model : null,
       lmMs: lm.durationMs,
       evidenceStats: lm.evidenceStats,
       softciteMs,

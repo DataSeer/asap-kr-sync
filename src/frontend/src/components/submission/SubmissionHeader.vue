@@ -29,11 +29,6 @@ const injectedJobs = inject('submissionJobs', ref({}))
 // will not spend an LM call on a statement nobody has confirmed. It used to be
 // the consolidator that parked here, which was the wrong step to ask — it never
 // reads the statement, and holding it stalled the whole KRT half of the run.
-const dasNeedsConfirmation = computed(() => {
-  if (!props.showDasBanner) return false
-  const j = injectedJobs.value?.das_suggestions
-  return j?.status === 'pending_input'
-})
 
 // While extraction is in flight the statement is about to be overwritten, so
 // the editor says so rather than letting somebody type into a field that is
@@ -63,18 +58,6 @@ const props = defineProps({
   stepDescription: {
     type: String,
     default: ''
-  },
-  /**
-   * Show the Availability Statement banner when the check is waiting.
-   *
-   * On by default, because the point of the banner is that the confirmation can
-   * be dealt with from anywhere. The Availability page itself sets it false:
-   * that page IS the confirmation, so the banner there is the same request made
-   * twice, directly above the control that answers it.
-   */
-  showDasBanner: {
-    type: Boolean,
-    default: true
   },
   /** Show navigation arrows in the status bar */
   showNavigation: {
@@ -175,14 +158,6 @@ const showFilesModal = ref(false)
 
 function openEditModal() {
   showEditModal.value = true
-}
-
-/**
- * Handler for the Availability Statement banner — opens the metadata editor,
- * where the statement can be read, corrected and confirmed.
- */
-function handleDasBannerClick() {
-  openEditModal()
 }
 
 function handleDasModalClosed() {
@@ -406,24 +381,6 @@ async function downloadCurrentKRT(round) {
         </div>
       </div>
     </div><!-- /.submission-sticky-bar -->
-
-    <!-- Availability Statement confirmation — surfaces from step 2 onward
-         whenever the check is waiting for somebody to agree that the statement
-         it is about to read is the right one. Resolves anywhere in the flow so
-         the user doesn't have to jump to step 5 to deal with it. -->
-    <div v-if="dasNeedsConfirmation" class="das-pending-banner" role="alert">
-      <svg class="das-pending-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-      </svg>
-      <div class="das-pending-body">
-        <p class="das-pending-title">Your Availability Statement needs a check</p>
-        <p class="das-pending-sub">
-          We pulled it out of your manuscript automatically. Confirm it is the right text and we will
-          review it — you can do this from any step.
-        </p>
-      </div>
-      <button type="button" class="das-pending-btn" @click="handleDasBannerClick">Review it</button>
-    </div>
 
     <!-- ─── REST — page title, description, help panel (NOT sticky) ─── -->
     <div class="submission-header-rest" style="overflow: visible;">
@@ -663,47 +620,4 @@ async function downloadCurrentKRT(round) {
   30%, 60% { box-shadow: none; }
 }
 
-/* DAS pending-input banner */
-.das-pending-banner {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  background: #fff7ed;
-  border: 1px solid #fdba74;
-  border-radius: 0.5rem;
-  padding: 0.625rem 0.875rem;
-}
-.das-pending-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-  color: #ea580c;
-  flex-shrink: 0;
-}
-.das-pending-body {
-  flex: 1;
-  min-width: 0;
-}
-.das-pending-title {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: #9a3412;
-}
-.das-pending-sub {
-  font-size: 0.75rem;
-  color: #7c2d12;
-  margin-top: 0.125rem;
-}
-.das-pending-btn {
-  flex-shrink: 0;
-  padding: 0.375rem 0.75rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  background: #ea580c;
-  color: #fff;
-  border-radius: 0.375rem;
-  border: 0;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.das-pending-btn:hover { background: #c2410c; }
 </style>

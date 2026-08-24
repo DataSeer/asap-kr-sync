@@ -865,7 +865,7 @@ const tabConflicts = computed(() => {
         >
           {{ labelFor(s.jobType) }}
         </RouterLink>
-        <span v-else class="mrv-module mrv-module-off" v-tooltip="'This step does not have a page yet — open it from the processes panel.'">
+        <span v-else class="mrv-module mrv-module-off" v-tooltip="'This step does not have a page yet — open it from the pipeline panel.'">
           {{ labelFor(s.jobType) }}
         </span>
       </template>
@@ -1071,7 +1071,7 @@ const tabConflicts = computed(() => {
     </template>
 
     <p v-else class="mrv-empty">
-      A dedicated view for this module is not built yet — open it from the processes panel for now.
+      A dedicated view for this module is not built yet — open it from the pipeline panel for now.
     </p>
   </div>
 </template>

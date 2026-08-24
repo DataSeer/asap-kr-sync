@@ -1,6 +1,6 @@
 # Background Processing Modules
 
-> A module-by-module functional reference for the background processes that turn an uploaded manuscript into
+> A module-by-module functional reference for the pipeline steps that turn an uploaded manuscript into
 > the **Generated KRT** and author list. For *how the queue runs them* (scheduling, dependencies, retries,
 > concurrency, polling, statuses) see [background-jobs.md](./background-jobs.md); for the *external-service API
 > details* (endpoints, auth, request/response) see [external-apis.md](./external-apis.md); for *configuration*

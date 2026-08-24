@@ -82,7 +82,7 @@ describe('when every drawn module has finished', () => {
     const wrapper = mountPanel(complete())
     await router.isReady()
 
-    expect(wrapper.text()).toContain('All processes complete')
+    expect(wrapper.text()).toContain('Pipeline complete')
     expect(wrapper.text()).not.toMatch(/remaining/i)
   })
 
@@ -101,7 +101,7 @@ describe('when every drawn module has finished', () => {
     await router.isReady()
 
     expect(wrapper.text(), 'a job the panel does not draw must not drive its estimate')
-      .toContain('All processes complete')
+      .toContain('Pipeline complete')
     expect(wrapper.text()).not.toMatch(/remaining/i)
     expect(wrapper.text()).not.toMatch(/keep editing/i)
   })
@@ -127,7 +127,7 @@ describe('when work really is outstanding', () => {
     const wrapper = mountPanel(jobs)
     await router.isReady()
 
-    expect(wrapper.text()).not.toContain('All processes complete')
+    expect(wrapper.text()).not.toContain('Pipeline complete')
   })
 
   it('a step waiting for something the user can act on NOW still counts', async () => {
@@ -141,6 +141,6 @@ describe('when work really is outstanding', () => {
     const wrapper = mountPanel(jobs)
     await router.isReady()
 
-    expect(wrapper.text()).not.toContain('All processes complete')
+    expect(wrapper.text()).not.toContain('Pipeline complete')
   })
 })

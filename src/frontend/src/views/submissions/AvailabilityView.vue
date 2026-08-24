@@ -608,7 +608,6 @@ async function handleBack() {
       :latest-files="latestFiles"
       step-title="Step 4: Edit manuscript"
       step-description="Review your Data/Code Availability Statement"
-      :show-das-banner="false"
       :help-items="helpItems"
       :show-navigation="true"
       :can-go-back="true"
