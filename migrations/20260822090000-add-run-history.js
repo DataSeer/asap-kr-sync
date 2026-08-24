@@ -96,22 +96,37 @@ module.exports = {
       }, { transaction: t });
     }
 
+    // Every one of these MUST carry the transaction. Without it the statement
+    // goes out on a different connection, which cannot see a table created
+    // inside this one and still uncommitted — so on a FRESH database the index
+    // fails with `relation "submission_job_runs" does not exist`, the whole
+    // migration rolls back, the container exits, and systemd restarts it into
+    // the same failure for ever.
+    //
+    // It ran green everywhere the table already existed, which is every
+    // database the migration had already been applied to: `CREATE TABLE IF NOT
+    // EXISTS` is a no-op there and the index finds the committed table. It only
+    // fails where it has never run — which is exactly a new deployment.
+
     // The backstop for run-number allocation. The atomic claim in
     // tryAdvanceStep already guarantees a single winner per transition; if a
     // second path ever allocates concurrently, this surfaces it as an error
     // rather than as two runs both numbered 3.
     await queryInterface.sequelize.query(
       'CREATE UNIQUE INDEX IF NOT EXISTS "submission_job_runs_job_run" '
-      + 'ON "submission_job_runs" ("submission_job_id", "run_number")'
+      + 'ON "submission_job_runs" ("submission_job_id", "run_number")',
+      { transaction: t }
     );
     // The read the module page makes: this step's runs, newest first.
     await queryInterface.sequelize.query(
       'CREATE INDEX IF NOT EXISTS "submission_job_runs_lookup" '
-      + 'ON "submission_job_runs" ("submission_id", "round", "job_type", "run_number" DESC)'
+      + 'ON "submission_job_runs" ("submission_id", "round", "job_type", "run_number" DESC)',
+      { transaction: t }
     );
     await queryInterface.sequelize.query(
       'CREATE INDEX IF NOT EXISTS "submission_job_runs_triggered_by" '
-      + 'ON "submission_job_runs" ("triggered_by_user_id")'
+      + 'ON "submission_job_runs" ("triggered_by_user_id")',
+      { transaction: t }
     );
 
     // ── 2. run_count on the job row ─────────────────────────────────────────
