@@ -9,23 +9,21 @@
  * With the LM unconfigured the module still completes: unmatched rows simply
  * stay `not_detected`, which is a truthful verdict, just a less informed one.
  *
- * Authentication: per-service API key via KRT_GROUNDING_GEMINI_API_KEY.
+ * Authentication: KRT_GROUNDING_GEMINI_API_KEY, falling back to the shared
+ * GEMINI_API_KEY. Placeholder values are rejected by geminiKey().
  */
 
 const logger = require('../utils/logger');
-const { geminiKey, geminiModel } = require('./gemini');
+const { geminiKey, geminiModel, isRealKey } = require('./gemini');
 
 /**
  * Placeholder values shipped in .env.example. Treating one as a real key makes
  * the module report itself configured and then fail every call with a 400 —
  * which is exactly what happened when this variable was copied but not filled.
  */
-const PLACEHOLDER_KEYS = new Set(['your_gemini_api_key', 'your_api_key', 'changeme', '']);
-
-/** @param {string} key @returns {boolean} */
-function isRealKey(key) {
-  return !PLACEHOLDER_KEYS.has(String(key || '').trim());
-}
+// Placeholder rejection lives in config/gemini.js now, so all nine modules
+// agree on what counts as a key -- and geminiKey() has already applied it to
+// the value below.
 
 
 module.exports = {

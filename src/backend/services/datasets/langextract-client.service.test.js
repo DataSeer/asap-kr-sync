@@ -190,10 +190,16 @@ test('the python script requires only keys the caller knows about', () => {
   const script = fs.readFileSync(
     path.join(__dirname, '../../python/datasets/extract-signals.py'), 'utf8'
   );
-  // `os.environ.get("X")` with no second argument. The closing paren with no
-  // comma is what separates a required read from one carrying its own default.
-  const required = [...script.matchAll(/os\.environ\.get\(\s*"([A-Z_]+)"\s*\)/g)]
-    .map((m) => m[1]).sort();
+  // Two required forms, both quote styles. `os.environ.get("X")` with no second
+  // argument returns None; `os.environ["X"]` raises KeyError -- and the
+  // subscript form is the more common way to write a required read, so a scan
+  // that only knew about .get() would miss exactly the variable most likely to
+  // crash the child. A .get() WITH a default needs nothing from the caller and
+  // is deliberately excluded: that is how the model is read.
+  const required = [
+    ...script.matchAll(/os\.environ\.get\(\s*['"]([A-Z_]+)['"]\s*\)/g),
+    ...script.matchAll(/os\.environ\[\s*['"]([A-Z_]+)['"]\s*\]/g)
+  ].map((m) => m[1]).sort();
 
   assert.deepEqual(
     [...new Set(required)],

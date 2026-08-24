@@ -51,6 +51,28 @@ const GEMINI_MODULES = [
 ];
 
 /**
+ * Values that look like a key but are not one.
+ *
+ * A copied-but-unfilled `.env` line is indistinguishable from a real key to
+ * anything that only checks for a non-empty string: the module reports itself
+ * configured, and the failure surfaces as a 400 from Gemini on every call
+ * rather than as "you have not set a key". Two modules already guarded against
+ * this privately; the other seven did not, and the startup pass would have
+ * propagated a placeholder into all nine names.
+ */
+const PLACEHOLDER_KEYS = new Set(['your_gemini_api_key', 'your_api_key', 'changeme', '']);
+
+/**
+ * Is this a key rather than a leftover placeholder?
+ *
+ * @param {string} key
+ * @returns {boolean}
+ */
+function isRealKey(key) {
+  return !PLACEHOLDER_KEYS.has(String(key || '').trim().toLowerCase());
+}
+
+/**
  * The API key a module should use: its own if set, else the shared one.
  *
  * @param {string} module - variable prefix, e.g. 'DATASETS_DETECTION'
@@ -58,7 +80,10 @@ const GEMINI_MODULES = [
  * @returns {string} the key, or '' when neither is set
  */
 function geminiKey(module, env = process.env) {
-  return env[`${module}_GEMINI_API_KEY`] || env.GEMINI_API_KEY || '';
+  const own = env[`${module}_GEMINI_API_KEY`];
+  if (isRealKey(own)) return own;
+  const shared = env.GEMINI_API_KEY;
+  return isRealKey(shared) ? shared : '';
 }
 
 /**
@@ -79,10 +104,14 @@ function geminiModel(module, env = process.env) {
  * before anything reads a config.
  *
  * A variable that is already set is left exactly as it is -- the specific
- * value always wins, which is the whole point of allowing one. Only the gaps
- * are filled, and only when there is something to fill them with: with no
- * shared key set, a module without its own key stays unset rather than gaining
- * an empty string, so `isConfigured()` can still tell "no key" from "a key".
+ * value always wins, which is the whole point of allowing one.
+ *
+ * A module with no key anywhere is left unset rather than set to ''. This is
+ * housekeeping, not a safety property: `isConfigured()` reads the RESOLVED
+ * value from `geminiKey()`, and '' is falsy on both sides of the process
+ * boundary (`extract-signals.py` chains its two lookups with `or`), so an empty
+ * variable and an absent one already behave identically. The reason to leave it
+ * out is simply that `process.env` should not gain nine names nobody set.
  *
  * Idempotent: running it twice changes nothing the second time.
  *
@@ -127,6 +156,7 @@ function geminiKeySources(env = process.env) {
 
 module.exports = {
   DEFAULT_MODEL,
+  isRealKey,
   GEMINI_MODULES,
   geminiKey,
   geminiModel,

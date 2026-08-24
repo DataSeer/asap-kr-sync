@@ -26,7 +26,13 @@ envFiles.forEach(file => {
 // LangExtract script that datasets detection spawns reads its per-module
 // variable directly; before this call it found nothing and exited 1 while
 // every Node-side status check reported the module configured.
-require('./config/gemini').applyGeminiDefaults();
+const { applyGeminiDefaults, geminiKeySources } = require('./config/gemini');
+
+// Snapshot BEFORE filling. Afterwards every module reports a key of its own,
+// because the pass has just given it one -- so "who configured their own key"
+// is a question only answerable from this side of the call.
+const geminiBefore = geminiKeySources();
+applyGeminiDefaults();
 
 /**
  * Validate required environment variables. Note that Auth0 vars are NOT
@@ -62,6 +68,14 @@ async function startServer() {
     //    on .env values for local dev).
     await loadAuth0Secret();
 
+    //    ...then resolve the Gemini keys again. The secret loader Object.assigns
+    //    arbitrary JSON into process.env, so a GEMINI_API_KEY arriving from
+    //    Secrets Manager lands AFTER the pass at the top of this file. Running
+    //    it twice is free -- it fills only what is missing -- and skipping it
+    //    would leave the per-module names unset for the one deployment that
+    //    keeps its credentials where they belong.
+    applyGeminiDefaults();
+
     // 2. Validate baseline env (DATABASE_URL, JWT_SECRET, FRONTEND_URL).
     assertEnvVars();
 
@@ -74,6 +88,18 @@ async function startServer() {
     const { initializeWorkers } = require('./services/queue/workers');
     const configService = require('./services/config.service');
     const logger = require('./utils/logger');
+
+    // Say which modules have a key and where it came from. This is the line
+    // that would have turned "datasets detection is on but produces nothing"
+    // into a one-glance answer, so it is worth the four fields.
+    const gemini = geminiKeySources();
+    logger.info('Gemini credentials resolved', {
+      withKey: gemini.filter((m) => m.hasKey).length,
+      total: gemini.length,
+      ownKey: geminiBefore.filter((m) => m.own).map((m) => m.module),
+      inherited: geminiBefore.filter((m) => !m.own).length,
+      missing: gemini.filter((m) => !m.hasKey).map((m) => m.module)
+    });
 
     // Test database connection
     await sequelize.authenticate();

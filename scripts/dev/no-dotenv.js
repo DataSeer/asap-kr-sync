@@ -24,7 +24,11 @@ Module.prototype.require = function (id) {
 };
 
 for (const key of Object.keys(process.env)) {
-  if (/^(JWT_|DATABASE_|DB_|S3_|AWS_|SOFTCITE_|GEMINI_|AUTH0_|MODAL_)/.test(key)) {
+  // The second alternative is not anchored on purpose: the nine per-module
+  // Gemini names are PREFIXED (DATASETS_DETECTION_GEMINI_API_KEY), so a `^`
+  // pattern cleared the shared key and left every module's copy behind --
+  // in the very run that now covers config/, whose whole subject they are.
+  if (/^(JWT_|DATABASE_|DB_|S3_|AWS_|SOFTCITE_|GEMINI_|AUTH0_|MODAL_)|_GEMINI_/.test(key)) {
     delete process.env[key];
   }
 }

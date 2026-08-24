@@ -10,7 +10,8 @@
  * S3-stored output, so this service depends on that job — see
  * orchestrator PIPELINE.
  *
- * Authentication: per-service API key via DAS_EXTRACTION_GEMINI_API_KEY.
+ * Authentication: DAS_EXTRACTION_GEMINI_API_KEY, falling back to the shared
+ * GEMINI_API_KEY. Placeholder values are rejected by geminiKey().
  */
 
 const logger = require('../utils/logger');

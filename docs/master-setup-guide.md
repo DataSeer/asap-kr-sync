@@ -194,7 +194,9 @@ And one of two **outcome states** after a run:
 > (KRT generation), AI suggestions (KRT comparison), and the DAS suggestions check. **LangExtract** is datasets pass 1 only.
 > **Softcite/GROBID/OpenAlex/ORCID** are non-LLM HTTP services. **Identifier detection** is fully local, and
 > **PDF analysis** falls back to a local rule-based merge when its LM is off. To enable a Gemini module you set
-> `<MODULE>_ENABLED=true` **and** its `..._GEMINI_API_KEY`.
+> `<MODULE>_ENABLED=true` and give it a key. The key can be the shared
+> `GEMINI_API_KEY`, which every Gemini module inherits — a per-module
+> `..._GEMINI_API_KEY` is only needed for a separate quota.
 
 ### 4.5 Module pipeline order
 
@@ -481,8 +483,8 @@ review suggestions → export the report. With all external modules off, demo da
 | `address already in use 0.0.0.0:5432` | A host Postgres already owns 5432. Stop it, or remap the container port. |
 | A detection module always returns empty | It's **Off** or **Demo** without demo data for that manuscript, or `_ENABLED=true` but the API key/endpoint is wrong. Check the job's status pill + logs. |
 | Materials detection never produces results | Expected when the author KRT has **no material rows** — the module is author-seeded and skips extraction in that case. Otherwise check it's **On** and the Gemini key is set. |
-| AI Suggestions panel is empty | AI Suggestions is **LM-only** — set `KRT_COMPARISON_ENABLED=true` and `KRT_COMPARISON_GEMINI_API_KEY`. With no LM configured, no suggestions are produced. Use **Regenerate suggestions** after editing the KRT. |
-| DAS Suggestions always show the legacy checks / never a loader | The LM DAS check is off — set `DAS_SUGGESTIONS_ENABLED=true` and `DAS_SUGGESTIONS_GEMINI_API_KEY`. With no LM configured the `/availability` step falls back to the in-browser rules (and Continue is never blocked). |
+| AI Suggestions panel is empty | AI Suggestions is **LM-only** — set `KRT_COMPARISON_ENABLED=true` and provide a key (the shared `GEMINI_API_KEY` is enough). With no LM configured, no suggestions are produced. Use **Regenerate suggestions** after editing the KRT. |
+| DAS Suggestions always show the legacy checks / never a loader | The LM DAS check is off — set `DAS_SUGGESTIONS_ENABLED=true` and provide a key (the shared `GEMINI_API_KEY` is enough). With no LM configured the `/availability` step falls back to the in-browser rules (and Continue is never blocked). |
 | No `debug` lines despite `LOG_LEVEL=debug` | The running prod image's env-file may not set it (the `docker run` doesn't pass `LOG_LEVEL`); set it in `/opt/asap-kr-sync-prod/.env` and restart. |
 | No `logs/app.log` file in prod | `NODE_ENV` isn't `production` in the env-file (file transport is prod-only). |
 | CORS / cookie auth failing | `FRONTEND_URL` / `API_BASE_URL` don't match the real origins. |

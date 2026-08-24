@@ -81,7 +81,7 @@ Extracts the Data Availability Statement (or another section type) from the manu
 | **Config** | `src/backend/config/das-extraction-api.js` |
 | **Client** | `src/backend/services/pdf/das-extraction.service.js` |
 | **Prompt** | `src/backend/data/prompts/das-extraction.txt` (public, version-controlled) |
-| **Auth** | `DAS_EXTRACTION_GEMINI_API_KEY` |
+| **Auth** | `DAS_EXTRACTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)) |
 | **Model** | `DAS_EXTRACTION_GEMINI_MODEL` (default `gemini-2.5-flash`) |
 | **Timeout** | 2 minutes (`DAS_EXTRACTION_API_TIMEOUT`) |
 | **Disable** | `DAS_EXTRACTION_ENABLED=false` |
