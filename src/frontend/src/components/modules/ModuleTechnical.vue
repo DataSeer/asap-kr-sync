@@ -919,47 +919,48 @@ const responseUrl = (name) =>
 }
 .mt-caret { color: #9ca3af; transition: transform 0.12s ease; }
 .mt-caret-open { transform: rotate(90deg); }
-/* Six columns, split 1 : 1 : 2 : 2.
-   Configuration and Statistics are short label/value lists; inputs and outputs
-   are lines of links with explanatory notes, and they were the two wrapping
-   awkwardly while the first two sat half empty. The spans are declared per
-   block rather than by position, because any block can be absent — a module
-   with no prompt or no stored artefacts simply omits one. */
+/* Two rows of six tracks, not one row of five columns.
+   All five side by side made every track narrower than its content: a model id
+   broke across three lines and a file name across two, on a screen with room
+   to spare. Split by what the blocks ARE — three short label/value lists, then
+   two lists of links with notes under them — each row gets the full width
+   between however many blocks belong on it.
+
+     row 1   Metadata 2 + Configuration 2 + Statistics 2 = 6
+     row 2   Module inputs 3 + Module outputs 3          = 6
+
+   The spans are declared per block rather than by position, because any block
+   can be absent — a module with no prompt or no stored artefacts omits one, and
+   the row it was on simply comes up short instead of the layout shifting. */
 .mt-body {
   padding: 0 0.9rem 0.9rem 2rem;
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 1.5rem 2rem;
   align-items: start;
 }
 .mt-block { min-width: 0; }
-/* THE ROW MUST ADD UP: every block sits on ONE row, and the spans total the
-   track count.
-
-     Metadata 1 + Configuration 1 + Statistics 1 + inputs 2 + outputs 2 = 7
-
-   It stopped adding up when Metadata was added as a fourth short list and the
-   spans were left alone — 1+1+1+2+2 = 7 in a six-track grid, so Module outputs
-   could not fit in the one track that remained and wrapped to a row of its own,
-   leaving the row above ragged and half empty. The grid grew a track rather
-   than the blocks losing one: the five headings are five columns, and they
-   should read as five columns.
+/* EACH ROW MUST ADD UP: the blocks that share a row total the track count, or
+   one of them wraps and leaves the row above ragged. That is how the previous
+   layout broke — a fourth short list was added and the spans were left alone,
+   so Module outputs could not fit in the track that remained.
 
    `module-technical-grid.test.js` re-does this arithmetic, because the next
    block anyone adds will break it the same way and it is invisible until
    someone opens the section on a wide screen.
 
-   Metadata, Configuration and Statistics: short label/value lists. */
-.mt-narrow { grid-column: span 1; }
-/* Module inputs and outputs: lines of links with an explanatory note under
-   them, so they need more room than a label/value list. */
-.mt-wide { grid-column: span 2; }
-
-/* Below the seven-column width each track would be narrower than a file name,
-   so drop to two: the short lists side by side, each wide block on its own
+   Metadata, Configuration and Statistics: short label/value lists, three to a
    row. */
+.mt-narrow { grid-column: span 2; }
+/* Module inputs and outputs: lines of links with an explanatory note under
+   them, two to a row so a file name has somewhere to go. */
+.mt-wide { grid-column: span 3; }
+
+/* Narrower than this, three short lists abreast is again too tight, so drop to
+   two: the short lists pair off and each wide block takes a row of its own. */
 @media (max-width: 1099px) {
   .mt-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mt-narrow { grid-column: span 1; }
   .mt-wide { grid-column: span 2; }
 }
 

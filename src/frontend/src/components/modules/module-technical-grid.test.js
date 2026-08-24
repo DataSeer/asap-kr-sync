@@ -1,19 +1,21 @@
 /**
- * The Technical detail row has to add up.
+ * The Technical detail rows have to add up.
  *
  * The section is a CSS grid with a fixed track count, and each block declares
  * its own span — deliberately, because any block can be absent (a module with
  * no prompt or no stored artefacts simply omits one). The cost of that is that
- * nothing checks the total.
+ * nothing checks the totals.
  *
- * It stopped adding up when Metadata was added as a fourth short list and the
- * spans were left alone: 1 + 1 + 1 + 2 + 2 = 7 in a six-track grid, so Module
- * outputs could not fit in the one track that remained and wrapped to a row of
- * its own, leaving the row above ragged and half empty. Invisible until someone
- * opens the section on a wide screen.
+ * It stopped adding up once before, when Metadata was added as a fourth short
+ * list and the spans were left alone: a block could not fit in the tracks that
+ * remained and wrapped, leaving the row above ragged and half empty. Invisible
+ * until someone opens the section on a wide screen.
  *
- * So the arithmetic is done here instead of by eye, and over the blocks that
- * are actually in the template rather than a remembered list of them.
+ * The layout is now two rows — three short label/value lists, then the two
+ * lists of links — because five abreast made every track narrower than its
+ * content. Both rows have to fill the width, so the arithmetic is done here
+ * instead of by eye, and over the blocks that are actually in the template
+ * rather than a remembered list of them.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -50,10 +52,24 @@ function blocks() {
 }
 
 describe('the Technical detail grid', () => {
-  it('fills its row exactly — no empty track, nothing forced to wrap', () => {
-    const total = blocks().reduce((sum, className) => sum + spanOf(className), 0)
+  it('fills each row exactly — no empty track, nothing forced to wrap', () => {
+    const tracks = trackCount()
+    const totalOf = (className) =>
+      blocks().filter((c) => c === className).length * spanOf(className)
 
-    expect(total).toBe(trackCount())
+    // Row 1: Metadata, Configuration, Statistics. Row 2: inputs, outputs.
+    expect(totalOf('mt-narrow'), 'the short lists must fill their row').toBe(tracks)
+    expect(totalOf('mt-wide'), 'the link lists must fill theirs').toBe(tracks)
+  })
+
+  it('puts the link lists on a row of their own, below the short lists', () => {
+    // Auto-placement is what makes the two rows, so DOM order is load-bearing:
+    // a wide block moved above a narrow one would drag it up into row 1.
+    const order = blocks()
+    const lastNarrow = order.lastIndexOf('mt-narrow')
+    const firstWide = order.indexOf('mt-wide')
+
+    expect(firstWide).toBeGreaterThan(lastNarrow)
   })
 
   it('is the five columns the headings promise', () => {
@@ -62,17 +78,18 @@ describe('the Technical detail grid', () => {
     expect(blocks()).toHaveLength(5)
   })
 
-  it('gives the short label/value lists one track each', () => {
+  it('gives the short label/value lists a third of the width each', () => {
     const narrow = blocks().filter((c) => c === 'mt-narrow')
 
     expect(narrow).toHaveLength(3)
-    expect(spanOf('mt-narrow')).toBe(1)
+    expect(spanOf('mt-narrow') * 3).toBe(trackCount())
   })
 
-  it('gives the two link lists more room than a label/value list', () => {
-    // They carry file names and an explanatory note, and they were what wrapped
-    // awkwardly while the short lists sat half empty.
+  it('gives the two link lists half the width each', () => {
+    // They carry file names and an explanatory note, so they need more room
+    // than a label/value list — half a row rather than a third.
     expect(blocks().filter((c) => c === 'mt-wide')).toHaveLength(2)
+    expect(spanOf('mt-wide') * 2).toBe(trackCount())
     expect(spanOf('mt-wide')).toBeGreaterThan(spanOf('mt-narrow'))
   })
 
@@ -87,7 +104,7 @@ describe('the Technical detail grid', () => {
   })
 
   it('collapses to tracks the content fits in on narrower screens', () => {
-    // A seven-track grid puts each block in something narrower than a file name.
+    // Three short lists abreast is too tight below this width.
     expect(STYLE).toMatch(/@media \(max-width: 1099px\)[\s\S]*?grid-template-columns: repeat\(2,/)
     expect(STYLE).toMatch(/@media \(max-width: 640px\)[\s\S]*?grid-template-columns: minmax/)
   })
