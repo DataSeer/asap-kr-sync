@@ -735,142 +735,152 @@ const responseUrl = (name) =>
         re-run the step once the service is back.
         <span v-if="degraded.error" class="mt-degraded-error">{{ degraded.error }}</span>
       </div>
-      <div v-if="metadata.length" class="mt-block mt-narrow">
-        <h3>Metadata</h3>
-        <dl><template v-for="([k, v]) in metadata" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
+      <!-- Three short label/value lists. They size to their own content:
+           given a third of the width each, Metadata reserved room it never
+           used while Configuration wrapped its longest sentence. -->
+      <div class="mt-row mt-row-summary">
+        <div v-if="metadata.length" class="mt-block mt-narrow">
+          <h3>Metadata</h3>
+          <dl><template v-for="([k, v]) in metadata" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
+        </div>
+        <div v-if="config.length" class="mt-block mt-narrow">
+          <h3>Configuration</h3>
+          <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
+        </div>
+        <div v-if="statRows.length" class="mt-block mt-narrow">
+          <h3>Statistics</h3>
+          <!-- Durations sit with the counts: both are "what this run did", and a
+               column of its own for two numbers was a column too many. -->
+          <!-- Every label carries its explanation. The app's own tooltip, never
+               the browser's: a `title` attribute waits a second, cannot be
+               styled, and does not appear on touch at all. -->
+          <dl>
+            <template v-for="row in statRows" :key="row.label">
+              <dt
+                :class="{ 'mt-stat-explained': row.explain }"
+                v-tooltip="row.explain || undefined"
+              >{{ row.label }}</dt>
+              <dd>{{ row.value }}</dd>
+            </template>
+          </dl>
+        </div>
       </div>
-      <div v-if="config.length" class="mt-block mt-narrow">
-        <h3>Configuration</h3>
-        <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
-      </div>
-      <div v-if="statRows.length" class="mt-block mt-narrow">
-        <h3>Statistics</h3>
-        <!-- Durations sit with the counts: both are "what this run did", and a
-             column of its own for two numbers was a column too many. -->
-        <!-- Every label carries its explanation. The app's own tooltip, never
-             the browser's: a `title` attribute waits a second, cannot be
-             styled, and does not appear on touch at all. -->
-        <dl>
-          <template v-for="row in statRows" :key="row.label">
-            <dt
-              :class="{ 'mt-stat-explained': row.explain }"
-              v-tooltip="row.explain || undefined"
-            >{{ row.label }}</dt>
-            <dd>{{ row.value }}</dd>
-          </template>
-        </dl>
-      </div>
-      <div
-        v-if="inputs.length || inputCounts.length || inputArtefacts.length || prompts.length"
-        class="mt-block mt-wide"
-      >
-        <h3>Module inputs</h3>
-        <ul v-if="inputs.length" class="mt-files">
-          <li v-for="(i, n) in inputs" :key="n">
-            <button v-if="i.fileId" type="button" class="mt-linkish" @click="openFile(i.fileId)">
-              {{ i.label }} ↗
-            </button>
-            <!-- The producing module's own page, which opens on its technical
-                 record. A step page for a DOCUMENT would show today's version
-                 beside this run's result, which is why those are gone; a link
-                 to the module that produced a finding is navigation between
-                 records, and the note beside it still says the exact bytes are
-                 in the `inputs` artefact. -->
-            <RouterLink
-              v-else-if="i.route"
-              :to="i.route"
-              v-tooltip="'Opens that module\'s own record — its run, inputs and outputs'"
-            >{{ i.label }} ↗</RouterLink>
-            <span v-else>{{ i.label }}</span>
-            <span v-if="i.note" class="mt-files-note">{{ i.note }}</span>
-          </li>
-        </ul>
-        <!-- The prompt is an input too, and the copy shown is the one this run
-             froze — not the file as it stands today, and not a link to a branch
-             the deployment may not be running. -->
-        <p v-if="promptsState === 'loading'" class="mt-files-note">Loading the prompts this run used…</p>
-        <p v-else-if="promptsState === 'error'" class="mt-files-note">
-          The prompts this run used could not be read.
-        </p>
-        <p v-else-if="promptsState === 'ready' && !prompts.length" class="mt-files-note">
-          This run recorded no prompt.
-        </p>
-        <!-- Opened in a tab of its own rather than expanded here. A prompt is
-             a page of text; read inside a panel inside a page it is a keyhole,
-             and it pushed everything below it far off screen.
-             Files the prompt cannot work without get their own line for the
-             same reason: LangExtract's few-shot examples are handed to the
-             extractor separately and never enter the prompt text, so the
-             template alone would show only part of what the run was given. -->
-        <ul v-if="prompts.length" class="mt-files">
-          <template v-for="p in prompts" :key="p.file">
-            <li>
-              <button
-                v-if="p.text"
-                type="button"
-                class="mt-linkish"
-                v-tooltip="'Opens this run\'s copy in a new tab'"
-                @click="openPromptFile(p)"
-              >
-                {{ p.name }} ↗
+
+      <!-- The two link lists, side by side on a row of their own: file names
+           and their notes need width a label/value pair does not. -->
+      <div class="mt-row mt-row-files">
+        <div
+          v-if="inputs.length || inputCounts.length || inputArtefacts.length || prompts.length"
+          class="mt-block mt-wide"
+        >
+          <h3>Module inputs</h3>
+          <ul v-if="inputs.length" class="mt-files">
+            <li v-for="(i, n) in inputs" :key="n">
+              <button v-if="i.fileId" type="button" class="mt-linkish" @click="openFile(i.fileId)">
+                {{ i.label }} ↗
               </button>
-              <span v-else>{{ p.name }}</span>
-              <span class="mt-files-note">{{ p.label }}</span>
-              <p class="mt-prompt-path">
-                {{ p.text ? promptProvenance(p) : 'This run did not store the prompt text.' }}
-              </p>
+              <!-- The producing module's own page, which opens on its technical
+                   record. A step page for a DOCUMENT would show today's version
+                   beside this run's result, which is why those are gone; a link
+                   to the module that produced a finding is navigation between
+                   records, and the note beside it still says the exact bytes are
+                   in the `inputs` artefact. -->
+              <RouterLink
+                v-else-if="i.route"
+                :to="i.route"
+                v-tooltip="'Opens that module\'s own record — its run, inputs and outputs'"
+              >{{ i.label }} ↗</RouterLink>
+              <span v-else>{{ i.label }}</span>
+              <span v-if="i.note" class="mt-files-note">{{ i.note }}</span>
             </li>
-            <li v-for="a in p.attachments || []" :key="a.file">
-              <button
-                v-if="a.text"
-                type="button"
-                class="mt-linkish"
-                v-tooltip="'Opens this run\'s copy in a new tab'"
-                @click="openPromptFile(a)"
-              >
-                {{ (a.file || '').split('/').pop() }} ↗
-              </button>
-              <span class="mt-files-note">handed to the model alongside the prompt</span>
-              <p class="mt-prompt-path">{{ promptProvenance(a) }}</p>
+          </ul>
+          <!-- The prompt is an input too, and the copy shown is the one this run
+               froze — not the file as it stands today, and not a link to a branch
+               the deployment may not be running. -->
+          <p v-if="promptsState === 'loading'" class="mt-files-note">Loading the prompts this run used…</p>
+          <p v-else-if="promptsState === 'error'" class="mt-files-note">
+            The prompts this run used could not be read.
+          </p>
+          <p v-else-if="promptsState === 'ready' && !prompts.length" class="mt-files-note">
+            This run recorded no prompt.
+          </p>
+          <!-- Opened in a tab of its own rather than expanded here. A prompt is
+               a page of text; read inside a panel inside a page it is a keyhole,
+               and it pushed everything below it far off screen.
+               Files the prompt cannot work without get their own line for the
+               same reason: LangExtract's few-shot examples are handed to the
+               extractor separately and never enter the prompt text, so the
+               template alone would show only part of what the run was given. -->
+          <ul v-if="prompts.length" class="mt-files">
+            <template v-for="p in prompts" :key="p.file">
+              <li>
+                <button
+                  v-if="p.text"
+                  type="button"
+                  class="mt-linkish"
+                  v-tooltip="'Opens this run\'s copy in a new tab'"
+                  @click="openPromptFile(p)"
+                >
+                  {{ p.name }} ↗
+                </button>
+                <span v-else>{{ p.name }}</span>
+                <span class="mt-files-note">{{ p.label }}</span>
+                <p class="mt-prompt-path">
+                  {{ p.text ? promptProvenance(p) : 'This run did not store the prompt text.' }}
+                </p>
+              </li>
+              <li v-for="a in p.attachments || []" :key="a.file">
+                <button
+                  v-if="a.text"
+                  type="button"
+                  class="mt-linkish"
+                  v-tooltip="'Opens this run\'s copy in a new tab'"
+                  @click="openPromptFile(a)"
+                >
+                  {{ (a.file || '').split('/').pop() }} ↗
+                </button>
+                <span class="mt-files-note">handed to the model alongside the prompt</span>
+                <p class="mt-prompt-path">{{ promptProvenance(a) }}</p>
+              </li>
+            </template>
+          </ul>
+          <ul v-if="inputArtefacts.length" class="mt-files">
+            <li v-for="name in inputArtefacts" :key="name">
+              <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
+              <span class="mt-files-note">the exact input this run was given, frozen</span>
             </li>
-          </template>
-        </ul>
-        <ul v-if="inputArtefacts.length" class="mt-files">
-          <li v-for="name in inputArtefacts" :key="name">
-            <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
-            <span class="mt-files-note">the exact input this run was given, frozen</span>
-          </li>
-        </ul>
-        <dl v-if="inputCounts.length">
-          <template v-for="([k, v]) in inputCounts" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
-        </dl>
-        <p class="mt-note">
-          Everything here is what this run was given, not what the submission holds today.
-          Each file opens the exact version this run read; anything without a link had its
-          exact bytes recorded in the <code>inputs</code> file above.
-        </p>
-      </div>
-      <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
-        <h3>Module outputs</h3>
-        <p v-if="artefactsNotOwn" class="mt-note mt-note-warn">
-          This run's stored files were not kept separately from later runs of the same
-          step, so they are not shown — they would be a later run's evidence wearing this
-          run's timestamp. Runs from here on keep their own.
-        </p>
-        <!-- What the module produced and stored. A slot rather than a prop:
-             only the caller knows what its module kept and how to hand it over. -->
-        <slot name="files" />
-        <!-- Real links: ctrl-click opens one in a tab like anything else, and
-             the browser handles the download rather than a click handler. -->
-        <ul v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-files">
-          <li v-for="name in artefacts" :key="name">
-            <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
-          </li>
-        </ul>
-        <p v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-note">
-          These are what the module sent to, or received from, the external service — the
-          unedited record of this run.
-        </p>
+          </ul>
+          <dl v-if="inputCounts.length">
+            <template v-for="([k, v]) in inputCounts" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
+          </dl>
+          <p class="mt-note">
+            Everything here is what this run was given, not what the submission holds today.
+            Each file opens the exact version this run read; anything without a link had its
+            exact bytes recorded in the <code>inputs</code> file above.
+          </p>
+        </div>
+        <div v-if="(canViewInternals && artefacts.length) || $slots.files" class="mt-block mt-wide">
+          <h3>Module outputs</h3>
+          <p v-if="artefactsNotOwn" class="mt-note mt-note-warn">
+            This run's stored files were not kept separately from later runs of the same
+            step, so they are not shown — they would be a later run's evidence wearing this
+            run's timestamp. Runs from here on keep their own.
+          </p>
+          <!-- What the module produced and stored. A slot rather than a prop:
+               only the caller knows what its module kept and how to hand it over. -->
+          <slot name="files" />
+          <!-- Real links: ctrl-click opens one in a tab like anything else, and
+               the browser handles the download rather than a click handler. -->
+          <ul v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-files">
+            <li v-for="name in artefacts" :key="name">
+              <a :href="responseUrl(name)" target="_blank" rel="noopener">{{ name }} ↗</a>
+            </li>
+          </ul>
+          <p v-if="canViewInternals && artefacts.length && !artefactsNotOwn" class="mt-note">
+            These are what the module sent to, or received from, the external service — the
+            unedited record of this run.
+          </p>
+        </div>
       </div>
     </div>
   </section>
@@ -919,55 +929,44 @@ const responseUrl = (name) =>
 }
 .mt-caret { color: #9ca3af; transition: transform 0.12s ease; }
 .mt-caret-open { transform: rotate(90deg); }
-/* Two rows of six tracks, not one row of five columns.
-   All five side by side made every track narrower than its content: a model id
-   broke across three lines and a file name across two, on a screen with room
-   to spare. Split by what the blocks ARE — three short label/value lists, then
-   two lists of links with notes under them — each row gets the full width
-   between however many blocks belong on it.
-
-     row 1   Metadata 2 + Configuration 2 + Statistics 2 = 6
-     row 2   Module inputs 3 + Module outputs 3          = 6
-
-   The spans are declared per block rather than by position, because any block
-   can be absent — a module with no prompt or no stored artefacts omits one, and
-   the row it was on simply comes up short instead of the layout shifting. */
+/* Two rows, each sized to what is on it.
+   Everything abreast in one grid gave each block an equal share regardless of
+   what it held: Metadata reserved a third of the width for six short values and
+   left a gap wider than itself, while Configuration wrapped a sentence in the
+   space beside it. So the blocks size to their own content now, and the rows
+   are declared in the template rather than left to auto-placement — which also
+   means moving a block cannot silently drag it into the wrong row. */
 .mt-body {
   padding: 0 0.9rem 0.9rem 2rem;
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 1.5rem 2rem;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
 }
 .mt-block { min-width: 0; }
-/* EACH ROW MUST ADD UP: the blocks that share a row total the track count, or
-   one of them wraps and leaves the row above ragged. That is how the previous
-   layout broke — a fourth short list was added and the spans were left alone,
-   so Module outputs could not fit in the track that remained.
 
-   `module-technical-grid.test.js` re-does this arithmetic, because the next
-   block anyone adds will break it the same way and it is invisible until
-   someone opens the section on a wide screen.
+/* Row 1 — Metadata, Configuration, Statistics. Each hugs its content; the
+   leftover collects at the end of the row instead of between the columns. */
+.mt-row-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2.75rem;
+  align-items: start;
+}
+.mt-row-summary .mt-block { flex: 0 1 auto; }
 
-   Metadata, Configuration and Statistics: short label/value lists, three to a
-   row. */
-.mt-narrow { grid-column: span 2; }
-/* Module inputs and outputs: lines of links with an explanatory note under
-   them, two to a row so a file name has somewhere to go. */
-.mt-wide { grid-column: span 3; }
-
-/* Narrower than this, three short lists abreast is again too tight, so drop to
-   two: the short lists pair off and each wide block takes a row of its own. */
-@media (max-width: 1099px) {
-  .mt-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mt-narrow { grid-column: span 1; }
-  .mt-wide { grid-column: span 2; }
+/* Row 2 — Module inputs and outputs: lines of links with notes under them, so
+   they get half the width each rather than only what a file name measures. */
+.mt-row-files {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem 2rem;
+  align-items: start;
 }
 
-@media (max-width: 640px) {
-  .mt-body { grid-template-columns: minmax(0, 1fr); }
-  .mt-narrow, .mt-wide { grid-column: span 1; }
+@media (max-width: 900px) {
+  .mt-row-files { grid-template-columns: minmax(0, 1fr); }
 }
+
 /* A label with something to say, marked so the reader knows to hover. */
 .mt-stat-explained {
   text-decoration: underline dotted #d1d5db;

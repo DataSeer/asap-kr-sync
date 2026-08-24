@@ -1,21 +1,17 @@
 /**
- * The Technical detail rows have to add up.
+ * The Technical detail panel is two rows, and each block is on the right one.
  *
- * The section is a CSS grid with a fixed track count, and each block declares
- * its own span — deliberately, because any block can be absent (a module with
- * no prompt or no stored artefacts simply omits one). The cost of that is that
- * nothing checks the totals.
+ * This used to be one grid with a fixed track count and a span per block, and
+ * it broke twice. First when a fourth short list was added and the spans were
+ * left alone, so a block could not fit in the tracks that remained and wrapped,
+ * leaving the row above ragged. Then, once the spans were fixed, because equal
+ * shares are the wrong model for this content: Metadata reserved a third of the
+ * width for six short values while Configuration wrapped a sentence beside it.
  *
- * It stopped adding up once before, when Metadata was added as a fourth short
- * list and the spans were left alone: a block could not fit in the tracks that
- * remained and wrapped, leaving the row above ragged and half empty. Invisible
- * until someone opens the section on a wide screen.
- *
- * The layout is now two rows — three short label/value lists, then the two
- * lists of links — because five abreast made every track narrower than its
- * content. Both rows have to fill the width, so the arithmetic is done here
- * instead of by eye, and over the blocks that are actually in the template
- * rather than a remembered list of them.
+ * So the rows are declared in the template now and the blocks size to their own
+ * content. What can still go wrong is a block being added to the wrong row, or
+ * a row losing its container — neither of which shows up until someone opens
+ * the section on a wide screen. That is what this checks.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -26,94 +22,58 @@ const SOURCE = readFileSync(join(import.meta.dirname, 'ModuleTechnical.vue'), 'u
 /** Just the `<style>` block, so template text cannot be mistaken for CSS. */
 const STYLE = SOURCE.slice(SOURCE.indexOf('<style'))
 
-/** The grid's track count, from the first (widest) definition. */
-function trackCount() {
-  const match = STYLE.match(/\.mt-body\s*\{[^}]*grid-template-columns:\s*repeat\((\d+),/)
-  expect(match, 'the grid must declare a fixed track count').toBeTruthy()
-  return Number(match[1])
+/** Just the `<template>`, so a CSS selector cannot be mistaken for markup. */
+const TEMPLATE = SOURCE.slice(SOURCE.indexOf('<template>'), SOURCE.indexOf('<style'))
+
+/** The markup of one row container, by its modifier class. */
+function row(name) {
+  const open = TEMPLATE.indexOf(`class="mt-row mt-row-${name}"`)
+  expect(open, `the ${name} row must exist`).toBeGreaterThan(-1)
+  // Its blocks are everything up to the next row, or to the end.
+  const rest = TEMPLATE.slice(open + 1)
+  const next = rest.indexOf('class="mt-row mt-row-')
+  return next === -1 ? rest : rest.slice(0, next)
 }
 
-/** The span a class declares, from the first (widest) rule for it. */
-function spanOf(className) {
-  const match = STYLE.match(new RegExp(`\\.${className}\\s*\\{\\s*grid-column:\\s*span\\s*(\\d+)`))
-  expect(match, `.${className} must declare a span`).toBeTruthy()
-  return Number(match[1])
-}
+/** The span classes of the blocks inside a chunk of markup. */
+const blocksIn = (markup) => [...markup.matchAll(/class="mt-block (mt-[a-z]+)"/g)].map((m) => m[1])
 
-/**
- * Every block in the template, with the span class it carries.
- *
- * Read from the template rather than listed here: a block added without a span
- * class, or with a new one, has to show up in the total — that is the whole
- * point of checking.
- */
-function blocks() {
-  return [...SOURCE.matchAll(/class="mt-block (mt-[a-z]+)"/g)].map((m) => m[1])
-}
+/** Every block in the whole template. */
+const allBlocks = () => [...TEMPLATE.matchAll(/class="mt-block (mt-[a-z]+)"/g)].map((m) => m[1])
 
-describe('the Technical detail grid', () => {
-  it('fills each row exactly — no empty track, nothing forced to wrap', () => {
-    const tracks = trackCount()
-    const totalOf = (className) =>
-      blocks().filter((c) => c === className).length * spanOf(className)
-
-    // Row 1: Metadata, Configuration, Statistics. Row 2: inputs, outputs.
-    expect(totalOf('mt-narrow'), 'the short lists must fill their row').toBe(tracks)
-    expect(totalOf('mt-wide'), 'the link lists must fill theirs').toBe(tracks)
+describe('the Technical detail panel', () => {
+  it('is the five blocks the headings promise, and no more', () => {
+    // Metadata, Configuration, Statistics, Module inputs, Module outputs. A
+    // sixth has to be put on a row deliberately, which is what the next two
+    // checks are for.
+    expect(allBlocks()).toHaveLength(5)
   })
 
-  it('puts the link lists on a row of their own, below the short lists', () => {
-    // Auto-placement is what makes the two rows, so DOM order is load-bearing:
-    // a wide block moved above a narrow one would drag it up into row 1.
-    const order = blocks()
-    const lastNarrow = order.lastIndexOf('mt-narrow')
-    const firstWide = order.indexOf('mt-wide')
-
-    expect(firstWide).toBeGreaterThan(lastNarrow)
+  it('puts the three short label/value lists on the summary row', () => {
+    expect(blocksIn(row('summary'))).toEqual(['mt-narrow', 'mt-narrow', 'mt-narrow'])
   })
 
-  it('is the five columns the headings promise', () => {
-    // Metadata, Configuration, Statistics, Module inputs, Module outputs. If a
-    // sixth block appears, the check above starts failing and this says why.
-    expect(blocks()).toHaveLength(5)
+  it('puts the two link lists on the files row', () => {
+    expect(blocksIn(row('files'))).toEqual(['mt-wide', 'mt-wide'])
   })
 
-  it('gives the short label/value lists a third of the width each', () => {
-    const narrow = blocks().filter((c) => c === 'mt-narrow')
+  it('leaves every block inside one of the two rows', () => {
+    // A block added outside them would render full-width above everything,
+    // which reads as a heading rather than a column.
+    const inRows = blocksIn(row('summary')).length + blocksIn(row('files')).length
 
-    expect(narrow).toHaveLength(3)
-    expect(spanOf('mt-narrow') * 3).toBe(trackCount())
+    expect(inRows).toBe(allBlocks().length)
   })
 
-  it('gives the two link lists half the width each', () => {
-    // They carry file names and an explanatory note, so they need more room
-    // than a label/value list — half a row rather than a third.
-    expect(blocks().filter((c) => c === 'mt-wide')).toHaveLength(2)
-    expect(spanOf('mt-wide') * 2).toBe(trackCount())
-    expect(spanOf('mt-wide')).toBeGreaterThan(spanOf('mt-narrow'))
+  it('sizes the summary blocks to their content rather than equal shares', () => {
+    // The failure this replaced: equal thirds put a gap wider than the block
+    // itself between Metadata and Configuration.
+    expect(STYLE).toMatch(/\.mt-row-summary\s*\{[^}]*display:\s*flex/)
+    expect(STYLE).toMatch(/\.mt-row-summary \.mt-block\s*\{[^}]*flex:\s*0 1 auto/)
   })
 
-  it('every block carries a span class the stylesheet defines', () => {
-    // A block with a class that has no rule silently gets span 1 and throws the
-    // total off by however many tracks it should have taken.
-    for (const className of new Set(blocks())) {
-      expect(STYLE, `.${className} is used but never defined`).toMatch(
-        new RegExp(`\\.${className}\\s*\\{`)
-      )
-    }
-  })
-
-  it('collapses to tracks the content fits in on narrower screens', () => {
-    // Three short lists abreast is too tight below this width.
-    expect(STYLE).toMatch(/@media \(max-width: 1099px\)[\s\S]*?grid-template-columns: repeat\(2,/)
-    expect(STYLE).toMatch(/@media \(max-width: 640px\)[\s\S]*?grid-template-columns: minmax/)
-  })
-
-  it('keeps the two-track row adding up too', () => {
-    // At the middle breakpoint the narrow blocks pair off and each wide block
-    // takes a row: 1 + 1 = 2, and .mt-wide is re-declared to span 2.
-    const middle = STYLE.match(/@media \(max-width: 1099px\)\s*\{([\s\S]*?)\n\}/)
-    expect(middle).toBeTruthy()
-    expect(middle[1]).toMatch(/\.mt-wide\s*\{\s*grid-column:\s*span\s*2/)
+  it('gives the two link lists half the width each, and a row on narrow screens', () => {
+    expect(STYLE).toMatch(/\.mt-row-files\s*\{[^}]*grid-template-columns:\s*repeat\(2,/)
+    expect(STYLE).toMatch(/@media \(max-width: 900px\)[\s\S]*?grid-template-columns: minmax/)
   })
 })
