@@ -4,7 +4,7 @@
  * is waiting on them, and it hangs off ONE injection — `submissionJobs`.
  *
  * The regression this guards: `provide('submissionJobs', jobs)` was moved out
- * of the view and into BackgroundProcesses, which is SubmissionHeader's
+ * of the view and into PipelinePanel, which is SubmissionHeader's
  * SIBLING. provide() only travels down, so the header silently fell back to
  * its `ref({})` default and the banner never showed. Nothing threw, nothing
  * logged — the pipeline just sat there.
@@ -100,7 +100,7 @@ describe('every view that polls jobs and renders the header', () => {
     for (const file of readdirSync(viewsDir).filter((f) => f.endsWith('.vue'))) {
       const source = readFileSync(join(viewsDir, file), 'utf8')
       const rendersHeader = /<SubmissionHeader[\s>]/.test(source)
-      const pollsJobs = /useJobPoller|BackgroundProcesses/.test(source)
+      const pollsJobs = /useJobPoller|PipelinePanel/.test(source)
       if (!rendersHeader || !pollsJobs) continue
       if (!source.includes("provide('submissionJobs'")) offenders.push(file)
     }

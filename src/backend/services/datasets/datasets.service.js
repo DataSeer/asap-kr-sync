@@ -234,7 +234,7 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
 
   // Consolidation is KRT-blind: the author's rows are reconciled against this
   // output by the krt_grounding module, downstream. See
-  // docs/background-modules.md.
+  // docs/pipeline-modules.md.
   jobLogger?.log('consolidate_start', 'Starting Gemini consolidation', {
     datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length
   });

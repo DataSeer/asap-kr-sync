@@ -21,7 +21,7 @@ import { statusToStep } from '@/utils/submission'
 // Optional injection — provided by KRTView (step 2) and PDFView (step 3), the
 // two views that poll jobs. Other views render the header without it and the
 // banner stays hidden. NOTE: it must be provided by the VIEW, not by
-// BackgroundProcesses — that component is this one's sibling, so its provide()
+// PipelinePanel — that component is this one's sibling, so its provide()
 // does not reach here.
 const injectedJobs = inject('submissionJobs', ref({}))
 

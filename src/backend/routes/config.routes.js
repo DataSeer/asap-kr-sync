@@ -111,7 +111,7 @@ router.get('/environment', (req, res) => {
 
 /**
  * GET /api/config/services
- * Returns the live config state of each background process so the panel can
+ * Returns the live config state of each pipeline step so the panel can
  * render the "On / Demo / Off" pill before any job has run.
  *
  * Each entry includes:

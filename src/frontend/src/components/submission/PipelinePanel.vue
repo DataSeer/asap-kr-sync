@@ -1,6 +1,6 @@
 <script setup>
 /**
- * BackgroundProcesses — the single shared "background jobs" panel reused on
+ * PipelinePanel — the single shared pipeline panel reused on
  * both step 2 (KRTView) and step 3 (PDFView). It owns:
  *
  *   1. The job poller (useJobPoller) and exposes its callbacks + jobs ref
@@ -12,7 +12,7 @@
  *      upload.
  *   4. The restart-job dispatcher (PMs / staff click a job to re-run it).
  *
- * Both views render `<BackgroundProcesses :submission-id="id" />` — any
+ * Both views render `<PipelinePanel :submission-id="id" />` — any
  * future change to the panel UI or polling logic only needs to be made
  * here. Per-view extras (software-mentions modal, authors, etc.) are still
  * provided by the parent view above this component since Vue's provide
@@ -35,6 +35,7 @@ const notificationStore = useNotificationStore()
 // ── Job poller — provided to JobStatusPanel via inject ───────────────
 const {
   jobs,
+  issues,
   fetchError,
   isAnyRunning,
   getJob,
@@ -45,6 +46,13 @@ const {
 } = useJobPoller(computed(() => props.submissionId))
 
 provide('submissionJobs', jobs)
+// The step tiles offer Retry / Continue on a step that needs a decision, so the
+// panel no longer sits under a separate box repeating the same thing. The id is
+// what the decision is made against, and the refresh is how the tile stops
+// showing the issue once it has been answered.
+provide('pipelineIssues', issues)
+provide('submissionIdForDecision', computed(() => props.submissionId))
+provide('refreshPipeline', refresh)
 // So the panel can say "could not be read" instead of listing every step as
 // "Not started" — which is what an unreachable server looked like.
 provide('jobsFetchError', fetchError)

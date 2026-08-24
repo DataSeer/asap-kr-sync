@@ -69,8 +69,8 @@ See [Getting Started](./docs/getting-started.md) for full setup instructions.
 | [KRT Validation Rules](./docs/krt-validation-rules.md) | What triggers an error / warning / silent pass on each KRT column, per-type identifier acceptance, and how errors gate "Continue" |
 | [KRT Editor](./docs/krt-editor.md) | Every feature of the table component — editing, quick actions, validation feedback, suggestion review, bulk operations, change visualisation, and what it deliberately does *not* do |
 | [Authentication](./docs/authentication.md) | JWT flow, Auth0 integration, roles, middleware, rate limiting |
-| [Background Jobs](./docs/background-jobs.md) | Job queue, pipeline, workers, statuses, polling |
-| [Background Modules](./docs/background-modules.md) | Module-by-module reference — each detector, its engine, the 4-stage contract, demo fallback, and how outputs become the Generated KRT |
+| [Background Jobs](./docs/pipeline-jobs.md) | Job queue, pipeline, workers, statuses, polling |
+| [Background Modules](./docs/pipeline-modules.md) | Module-by-module reference — each detector, its engine, the 4-stage contract, demo fallback, and how outputs become the Generated KRT |
 | [Archiving](./docs/archiving.md) | Taking a submission out to a folder and putting it back — what an archive holds, restore order, the tombstone, and retention |
 | [External APIs](./docs/external-apis.md) | GROBID, OpenAlex, ORCID, Softcite, Gemini, LM APIs, S3, Google Sheets |
 | [Frontend](./docs/frontend.md) | Vue 3 SPA architecture, routing, stores, composables, components |
@@ -87,7 +87,7 @@ See [Getting Started](./docs/getting-started.md) for full setup instructions.
    (step_krt)        (step_pdf)          (step_review)   (step_as)          (step_report)
 ```
 
-When a PDF is uploaded, background jobs run in parallel:
+When a PDF is uploaded, the pipeline runs its steps in parallel:
 
 ```
 PDF Upload
@@ -125,8 +125,8 @@ Either way the author's rows are reconciled against the manuscript afterwards,
 at **KRT Grounding**, as a query rather than a seed — which is what makes "did
 we actually find this row in the PDF?" answerable, and it is deliberately the
 only place that question is answered. See
-[Background Jobs](./docs/background-jobs.md) for the full gating rules and
-[Background Modules](./docs/background-modules.md) for the pipelines.
+[Background Jobs](./docs/pipeline-jobs.md) for the full gating rules and
+[Background Modules](./docs/pipeline-modules.md) for the pipelines.
 
 PDF Analysis is an in-app step (no external API) that merges the
 items produced by every detection into the Generated KRT — feeding

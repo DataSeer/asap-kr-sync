@@ -6,3 +6,4 @@
  */
 
 export { useJobPoller, isFutureStepJob, FUTURE_STEP_REASONS } from './useJobPoller'
+export { useIssueDecision } from './useIssueDecision'

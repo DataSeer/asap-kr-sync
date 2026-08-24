@@ -16,14 +16,12 @@ import jobService from '@/services/job.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
-import BackgroundProcesses from '@/components/submission/BackgroundProcesses.vue'
+import PipelinePanel from '@/components/submission/PipelinePanel.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
 import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isFutureStepJob } from '@/composables'
-import PipelineIssues from '@/components/submission/PipelineIssues.vue'
-import { useJobPoller } from '@/composables'
 
 const route = useRoute()
 const router = useRouter()
@@ -50,7 +48,7 @@ const submission = computed(() => submissionStore.currentSubmission)
 // Per-detector data feeds the JobStatusPanel "Show more" modal. These stay
 // in the view because they're step-3-specific — KRTView doesn't fetch them.
 // Vue's provide resolution walks the entire ancestry, so even though the
-// BackgroundProcesses wrapper provides its own context below, JobStatusPanel
+// PipelinePanel wrapper provides its own context below, JobStatusPanel
 // (its descendant) can still see these provides.
 const softwareMentionsItems = ref([])
 provide('submissionSoftwareMentions', softwareMentionsItems)
@@ -63,7 +61,7 @@ provide('submissionMaterials', materialsItems)
 const protocolsItems = ref([])
 provide('submissionProtocols', protocolsItems)
 
-// Shortcut accessors that delegate to the BackgroundProcesses ref once the
+// Shortcut accessors that delegate to the PipelinePanel ref once the
 // child is mounted. Wrapping `jobs` as a computed so consumers (watch /
 // other computed) react when the ref binds. defineExpose does NOT auto-
 // unwrap refs, so we unwrap explicitly via `.jobs?.value`.
@@ -83,25 +81,14 @@ function getJob(type) {
 // empty-state visible even after every job has hit 'complete'.
 const jobs = computed(() => bgProcessesRef.value?.jobs || {})
 
-/**
- * Issues come from a poller of this page's own, not from the panel below.
- *
- * BackgroundProcesses is a SIBLING of everything above it, and provide() only
- * travels down — the same trap that once left the header blind to the pipeline.
- * A second poller is a second request every few seconds, which is the price of
- * not having a component's internals decide what the page above it can show.
- */
-const { issues, refresh: refreshIssues } = useJobPoller(computed(() => route.params.id))
-
-/** A decision changes both what the panel shows and what is left to decide. */
-function refreshAfterDecision() {
-  refreshIssues()
-  refreshJobs()
-}
+// This page ran a SECOND poller purely to feed the issue box that used to sit
+// above the panel — a duplicate request every few seconds. The decision now
+// lives on the step tile, inside the panel, which polls already; the box and
+// the poller went together.
 
 // SubmissionHeader injects this to know whether pdf_analysis is parked on
 // `pending_input`, which is what makes saving a DAS advance the pipeline.
-// BackgroundProcesses provides the same key, but it is the header's SIBLING
+// PipelinePanel provides the same key, but it is the header's SIBLING
 // here — provide only travels DOWN, so without this line the header falls back
 // to its `ref({})` default, the banner never shows and saving a DAS never
 // releases the step. Declared after `jobs` on purpose: provide() runs at setup,
@@ -130,7 +117,7 @@ watch(pdfAnalysisJob, (job) => {
 })
 
 // Wires job-completion side-effects (refreshing suggestions, surfacing
-// notifications, etc.) into the shared BackgroundProcesses wrapper. The wrapper
+// notifications, etc.) into the shared PipelinePanel wrapper. The wrapper
 // itself runs useJobPoller; we just register PDFView-specific reactions on top.
 //
 // It cannot simply be called from onMounted. The panel lives inside a `v-else`
@@ -219,7 +206,7 @@ const processesForThisStep = computed(
   () => Object.values(jobs.value || {}).filter(j => !isFutureStepJob(j))
 )
 
-// True when every background process has reached a final state (complete or
+// True when every pipeline step has reached a final state (complete or
 // failed). Excludes pending_input and waiting — those are "blocked, not done",
 // and the user should still see the prompt that lets them act on it.
 const allProcessesFinished = computed(() => {
@@ -374,7 +361,7 @@ async function loadPage() {
   registerJobCallbacks()
 
   // Load resource type categories (non-blocking) — service status is owned
-  // by the BackgroundProcesses wrapper now.
+  // by the PipelinePanel wrapper now.
   resourceTypesStore.fetchResourceTypeNames().catch(() => {})
 
   try {
@@ -544,7 +531,7 @@ async function loadProtocols() {
 }
 
 // PDF replace flow — gated by the warning modal because re-uploading the
-// PDF restarts every background process and invalidates existing suggestions.
+// PDF restarts the whole pipeline and invalidates existing suggestions.
 function openReplacePdfDialog() {
   showReplacePdfModal.value = true
 }
@@ -582,7 +569,7 @@ async function handleReplacePdfFile(event) {
 }
 
 /**
- * Re-run all background processes via the orchestrator
+ * Re-run the whole pipeline via the orchestrator
  */
 async function handleRerunAnalysis() {
   // Optimistically wipe the old AI suggestions the moment the user clicks
@@ -1279,26 +1266,33 @@ function scrollToFindingRow(finding) {
       <!-- Anything needing a decision, above the panel that shows the steps —
            this is the page the user is on while the pipeline runs, so it is
            where a stall has to be answerable. -->
-      <PipelineIssues
-        :submission-id="route.params.id"
-        :issues="issues"
-        actionable
-        compact
-        @resolved="refreshAfterDecision"
-      />
-
       <!-- Pipeline panel — embeds the wait-time ETA in its
            header and exposes a "More details" toggle for the per-job grid. -->
-      <BackgroundProcesses
+      <PipelinePanel
         ref="bgProcessesRef"
         :submission-id="route.params.id"
       />
 
       <!-- AI Suggestions Section - Carousel Navigation -->
       <div v-if="findings.length > 0 || anyProcessFinished || pdfAnalysisInFlight" id="ai-suggestions-section" class="card">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-medium text-gray-700">AI Suggestions</h3>
-          <div class="flex items-center space-x-2">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <h3 class="text-sm font-medium text-gray-700 shrink-0">AI Suggestions</h3>
+
+          <!-- Disclaimer (#8): AI suggestions are candidates, not ground truth.
+               On the header row rather than a band of its own — it is a
+               standing caveat, not news, and a full-width strip spent three
+               lines of the page saying so every time. -->
+          <div class="flex items-center gap-2 flex-1 min-w-0 px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-xs text-blue-800">
+            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>
+              Suggestions of resources that <em>may</em> belong in your Key Resources Table — review each
+              one before accepting.
+            </span>
+          </div>
+
+          <div class="flex items-center space-x-2 shrink-0">
             <!-- Regenerate suggestions (re-runs only the LM comparison job).
                  Disabled once anything was cancelled — the Generated KRT it
                  compares against may never have been produced; use Re-run all. -->
@@ -1338,17 +1332,6 @@ function scrollToFindingRow(finding) {
               <span class="stats-total">{{ findings.length }}</span>
             </span>
           </div>
-        </div>
-
-        <!-- Disclaimer (#8): AI suggestions are candidates, not ground truth. -->
-        <div class="flex items-start gap-2 mb-3 px-3 py-2 rounded-md bg-blue-50 border border-blue-200 text-xs text-blue-800">
-          <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span>
-            These are AI-generated suggestions of resources that <em>may</em> belong in your Key Resources Table.
-            They are potential additions and might not be part of your original KRT — please review each one before accepting.
-          </span>
         </div>
 
         <!-- Filter tabs -->
@@ -1695,7 +1678,7 @@ function scrollToFindingRow(finding) {
     </template>
 
     <!-- Replace PDF warning modal — gates the file picker because replacing
-         the PDF restarts every background process and discards in-flight
+         the PDF restarts the whole pipeline and discards in-flight
          suggestions. -->
     <Teleport to="body">
       <div v-if="showReplacePdfModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="closeReplacePdfModal">

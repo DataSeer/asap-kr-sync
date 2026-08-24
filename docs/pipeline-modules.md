@@ -1,8 +1,8 @@
-# Background Processing Modules
+# Pipeline Modules
 
 > A module-by-module functional reference for the pipeline steps that turn an uploaded manuscript into
 > the **Generated KRT** and author list. For *how the queue runs them* (scheduling, dependencies, retries,
-> concurrency, polling, statuses) see [background-jobs.md](./background-jobs.md); for the *external-service API
+> concurrency, polling, statuses) see [pipeline-jobs.md](./pipeline-jobs.md); for the *external-service API
 > details* (endpoints, auth, request/response) see [external-apis.md](./external-apis.md); for *configuration*
 > (env vars, prompts) see the [Master Setup Guide §4](./master-setup-guide.md#4-backend-configuration-env).
 >
@@ -12,7 +12,7 @@
 
 ## 1. The module roster
 
-Each background process is a `submission_jobs` row of a given `job_type` (`config/constants.js` → `JOB_TYPES`),
+Each pipeline step is a `submission_jobs` row of a given `job_type` (`config/constants.js` → `JOB_TYPES`),
 run by a worker in `services/queue/workers.js`. Eleven modules participate in the analysis pipeline (a twelfth,
 `report_generation`, is ad-hoc). `das_suggestions` is one of the eleven, but **gated to the Availability step** —
 it depends on `das_extraction` for the statement, and its gate holds it there rather than letting it run when
@@ -33,7 +33,7 @@ extraction finishes; see §3.11 and [submission-workflow.md](./submission-workfl
 | `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
 | `das_suggestions` | DAS vs the ASAP rulebook (per-rule verdict) | **LM (Gemini)** — LM-only, **legacy-rules fallback** | `das_extraction` *(gated to the Availability step)* | the `/availability` suggestions list, and its own module page |
 
-Pipeline shape (the orchestrator's dependency graph; see [background-jobs.md](./background-jobs.md#pipeline)). `das_suggestions` is omitted from the diagram below for readability — it hangs off `das_extraction` and is gated to the Availability step (see §3.11). On the app's own pipeline page it is drawn in the **Suggest** stage rather than beside its dependency, via the step's `displayStage`: it depends on something early but runs last, and a reader following the page top to bottom should find it where it actually runs.
+Pipeline shape (the orchestrator's dependency graph; see [pipeline-jobs.md](./pipeline-jobs.md#pipeline)). `das_suggestions` is omitted from the diagram below for readability — it hangs off `das_extraction` and is gated to the Availability step (see §3.11). On the app's own pipeline page it is drawn in the **Suggest** stage rather than beside its dependency, via the step's `displayStage`: it depends on something early but runs last, and a reader following the page top to bottom should find it where it actually runs.
 
 ```mermaid
 flowchart LR
@@ -410,7 +410,7 @@ that it lives in git and can be looked up — and the UI duly linked to GitHub. 
 contact with a deployment: dev is not always running the latest commit, so a reader could be shown a prompt that
 was *not* the one that ran, silently and with no way to tell. A template is a few kilobytes; the run keeps its
 own copy and the UI shows that. The GitHub link for prompts is gone. (The link from a module page to
-`docs/background-modules.md` stays — documentation is reference material, not a record of what ran.)
+`docs/pipeline-modules.md` stays — documentation is reference material, not a record of what ran.)
 
 **`attachments` is for a file the prompt cannot work without.** LangExtract's few-shot examples
 (`data/prompts/datasets-signals-examples.json`) are the case that exists: they are passed to the extractor as a
@@ -488,7 +488,7 @@ engine returned (deduped). Admins manage the lists in the UI (see
 ## 3. Module reference
 
 Each section lists: **purpose · engine · depends on · input · how it works · config files · demo · key files**.
-Per-module timeouts, retry limits and concurrency live in [background-jobs.md](./background-jobs.md#timeout-and-retry-configuration);
+Per-module timeouts, retry limits and concurrency live in [pipeline-jobs.md](./pipeline-jobs.md#timeout-and-retry-configuration);
 external-API call specifics live in [external-apis.md](./external-apis.md).
 
 ### 3.1 `markdown_convert` — PDF → Markdown
@@ -883,7 +883,7 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Persistence:** the per-rule verdicts are persisted on the job result (`result.data.suggestions`) — each with a
   `reason` kept for **every** rule (applicable or not, so the UI's "More details" disclosure can explain both
   flagged and passed checks) — alongside the KRT `signals` used (`result.data.signals`) and `result.data.meta`
-  (see the [result-shape contract](./background-jobs.md#result-summaries); this module stored its meta beside
+  (see the [result-shape contract](./pipeline-jobs.md#result-summaries); this module stored its meta beside
   `data` for one commit and the only symptom was a blank Statistics column on its own page). It also writes the
   frozen `inputs` artefact every module writes: the statement as sent, the KRT signals, and the prompt by template
   + assembled digest. Read via `GET /api/submissions/:id/das-suggestions`; re-run via
@@ -1036,7 +1036,7 @@ running in the container (root-owned); the workbooks therefore go to a sibling,
 | Area | Files |
 |------|-------|
 | Shared | `services/demo-fallback.service.js` (On/Demo/Off + Done/Fail), `services/pdf-analysis/krt-entry.js` (KrtEntry shape), `services/demo-data.service.js` (demo getters) |
-| Orchestration | `services/queue/orchestrator.service.js` (PIPELINE), `services/queue/workers.js`, `services/queue/job-queue.service.js` — see [background-jobs.md](./background-jobs.md) |
+| Orchestration | `services/queue/orchestrator.service.js` (PIPELINE), `services/queue/workers.js`, `services/queue/job-queue.service.js` — see [pipeline-jobs.md](./pipeline-jobs.md) |
 | Detectors | `services/{software,datasets,materials,protocols}/`, `services/identifier-detection/`, `services/orcid/`, `services/pdf/` (markdown + DAS), `services/krt/author-krt-seeds.service.js` (eval-only; see §3.6) |
 | Consolidation | `services/pdf-analysis/{pdf-analysis,merge-detections,krt-generation,identifier-normalize,dedupe-krt-items}.service.js` (`diff-suggestions.service.js` retired but kept) |
 | Suggestions | `services/suggestion/kr-comparison.service.js` (the LM-only AI Suggestions / `suggestion_generation` module) |

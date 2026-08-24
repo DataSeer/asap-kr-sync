@@ -34,7 +34,7 @@ export function isTerminalStatus(status) {
 }
 
 /**
- * Composable for polling background job status for a submission.
+ * Composable for polling pipeline step status for a submission.
  * Fetches once on mount, then polls with exponential backoff while any job is running.
  * Fires callbacks only on status transitions observed during this session.
  *

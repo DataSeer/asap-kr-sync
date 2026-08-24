@@ -185,9 +185,6 @@ function enginesFor(jobType, m) {
   return null
 }
 
-/** Just the file name; the full path is on the Prompt tab. */
-const promptName = (p) => (typeof p === 'string' ? p.split('/').pop() : null)
-
 const config = computed(() => {
   const m = meta.value
   const state = result.value.service?.config?.state
@@ -205,9 +202,6 @@ const config = computed(() => {
     ['Model', m.model],
     ['Mode', m.mode],
     ['Engines', enginesFor(props.jobType, m)],
-    ['Prompt', promptName(m.promptFile)],
-    ['LM pass', m.usedLM === true ? 'used' : m.usedLM === false ? 'not used — rule-based merge'
-      : m.lmEnabled === true ? 'enabled' : m.lmEnabled === false ? 'disabled' : null],
     ['Ran via', RAN_VIA[via] || via]
   ]
   if (m.grounding) {

@@ -1,9 +1,9 @@
-# Background Jobs
+# Pipeline Jobs
 
-The application uses **pg-boss** (PostgreSQL-based job queue) for asynchronous background processing. Jobs are tracked in the `submission_jobs` table, and an orchestrator manages dependencies between jobs. The frontend polls for status updates with exponential backoff.
+The application uses **pg-boss** (PostgreSQL-based job queue) to run the pipeline asynchronously. Jobs are tracked in the `submission_jobs` table, and an orchestrator manages dependencies between jobs. The frontend polls for status updates with exponential backoff.
 
 > This document covers the **queue & orchestration layer** (how jobs are scheduled, sequenced, retried, and polled).
-> For what each module *does and how it works internally*, see [background-modules.md](./background-modules.md).
+> For what each module *does and how it works internally*, see [pipeline-modules.md](./pipeline-modules.md).
 
 ## Queue Configuration
 
@@ -1230,7 +1230,7 @@ endpoints say so rather than reporting "queued". Pinned by
 
 ## Job Logging & Raw Response Caching
 
-Each background job uses a **JobLogger** that captures structured logs and raw API responses:
+Each pipeline step uses a **JobLogger** that captures structured logs and raw API responses:
 
 ### Structured Logs (`SubmissionJob.logs` JSONB)
 

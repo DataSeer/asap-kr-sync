@@ -1,6 +1,6 @@
 <script setup>
 /**
- * ModuleResultsView — one background module's results, on its own page.
+ * ModuleResultsView — one pipeline module's results, on its own page.
  *
  * A modal could not do this job. Resolving a conflict means reading the
  * grounding verdict and the KRT row side by side, which needs two tabs; and a
@@ -840,19 +840,6 @@ const tabConflicts = computed(() => {
       </span>
     </div>
 
-    <!-- Directly under the title, before anything that could be mistaken for a
-       result: what state this run is in. -->
-    <div class="mrv-status" :class="`mrv-status-${runStatus.tone}`" role="status">
-      <span class="mrv-status-label">{{ runStatus.label }}</span>
-      <span class="mrv-status-text">
-        {{ runStatus.title }}
-        <span v-if="runStatus.detail" class="mrv-status-detail">{{ runStatus.detail }}</span>
-        <!-- What is below is this run's record, not the submission as it stands
-             now. The KRT editor next door is live; this is not. -->
-        <span v-if="asAt" class="mrv-status-asat">{{ asAt }}</span>
-      </span>
-    </div>
-
     <!-- Every step, as links. RouterLink rather than a click handler so
        ctrl-click opens a second tab, which is the point of these pages. -->
     <nav v-if="steps.length" class="mrv-modules" aria-label="Pipeline steps">
@@ -870,6 +857,21 @@ const tabConflicts = computed(() => {
         </span>
       </template>
     </nav>
+
+    <!-- Between the step links and the results, which is where it belongs: it
+       describes the run whose output follows, and the links above are how you
+       change which run that is. On one line — three stacked lines to say "this
+       finished" pushed the results themselves below the fold. -->
+    <div class="mrv-status" :class="`mrv-status-${runStatus.tone}`" role="status">
+      <span class="mrv-status-label">{{ runStatus.label }}</span>
+      <span class="mrv-status-text">
+        {{ runStatus.title }}
+        <span v-if="runStatus.detail" class="mrv-status-detail">{{ runStatus.detail }}</span>
+        <!-- What is below is this run's record, not the submission as it stands
+             now. The KRT editor next door is live; this is not. -->
+        <span v-if="asAt" class="mrv-status-asat">{{ asAt }}</span>
+      </span>
+    </div>
 
     <ModuleExplainer
       v-if="explainer"
@@ -1176,10 +1178,11 @@ const tabConflicts = computed(() => {
 
 .mrv-status {
   display: flex;
-  align-items: flex-start;
-  gap: 0.625rem;
-  margin: 0 0 1rem;
-  padding: 0.625rem 0.75rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0.375rem 0.625rem;
   border: 1px solid transparent;
   border-radius: 0.5rem;
   font-size: 0.8125rem;
@@ -1197,11 +1200,16 @@ const tabConflicts = computed(() => {
   background: rgba(255, 255, 255, 0.65);
 }
 
-.mrv-status-detail { display: block; opacity: 0.9; }
+/* Inline, separated by a middot: these are clauses of one sentence, not
+   three findings, and stacking them cost three lines on every module page. */
+.mrv-status-detail { opacity: 0.9; }
+.mrv-status-detail::before { content: '· '; opacity: 0.6; }
+.mrv-status-asat::before { content: '· '; opacity: 0.6; }
 
 .mrv-status-asat {
-  display: block;
-  margin-top: 0.25rem;
+  /* Same middot as the detail: without it the clause ran straight into the
+     sentence before it ("...its full output.Run 1 · as at..."). */
+  margin-left: 0.375rem;
   font-size: 0.75rem;
   opacity: 0.75;
 }

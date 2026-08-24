@@ -231,7 +231,7 @@ function formatAge(iso) {
       </button>
     </div>
     <p class="text-sm text-gray-500 mb-4 flex-shrink-0">
-      Every background job across all submissions. A job is flagged when it can no longer produce anything —
+      Every pipeline step across all submissions. A job is flagged when it can no longer produce anything —
       its submission was deleted, a newer run replaced it, or it has been waiting far longer than its step
       should take. Deleting a job also cancels its queued work. A job a worker is running right now is
       protected from bulk actions.

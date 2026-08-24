@@ -19,7 +19,7 @@
  * — skipped outright when the author listed no materials — which left the
  * module with no discovery capacity in the case that needs it most. The prompt
  * now works from textual cues; the author's rows are reconciled against this
- * output by the krt_grounding module. See docs/background-modules.md.
+ * output by the krt_grounding module. See docs/pipeline-modules.md.
  *
  * Note: the curated enrichment list is no longer applied here — only the
  * Identifier Detection module consults the enrichment lists now.

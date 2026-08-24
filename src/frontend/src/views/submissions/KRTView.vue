@@ -398,7 +398,7 @@ function triggerPdfUpload() {
  * fallback covers the cases the modal can't: an old client that didn't
  * upload a PDF, or a user who wants to swap the PDF mid-round after
  * spotting an issue. Backend `pdfService.upload` cascades the analysis
- * pipeline so the background processes re-run automatically.
+ * pipeline so its steps re-run automatically.
  */
 async function handlePdfUpload(event) {
   const file = event.target.files[0]

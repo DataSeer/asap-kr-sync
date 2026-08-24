@@ -1,7 +1,7 @@
 /**
  * Job Logger Service
  *
- * Provides structured logging and raw response caching for background jobs.
+ * Provides structured logging and raw response caching for pipeline steps.
  * Each job gets a logger instance that:
  *   - Collects structured log entries (stored in SubmissionJob.logs JSONB)
  *   - Uploads raw API responses to S3 (stored as S3 keys in SubmissionJob.rawResponses)
@@ -19,7 +19,7 @@ const { generateJobS3Key } = require('../../utils/helpers');
 const logger = require('../../utils/logger');
 
 /**
- * Create a job logger for a background job.
+ * Create a job logger for a pipeline step.
  *
  * @param {object} submissionJob - The SubmissionJob model instance
  * @param {string} manuscriptId - Manuscript ID for S3 key generation

@@ -486,13 +486,13 @@ router.post('/:id/grounding/regenerate',
 
 // ===== Background Jobs =====
 
-// GET /api/submissions/:id/jobs - Get background job statuses
+// GET /api/submissions/:id/jobs - Get the status of every pipeline step
 router.get('/:id/jobs',
   canAccessSubmission,
   jobsController.getJobs
 );
 
-// POST /api/submissions/:id/processes/run - Run (or re-run) all background processes
+// POST /api/submissions/:id/processes/run - Run (or re-run) the whole pipeline
 router.post('/:id/processes/run',
   canAccessSubmission,
   lmApiLimiter,

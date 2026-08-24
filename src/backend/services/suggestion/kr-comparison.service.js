@@ -6,7 +6,7 @@
  * suggestions, prioritizing the author's data, keeping the list manageable, and
  * proposing removes only for clear mistakes.
  *
- * Runs as the SUGGESTION_GENERATION background job (after PDF_ANALYSIS) and is
+ * Runs as the SUGGESTION_GENERATION pipeline step (after PDF_ANALYSIS) and is
  * re-triggerable. The result is persisted on the job as a list of canonical
  * suggestion objects (same shape the frontend already consumes), so the read
  * and approve/reject paths can use it directly without re-deriving anything.

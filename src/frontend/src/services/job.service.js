@@ -1,5 +1,5 @@
 /**
- * Job Service - API client for background job status
+ * Job Service - API client for pipeline step status
  *
  * All endpoints support an optional `round` parameter.
  * When omitted, the backend defaults to the submission's current round.
@@ -9,7 +9,7 @@ import api from './api'
 
 export default {
   /**
-   * Get all background jobs for a submission
+   * Get every pipeline step for a submission
    * @param {string} submissionId
    * @param {number} [round] - Optional round number (defaults to current round)
    * @returns {Promise<Object>} - { round, jobs: [...] }
@@ -74,7 +74,7 @@ export default {
   },
 
   /**
-   * Run (or re-run) all background processes for a submission
+   * Run (or re-run) the whole pipeline for a submission
    * @param {string} submissionId
    * @returns {Promise<Object>}
    */
@@ -84,7 +84,7 @@ export default {
   },
 
   /**
-   * Cancel all in-flight background processing for a submission (#15).
+   * Cancel the in-flight pipeline for a submission (#15).
    * @param {string} submissionId
    * @param {number} [round]
    * @returns {Promise<Object>} - { message, cancelled, round }

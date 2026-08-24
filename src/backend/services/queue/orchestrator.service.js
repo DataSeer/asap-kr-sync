@@ -1,7 +1,7 @@
 /**
  * Process Orchestrator
  *
- * Manages the execution order of background processes for a submission.
+ * Manages the execution order of the pipeline steps for a submission.
  * Defines a pipeline with dependencies — jobs only start when their
  * dependencies have reached a terminal state (complete or failed).
  */

@@ -1,6 +1,6 @@
 /**
  * Jobs Controller
- * Returns background job statuses for a submission.
+ * Returns the status of every pipeline step for a submission.
  *
  * All endpoints support an optional `?round=N` query parameter.
  * When omitted, defaults to the submission's current round.
@@ -241,7 +241,7 @@ async function getJobs(req, res, next) {
 }
 
 /**
- * Run all background processes for a submission
+ * Run the whole pipeline for a submission
  * POST /api/submissions/:id/processes/run
  */
 async function runProcesses(req, res, next) {
@@ -390,7 +390,7 @@ async function advanceJob(req, res, next) {
 }
 
 /**
- * Cancel all in-flight background processing for a submission.
+ * Cancel the in-flight pipeline for a submission.
  * POST /api/submissions/:id/processes/cancel?round=N
  *
  * A cancel INTERRUPTS. Every step that has not finished — waiting, queued and

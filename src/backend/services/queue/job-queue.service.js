@@ -1,6 +1,6 @@
 /**
  * Job Queue Service using pg-boss
- * PostgreSQL-based job queue for background processing
+ * PostgreSQL-based job queue that runs the pipeline
  */
 
 const PgBoss = require('pg-boss');

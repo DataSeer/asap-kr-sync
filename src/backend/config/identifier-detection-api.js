@@ -21,7 +21,7 @@ module.exports = {
   // positives). Defaults to ON. Set IDENTIFIER_DETECTION_CUT_AT_REFERENCES=false
   // to scan the WHOLE document — needed for combined manuscript+supplemental
   // PDFs where the Key Resources table sits AFTER the references heading (see
-  // docs/background-modules.md §3.7 / KNOWN_ISSUES.md).
+  // docs/pipeline-modules.md §3.7 / KNOWN_ISSUES.md).
   cutAtReferences() {
     return process.env.IDENTIFIER_DETECTION_CUT_AT_REFERENCES !== 'false';
   },

@@ -1,6 +1,6 @@
 <script setup>
 /**
- * JobStatusPanel - Slim bar showing background job statuses
+ * JobStatusPanel - Slim bar showing the pipeline steps and their statuses
  *
  * Displays each job with a spinner/checkmark/X icon, label, and status.
  * Clicking a job opens a popup with details (richer for admin/ds_annotator).
@@ -14,7 +14,7 @@ import configService from '@/services/config.service'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isCancelledJob } from '@/composables/useJobPoller'
-import { isFutureStepJob } from '@/composables'
+import { isFutureStepJob, useIssueDecision } from '@/composables'
 // One vocabulary for job state, shared with the module pages — these were
 // about to be a second copy.
 import { formatFailReason, partialDetail } from '@/utils/job-status'
@@ -63,6 +63,44 @@ const statusUnreadable = computed(() =>
  * document and report zero findings, which reads as "your manuscript mentions
  * none of this" — so the steps hold instead, and this says why.
  */
+/**
+ * Steps that need a decision, and the two answers.
+ *
+ * The Manuscript step used to stack a separate issue box directly above this
+ * panel, so a failure was announced twice — once in prose at the top, once as a
+ * red pill on the tile — with the buttons only on the copy the user was not
+ * looking at. The tile is where the failure already shows, so the choice
+ * belongs on the tile.
+ */
+const injectedIssues = inject('pipelineIssues', ref([]))
+const submissionIdForDecision = inject('submissionIdForDecision', ref(null))
+const { busy: decisionBusy, act: decide } = useIssueDecision(submissionIdForDecision)
+
+/** Undecided issues, by step. */
+const issueByType = computed(() => {
+  const map = {}
+  for (const i of injectedIssues.value || []) if (!i.decided) map[i.jobType] = i
+  return map
+})
+const issueFor = (job) => issueByType.value[job.type] || null
+
+/** What continuing costs, in this issue's own terms. */
+function issueConsequence(issue) {
+  if (issue.wouldSkip?.length) {
+    return `${issue.wouldSkip.length} step(s) that need it will be skipped`
+  }
+  if (issue.holding?.length) {
+    return `${issue.holding.length} step(s) will run with less to work from`
+  }
+  return 'nothing is waiting on it'
+}
+
+const refreshPipeline = inject('refreshPipeline', null)
+
+async function onDecide(job, action) {
+  await decide(job.type, action, () => refreshPipeline?.())
+}
+
 const BLOCKED_REASON = 'blocked_by_failure'
 
 const blockedByIssue = computed(() =>
@@ -74,7 +112,7 @@ const paused = computed(() => blockedByIssue.value)
 /** How many steps that has stopped — the scale of the problem, not just its name. */
 const blockedCount = computed(() =>
   jobList.value.filter((j) => j.status === 'waiting' && j.waitingReason === BLOCKED_REASON).length)
-// Cancel-processing action, provided by BackgroundProcesses (#15).
+// Cancel-processing action, provided by PipelinePanel (#15).
 const cancelProcessingFn = inject('cancelProcessing', null)
 const cancelling = ref(false)
 // Reactive counter incremented by parent (PDFView) to force-expand the panel
@@ -1084,6 +1122,7 @@ async function downloadRawResponse(jobType, responseName) {
         :key="job.type"
         :to="{ name: 'submission-module', params: { id: submissionId, type: job.type } }"
         class="job-status-item job-status-item-link"
+        :class="{ 'job-status-item-needs-decision': issueFor(job) }"
       >
         <!-- Line 1: Configuration pill (On / Demo / Off) -->
         <div class="job-config-line" v-tooltip="getLiveConfigTitle(job)">
@@ -1188,6 +1227,28 @@ async function downloadRawResponse(jobType, responseName) {
             v-tooltip="conflictCount(job) + ' KRT row(s) hold a value the manuscript contradicts. One of the two is wrong — open the module to see which values differ.'"
           >{{ conflictCount(job) }} conflict{{ conflictCount(job) === 1 ? '' : 's' }}</span>
         </div>
+
+        <!-- The decision, on the step it is about. The buttons stop the click
+             from opening the module page underneath them. -->
+        <div v-if="issueFor(job)" class="job-decision-line">
+          <span class="job-decision-consequence">
+            Continue and {{ issueConsequence(issueFor(job)) }}.
+          </span>
+          <span v-if="canRestartJobs" class="job-decision-actions">
+            <button
+              type="button"
+              class="job-decision-btn job-decision-retry"
+              :disabled="!!decisionBusy"
+              @click.prevent.stop="onDecide(job, 'retry')"
+            >{{ decisionBusy === job.type + ':retry' ? 'Retrying…' : 'Retry' }}</button>
+            <button
+              type="button"
+              class="job-decision-btn job-decision-continue"
+              :disabled="!!decisionBusy"
+              @click.prevent.stop="onDecide(job, 'continue')"
+            >{{ decisionBusy === job.type + ':continue' ? 'Continuing…' : 'Continue without it' }}</button>
+          </span>
+        </div>
       </RouterLink>
     </div>
   </div>
@@ -1195,6 +1256,39 @@ async function downloadRawResponse(jobType, responseName) {
 </template>
 
 <style scoped>
+/* The step that stopped the pipeline, marked where the failure already shows. */
+.job-status-item-needs-decision {
+  background: #fef2f2;
+  box-shadow: inset 0 0 0 1px #fecaca;
+  border-radius: 0.375rem;
+}
+.job-decision-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+  padding-left: 1.5rem;
+}
+.job-decision-consequence {
+  font-size: 0.6875rem;
+  color: #991b1b;
+}
+.job-decision-actions { display: flex; gap: 0.25rem; }
+.job-decision-btn {
+  padding: 0.0625rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.job-decision-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.job-decision-retry { background: #b91c1c; color: #fff; }
+.job-decision-retry:hover:not(:disabled) { background: #991b1b; }
+.job-decision-continue { background: #fff; color: #7f1d1d; border: 1px solid #fca5a5; }
+.job-decision-continue:hover:not(:disabled) { background: #fef2f2; }
+
 .job-run-badge {
   flex: none;
   padding: 0.0625rem 0.375rem;

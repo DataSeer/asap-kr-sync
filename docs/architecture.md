@@ -181,7 +181,7 @@ Each step has a corresponding status, view, and set of operations. Users can nav
 
 ## Background Job Pipeline
 
-PDF upload triggers parallel background jobs via pg-boss. The pipeline separates
+PDF upload triggers parallel pipeline steps via pg-boss. The pipeline separates
 two jobs that used to be fused:
 
 - **Discovery** — five detectors answer *what resources does this manuscript
@@ -256,7 +256,7 @@ reports zero author rows with every candidate unmatched (`meta.mode: 'no_krt'`).
 Nothing about the pipeline shape changes — the Generated KRT is then pure
 discovery.
 
-See [Background Jobs](./background-jobs.md) for details.
+See [Pipeline jobs](./pipeline-jobs.md) for details.
 
 ## User Roles
 

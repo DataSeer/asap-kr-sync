@@ -1,7 +1,7 @@
 /**
  * Job Queue Workers
  *
- * Registers handlers for all background job queues. Each handler:
+ * Registers handlers for every pipeline step queue. Each handler:
  *   1. Marks the SubmissionJob as processing.
  *   2. Computes isFinalAttempt from pg-boss retrycount + JOB_CONFIG retryLimit.
  *   3. Calls processX(submissionId, jobLogger, { isFinalAttempt }) — the service

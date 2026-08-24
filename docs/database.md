@@ -292,7 +292,7 @@ the round is handed the same thing.
 Before this, nine services each ran their own `File.findOne({ type }, order:
 version DESC)`, so "the input" meant whatever was newest when each step happened
 to run. Replacing a file mid-run split the round, and nothing recorded it. See
-[background-jobs.md](./background-jobs.md#one-round-one-pdf-one-krt).
+[pipeline-jobs.md](./pipeline-jobs.md#one-round-one-pdf-one-krt).
 
 | Column | Type | Notes |
 |--------|------|-------|

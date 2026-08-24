@@ -6,9 +6,9 @@
 > per-topic docs where useful, but you should not *need* them to get a working deployment.
 >
 > **Deep-dive references** (optional): [Architecture](./architecture.md) · [Database](./database.md) ·
-> [External APIs](./external-apis.md) · [Background Jobs](./background-jobs.md) ·
+> [External APIs](./external-apis.md) · [Pipeline jobs](./pipeline-jobs.md) ·
 > [Archiving](./archiving.md) ·
-> [Background Modules](./background-modules.md) · [Authentication](./authentication.md) ·
+> [Background Modules](./pipeline-modules.md) · [Authentication](./authentication.md) ·
 > [Auth0 Integration](./auth0-integration.md) · [Environment Variables](./environment-variables.md) ·
 > [Submission Workflow](./submission-workflow.md) · [EC2 Deployment](./ec2-deployment.md).
 
@@ -133,7 +133,7 @@ cp .env.example .env
 
 ### 4.3 Detection-module configuration — the On / Demo / Off model
 
-**This is the most important configuration concept.** Every background module shares the same two-flag pattern:
+**This is the most important configuration concept.** Every pipeline module shares the same two-flag pattern:
 
 ```
 <MODULE>_ENABLED=true|false              # call the real external service?
@@ -174,7 +174,7 @@ And one of two **outcome states** after a run:
 
 > This table is the **configuration** view. For each module's full internal workflow (the 4-stage detector
 > contract, demo fallback, outputs, and how results become the Generated KRT), see
-> **[Background Modules](./background-modules.md)**.
+> **[Background Modules](./pipeline-modules.md)**.
 
 | Module | `.env` prefix | Engine / how it works | Prompt / config file |
 |--------|---------------|------------------------|----------------------|
@@ -201,7 +201,7 @@ And one of two **outcome states** after a run:
 ### 4.5 Module pipeline order
 
 When a PDF is uploaded, the orchestrator runs modules as a small dependency graph (details in
-[background-jobs.md](./background-jobs.md)):
+[pipeline-jobs.md](./pipeline-jobs.md)):
 
 ```mermaid
 flowchart LR
@@ -285,7 +285,7 @@ Full ERD/columns: [database.md](./database.md). The core tables:
 | `validation_results` | Per-row KRT validation issues (insert-only). |
 | `change_logs` | Append-only audit trail (action × source × round). |
 | `reports` | Generated report records per round (insert-only). |
-| `submission_jobs` | One row per background job (type, status, JSONB `result`/`logs`, pg-boss link). |
+| `submission_jobs` | One row per pipeline step (type, status, JSONB `result`/`logs`, pg-boss link). |
 | `user_hidden_submissions` | Per-user dashboard visibility prefs. |
 | `resource_types` | Controlled vocabulary of KRT resource types (drives KRT validation). |
 | `app_config` | Key/value JSONB runtime config (e.g. `validation_rules`). |

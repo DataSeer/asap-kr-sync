@@ -1,6 +1,6 @@
 /**
  * SubmissionJob Model
- * Tracks background job status for all async processes per submission
+ * Tracks the status of every pipeline step per submission
  */
 
 const { DataTypes, Op } = require('sequelize');

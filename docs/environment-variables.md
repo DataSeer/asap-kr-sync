@@ -113,7 +113,7 @@ The LM that powers AI Suggestions (the `suggestion_generation` job): it compares
 
 ## DAS Suggestions (Google Gemini — Availability Statement check)
 
-The LM that powers the DAS Suggestions shown on the `/availability` step (the `das_suggestions` job). It checks the Data/Code Availability Statement against the ASAP rulebook (see [background-modules.md → `das_suggestions`](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a per-rule verdict. **LM-only:** when disabled / no key, the frontend **falls back to the legacy in-browser rules** and Continue is not blocked.
+The LM that powers the DAS Suggestions shown on the `/availability` step (the `das_suggestions` job). It checks the Data/Code Availability Statement against the ASAP rulebook (see [pipeline-modules.md → `das_suggestions`](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a per-rule verdict. **LM-only:** when disabled / no key, the frontend **falls back to the legacy in-browser rules** and Continue is not blocked.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|

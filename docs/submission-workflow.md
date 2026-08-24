@@ -166,7 +166,7 @@ updates status to `step_pdf` and navigates to PDFView.
 
 **Instructions shown to the user:**
 1. Upload your manuscript PDF (accepted: .pdf or .docx files, max 50MB)
-2. View background job progress — DAS Extraction, Software Detection, ORCID Extraction, Markdown Convert, Datasets Detection, Materials Detection, Protocols Detection, Identifier Detection, PDF Analysis (Generated KRT), and AI Suggestions (KRT comparison)
+2. View pipeline progress — DAS Extraction, Software Detection, ORCID Extraction, Markdown Convert, Datasets Detection, Materials Detection, Protocols Detection, Identifier Detection, PDF Analysis (Generated KRT), and AI Suggestions (KRT comparison)
 3. Wait for analysis to complete (may take a few minutes)
 4. Click "Continue" to proceed to Step 3
 
@@ -174,7 +174,7 @@ updates status to `step_pdf` and navigates to PDFView.
 
 **Upload a PDF:**
 - Drag-and-drop or click to upload a manuscript PDF
-- Triggers the background job pipeline (see below)
+- Triggers the pipeline (see below)
 - A "Replace PDF" button appears once a PDF exists
 
 **Load demo PDF:**
@@ -205,7 +205,7 @@ selected* (confirmation prompt at **5 or more**), *Approve with Resource Type…
 
 ### Background Job Pipeline
 
-When a PDF is uploaded, ten background jobs start (eight detections, the PDF Analysis Generated-KRT builder, and the AI Suggestions comparison that runs last):
+When a PDF is uploaded, ten pipeline steps start (eight detections, the PDF Analysis Generated-KRT builder, and the AI Suggestions comparison that runs last):
 
 ```mermaid
 graph LR
@@ -349,7 +349,7 @@ flowchart TD
 
 **Conditions (all must be true):**
 - A PDF has been uploaded
-- No background jobs are in `pending_input` status (all must be complete, failed, cancelled, or not started)
+- No pipeline steps are in `pending_input` status (all must be complete, failed, cancelled, or not started)
 - All AI suggestions have been approved or rejected
 - **RESOURCE TYPE errors = 0** (same gate as Step 1)
 
@@ -446,15 +446,15 @@ that source, so a reviewer can isolate (for example) only the AI-driven changes.
 
 ### Availability Statement Recommendations (DAS Suggestions)
 
-The DAS is checked against the **ASAP rulebook** by the **`das_suggestions`** background job — a pipeline step
-gated to this step (see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) — a Google
+The DAS is checked against the **ASAP rulebook** by the **`das_suggestions`** pipeline step — a pipeline step
+gated to this step (see [pipeline-modules.md §3.11](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) — a Google
 Gemini call that judges the statement **semantically** (not by literal keyword matching). It runs on first arrival
 at this step (once review is done, so the DAS is extracted and the KRT is final) and re-runs whenever the DAS is
 edited. While it runs, the panel shows a **loader** and **Continue is blocked**. When the LM is disabled or fails,
 the view **falls back** to the same rules computed in-browser and Continue is **not** blocked.
 
 The rulebook — all nine checks — with the exact `rule_id`s and recommended text is documented in
-[background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions).
+[pipeline-modules.md §3.11](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions).
 Quick reference:
 
 | Rule (`rule_id`) | Type | Applies when |
@@ -701,7 +701,7 @@ flowchart TD
 | `src/frontend/src/components/submission/StepIndicator.vue` | Step navigation bar |
 | `src/frontend/src/components/submission/StepHelpPanel.vue` | Contextual help for each step |
 | `src/frontend/src/components/submission/SubmissionHeader.vue` | Header with navigation and actions |
-| `src/frontend/src/components/submission/JobStatusPanel.vue` | Background job status display |
+| `src/frontend/src/components/submission/JobStatusPanel.vue` | Pipeline step status display |
 | `src/frontend/src/components/submission/NewRoundModal.vue` | New round/version dialog |
 | `src/backend/controllers/submissions.controller.js` | Status update logic |
 | `src/backend/config/constants.js` | Status and step constants |

@@ -147,7 +147,7 @@ async function handleNewRound(data) {
 
     // 2. Upload the new PDF to the round the backend just created. uploadPDF
     //    triggers the full analysis pipeline (markdown → DAS → suggestions),
-    //    so by the time the user lands on Step 2 the background jobs are
+    //    so by the time the user lands on Step 2 the pipeline steps are
     //    already running.
     if (data.pdfFile) {
       await pdfService.upload(route.params.id, data.pdfFile)

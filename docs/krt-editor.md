@@ -14,8 +14,8 @@ and 2**. It is the *same component* on both, with different capabilities switche
 > Step 3 is review-only.
 
 > If you only want to know what makes a cell red or yellow, see
-> [KRT Validation Rules](./krt-validation-rules.md). If you want to know what the background jobs
-> did to produce the suggestions, see [Background Modules](./background-modules.md).
+> [KRT Validation Rules](./krt-validation-rules.md). If you want to know what the pipeline steps
+> did to produce the suggestions, see [Background Modules](./pipeline-modules.md).
 
 ---
 
@@ -92,7 +92,7 @@ a DOI or URL identifier").
 ## 4. AI suggestions (Step 2, `PDFView`)
 
 Suggestions come from the `suggestion_generation` job — a Gemini comparison of the author KRT against
-the Generated KRT. See [Background Modules](./background-modules.md) for how the Generated KRT is built.
+the Generated KRT. See [Background Modules](./pipeline-modules.md) for how the Generated KRT is built.
 
 ### Suggestion types
 
@@ -181,7 +181,7 @@ Worth stating explicitly, because the background pipeline does all of these and 
 All of that happens in the background pipeline and reaches the user only as a *suggestion* they must
 accept. The single exception is the Additional Information → Identifier auto-copy described in §3.
 
-See [Background Modules — automatic transformations](./background-modules.md#21e-automatic-transformations-applied-by-the-pipeline)
+See [Background Modules — automatic transformations](./pipeline-modules.md#21e-automatic-transformations-applied-by-the-pipeline)
 for the full list of what the pipeline does silently.
 
 ---

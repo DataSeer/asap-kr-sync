@@ -22,7 +22,7 @@ const props = defineProps({
   /** [{ q, a }] — the questions a reader actually has, answered. */
   points: { type: Array, default: () => [] },
   /**
-   * Anchor of this module's section in docs/background-modules.md, e.g.
+   * Anchor of this module's section in docs/pipeline-modules.md, e.g.
    * "32-das_extraction--data-availability-statement". Just the fragment: the
    * repository and branch belong to the deployment, not to this component.
    */
@@ -42,7 +42,7 @@ onMounted(async () => {
 })
 
 const docUrl = computed(() => (props.doc && source.value
-  ? `${source.value.repoUrl}/blob/${source.value.branch}/docs/background-modules.md#${props.doc}`
+  ? `${source.value.repoUrl}/blob/${source.value.branch}/docs/pipeline-modules.md#${props.doc}`
   : null))
 </script>
 

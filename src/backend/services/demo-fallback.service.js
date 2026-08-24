@@ -2,7 +2,7 @@
  * Demo-fallback workflow helper.
  *
  * Encodes the four configuration scenarios x two outcome states for every
- * background process (DAS, software, datasets, protocols, materials,
+ * pipeline step (DAS, software, datasets, protocols, materials,
  * markdown, pdf_analysis, orcid). Centralized here so the contract is
  * defined once instead of being re-implemented in each service.
  *

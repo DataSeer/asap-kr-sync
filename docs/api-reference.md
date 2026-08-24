@@ -389,10 +389,10 @@ Get all pending AI Suggestions.
 - **Returns**: `{ suggestions: Suggestion[] }`
 
 Suggestions are **persisted**, not diff-computed at read time. They are produced by the dedicated
-**`suggestion_generation`** background job (AI Suggestions / KRT Comparison): a Gemini call compares the author
+**`suggestion_generation`** pipeline step (AI Suggestions / KRT Comparison): a Gemini call compares the author
 KRT against the **Generated KRT** and emits, for every generated resource, a decision (add / skip / update /
 remove) with a reason, plus author-side fixes (see
-[background-modules.md §3.10](./background-modules.md#310-suggestion_generation--ai-suggestions-krt-comparison)).
+[pipeline-modules.md §3.10](./pipeline-modules.md#310-suggestion_generation--ai-suggestions-krt-comparison)).
 The module is **LM-only — with no LM configured, no suggestions are produced.** Because the list is persisted on
 the job result, editing the KRT does **not** silently change it; suggestions change only when the job is re-run
 (the "Regenerate suggestions" button → `POST /api/submissions/:id/suggestions/regenerate`, or a module restart
@@ -510,7 +510,7 @@ recomputed on read).
 The LM check of the **Data/Code Availability Statement** shown on the `/availability` step (the standalone
 `das_suggestions` job). It judges the DAS against the ASAP rulebook and returns a **per-rule verdict**. LM-only:
 when disabled / no key (or on failure), the frontend falls back to the legacy in-browser rules. See
-[background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)
+[pipeline-modules.md §3.11](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)
 for the full rulebook (the 9 checks).
 
 ### `GET /api/submissions/:id/das-suggestions`
@@ -545,7 +545,7 @@ release the check — which does not start on its own.
   would send the checker two literal words to review, and bill for it.
 - Only needed for a statement that came from automatic **extraction**. Writing
   one by hand records the same thing, in the same person's name — see
-  [background-jobs.md](./background-jobs.md#the-availability-statement-and-who-vouches-for-it).
+  [pipeline-jobs.md](./pipeline-jobs.md#the-availability-statement-and-who-vouches-for-it).
 - Releases the step only when it is actually held (`waiting`, `pending_input` or
   `failed`). A check that already ran is not re-run by confirming again, so
   re-opening the confirmation screen cannot turn into a second LM bill.
@@ -671,7 +671,7 @@ Get a presigned download URL for a report.
 All job endpoints support an optional `?round=N` query parameter. When omitted, defaults to the submission's current round.
 
 ### `GET /api/submissions/:id/jobs?round=N`
-Get all background job statuses for a submission.
+Get the status of every pipeline step for a submission.
 - **Returns**: `{ round, inputs, jobs: [...] }` — each job includes `logs`, `files`, `result`, `config`
 - `issues` is everything about this round needing a person: `{ jobType, kind
   ('failure' | 'unusable' | 'partial'), blocking, holding, wouldSkip,
@@ -687,7 +687,7 @@ Get all background job statuses for a submission.
   analysis used an earlier version of your data"*, naming the document and both
   versions. For the KRT the comparison is row COUNTS, which cannot see an edited
   cell — `stale` means rows were added or removed, never "nothing has changed".
-  See [background-jobs.md](./background-jobs.md#one-round-one-pdf-one-krt).
+  See [pipeline-jobs.md](./pipeline-jobs.md#one-round-one-pdf-one-krt).
 - Non-fatal: if the freeze state cannot be computed, `inputs` is `[]` and the
   page simply says nothing about provenance rather than failing to load.
 - A `waiting` job that is held by a submission-state gate (datasets/materials/protocols before KRT validation)

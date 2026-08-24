@@ -7,7 +7,7 @@
  * verdict. The result is persisted on the DAS_SUGGESTIONS SubmissionJob in the
  * exact shape the /availability view renders.
  *
- * Runs as a background job gated so it starts only once the DAS has been
+ * Runs as a pipeline step gated so it starts only once the DAS has been
  * extracted and the KRT is finalized (submission past the review step), and is
  * re-triggerable (e.g. when the author edits the DAS on /availability). When
  * the LM is not configured, the service returns no suggestions and the frontend

@@ -126,7 +126,7 @@ async function saveDAS() {
   }
 }
 
-// ── LM DAS suggestions (background job) ───────────────────────────────
+// ── LM DAS suggestions (pipeline step) ───────────────────────────────
 // The DAS is checked against the ASAP rulebook by a background Gemini job. We
 // poll its status: while it runs we show a loader and block Continue; when it
 // finishes we render its per-rule verdicts. If the LM is disabled or failed we

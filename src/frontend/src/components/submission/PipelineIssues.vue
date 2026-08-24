@@ -20,8 +20,9 @@
  *   partial error             → appears; the run is real but incomplete
  *   total error               → appears; there is nothing to build on
  */
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { labelFor } from '@/components/modules/module-meta'
+import { useIssueDecision } from '@/composables'
 import jobService from '@/services/job.service'
 import { useNotificationStore } from '@/stores/notification.store'
 
@@ -44,7 +45,11 @@ const props = defineProps({
 const emit = defineEmits(['resolved'])
 
 const notificationStore = useNotificationStore()
-const busy = ref(null)
+
+// Shared with the pipeline panel's step tiles, which offer the same two
+// answers on the Manuscript step. `continueAll` below stays local: it is a
+// loop over the single decision, and only this list has a list to loop over.
+const { busy, act: decide } = useIssueDecision(computed(() => props.submissionId))
 
 /** Undecided issues are what a user still has to act on. */
 const open = computed(() => props.issues.filter((i) => !i.decided))
@@ -77,21 +82,7 @@ function consequenceOf(issue) {
   return 'Nothing is waiting on it.'
 }
 
-async function act(issue, action) {
-  if (busy.value) return
-  busy.value = `${issue.jobType}:${action}`
-  try {
-    const result = action === 'retry'
-      ? await jobService.retryJob(props.submissionId, issue.jobType)
-      : await jobService.continueWithout(props.submissionId, issue.jobType)
-    notificationStore.info(result?.message || 'Done')
-    emit('resolved', { jobType: issue.jobType, action })
-  } catch (err) {
-    notificationStore.error(err.response?.data?.error || 'That did not work')
-  } finally {
-    busy.value = null
-  }
-}
+const act = (issue, action) => decide(issue.jobType, action, (p) => emit('resolved', p))
 
 /**
  * Carry on past everything at once.

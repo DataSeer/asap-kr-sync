@@ -3,8 +3,8 @@
 The application integrates with several external services for PDF analysis, software detection, author extraction, and report generation. Each integration follows a consistent pattern: a config module for environment-based settings, a client service with retry logic, and a main service that orchestrates the business logic.
 
 > This document covers the **external-service call specifics** (endpoints, auth, request/response). For how each
-> background module works end-to-end (engine, the 4-stage contract, demo fallback, outputs), see
-> [background-modules.md](./background-modules.md).
+> pipeline module works end-to-end (engine, the 4-stage contract, demo fallback, outputs), see
+> [pipeline-modules.md](./pipeline-modules.md).
 
 ## PDF Analysis (Generated KRT — rule-based merge → LM consolidation)
 
@@ -34,7 +34,7 @@ ORCID extraction is **not** a contributor — its output writes to `submission.a
 
 ## Google Gemini API (AI Suggestions / KRT Comparison)
 
-Powers the `suggestion_generation` background job. A Gemini call compares the **author KRT** against the **Generated KRT** and emits, for every generated resource, a decision (add / skip / update / remove) with a reason, plus author-side fixes. Author data is prioritized, the actionable list is kept manageable, and `remove` decisions are rare (clear mistakes only). The resulting suggestions are **persisted** on the job result. This module is **LM-only — there is no fallback**: with no LM configured, no suggestions are produced.
+Powers the `suggestion_generation` pipeline step. A Gemini call compares the **author KRT** against the **Generated KRT** and emits, for every generated resource, a decision (add / skip / update / remove) with a reason, plus author-side fixes. Author data is prioritized, the actionable list is kept manageable, and `remove` decisions are rare (clear mistakes only). The resulting suggestions are **persisted** on the job result. This module is **LM-only — there is no fallback**: with no LM configured, no suggestions are produced.
 
 | Property | Value |
 |----------|-------|
@@ -54,7 +54,7 @@ Each suggestion carries the real contributing detection module(s) (software/data
 
 ## Google Gemini API (DAS Suggestions)
 
-Powers the `das_suggestions` background job — a pipeline step gated to the Availability step. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
+Powers the `das_suggestions` pipeline step — a pipeline step gated to the Availability step. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [pipeline-modules.md §3.11](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
 
 | Property | Value |
 |----------|-------|
