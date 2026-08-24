@@ -7,6 +7,7 @@ const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, Submis
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const { extractProjectFromManuscriptId, parsePagination, buildPaginationMeta, statusToStep, buildS3Folder } = require('../utils/helpers');
 const s3Service = require('../services/storage/s3.service');
+const archiveService = require('../services/archive/archive.service');
 const parserService = require('../services/krt/parser.service');
 const krtService = require('../services/krt/krt.service');
 const { NO_DAS_SENTINEL } = require('../services/das-suggestions/das-suggestions.service');
@@ -475,24 +476,6 @@ async function deleteSubmission(req, res, next) {
       throw new NotFoundError('Submission');
     }
 
-    // Delete the entire S3 folder for this submission first (best-effort).
-    // Every file the submission ever produced — uploaded KRT/PDF, generated
-    // reports, job raw responses, logs — lives under a single
-    // {manuscriptId}_{submissionId}/ prefix, so a single prefix delete cleans
-    // up everything. We log but don't fail the DB delete if S3 has issues —
-    // a stranded folder is recoverable, a half-deleted DB row is not.
-    const s3Folder = buildS3Folder(submission.manuscriptId, submission.id);
-    let s3DeletedCount = 0;
-    try {
-      s3DeletedCount = await s3Service.deletePrefix(`${s3Folder}/`);
-    } catch (s3Error) {
-      logger.error('S3 cleanup failed during submission delete', {
-        submissionId: submission.id,
-        s3Folder,
-        error: s3Error.message
-      });
-    }
-
     // Cancel any queued work BEFORE the cascade removes the job rows.
     // `submission_jobs.submission_id` is ON DELETE CASCADE, but pg-boss keeps
     // its own table with no foreign key to ours — so without this the queue
@@ -508,11 +491,35 @@ async function deleteSubmission(req, res, next) {
       });
     }
 
-    await submission.destroy();
+    // Ordered, in one transaction. `submission.destroy()` used to stand here and
+    // let Postgres cascade, which walks into the ON DELETE RESTRICT that
+    // `pipeline_run_steps` holds on `step_executions` — so every delete of a
+    // submission that had run the pipeline failed with a foreign-key violation.
+    // The retention path already knew the order; it is shared now rather than
+    // known in one place and assumed in the other.
+    const rows = await archiveService.removeSubmissionRows(submission.id);
+
+    // S3 AFTER the database, not before. It used to go first, on the reasoning
+    // that a stranded folder is recoverable and a half-deleted row is not —
+    // true, but it means a failing delete destroys the files and leaves the
+    // submission, which is what the foreign-key bug did on every attempt: the
+    // log shows the prefix emptied, then the 400, then a retry finding nothing
+    // left to delete. Now the row is gone before anything is unrecoverable, and
+    // the worst case is an orphaned prefix that a sweep can find.
+    const s3Folder = buildS3Folder(submission.manuscriptId, submission.id);
+    let s3DeletedCount = 0;
+    try {
+      s3DeletedCount = await s3Service.deletePrefix(`${s3Folder}/`);
+    } catch (s3Error) {
+      logger.error('S3 cleanup failed after submission delete', {
+        submissionId: submission.id, s3Folder, error: s3Error.message
+      });
+    }
 
     logger.info('Submission deleted', {
       submissionId: req.params.id,
       userId: req.userId,
+      rows,
       s3ObjectsDeleted: s3DeletedCount,
       cancelledJobs
     });

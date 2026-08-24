@@ -333,6 +333,53 @@ async function importSubmission(dir, { dryRun = false, userId = null } = {}) {
  * @param {string} [opts.userId] - who deleted it, for the tombstone
  * @returns {Promise<{rows: object, objects: number}>}
  */
+/**
+ * Take every row of one submission out, in the order the constraints allow.
+ *
+ * `pipeline_run_steps.step_execution_id` is ON DELETE RESTRICT on purpose: a run
+ * that carried a step over from an earlier one points at that earlier
+ * execution, and retention must not be able to hollow out a run it left behind.
+ * The cost is that nothing can rely on the cascade — the membership rows have to
+ * come out before the executions they reference, which is what `DELETE_ORDER`
+ * encodes and why `pipeline_run_steps` is first in it.
+ *
+ * Shared because it was not: the retention path did this correctly while the
+ * dashboard's delete called `submission.destroy()` and let Postgres cascade,
+ * which walks straight into the RESTRICT. Every admin delete of a submission
+ * that had run the pipeline failed with a foreign-key violation.
+ *
+ * @param {string} submissionId
+ * @param {object} [opts]
+ * @param {object} [opts.transaction] join a caller's transaction instead of opening one
+ * @returns {Promise<Record<string, number>>} rows removed, per table
+ */
+async function removeSubmissionRows(submissionId, { transaction } = {}) {
+  const models = require('../../models');
+  const rows = {};
+
+  const run = async (t) => {
+    for (const table of DELETE_ORDER) {
+      const spec = TABLES.find((x) => x.table === table);
+      const Model = models[spec.model];
+      const where = spec.via
+        ? { [spec.by]: (await models.PipelineRun.findAll({
+          where: { submissionId }, attributes: ['id'], transaction: t
+        })).map((r) => r.id) }
+        : { [spec.by]: submissionId };
+      if (spec.via && !where[spec.by].length) { rows[table] = 0; continue; }
+      rows[table] = await Model.destroy({ where, transaction: t });
+    }
+    rows.submissions = await models.Submission.destroy({ where: { id: submissionId }, transaction: t });
+  };
+
+  // All of it or none of it: a submission half out of the database is the one
+  // state none of these tables can describe.
+  if (transaction) await run(transaction);
+  else await models.sequelize.transaction(run);
+
+  return rows;
+}
+
 async function deleteSubmission(submissionId, { archiveDir, userId = null } = {}) {
   const fs = require('fs/promises');
   const models = require('../../models');
@@ -364,21 +411,7 @@ async function deleteSubmission(submissionId, { archiveDir, userId = null } = {}
     }
   });
 
-  const rows = {};
-  await models.sequelize.transaction(async (t) => {
-    for (const table of DELETE_ORDER) {
-      const spec = TABLES.find((x) => x.table === table);
-      const Model = models[spec.model];
-      const where = spec.via
-        ? { [spec.by]: (await models.PipelineRun.findAll({
-          where: { submissionId }, attributes: ['id'], transaction: t
-        })).map((r) => r.id) }
-        : { [spec.by]: submissionId };
-      if (spec.via && !where[spec.by].length) { rows[table] = 0; continue; }
-      rows[table] = await Model.destroy({ where, transaction: t });
-    }
-    rows.submissions = await models.Submission.destroy({ where: { id: submissionId }, transaction: t });
-  });
+    const rows = await removeSubmissionRows(submissionId);
 
   const objects = await s3Service.deletePrefix(manifest.s3Prefix);
   logger.info('Submission deleted after archiving', { submissionId, rows, objects, archiveDir });
@@ -388,5 +421,6 @@ async function deleteSubmission(submissionId, { archiveDir, userId = null } = {}
 
 module.exports = {
   exportSubmission, importSubmission, deleteSubmission, readArchive,
+  removeSubmissionRows,
   ARCHIVE_VERSION, sha256, TABLES, DELETE_ORDER
 };

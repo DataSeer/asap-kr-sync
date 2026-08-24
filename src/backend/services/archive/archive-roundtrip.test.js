@@ -204,3 +204,72 @@ test('a submission survives being archived, deleted and restored', async (t) => 
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * The dashboard's delete, on a submission that has run the pipeline.
+ *
+ * `pipeline_run_steps.step_execution_id` is ON DELETE RESTRICT so that
+ * retention cannot hollow out a run that carried a step over from an earlier
+ * one. Nothing can therefore rely on the cascade: the membership rows have to
+ * come out before the executions they name.
+ *
+ * The retention path knew that — `DELETE_ORDER` puts `pipeline_run_steps`
+ * first. The controller did not: it called `submission.destroy()` and let
+ * Postgres cascade, which walks into the RESTRICT. Every admin delete of a
+ * submission that had run the pipeline returned 400 with
+ * `violates foreign key constraint "pipeline_run_steps_step_execution_id_fkey"`,
+ * and because S3 was emptied first, the files were already gone by then.
+ *
+ * A carried-over step is what makes this bite, so this builds one: two runs
+ * pointing at a single execution, which is the row RESTRICT is protecting.
+ */
+test('deleting a submission that has carried a step over succeeds', async (t) => {
+  if (!await hasDatabase()) {
+    t.skip('no database reachable — run this against a real instance');
+    return;
+  }
+
+  const user = await models.User.findOne();
+  assert.ok(user, 'the instance needs at least one user');
+
+  const submission = await models.Submission.create({
+    userId: user.id,
+    title: '[delete path] delete me',
+    manuscriptId: 'DP1-000001-001-org-X-1',
+    currentRound: 1
+  });
+
+  const job = await models.SubmissionJob.create({
+    submissionId: submission.id, jobType: 'materials_detection', status: 'complete', round: 1
+  });
+  const run = await models.PipelineRun.open({
+    submissionId: submission.id, round: 1, cause: 'create_submission', causedByUserId: user.id
+  });
+  const child = await models.PipelineRun.open({
+    submissionId: submission.id, round: 1, cause: 'restart', parentRunId: run.id
+  });
+  const execution = await models.StepExecution.create({
+    pipelineRunId: run.id, submissionJobId: job.id, submissionId: submission.id,
+    jobType: 'materials_detection', round: 1, status: 'complete'
+  });
+  await models.PipelineRunStep.create({
+    pipelineRunId: run.id, jobType: 'materials_detection', stepExecutionId: execution.id
+  });
+  // The row that RESTRICT exists for: a second run naming the FIRST run's
+  // execution. Without this the cascade happens to succeed and the bug hides.
+  await models.PipelineRunStep.create({
+    pipelineRunId: child.id, jobType: 'materials_detection',
+    stepExecutionId: execution.id, carriedOver: true
+  });
+
+  const rows = await archive.removeSubmissionRows(submission.id);
+
+  assert.equal(rows.pipeline_run_steps, 2, 'both membership rows should come out');
+  assert.equal(rows.step_executions, 1);
+  assert.equal(rows.submissions, 1);
+
+  const left = await census(submission.id);
+  for (const [table, n] of Object.entries(left)) {
+    assert.equal(n, 0, `${table} still holds ${n} row(s) after the delete`);
+  }
+});
