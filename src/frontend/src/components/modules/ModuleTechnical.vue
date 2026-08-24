@@ -154,7 +154,7 @@ const MODULE_STATE = {
 const RAN_VIA = {
   external: 'a live service',
   internal: 'the app itself — no service was called',
-  'internal+external': 'both — the app, plus a live service for what it could not settle',
+  both: 'both — the app, plus a live service for what it could not settle',
   demo: 'demo data, not a live service'
 }
 

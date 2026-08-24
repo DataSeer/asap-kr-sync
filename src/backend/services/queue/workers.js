@@ -779,7 +779,12 @@ async function initializeWorkers() {
           // module look like a misconfigured one.
           service: buildServiceSnapshot('krt_grounding', {
             status: 'done',
-            source: m.secondLook && m.secondLook.skipped === false ? 'internal+external' : 'internal'
+            // Short on purpose: `step_executions.outcome_source` is STRING(16),
+            // and a longer value does not fail loudly. The insert throws inside
+            // the run-history close, which is caught and logged as "the run
+            // itself is unaffected" -- true of the pipeline, but the history row
+            // is then left open at `processing` for ever.
+            source: m.secondLook && m.secondLook.skipped === false ? 'both' : 'internal'
           }),
           counts: {
             authorRows: m.authorRows || 0,
