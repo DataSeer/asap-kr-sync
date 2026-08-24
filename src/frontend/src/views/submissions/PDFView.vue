@@ -281,7 +281,7 @@ const helpItems = computed(() => [
     done: validationDone.value
   },
   {
-    title: 'Click "Continue" to proceed to Step 4',
+    title: 'Click "Continue" to proceed to Step 3',
     done: false
   }
 ])
@@ -393,7 +393,7 @@ watch(bgProcessesRef, () => registerJobCallbacks())
 // Update page title with the submission title (manuscriptId is optional).
 watch(submission, (sub) => {
   if (sub?.title || sub?.manuscriptId) {
-    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 3: Manage suggestions')
+    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 2: Manage suggestions')
   }
 }, { immediate: true })
 
@@ -1201,7 +1201,7 @@ function scrollToFindingRow(finding) {
       ref="submissionHeaderRef"
       :submission="submission"
       :latest-files="latestFiles"
-      step-title="Step 3: Manage suggestions"
+      step-title="Step 2: Manage suggestions"
       step-description="Review AI suggestions against your KRT and approve or reject changes"
       :help-items="helpItems"
       :show-navigation="true"
@@ -1254,7 +1254,7 @@ function scrollToFindingRow(finding) {
       <p class="text-sm text-gray-700 mb-2">
         No PDF file is associated with this submission. The original upload may have failed.
       </p>
-      <button class="btn-secondary mt-2" @click="handleBack">Go back to Step 2</button>
+      <button class="btn-secondary mt-2" @click="handleBack">Go back to Step 1</button>
     </div>
 
     <template v-else>
@@ -1306,7 +1306,7 @@ function scrollToFindingRow(finding) {
               :disabled="analyzing"
               class="btn-secondary text-xs inline-flex items-center"
               :class="{ 'opacity-50 cursor-not-allowed': analyzing }"
-              v-tooltip="'Re-run all background processes (PDF analysis, DAS extraction, software detection)'"
+              v-tooltip="'Re-run every background process for this round — all twelve steps'"
               @click="handleRerunAnalysis"
             >
               <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1684,7 +1684,7 @@ function scrollToFindingRow(finding) {
         <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
           <h3 class="text-sm font-semibold text-gray-900 mb-2">Replace the PDF?</h3>
           <p class="text-sm text-gray-600 mb-3">
-            Uploading a new PDF will restart every background process — DAS extraction, Markdown conversion, software / datasets / materials / protocols / identifier detection, ORCID extraction, and PDF analysis.
+            Uploading a new PDF will restart every background process — all twelve, from the markdown conversion through every detector to the Generated KRT, AI Suggestions and the Availability Statement check.
           </p>
           <p class="text-sm text-gray-600 mb-4">
             Existing AI suggestions will be regenerated against the new manuscript. Any unsaved review work on the current suggestions will be lost.

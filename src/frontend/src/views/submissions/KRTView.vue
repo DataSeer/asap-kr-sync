@@ -227,7 +227,7 @@ const helpItems = computed(() => [
     done: summary.value.totalErrors === 0
   },
   {
-    title: 'Click "Continue" to proceed to Step 3',
+    title: 'Click "Continue" to proceed to Step 2',
     done: false
   }
 ])
@@ -354,7 +354,7 @@ async function loadPage() {
 // keep the router's generic "Step X" title).
 watch(submission, (sub) => {
   if (sub?.title || sub?.manuscriptId) {
-    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 2: Fix the Key Resources Table')
+    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 1: Fix the Key Resources Table')
   }
 }, { immediate: true })
 
@@ -425,9 +425,9 @@ async function handleValidate() {
     const warnings = summary.value.totalWarnings
 
     if (errors === 0 && warnings === 0) {
-      notificationStore.success('Key Resources Table is valid! You can proceed to Step 3.')
+      notificationStore.success('Key Resources Table is valid! You can proceed to Step 2.')
     } else if (errors === 0 && warnings > 0) {
-      notificationStore.success(`Key Resources Table is valid with ${warnings} warning${warnings > 1 ? 's' : ''}. You can proceed to Step 3.`)
+      notificationStore.success(`Key Resources Table is valid with ${warnings} warning${warnings > 1 ? 's' : ''}. You can proceed to Step 2.`)
     } else {
       const parts = []
       if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`)
@@ -604,8 +604,8 @@ function scrollToFirstWarning() {
     <SubmissionHeader
       :submission="submission"
       :latest-files="latestFiles"
-      step-title="Step 2: Fix the Key Resources Table"
-      step-description="Review and fix your Key Resources Table — the analysis runs in the background and needs nothing from you here"
+      step-title="Step 1: Fix the Key Resources Table"
+      step-description="Review and fix your Key Resources Table — most of the analysis waits until you continue, so that it reads the table you settled on"
       :help-items="helpItems"
       :show-navigation="true"
       :can-go-back="false"

@@ -357,8 +357,9 @@ async function retry() {
  */
 const emptyMessage = computed(() => (
   jobType.value === 'das_suggestions'
-    ? 'This check runs when you reach the Availability Statement step — it reads the '
-      + 'statement itself, so there is nothing for it to check before then.'
+    ? 'This check waits for two things: reaching the Availability Statement step, and '
+      + 'your confirming the statement it should read. It runs on its own once you '
+      + 'confirm — until then it spends nothing.'
     : 'This module has not produced a result for this submission yet.'
 ))
 
@@ -791,7 +792,7 @@ const tabConflicts = computed(() => {
         type="button"
         class="mrv-retry"
         :disabled="continuing"
-        v-tooltip="'The steps waiting on this one will run without its data. Recorded, so the report can say it was skipped rather than empty.'"
+        v-tooltip="'Lets the round finish instead of waiting. Steps that can manage without this one run on; steps that needed it are skipped, and the pipeline page lists which. Recorded with your name, so the report can say it was skipped rather than empty.'"
         @click="continueWithout"
       >
         {{ continuing ? 'Continuing…' : 'Continue without it' }}

@@ -65,7 +65,11 @@ export function partialDetail(job) {
 const WAITING_REASONS = {
   krt_validation: 'It is held until the Key Resources Table has been validated. Finish the KRT step and this starts on its own.',
   markdown_missing: 'The manuscript has no converted text yet. This step is held rather than run against an empty document.',
-  availability_step: 'It belongs to a later step of the submission, and starts when you reach it.'
+  availability_step: 'It belongs to a later step of the submission, and starts when you reach it.',
+  // The backend sends this when an unresolved issue upstream is holding the
+  // step. Without it the default below applied, which told the user nothing
+  // was needed from them while the pipeline waited on their decision.
+  blocked_by_failure: 'An earlier step needs a decision before this one can run. Open the pipeline page to retry it or continue without it.'
 };
 
 /**

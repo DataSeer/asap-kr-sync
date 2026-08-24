@@ -100,7 +100,8 @@ async function handleCancelProcessing() {
   if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
     const ok = window.confirm(
       'Stop all background processing for this document? ' +
-      'Any running analysis will be cancelled — you can re-run it later.'
+      'Every step still to run is cancelled too, not just the one in progress, and each has to be started again. ' +
+      'A request already sent to an outside service cannot be recalled — its answer is discarded, but it is still charged.'
     )
     if (!ok) return
   }
@@ -1020,7 +1021,7 @@ async function downloadRawResponse(jobType, responseName) {
         ></div>
       </div>
       <p v-if="anyInFlight && !paused" class="job-status-eta-hint">
-        You can keep editing the Key Resources Table while these finish — suggestions will appear once they're done.
+        You can keep editing the Key Resources Table, but these steps read the version frozen when the round started — your edits reach the analysis on the next run, not this one.
       </p>
       <div class="job-status-eta-footer">
         <button type="button" class="job-status-eta-toggle" @click="toggleCollapsed">

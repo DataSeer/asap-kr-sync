@@ -546,7 +546,7 @@ async function proceedWithSubmit(krtFileToSend) {
              a confirmation modal instead of blocking. -->
         <button type="submit" :disabled="loading" class="btn-primary">
           <span v-if="loading">Creating...</span>
-          <span v-else>Create & Continue to Step 2</span>
+          <span v-else>Create & Continue to Step 1</span>
         </button>
       </div>
     </form>

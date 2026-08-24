@@ -31,7 +31,7 @@ export const MODULE_EXPLAINERS = {
           + 'is shown so the row still reads as a row.'
       },
       {
-        q: 'The Modules column',
+        q: 'The "Detected by" column',
         a: 'Which detectors backed the proposal. A decision resting on one module is weaker than '
           + 'one several found independently, and this is where to see the difference.'
       },
@@ -81,14 +81,17 @@ export const MODULE_EXPLAINERS = {
   markdown_convert: {
     title: 'Markdown Convert',
     doc: '31-markdown_convert--pdf--markdown',
-    summary: 'Turns the manuscript PDF into plain text. Everything downstream reads that text and '
-      + 'nothing else, so whatever is lost here is invisible to every other module.',
+    summary: 'Turns the manuscript PDF into plain text. Almost everything downstream reads that '
+      + 'text and nothing else, so whatever is lost here is invisible to those modules.',
     points: [
       {
         q: 'Why it matters more than it looks',
-        a: 'No module reads the PDF. If a resource is only named inside a figure image, a scanned '
-          + 'page or a table the converter mangled, no amount of detection will find it — the word '
-          + 'is simply not in the text the models are given.'
+        a: 'Nearly every module reads this text rather than the PDF. If a resource is only named '
+          + 'inside a figure image, a scanned page or a table the converter mangled, those modules '
+          + 'cannot find it — the word is simply not in the text they are given. Two exceptions '
+          + 'read the PDF itself: Softcite, the name-recogniser half of Software Detection, and '
+          + 'ORCID Extraction, which parses the front matter. So a tool named in a mangled table '
+          + 'can still surface through Softcite.'
       },
       {
         q: 'What tends to be lost',
@@ -240,8 +243,17 @@ export const MODULE_EXPLAINERS = {
       },
       {
         q: 'What it will miss',
-        a: 'Software mentioned only in a figure, in an image, or in words that never name it. '
-          + 'It reads the converted text of the PDF, so anything lost in conversion is invisible.'
+        a: 'Software mentioned only in a figure, in an image, or in words that never name it. The '
+          + 'LM half reads the converted text, so anything lost in conversion is invisible to it; '
+          + 'Softcite reads the PDF directly and is not limited that way.'
+      },
+      {
+        q: 'Instrument software is removed on purpose',
+        a: 'Software that only drives an instrument — ZEN, NIS-Elements, LAS X, MetaMorph, '
+          + 'cellSens, SoftMax Pro, Gen5, FACSDiva and others — is dropped even when the '
+          + 'manuscript names it plainly. It is acquisition machinery rather than a key resource. '
+          + 'If you expected one of these and it is absent, that is why, and nothing is wrong with '
+          + 'the detection.'
       }
     ]
   },
@@ -388,11 +400,19 @@ export const MODULE_EXPLAINERS = {
       + 'your Key Resources Table says. It proposes wording; it never edits your statement.',
     points: [
       {
-        q: 'Why this one is not in the pipeline',
-        a: 'Nothing schedules it. It runs when you ask for it from the Availability Statement '
-          + 'step, because it only makes sense once your table is final — a check against a table '
-          + 'you are still editing would be answering a question that has changed by the time you '
-          + 'read it. A submission that never runs it is complete, not unfinished.'
+        q: 'Why it waits until the Availability step',
+        a: 'It is part of the pipeline, but held back rather than run as soon as the statement is '
+          + 'extracted. Two things release it: your submission reaching the Availability step, and '
+          + 'you confirming the statement is the right passage. Until you confirm, it sits waiting '
+          + 'and spends nothing — a check of the wrong paragraph is worse than no check, and it '
+          + 'would be reported as yours. Once you confirm, it runs on its own; you do not have to '
+          + 'ask for it.'
+      },
+      {
+        q: 'Re-running it',
+        a: 'Editing your statement clears the confirmation, so an edited statement is confirmed '
+          + 'again rather than silently re-checked against the old text. You can also ask for a '
+          + 'fresh check at any time from the Availability step.'
       },
       {
         q: 'What the model actually decides',
