@@ -7,7 +7,7 @@
  * degradation is not stated on this page, the only place it appears is a badge
  * on a panel the reader has already left.
  *
- * It leads the panel rather than sitting in Statistics on purpose: the counts
+ * It leads the panel rather than sitting with the counts on purpose: they
  * below it are correct but are a floor, not a total, and a reader who meets the
  * number first has already drawn the wrong conclusion.
  */
@@ -110,13 +110,13 @@ describe('counts owned by the failed engine', () => {
       state: 'partial', source: 'external', failReason: 'softcite_failed', externalError: 'x'
     })
 
-    // The FIRST .mt-block is Configuration; the counts live in the one headed
-    // "Statistics".
-    const stats = wrapper.findAll('.mt-block').find((b) => b.text().includes('Statistics'))
-    expect(stats, 'the Statistics block must render').toBeTruthy()
-    expect(stats.text()).toContain('—')
+    // The module's own counts live in their own box now, apart from the run and
+    // the cost, which read the same on every module.
+    const found = wrapper.find('.mt-results')
+    expect(found.exists(), 'the results block must render').toBe(true)
+    expect(found.text()).toContain('—')
     // "Found" is what `total` is called for a detector — see STAT_META.
-    expect(stats.text()).not.toMatch(/Found\s*0\b/)
+    expect(found.text()).not.toMatch(/Found\s*0\b/)
   })
 
   it('are shown normally on a healthy run', async () => {

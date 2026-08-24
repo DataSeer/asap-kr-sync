@@ -208,11 +208,6 @@ const config = computed(() => {
     rows.push(['Shows candidate verdicts', m.grounding.surfaceValues ? 'yes' : 'no — the prompts were seeded'])
     rows.push(['Shows presence', m.grounding.surfacePresence ? 'yes' : 'no'])
   }
-  if (m.secondLook) {
-    rows.push(['LM second look', m.secondLook.skipped
-      ? `skipped (${m.secondLook.reason})`
-      : `${m.secondLook.recovered} of ${m.secondLook.attempted} rows recovered`])
-  }
   return rows.filter(([, v]) => v !== undefined && v !== null && v !== '')
 })
 
@@ -425,7 +420,35 @@ const tokens = computed(() => {
  * Counts, durations and spend in one list — all three answer "what did this run
  * do", and a column of its own for two timings was a column too many.
  */
-const statRows = computed(() => [...stats.value, ...timings.value, ...tokens.value])
+/**
+ * What this run COST — the same three facts on every module that has them.
+ *
+ * Kept apart from the results below because they answer a different question,
+ * and because they are the same question on every page: a reader looking for
+ * the duration should not have to find it among counts whose names change from
+ * one module to the next.
+ */
+const costRows = computed(() => [...tokens.value, ...timings.value])
+
+/**
+ * What this run FOUND — the only part of the panel that differs by module.
+ *
+ * Everything above is identical in shape everywhere, so this is the one box a
+ * reader has to actually read. The LM second look belongs here rather than in
+ * Configuration: "9 of 23 rows recovered" is an outcome, not a setting.
+ */
+const resultRows = computed(() => {
+  const rows = [...stats.value]
+  const lm = meta.value.secondLook
+  if (lm) {
+    rows.push({
+      label: 'LM second look',
+      value: lm.skipped ? `skipped (${lm.reason})` : `${lm.recovered} of ${lm.attempted} rows recovered`,
+      explain: 'Rows the deterministic match could not place, sent to the model as a second pass.'
+    })
+  }
+  return rows
+})
 
 /**
  * How many tries this run took, and what went wrong on the way.
@@ -735,33 +758,52 @@ const responseUrl = (name) =>
         re-run the step once the service is back.
         <span v-if="degraded.error" class="mt-degraded-error">{{ degraded.error }}</span>
       </div>
-      <!-- Three short label/value lists. They size to their own content:
-           given a third of the width each, Metadata reserved room it never
-           used while Configuration wrapped its longest sentence. -->
+      <!-- Three boxes that ask the same three questions on every module page:
+           what happened, how it was set up, what it cost. Same order, same
+           place, every time — so the one box below that DOES change is the only
+           thing a reader has to look for. -->
       <div class="mt-row mt-row-summary">
         <div v-if="metadata.length" class="mt-block mt-narrow">
-          <h3>Metadata</h3>
+          <h3>The run</h3>
           <dl><template v-for="([k, v]) in metadata" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
         </div>
         <div v-if="config.length" class="mt-block mt-narrow">
           <h3>Configuration</h3>
           <dl><template v-for="([k, v]) in config" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
         </div>
-        <div v-if="statRows.length" class="mt-block mt-narrow">
-          <h3>Statistics</h3>
-          <!-- Durations sit with the counts: both are "what this run did", and a
-               column of its own for two numbers was a column too many. -->
+        <div v-if="costRows.length" class="mt-block mt-narrow">
+          <h3>Cost</h3>
           <!-- Every label carries its explanation. The app's own tooltip, never
                the browser's: a `title` attribute waits a second, cannot be
                styled, and does not appear on touch at all. -->
           <dl>
-            <template v-for="row in statRows" :key="row.label">
+            <template v-for="row in costRows" :key="row.label">
               <dt
                 :class="{ 'mt-stat-explained': row.explain }"
                 v-tooltip="row.explain || undefined"
               >{{ row.label }}</dt>
               <dd>{{ row.value }}</dd>
             </template>
+          </dl>
+        </div>
+      </div>
+
+      <!-- The only box whose contents change from one module to the next, so it
+           says so in the heading. Laid out as a wrapping row of pairs rather
+           than a column: these are a dozen short numbers on some modules and
+           three on others, and a single column of twelve was what made the old
+           panel ragged. -->
+      <div v-if="resultRows.length" class="mt-row mt-row-results">
+        <div class="mt-block mt-results">
+          <h3>What this module found</h3>
+          <dl class="mt-results-list">
+            <div v-for="row in resultRows" :key="row.label" class="mt-result">
+              <dt
+                :class="{ 'mt-stat-explained': row.explain }"
+                v-tooltip="row.explain || undefined"
+              >{{ row.label }}</dt>
+              <dd>{{ row.value }}</dd>
+            </div>
           </dl>
         </div>
       </div>
@@ -954,7 +996,33 @@ const responseUrl = (name) =>
 }
 .mt-row-summary .mt-block { flex: 0 1 auto; }
 
-/* Row 2 — Module inputs and outputs: lines of links with notes under them, so
+/* The results box: the module's own numbers, and the only part that varies.
+   Full width and wrapping, because the count of counts varies too — KRT
+   Grounding reports eleven, DAS Extraction three. As a column those made the
+   panel as tall as its longest module; as a wrapping row they fill the width
+   they are given and the box is as tall as it needs to be. */
+.mt-row-results .mt-block { width: 100%; }
+/* `.mt-block dl` above is a two-column grid and out-specifies a bare class, so
+   this has to match at least as tightly or the pairs keep laying out in two
+   columns and the box wraps at half the width it was given. */
+.mt-block dl.mt-results-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1.75rem;
+  align-items: baseline;
+}
+/* Each pair in its own wrapper so it wraps as a unit. Loose dt/dd in a flex
+   row break between the label and its number, which puts a count under the
+   wrong name — the one mistake this box must not make. */
+.mt-result {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+.mt-result dd { font-weight: 600; }
+
+/* Row 3 — Module inputs and outputs: lines of links with notes under them, so
    they get half the width each rather than only what a file name measures. */
 .mt-row-files {
   display: grid;

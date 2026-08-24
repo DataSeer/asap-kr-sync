@@ -621,6 +621,9 @@ async function extractAndSaveDAS(submissionId, jobLogger = null, { isFinalAttemp
  * PIPELINE.
  */
 async function runDasExtractor(submission, jobLogger) {
+  // The only module that recorded no duration, so its Technical panel was the
+  // only one missing the row. Measured the same way as the other eleven.
+  const startTime = Date.now();
   const submissionId = submission.id;
   const round = submission.currentRound || 1;
 
@@ -672,6 +675,7 @@ async function runDasExtractor(submission, jobLogger) {
         das: null, dasLength: 0,
         promptFile: repoPath(dasExtractionService.PROMPT_FILE),
         model: dasExtractionConfig.model,
+        totalMs: Date.now() - startTime,
         partialMatch: !!extracted?.partialMatch,
         sectionFragmented: !!extracted?.sectionFragmented
       }
@@ -685,6 +689,7 @@ async function runDasExtractor(submission, jobLogger) {
       dasLength: dasContent.length,
       promptFile: repoPath(dasExtractionService.PROMPT_FILE),
       model: dasExtractionConfig.model,
+      totalMs: Date.now() - startTime,
       partialMatch: !!extracted.partialMatch,
       sectionFragmented: !!extracted.sectionFragmented
     }
