@@ -23,9 +23,24 @@ export function isCancelledJob(job) {
  */
 export const FUTURE_STEP_REASONS = new Set(['availability_step'])
 
+/**
+ * Gates that mark a step as belonging to a later stage of the submission.
+ *
+ * Read from the step's own gate rather than from its waiting reason, because
+ * the reason only speaks while the job is `waiting`. The Availability check
+ * leaves that state as soon as the submission reaches its step — it becomes
+ * `pending_input`, awaiting the confirmation — and a page showing the
+ * manuscript stage would start counting it again.
+ */
+const FUTURE_STEP_GATES = new Set(['availability_ready'])
+
 /** Is this job merely queued behind a step the user has not reached? */
 export function isFutureStepJob(job) {
-  return job?.status === 'waiting' && FUTURE_STEP_REASONS.has(job?.waitingReason)
+  if (!job) return false
+  // A finished step is nobody's outstanding work, wherever it belongs.
+  if (isTerminalStatus(job.status)) return false
+  if (job.status === 'waiting' && FUTURE_STEP_REASONS.has(job.waitingReason)) return true
+  return (job.gates || []).some((g) => FUTURE_STEP_GATES.has(g))
 }
 
 // Terminal statuses: a job that will not change further.

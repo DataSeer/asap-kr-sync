@@ -118,17 +118,62 @@ function geminiModel(module, env = process.env) {
  * @param {object} [env] - environment to mutate (injectable for tests)
  * @returns {string[]} the variable names that were filled in
  */
+/**
+ * Names THIS process filled in, so a later pass may revise them.
+ *
+ * Startup runs the pass twice: once when this file is required, and again after
+ * the secret loader, which `Object.assign`s credentials into `process.env`. A
+ * value the pass wrote itself is not the operator's choice, so it must not
+ * block a fresher one arriving in between — a key rotated in Secrets Manager
+ * would otherwise be shadowed on all nine modules by whatever `.env` held.
+ *
+ * Per environment object, so a caller passing its own (tests, the LangExtract
+ * boundary) is unaffected by what the real environment did.
+ */
+const filledBy = new WeakMap();
+
 function applyGeminiDefaults(env = process.env) {
   const filled = [];
+  const ours = filledBy.get(env) || new Set();
+  filledBy.set(env, ours);
   for (const module of GEMINI_MODULES) {
     for (const [suffix, resolve] of [['GEMINI_API_KEY', geminiKey], ['GEMINI_MODEL', geminiModel]]) {
       const name = `${module}_${suffix}`;
-      if (env[name]) continue;
-      const value = resolve(module, env);
-      // The model always resolves to the built-in default; the key can be
-      // genuinely absent, and an empty string would read as "configured".
+      // Truthiness is not enough for the key: a copied-but-unfilled
+      // `<MODULE>_GEMINI_API_KEY=your_gemini_api_key` is truthy, so a raw guard
+      // left the placeholder in place and handed it to the LangExtract child --
+      // which is the failure this whole module exists to prevent, arriving from
+      // the one direction it did not check.
+      const isKey = suffix === 'GEMINI_API_KEY';
+      const present = isKey ? isRealKey(env[name]) : !!env[name];
+      // Present AND the operator's own: leave it. Present because an earlier
+      // pass wrote it: re-resolve, in case something fresher has since arrived.
+      if (present && !ours.has(name)) continue;
+      // The MODEL is only written when somebody actually chose one. It used to
+      // be filled with the built-in default, which looks harmless and is not:
+      // the pass runs again after the secret loader, and by then every model
+      // name was already set, so a `GEMINI_MODEL` arriving from Secrets Manager
+      // could never take effect. Nothing reads these names except the
+      // LangExtract child, which carries its own default.
+      // Resolving a name WE wrote has to ignore that write, or the resolver
+      // reads its own output back: `geminiKey` prefers the per-module variable,
+      // which is exactly the stale value a second pass is trying to replace.
+      const previous = env[name];
+      if (ours.has(name)) delete env[name];
+      const value = isKey
+        ? resolve(module, env)
+        : (env[`${module}_GEMINI_MODEL`] || env.GEMINI_MODEL || '');
+      if (ours.has(name) && previous !== undefined) env[name] = previous;
+      // A placeholder with nothing real to replace it is REMOVED rather than
+      // left standing. The script reads this variable first and reports the
+      // names it looked for; leaving `your_gemini_api_key` in place turns a
+      // clear "no key is set" into a 400 from Gemini on every chunk.
+      if (isKey && !value && env[name] !== undefined) delete env[name];
       if (!value) continue;
+      // Idempotent: a pass that resolves the same answer reports no change.
+      if (env[name] === value) continue;
       env[name] = value;
+      ours.add(name);
       filled.push(name);
     }
   }
@@ -149,7 +194,9 @@ function geminiKeySources(env = process.env) {
   return GEMINI_MODULES.map((module) => ({
     module,
     hasKey: !!geminiKey(module, env),
-    own: !!env[`${module}_GEMINI_API_KEY`],
+    // A placeholder is not a key of one's own, or the startup line reports a
+    // module as configured by exactly the value that will fail.
+    own: isRealKey(env[`${module}_GEMINI_API_KEY`]),
     model: geminiModel(module, env)
   }));
 }

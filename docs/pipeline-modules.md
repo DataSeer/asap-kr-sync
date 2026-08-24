@@ -87,7 +87,7 @@ before this gate every downstream module ran against an empty document and repor
 cannot tell apart from a manuscript that genuinely mentions nothing. This gate does **not** clear by itself:
 conversion has already finished, unsuccessfully, so it takes a re-run.
 
-While a step is gated the jobs API reports `waitingReason` — `'krt_validation'` or `'markdown_missing'` — and the
+While a step is gated the jobs API reports `waitingReason` — `'krt_validation'` for the KRT gate, `'availability_step'` for a step belonging to a later stage, or `'blocked_by_failure'` when an unresolved issue is holding it — and the
 processes panel turns that into a banner where the progress bar would be, rather than leaving the user to read
 "waiting" and wonder what stalled.
 

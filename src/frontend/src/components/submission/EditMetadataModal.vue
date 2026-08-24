@@ -33,11 +33,6 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'saved'])
 
-// Provided by the views that poll jobs (KRT and PDF steps); absent elsewhere,
-// and the field then behaves as it always did. Editing metadata stays available
-// from EVERY step — the extraction notice narrows what is safe to type right
-// now, it does not take the feature away.
-const injectedJobs = inject('submissionJobs', ref({}))
 
 // The Availability Statement is NOT edited here. It is confirmed and rewritten
 // on the Availability step alone, because that page is the only place that

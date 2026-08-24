@@ -174,12 +174,14 @@ module ran against an empty document and reported zero findings, which reads as
 manuscript"*. Observed on a real run: 11/11 steps complete, 0 datasets, 0
 materials, 0 protocols, and all 12 author rows reported not detected.
 
-Unlike the KRT gate this one does **not** clear by itself — conversion has
-already finished, unsuccessfully. The jobs API reports
-`waitingReason: 'markdown_missing'` and the processes panel shows a blocked
-banner where the progress bar would be, naming the re-run that fixes it.
-Re-running `markdown_convert` successfully releases every held step
-automatically.
+This does **not** clear by itself — conversion has already finished,
+unsuccessfully. There is no longer a gate for it: a conversion that produced
+nothing is a FAILED step, which raises an issue, and the steps that require it
+are held behind that issue with `waitingReason: 'blocked_by_failure'`. The
+pipeline panel turns that into a banner where the progress bar would be, saying
+how many steps are held and that the step which stopped explains itself below.
+Retrying `markdown_convert` successfully releases every held step
+automatically; continuing without it skips them, and says so first.
 
 Until the submission status moves past `draft`/`step_krt` those jobs stay in
 `waiting` and the jobs API reports `waitingReason: 'krt_validation'`, which the

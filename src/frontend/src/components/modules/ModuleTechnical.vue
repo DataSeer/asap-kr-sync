@@ -129,6 +129,9 @@ const result = computed(() => props.job?.result || {})
  * which would have let the next module drift too. The module was fixed instead.
  */
 const meta = computed(() => result.value.data?.meta || {})
+/** Did this step actually produce something? `{}` meta reads the same as a
+    step that has not run, so the distinction has to come from the result. */
+const hasResult = computed(() => !!result.value.data || !!result.value.counts)
 const counts = computed(() => result.value.counts || {})
 
 const ms = (v) => (typeof v === 'number' ? (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`) : null)
@@ -167,23 +170,38 @@ const RAN_VIA = {
  * Each branch reads a field the module already reports.
  */
 function enginesFor(jobType, m) {
+  // Every branch reads a field the module reports ONLY when it ran. `meta` is
+  // {} for a step that is waiting, failed, or switched off — and an
+  // unconditional string there claims a specific execution that never
+  // happened: "Softcite only, the LM pass is off" beside "Module: off", or
+  // "rule-based merge, the LM was unavailable" for a step still queued.
   if (jobType === 'krt_grounding') {
     const lm = m.secondLook
-    return lm && lm.skipped === false
+    if (!lm) return null
+    return lm.skipped === false
       ? `deterministic text match, then an LM second look on ${lm.attempted} unplaced row(s)`
       : 'deterministic text match only — the LM second look did not run'
   }
   if (jobType === 'software_detection') {
-    return m.lmEnabled ? 'Softcite, plus an LM pass' : 'Softcite only — the LM pass is off'
+    if (m.lmEnabled === undefined) return null
+    if (!m.lmEnabled) return 'Softcite only — the LM pass is off'
+    // Configured is not the same as ran; the skip reason says which.
+    return m.lmSkippedReason ? 'Softcite only — the LM pass did not run' : 'Softcite, plus an LM pass'
   }
   if (jobType === 'pdf_analysis') {
-    return m.usedLM ? 'LM consolidation' : 'rule-based merge — the LM was unavailable'
+    if (m.usedLM === undefined) return null
+    // `usedLM: false` covers two different causes and the module records which.
+    return m.usedLM ? 'LM consolidation' : 'rule-based merge — the LM did not run'
   }
+  // These three call no model at all, but say so only once they have a result:
+  // a step that has not run has nothing to describe.
+  if (!hasResult.value) return null
   if (jobType === 'identifier_detection') return 'a local scan against the curated lists — no model'
   if (jobType === 'orcid_extraction') return 'GROBID, OpenAlex and the ORCID public API — no model'
   if (jobType === 'markdown_convert') return 'the PDF-to-Markdown converter — no model'
   return null
 }
+
 
 const config = computed(() => {
   const m = meta.value

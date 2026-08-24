@@ -413,7 +413,10 @@ async function groundSubmission(submission, jobLogger) {
       hasAuthorKrt: authorRows.length > 0,
       mode: authorRows.length > 0 ? 'with_krt' : 'no_krt',
       totalMs: Date.now() - startTime,
-      model: groundingConfig.model
+          // Named only on a run that called it, like the promptFile above: a
+          // run with no rows to place skips the second look, and a model
+          // beside "the LM second look did not run" reads as a contradiction.
+          model: secondLookStats.skipped ? null : groundingConfig.model
     }
   };
 

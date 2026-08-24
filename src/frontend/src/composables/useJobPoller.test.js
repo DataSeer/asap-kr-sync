@@ -400,6 +400,34 @@ describe('isFutureStepJob', () => {
     expect(isFutureStepJob({ status: 'waiting', waitingReason: 'krt_validation' })).toBe(false)
     expect(isFutureStepJob({ status: 'waiting' })).toBe(false)
     expect(isFutureStepJob(null)).toBe(false)
+  })
+
+  /**
+   * The reason only speaks while a job is `waiting`. The Availability check
+   * leaves that state the moment the submission reaches its step — the gate is
+   * satisfied and it parks in `pending_input` awaiting the confirmation.
+   *
+   * A reader who then walks BACK to the Manuscript step had that job counted as
+   * outstanding work of its own stage again, so "every process finished" could
+   * never become true: the suggestions panel returned to "Analyzing the
+   * manuscript…" and Continue was disabled with no reason shown.
+   */
+  it('still recognises a later step once it parks for input', () => {
+    expect(isFutureStepJob({
+      status: 'pending_input', waitingReason: null, gates: ['availability_ready']
+    })).toBe(true)
+  })
+
+  it('does not treat this stage\'s own gate as a later step', () => {
+    expect(isFutureStepJob({
+      status: 'waiting', waitingReason: 'krt_validation', gates: ['krt_curated']
+    })).toBe(false)
+  })
+
+  it('a finished step is nobody\'s outstanding work', () => {
+    for (const status of ['complete', 'failed', 'cancelled']) {
+      expect(isFutureStepJob({ status, gates: ['availability_ready'] }), status).toBe(false)
+    }
     expect(isFutureStepJob(undefined)).toBe(false)
   })
 })

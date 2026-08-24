@@ -542,11 +542,14 @@ router.post('/:id/processes/cancel',
 // user — the "trigger first-time analysis" that canManageJobs' own docstring
 // grants to authors and PMs. Restart, retry and force-run remain staff-only.
 //
-// It was gated, and the gate stalled the pipeline: when no Availability
-// Statement is found, pdf_analysis parks at pending_input and the PDF page tells
-// every user "enter it manually, then come back and start the analysis" — but an
-// author or PM pressing that button got 403, and the submission could never
-// finish. canAccessSubmission still scopes this to documents they may see.
+// It was gated, and the gate stalled the pipeline: a step parked at
+// pending_input told every user to resolve it, but an author or PM pressing
+// that button got 403, and the submission could never finish.
+// canAccessSubmission still scopes this to documents they may see.
+//
+// (The example that produced this was pdf_analysis waiting on an Availability
+// Statement. That step no longer depends on the extraction and cannot park at
+// all — but the access rule stands on its own for the step that still can.)
 router.post('/:id/jobs/:jobType/advance',
   canAccessSubmission,
   lmApiLimiter,

@@ -1,7 +1,7 @@
 <script setup>
 /**
- * PipelinePanel — the single shared pipeline panel reused on
- * both step 2 (KRTView) and step 3 (PDFView). It owns:
+ * PipelinePanel — the single shared pipeline panel rendered on
+ * the Manuscript step (step 2). It owns:
  *
  *   1. The job poller (useJobPoller) and exposes its callbacks + jobs ref
  *      via inject('submissionJobs') AND via defineExpose for parents that
@@ -12,7 +12,7 @@
  *      upload.
  *   4. The restart-job dispatcher (PMs / staff click a job to re-run it).
  *
- * Both views render `<PipelinePanel :submission-id="id" />` — any
+ * The view renders `<PipelinePanel :submission-id="id" />` — any
  * future change to the panel UI or polling logic only needs to be made
  * here. Per-view extras (software-mentions modal, authors, etc.) are still
  * provided by the parent view above this component since Vue's provide

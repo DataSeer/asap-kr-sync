@@ -57,6 +57,60 @@ test('a module whose own key is a placeholder falls back to the shared one', () 
   assert.equal(geminiKey('DATASETS_DETECTION', env), 'real-key');
 });
 
+/**
+ * Startup runs the pass twice: at require time, then again after the secret
+ * loader Object.assigns credentials into process.env. A value the pass wrote
+ * itself is not the operator's choice and must not shadow a fresher one.
+ */
+test('a key arriving after the first pass replaces the one it filled in', () => {
+  const env = { GEMINI_API_KEY: 'stale' };
+  applyGeminiDefaults(env);
+  assert.equal(env.DATASETS_DETECTION_GEMINI_API_KEY, 'stale');
+
+  env.GEMINI_API_KEY = 'rotated';           // the secret loader
+  applyGeminiDefaults(env);
+
+  assert.equal(env.DATASETS_DETECTION_GEMINI_API_KEY, 'rotated',
+    'a key the pass filled in must not shadow a rotated one');
+});
+
+test('a value the OPERATOR set is never revised', () => {
+  const env = { GEMINI_API_KEY: 'shared', DATASETS_DETECTION_GEMINI_API_KEY: 'operator' };
+  applyGeminiDefaults(env);
+  env.GEMINI_API_KEY = 'rotated';
+  applyGeminiDefaults(env);
+
+  assert.equal(env.DATASETS_DETECTION_GEMINI_API_KEY, 'operator');
+});
+
+test('a model chosen after the first pass takes effect', () => {
+  // The pass used to fill every model name with the built-in default, so by the
+  // time a GEMINI_MODEL arrived from Secrets Manager nothing was missing and it
+  // could never apply. Only a chosen model is written now.
+  const env = { GEMINI_API_KEY: 'k' };
+  applyGeminiDefaults(env);
+  assert.equal('DATASETS_DETECTION_GEMINI_MODEL' in env, false,
+    'the built-in default must not be written into the environment');
+
+  env.GEMINI_MODEL = 'gemini-2.5-pro';
+  applyGeminiDefaults(env);
+
+  assert.equal(env.DATASETS_DETECTION_GEMINI_MODEL, 'gemini-2.5-pro');
+});
+
+test('a placeholder is replaced, or removed when nothing real replaces it', () => {
+  // Truthiness alone let `your_gemini_api_key` survive and reach the child.
+  const withReal = { GEMINI_API_KEY: 'real', DATASETS_DETECTION_GEMINI_API_KEY: 'changeme' };
+  applyGeminiDefaults(withReal);
+  assert.equal(withReal.DATASETS_DETECTION_GEMINI_API_KEY, 'real');
+
+  const withNone = { DATASETS_DETECTION_GEMINI_API_KEY: 'your_gemini_api_key' };
+  applyGeminiDefaults(withNone);
+  assert.equal('DATASETS_DETECTION_GEMINI_API_KEY' in withNone, false,
+    'the script reports which names it looked for; a placeholder turns that '
+    + 'into a 400 from Gemini instead');
+});
+
 test('startup never propagates a placeholder', () => {
   const env = { GEMINI_API_KEY: 'your_gemini_api_key' };
   applyGeminiDefaults(env);
@@ -101,14 +155,20 @@ test('startup never overwrites a value the operator set', () => {
   assert.ok(filled.includes('MATERIALS_DETECTION_GEMINI_API_KEY'));
 });
 
-test('with no shared key, a module without its own stays unset', () => {
-  // An empty string would read as "configured" to isConfigured(), turning
-  // "nobody set a key" into a module that claims to be on and then fails.
+test('with nothing configured, nothing is written', () => {
+  // An empty key would read as "configured" to isConfigured(), turning "nobody
+  // set a key" into a module that claims to be on and then fails.
+  //
+  // The MODEL is left alone for a different reason: writing the built-in
+  // default here is what stopped a `GEMINI_MODEL` arriving later from Secrets
+  // Manager from taking effect. `geminiModel()` still answers with the default,
+  // so nothing downstream is left guessing.
   const env = {};
   applyGeminiDefaults(env);
+
   assert.equal('MATERIALS_DETECTION_GEMINI_API_KEY' in env, false);
-  // The model always has a default, so it is always safe to fill in.
-  assert.equal(env.MATERIALS_DETECTION_GEMINI_MODEL, DEFAULT_MODEL);
+  assert.equal('MATERIALS_DETECTION_GEMINI_MODEL' in env, false);
+  assert.equal(geminiModel('MATERIALS_DETECTION', env), DEFAULT_MODEL);
 });
 
 test('running startup twice changes nothing the second time', () => {

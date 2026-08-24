@@ -24,7 +24,6 @@ vi.mock('@/services/api', () => ({ default: { get: vi.fn().mockResolvedValue({ d
 import EditMetadataModal from './EditMetadataModal.vue'
 import { useSubmissionStore } from '@/stores/submission.store'
 
-const CONFIRM_BTN = 'button[type="button"]'
 
 function mountModal({ submission = {}, jobs = {} } = {}) {
   return mount(EditMetadataModal, {
@@ -40,9 +39,6 @@ function mountModal({ submission = {}, jobs = {} } = {}) {
 }
 
 /** The confirmation prompt, found by its copy rather than a styling class. */
-function confirmPrompt(wrapper) {
-  return wrapper.findAll(CONFIRM_BTN).find((b) => /confirm/i.test(b.text()))
-}
 
 describe('the metadata editor and the Availability Statement', () => {
   beforeEach(() => { setActivePinia(createPinia()); vi.clearAllMocks() })

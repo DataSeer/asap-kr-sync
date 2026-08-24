@@ -167,6 +167,24 @@ async function getJobs(req, res, next) {
               ? WAITING_REASONS.blocked_by_failure
               : WAITING_REASONS[orchestrator.isGateBlocked(job.jobType, req.submission, jobsByType)] || null)
             : null,
+          /**
+           * The gates this STEP declares, whatever its status.
+           *
+           * `waitingReason` only speaks while a job is `waiting`, and the
+           * Availability check does not stay there: once the submission reaches
+           * that step the check flips to `pending_input` awaiting the author's
+           * confirmation. A page showing the manuscript stage then counted it
+           * as outstanding work of its own and could never conclude the
+           * analysis had finished — the bug the `availability_step` reason was
+           * introduced to prevent, returning by a different door.
+           *
+           * The gate is a fact about the step, not about this moment, so it is
+           * sent regardless of status and the client can ask "is this my
+           * stage's work?" without having to guess from a status.
+           */
+          gates: (orchestrator.PIPELINE.find((s) => s.jobType === job.jobType)?.gate)
+            ? [].concat(orchestrator.PIPELINE.find((s) => s.jobType === job.jobType).gate)
+            : [],
           /** Which failed steps are holding this one — named, so the UI can point at them. */
           blockedBy: job.status === 'waiting'
             ? orchestrator.blockingIssues(job.jobType, jobsByType)

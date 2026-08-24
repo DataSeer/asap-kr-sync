@@ -33,10 +33,6 @@ const injectedJobs = inject('submissionJobs', ref({}))
 // While extraction is in flight the statement is about to be overwritten, so
 // the editor says so rather than letting somebody type into a field that is
 // seconds from changing under them.
-const dasExtractionRunning = computed(() => {
-  const status = injectedJobs.value?.das_extraction?.status
-  return status === 'queued' || status === 'processing'
-})
 
 const props = defineProps({
   /** The submission object */
