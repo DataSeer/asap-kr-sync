@@ -31,6 +31,19 @@ export default {
   },
 
   /**
+   * The named DETECTION configurations a submission can be analysed with.
+   *
+   * Not `getPipeline()` above, which is the twelve-step job graph. The server
+   * withholds admin-only arms from anyone who cannot choose them, so whatever
+   * comes back is safe to offer.
+   *
+   * @returns {Promise<{pipelines: Array, defaultPipelineId: string}>}
+   */
+  async getDetectionPipelines() {
+    return (await api.get('/config/detection-pipelines')).data
+  },
+
+  /**
    * Get the enabled/disabled status of each external service
    * @returns {Promise<Object>} - { services: { [jobType]: { enabled, hasDemoData } } }
    */

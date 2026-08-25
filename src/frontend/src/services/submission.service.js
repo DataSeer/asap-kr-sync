@@ -43,6 +43,9 @@ export default {
     if (data.manuscriptId) formData.append('manuscriptId', data.manuscriptId)
     if (data.notes) formData.append('notes', data.notes)
     if (data.dataAvailabilityStatement) formData.append('dataAvailabilityStatement', data.dataAvailabilityStatement)
+    // Omitted rather than sent empty: the server reads an absent pipelineId as
+    // "the default", and an empty string would fail its allow-list.
+    if (data.pipelineId) formData.append('pipelineId', data.pipelineId)
     if (krtFile) formData.append('krt', krtFile)
     const response = await api.post('/submissions', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },

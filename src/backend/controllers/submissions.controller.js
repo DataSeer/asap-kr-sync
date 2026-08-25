@@ -4,7 +4,7 @@
 
 const { Op } = require('sequelize');
 const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, SubmissionJob, sequelize } = require('../models');
-const { NotFoundError, ValidationError } = require('../utils/errors');
+const { NotFoundError, ValidationError, AuthorizationError } = require('../utils/errors');
 const { extractProjectFromManuscriptId, parsePagination, buildPaginationMeta, statusToStep, buildS3Folder } = require('../utils/helpers');
 const s3Service = require('../services/storage/s3.service');
 const archiveService = require('../services/archive/archive.service');
@@ -12,7 +12,8 @@ const parserService = require('../services/krt/parser.service');
 const krtService = require('../services/krt/krt.service');
 const { NO_DAS_SENTINEL } = require('../services/das-suggestions/das-suggestions.service');
 const jobAdminService = require('../services/queue/job-admin.service');
-const { KRT_COLUMNS, SUBMISSION_STATUSES, JOB_TYPES } = require('../config/constants');
+const { KRT_COLUMNS, SUBMISSION_STATUSES, JOB_TYPES, ROLES } = require('../config/constants');
+const { getPipeline, DEFAULT_PIPELINE_ID } = require('../config/pipelines');
 const logger = require('../utils/logger');
 
 /**
@@ -136,6 +137,32 @@ async function list(req, res, next) {
 }
 
 /**
+ * May this caller analyse a submission with this pipeline?
+ *
+ * The validator has already refused an unknown id, so what is left is
+ * authorisation. A pipeline marked `adminOnly` is an experiment arm: it detects
+ * differently from what ships, so a submission created under one is not
+ * comparable with the rest of the corpus and its results are not what an author
+ * should be handed. Choosing it is a deliberate act by whoever runs the
+ * experiment.
+ *
+ * Omitting the field is always allowed and means the default.
+ *
+ * @param {object} actor - the authenticated user
+ * @param {string} [pipelineId] - from the validated body; undefined = default
+ * @throws {AuthorizationError} when a non-admin names an adminOnly pipeline
+ */
+function assertMayChoosePipeline(actor, pipelineId) {
+  if (!pipelineId) return;
+  const pipeline = getPipeline(pipelineId);
+  if (pipeline.adminOnly && actor?.role !== ROLES.ADMIN) {
+    throw new AuthorizationError(
+      `The "${pipeline.label}" pipeline is available to admins only.`
+    );
+  }
+}
+
+/**
  * Create submission. Accepts multipart/form-data with metadata fields and a
  * required KRT file ("krt"). The KRT format is validated **before** any DB
  * writes — if the file isn't a properly-formatted Key Resources Table, the
@@ -147,7 +174,17 @@ async function list(req, res, next) {
  */
 async function create(req, res, next) {
   try {
-    const { title, dataAvailabilityStatement, manuscriptId, notes } = req.validatedBody;
+    const { title, dataAvailabilityStatement, manuscriptId, notes, pipelineId } = req.validatedBody;
+
+    // 0. Which detection pipeline analyses this submission. Checked before the
+    //    file is parsed so a caller who may not choose it is refused without
+    //    spending anything, and before any row exists to be half-created.
+    //
+    //    The validator has already rejected an unknown id; what is left is
+    //    authorisation. `adminOnly` pipelines are experiment arms — they detect
+    //    differently, and a submission created under one is not comparable with
+    //    the rest — so they are not something an author can opt into.
+    assertMayChoosePipeline(req.user, pipelineId);
 
     // 1. KRT file is required — frontend always attaches it.
     if (!req.file) {
@@ -199,6 +236,12 @@ async function create(req, res, next) {
       manuscriptId: manuscriptId || null,
       project,
       notes,
+      // Always stamped, never left null. `getPipeline(null)` resolves to
+      // whatever the default is *now*, so a null row would silently start
+      // claiming it ran a different pipeline the day the default changes —
+      // the same fault frozen prompts and frozen models exist to prevent.
+      // What a submission was analysed with is a fact about the past.
+      pipelineId: pipelineId || DEFAULT_PIPELINE_ID,
       status: 'step_krt'
     });
 

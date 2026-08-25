@@ -5,7 +5,8 @@
 
 const express = require('express');
 const { authenticate } = require('../middleware/auth.middleware');
-const { KRT_TEMPLATE_URL, getResourceTypes } = require('../config/constants');
+const { KRT_TEMPLATE_URL, getResourceTypes, ROLES } = require('../config/constants');
+const { PIPELINES, DEFAULT_PIPELINE_ID } = require('../config/pipelines');
 const pdfAnalysisConfig = require('../config/pdf-analysis-api');
 const dasExtractionConfig = require('../config/das-extraction-api');
 const softciteConfig = require('../config/softcite-api');
@@ -81,6 +82,31 @@ router.get('/source', authenticate, (req, res) => {
  */
 router.get('/pipeline', authenticate, (req, res) => {
   res.json(buildPipelineGraph());
+});
+
+/**
+ * GET /api/config/detection-pipelines
+ *
+ * The named detection configurations a submission can be analysed with —
+ * `seeded-v1`, `blind-v1` and whatever else `config/pipelines.js` grows.
+ *
+ * NOT the same thing as `/api/config/pipeline` above, which is the twelve-step
+ * job graph. The two senses of "pipeline" predate each other; this one is
+ * spelled out to keep them apart at the call site.
+ *
+ * `adminOnly` arms are withheld from anyone who cannot choose them, so the
+ * listing matches what `POST /submissions` will actually accept — a selector
+ * offering an option the server refuses is the mismatch this whole audit was
+ * about. The strategies, merge and grounding policies are not sent: they are
+ * implementation, and no client decides anything from them.
+ */
+router.get('/detection-pipelines', authenticate, (req, res) => {
+  const isAdmin = req.user?.role === ROLES.ADMIN;
+  const pipelines = Object.values(PIPELINES)
+    .filter((p) => !p.adminOnly || isAdmin)
+    .map(({ id, label, description, isDefault, adminOnly }) =>
+      ({ id, label, description, isDefault: !!isDefault, adminOnly: !!adminOnly }));
+  res.json({ pipelines, defaultPipelineId: DEFAULT_PIPELINE_ID });
 });
 
 /**

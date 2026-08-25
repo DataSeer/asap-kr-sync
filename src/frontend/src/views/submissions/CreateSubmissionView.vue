@@ -8,6 +8,7 @@ import submissionService from '@/services/submission.service'
 import pdfService from '@/services/pdf.service'
 import krtService from '@/services/krt.service'
 import demosService from '@/services/demos.service'
+import configService from '@/services/config.service'
 import api from '@/services/api'
 
 
@@ -129,6 +130,23 @@ function clearSupplementalFile() {
   if (input) input.value = ''
 }
 
+// Detection pipelines. The server sends only the arms this user may choose, so
+// a single-entry list means there is nothing to pick between and the selector
+// does not render.
+//
+// One option per pipeline, the default pre-selected — there is no separate
+// "Default" entry. An earlier version had both, which put the same pipeline in
+// the list twice under two labels; whatever is picked is sent explicitly, and
+// the server stamps it, so the submission records what it actually ran rather
+// than deferring to a default that may change later.
+const detectionPipelines = ref([])
+const pipelineId = ref('')
+
+/** The description of whatever is selected, so the choice explains itself. */
+const selectedPipelineDescription = computed(() =>
+  detectionPipelines.value.find((p) => p.id === pipelineId.value)?.description || ''
+)
+
 // Demo documents — discovered server-side from src/frontend/public/demo-files/.
 // Includes every PDF demo whether or not it has a matching KRT file.
 const demoDocuments = ref([])
@@ -146,6 +164,16 @@ onMounted(async () => {
       }))
   } catch {
     demoDocuments.value = []
+  }
+
+  try {
+    const { pipelines, defaultPipelineId } = await configService.getDetectionPipelines()
+    detectionPipelines.value = pipelines || []
+    pipelineId.value = defaultPipelineId || pipelines?.[0]?.id || ''
+  } catch {
+    // A failure here costs the selector, not the form: creating with the
+    // default is still correct and is what almost every submission wants.
+    detectionPipelines.value = []
   }
 
   // KRT template URL — used by the format-error block to link users to a
@@ -263,7 +291,10 @@ async function proceedWithSubmit(krtFileToSend) {
       {
         title: title.value,
         manuscriptId: null,
-        notes: notes.value
+        notes: notes.value,
+        // Left out entirely when nothing was picked, so the server stores null
+        // and "ran on whatever ships" stays distinguishable from a chosen arm.
+        pipelineId: pipelineId.value || undefined
       },
       krtFileToSend
     )
@@ -511,6 +542,29 @@ async function proceedWithSubmit(krtFileToSend) {
           class="input"
           placeholder="Add any notes about this submission"
         ></textarea>
+      </div>
+
+      <!--
+        6. Detection pipeline. Only rendered when there is genuinely a choice:
+        the server withholds admin-only arms from anyone who cannot pick one, so
+        for almost everybody this list has a single entry and no selector appears.
+        Chosen once, here — it decides what the detectors are shown, so it cannot
+        be changed later without splitting the analysis in two.
+      -->
+      <div v-if="detectionPipelines.length > 1">
+        <label for="pipelineId" class="label">
+          Detection pipeline <span class="text-gray-400 text-sm font-normal">(optional)</span>
+        </label>
+        <select id="pipelineId" v-model="pipelineId" class="input">
+          <option
+            v-for="p in detectionPipelines"
+            :key="p.id"
+            :value="p.id"
+          >{{ p.label }}{{ p.isDefault ? ' — default' : '' }}{{ p.adminOnly ? ' (experiment)' : '' }}</option>
+        </select>
+        <p class="mt-1 text-xs text-gray-500">
+          {{ selectedPipelineDescription }}
+        </p>
       </div>
 
       <!-- KRT format error — surfaced when the server rejects the file

@@ -94,6 +94,26 @@ module.exports = (sequelize) => {
       defaultValue: null,
       field: 'authors'
     },
+    /**
+     * Which detection pipeline analysed this submission (`config/pipelines.js`).
+     *
+     * Always stamped on creation, the default included. `getPipeline(null)`
+     * resolves to whatever the default is *now*, so a null row would start
+     * claiming a different pipeline the day the default changes. NULL means
+     * only "created before this column existed".
+     *
+     * Set once, when the submission is created, and never afterwards: the
+     * strategies decide what the detectors are shown, so changing it mid-flight
+     * would leave some steps detected blind and some seeded with nothing
+     * recording the split — the same fault `submission_input_freezes` exists to
+     * prevent for documents.
+     */
+    pipelineId: {
+      type: DataTypes.STRING(32),
+      allowNull: true,
+      defaultValue: null,
+      field: 'pipeline_id'
+    },
   }, {
     tableName: 'submissions',
     timestamps: true,
