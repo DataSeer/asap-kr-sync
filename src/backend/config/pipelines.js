@@ -47,16 +47,23 @@ const PIPELINES = Object.freeze({
       // gave it", and the output cannot distinguish that from a real find.
       surfaceValues: false,
       // Grounding verifies the AUTHOR's rows against the manuscript, which is
-      // independent of how detection was prompted — so it derives its
-      // suggestions in both pipelines. True by default in both; kept as a
-      // switch because ASAP may later want conflicts shown for a curator to
-      // resolve by hand, with no suggestion raised on their behalf.
+      // independent of how detection was prompted — so it derives suggestions
+      // in both pipelines, and these read the same in each.
       //
-      // It governs the EMPTY-CELL fills only. A conflict — the author has a
-      // value and the manuscript disagrees — never becomes a suggestion either
-      // way: it is surfaced as a conflict, and the author's value stands until
-      // a curator decides.
-      deriveSuggestions: true
+      // Split by case rather than one boolean, because the three things
+      // grounding can conclude carry very different risk and a deployment may
+      // want them separately. `not_detected` is not listed: it raises nothing in
+      // any configuration, since the only action it could imply is deleting the
+      // author's row.
+      deriveSuggestions: {
+        // The author left the cell blank and a matched candidate carried a
+        // value. Nothing is overwritten, only filled.
+        emptyCell: true,
+        // The author HAS a value and the manuscript disagrees. Asking a curator
+        // to change curated data on a detector's word, so it is proposed at
+        // lower confidence and names the detector that raised it.
+        conflict: true
+      }
     }
   },
 
@@ -77,7 +84,13 @@ const PIPELINES = Object.freeze({
     },
     merge: { dropUnsupported: true },
     reconcile: { carryAuthorRows: 'all' },
-    grounding: { surfacePresence: true, surfaceValues: true, deriveSuggestions: true }
+    grounding: {
+      surfacePresence: true,
+      surfaceValues: true,
+      // Same as seeded: grounding checks the author's rows against the
+      // manuscript, which is what it does regardless of how detection ran.
+      deriveSuggestions: { emptyCell: true, conflict: true }
+    }
   }
 });
 

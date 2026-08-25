@@ -821,14 +821,23 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   deterministically, `appendGroundingUpdates` turns `krt_grounding` outcomes into `edit` suggestions
   (`source: 'krt_grounding'`) and prepends them, so a grounding fill wins the dedupe race against an LM proposal
   for the same row and column. Grounding outcomes are still frozen into the run's inputs for audit.
-  - It proposes **only into an empty author cell**. A **conflict** — the author has a value and the manuscript
-    disagrees — never becomes a suggestion in any pipeline: it is surfaced as a conflict and the author's value
-    stands until a curator decides. `not_detected` likewise raises nothing; it is a tag, not an action.
-  - Governed by `grounding.deriveSuggestions` in `config/pipelines.js`, **true in both pipelines** — grounding
-    checks the author's rows against the manuscript, which is independent of how detection was prompted. The
-    switch is kept for a deployment that would rather show the findings and let a curator act on them. It was
-    previously declared `false` for the seeded pipeline and read by nothing, so the config described behaviour
-    the code never had.
+  - Grounding can conclude **three** things about a row, and each is governed separately by
+    `grounding.deriveSuggestions` in `config/pipelines.js` — the risks are not comparable. Both switches are
+    **on in both pipelines**: grounding checks the author's rows against the manuscript, which is independent of
+    how detection was prompted, so it reads the same in each.
+
+    | Case | Switch | Default | What it raises |
+    |---|---|---|---|
+    | **Empty cell** — author left it blank, a matched candidate carried a value | `emptyCell` | on | `edit` at confidence **0.9**, `groundingKind: 'empty_cell'`. Nothing is overwritten, only filled. |
+    | **Conflict** — author HAS a value, the manuscript disagrees | `conflict` | on | `edit` at confidence **0.6**, `groundingKind: 'conflict'`, carrying `data.conflictSource` — the detector that raised it. Only `identifier` is ever comparable (`COMPARABLE_FIELDS`). |
+    | **Not detected** — the manuscript never mentions the row | *(none)* | — | **Nothing, in any configuration.** It is a tag, surfaced via `groundings` so the editor can badge the row. The only action it could imply is deleting the author's row. |
+
+    A conflict is proposed at lower confidence than a fill on purpose: it asks a curator to change curated data
+    on a detector's word, and a detector can misread the manuscript. Accepting one goes through the ordinary
+    `edit` path, so the author's previous value is recorded in the change log.
+
+    The flag was previously a single boolean declared `false` for the seeded pipeline and read by nothing, so the
+    config described behaviour the code never had.
 - **Truncation is survivable, and used not to be.** This call ran with **no generation config at all** — the model
   default token budget, while the prompt demands one decision per generated row. The largest tables truncated
   first: the reply came back with an unterminated ```` ```json ```` fence, `JSON.parse` died on the backtick, the

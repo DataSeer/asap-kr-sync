@@ -92,13 +92,16 @@ test('a seeded pipeline never surfaces candidate-derived grounding', () => {
   }
 });
 
-test('grounding derives its suggestions in every pipeline', () => {
+test('grounding derives both kinds of suggestion in every pipeline', () => {
   // Grounding checks the AUTHOR's rows against the manuscript, which is
-  // independent of how detection was prompted — so it runs, and proposes, in
-  // both. The flag stays as a switch ASAP may want later (show the conflicts,
-  // raise no suggestion), but on is the shipped behaviour.
+  // independent of how detection was prompted — so it proposes in both.
+  // Split by case because filling a blank and contradicting a curator carry
+  // different risk; `not_detected` has no switch and raises nothing anywhere.
   for (const pipeline of Object.values(PIPELINES)) {
-    assert.equal(pipeline.grounding.deriveSuggestions, true, `${pipeline.id}`);
+    const derive = pipeline.grounding.deriveSuggestions;
+    assert.equal(typeof derive, 'object', `${pipeline.id}: expected a per-case policy`);
+    assert.equal(derive.emptyCell, true, `${pipeline.id}`);
+    assert.equal(derive.conflict, true, `${pipeline.id}`);
   }
 });
 

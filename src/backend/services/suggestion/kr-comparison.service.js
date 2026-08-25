@@ -133,18 +133,37 @@ function authorRowDisplay(row) {
 /**
  * Turn `incomplete` grounding outcomes into edit suggestions.
  *
- * These are the highest-trust updates the pipeline can make: a candidate that
- * matched this row by identifier/alias/name actually carried the value, and the
- * author's cell is empty. Nothing is written — this only proposes.
+ * Grounding reconciles the AUTHOR's rows against the manuscript, and there are
+ * three things it can conclude about a row. Each is governed separately, because
+ * they carry very different risk:
  *
- * `not_detected` outcomes deliberately produce NO suggestion. "The manuscript
- * never mentions this" is not an action to take on the author's table; it is a
- * tag, surfaced separately via `groundings` so the editor can badge the row.
- * The author's data is right even when we cannot find it.
+ *   EMPTY CELL   the author left a cell blank and a matched candidate carried a
+ *                value. The highest-trust update the pipeline can make — nothing
+ *                is overwritten, only filled. `policy.emptyCell`.
  *
- * @param {object} ctx - { groundingOutcomes, byId, suggestions, decisions, seen }
+ *   CONFLICT     the author HAS a value and the manuscript disagrees. Proposing
+ *                here means asking a curator to change curated data on the word
+ *                of a detector, which can itself be wrong — so the suggestion
+ *                carries the detector that raised it and a lower confidence, and
+ *                the author's value stays until someone accepts.
+ *                `policy.conflict`. Only `identifier` is ever comparable.
+ *
+ *   NOT DETECTED the manuscript never mentions the row. This raises NOTHING in
+ *                any configuration: it is a tag, surfaced via `groundings` so the
+ *                editor can badge the row. The author's data is right even when
+ *                we cannot find it, and the only action it could imply is
+ *                deleting their row.
+ *
+ * Nothing is written here — this only proposes.
+ *
+ * @param {object} ctx - { groundingOutcomes, byId, suggestions, decisions, seen, policy }
+ * @param {object} [ctx.policy] - { emptyCell, conflict }; both default to on
  */
-function appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decisions, seen }) {
+function appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decisions, seen, policy = {} }) {
+  const wantEmptyCell = policy.emptyCell !== false;
+  const wantConflict = policy.conflict !== false;
+  if (!wantEmptyCell && !wantConflict) return;
+
   for (const outcome of Array.isArray(groundingOutcomes) ? groundingOutcomes : []) {
     if (outcome?.outcome !== 'incomplete') continue;
     const row = byId.get(outcome.krtRowId);
@@ -153,34 +172,77 @@ function appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decision
     const dedupKey = computeDedupKey(row);
     const changeMap = {};
 
-    for (const column of UPDATABLE_COLUMNS) {
-      const newValue = outcome.foundValues?.[column];
-      if (newValue == null || String(newValue).trim() === '') continue;
-      const oldValue = row[column] || '';
-      // Grounding only ever proposes for an EMPTY author cell; this re-checks
-      // that here so a stale outcome can never overwrite curated data.
-      if (String(oldValue).trim() !== '') continue;
-
+    /** One proposed column change, deduped against everything already proposed. */
+    const propose = ({ column, oldValue, newValue, kind, confidence, reason, evidence, detector }) => {
       const id = `edit:${dedupKey}:${column}`;
-      if (seen.has(id)) continue;
+      if (seen.has(id)) return;
       seen.add(id);
-      changeMap[column] = { old: oldValue, new: String(newValue) };
+      changeMap[column] = { old: oldValue, new: newValue };
 
       suggestions.push({
         id, type: 'edit', action: 'edit', status: 'pending',
         source: 'krt_grounding',
-        title: `Update ${COLUMN_LABEL[column]} of ${row.resourceName || row.identifier || ''}`.trim(),
-        description: `${COLUMN_LABEL[column]}: "${oldValue || '(empty)'}" → "${newValue}"`,
-        reason: outcome.reason || null,
-        dedupKey, confidence: 0.9, existsInKRT: 'update', matchedKrtRowId: row.id,
+        // The two kinds ask a curator for different things — "fill this in" and
+        // "the paper says otherwise" — so they must not read identically.
+        groundingKind: kind,
+        title: kind === 'conflict'
+          ? `Resolve ${COLUMN_LABEL[column]} of ${row.resourceName || row.identifier || ''}`.trim()
+          : `Update ${COLUMN_LABEL[column]} of ${row.resourceName || row.identifier || ''}`.trim(),
+        description: kind === 'conflict'
+          ? `${COLUMN_LABEL[column]}: your table says "${oldValue}", the manuscript says "${newValue}"`
+          : `${COLUMN_LABEL[column]}: "${oldValue || '(empty)'}" → "${newValue}"`,
+        reason: reason || null,
+        dedupKey, confidence, existsInKRT: 'update', matchedKrtRowId: row.id,
         mergedFrom: ['krt_grounding'],
-        evidence: outcome.evidence || null,
+        evidence: evidence || null,
         data: {
           rowId: row.id, column, columnLabel: COLUMN_LABEL[column],
-          oldValue, newValue: String(newValue),
-          resourceType: row.resourceType, resourceName: row.resourceName
+          oldValue, newValue,
+          resourceType: row.resourceType, resourceName: row.resourceName,
+          // Which detector supplied the contradicting value. A conflict is only
+          // as good as whatever read the manuscript, and a curator deciding
+          // against their own entry deserves to know what is asking.
+          ...(kind === 'conflict' ? { conflictSource: detector || null } : {})
         }
       });
+    };
+
+    if (wantEmptyCell) {
+      for (const column of UPDATABLE_COLUMNS) {
+        const newValue = outcome.foundValues?.[column];
+        if (newValue == null || String(newValue).trim() === '') continue;
+        const oldValue = row[column] || '';
+        // An EMPTY author cell only. Re-checked here so a stale outcome can
+        // never overwrite curated data through this branch — a populated cell
+        // is a conflict, and goes through the other one with its own switch.
+        if (String(oldValue).trim() !== '') continue;
+
+        propose({
+          column, oldValue, newValue: String(newValue), kind: 'empty_cell',
+          confidence: 0.9, reason: outcome.reason, evidence: outcome.evidence
+        });
+      }
+    }
+
+    if (wantConflict) {
+      for (const conflict of Array.isArray(outcome.conflicts) ? outcome.conflicts : []) {
+        const column = conflict?.field;
+        if (!column || !UPDATABLE_COLUMNS.includes(column)) continue;
+        const oldValue = String(conflict.authorValue || '').trim();
+        const newValue = String(conflict.manuscriptValue || '').trim();
+        // A conflict with nothing on one side is not a conflict.
+        if (!oldValue || !newValue || oldValue === newValue) continue;
+
+        propose({
+          column, oldValue, newValue, kind: 'conflict',
+          // Lower than an empty-cell fill on purpose: this one contradicts a
+          // human, and the value it offers came from a detector that may have
+          // misread the manuscript.
+          confidence: 0.6,
+          reason: outcome.reason, evidence: outcome.evidence,
+          detector: conflict.source || null
+        });
+      }
     }
 
     if (Object.keys(changeMap).length > 0) {
@@ -219,22 +281,17 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, grounding
   // `seen` race against an LM proposal for the same row+column, which is then
   // skipped by the existing dedupe rather than duplicated.
   //
-  // `deriveSuggestions` is the pipeline's switch for this, and it is true in
-  // both pipelines today — grounding checks the AUTHOR's rows against the
-  // manuscript, which is independent of how detection was prompted. Turning it
-  // off leaves the conflicts and presence verdicts on display and simply raises
-  // no suggestion, for a deployment that would rather a curator resolved them
-  // by hand.
+  // `deriveSuggestions` is the pipeline's policy for this — `{ emptyCell,
+  // conflict }`, both on in both pipelines today. Grounding checks the AUTHOR's
+  // rows against the manuscript, which is independent of how detection was
+  // prompted, so it reads the same in each.
   //
-  // It governs the empty-cell fills only. A conflict never becomes a suggestion
-  // in either case — appendGroundingUpdates skips any cell that already holds a
-  // value, so the author's entry stands until someone decides otherwise.
-  //
-  // Defaults to on when unspecified, so the offline harnesses that call this
-  // without a pipeline reproduce what the real path does.
-  if (options.deriveSuggestions !== false) {
-    appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decisions, seen });
-  }
+  // Each case defaults to ON when unspecified, so the offline harnesses that
+  // call this without a pipeline reproduce what the real path does.
+  appendGroundingUpdates({
+    groundingOutcomes, byId, suggestions, decisions, seen,
+    policy: options.deriveSuggestions
+  });
 
   for (const d of lmDecisions) {
     const action = String(d?.action || '').toLowerCase();
