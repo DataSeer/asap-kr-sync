@@ -76,11 +76,24 @@ function markdownByPdfSha() {
         const pdfDir = path.join(base, round, 'pdf');
         const mdDir = path.join(base, round, 'markdown');
         if (!fs.existsSync(pdfDir) || !fs.existsSync(mdDir)) continue;
-        const pdf = fs.readdirSync(pdfDir).find((f) => f.toLowerCase().endsWith('.pdf'));
-        const md = fs.readdirSync(mdDir).find((f) => f.endsWith('.md'));
-        if (!pdf || !md) continue;
-        const hash = sha256(path.join(pdfDir, pdf));
-        if (!out.has(hash)) out.set(hash, path.join(mdDir, md));
+
+        // Pair by NAME, and map EVERY pdf in the round rather than the first.
+        // A round can hold two manuscripts, and taking one of each would either
+        // skip the second entirely — JJ1_000520_004 read as "never converted"
+        // while its markdown sat right there — or, worse, hand one manuscript's
+        // text to the other's table and score it as a bad pair.
+        const pdfs = fs.readdirSync(pdfDir).filter((f) => f.toLowerCase().endsWith('.pdf'));
+        const mds = fs.readdirSync(mdDir).filter((f) => f.endsWith('.md'));
+        const stem = (f) => f.replace(/\.[^.]+$/, '').toLowerCase();
+
+        for (const pdf of pdfs) {
+          const md = mds.find((m) => stem(m) === stem(pdf))
+            // One of each is unambiguous; the archives predate this convention.
+            || (pdfs.length === 1 && mds.length === 1 ? mds[0] : null);
+          if (!md) continue;
+          const hash = sha256(path.join(pdfDir, pdf));
+          if (!out.has(hash)) out.set(hash, path.join(mdDir, md));
+        }
       }
     }
   }
