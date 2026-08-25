@@ -816,6 +816,19 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   through). `read`/`approve`/`reject` operate on this persisted list; **accepting a `remove` deletes the KRT row**.
 - **Origins:** each suggestion carries the **real contributing detection module(s)**
   (software/datasets/materials/protocols/identifier) as origin badges — no longer a flat `krt_comparison` tag.
+- **Two routes in, and the model only knows about one.** The LM is sent
+  `{ author_krt, generated_krt }` and nothing else — grounding results are **not** in its prompt. Separately and
+  deterministically, `appendGroundingUpdates` turns `krt_grounding` outcomes into `edit` suggestions
+  (`source: 'krt_grounding'`) and prepends them, so a grounding fill wins the dedupe race against an LM proposal
+  for the same row and column. Grounding outcomes are still frozen into the run's inputs for audit.
+  - It proposes **only into an empty author cell**. A **conflict** — the author has a value and the manuscript
+    disagrees — never becomes a suggestion in any pipeline: it is surfaced as a conflict and the author's value
+    stands until a curator decides. `not_detected` likewise raises nothing; it is a tag, not an action.
+  - Governed by `grounding.deriveSuggestions` in `config/pipelines.js`, **true in both pipelines** — grounding
+    checks the author's rows against the manuscript, which is independent of how detection was prompted. The
+    switch is kept for a deployment that would rather show the findings and let a curator act on them. It was
+    previously declared `false` for the seeded pipeline and read by nothing, so the config described behaviour
+    the code never had.
 - **Truncation is survivable, and used not to be.** This call ran with **no generation config at all** — the model
   default token budget, while the prompt demands one decision per generated row. The largest tables truncated
   first: the reply came back with an unterminated ```` ```json ```` fence, `JSON.parse` died on the backtick, the

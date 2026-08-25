@@ -89,7 +89,16 @@ test('a seeded pipeline never surfaces candidate-derived grounding', () => {
     const isSeeded = Object.values(pipeline.strategies).some((id) => id.endsWith('.seeded'));
     if (!isSeeded) continue;
     assert.equal(pipeline.grounding.surfaceValues, false, `${pipeline.id}`);
-    assert.equal(pipeline.grounding.deriveSuggestions, false, `${pipeline.id}`);
+  }
+});
+
+test('grounding derives its suggestions in every pipeline', () => {
+  // Grounding checks the AUTHOR's rows against the manuscript, which is
+  // independent of how detection was prompted — so it runs, and proposes, in
+  // both. The flag stays as a switch ASAP may want later (show the conflicts,
+  // raise no suggestion), but on is the shipped behaviour.
+  for (const pipeline of Object.values(PIPELINES)) {
+    assert.equal(pipeline.grounding.deriveSuggestions, true, `${pipeline.id}`);
   }
 });
 

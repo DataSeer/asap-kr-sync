@@ -205,7 +205,7 @@ function appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decision
  * @param {object[]} [groundingOutcomes] - per-author-row verdicts from krt_grounding
  * @returns {{ suggestions: object[], decisions: object[] }}
  */
-function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, groundingOutcomes = []) {
+function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, groundingOutcomes = [], options = {}) {
   if (!Array.isArray(lmDecisions)) return { suggestions: [], decisions: [] };
   const byId = new Map((authorRows || []).map(r => [r.id, r]));
   const gen = Array.isArray(generatedKrt) ? generatedKrt : [];
@@ -218,7 +218,23 @@ function buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, grounding
   // carried the value, matched by identifier/alias/name) so they should win the
   // `seen` race against an LM proposal for the same row+column, which is then
   // skipped by the existing dedupe rather than duplicated.
-  appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decisions, seen });
+  //
+  // `deriveSuggestions` is the pipeline's switch for this, and it is true in
+  // both pipelines today — grounding checks the AUTHOR's rows against the
+  // manuscript, which is independent of how detection was prompted. Turning it
+  // off leaves the conflicts and presence verdicts on display and simply raises
+  // no suggestion, for a deployment that would rather a curator resolved them
+  // by hand.
+  //
+  // It governs the empty-cell fills only. A conflict never becomes a suggestion
+  // in either case — appendGroundingUpdates skips any cell that already holds a
+  // value, so the author's entry stands until someone decides otherwise.
+  //
+  // Defaults to on when unspecified, so the offline harnesses that call this
+  // without a pipeline reproduce what the real path does.
+  if (options.deriveSuggestions !== false) {
+    appendGroundingUpdates({ groundingOutcomes, byId, suggestions, decisions, seen });
+  }
 
   for (const d of lmDecisions) {
     const action = String(d?.action || '').toLowerCase();
@@ -502,7 +518,17 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
     call: krtComparisonConfig
   });
 
-  const { suggestions, decisions } = buildSuggestionsFromLM(authorRows, generatedKrt, lmDecisions, groundingOutcomes);
+  // Which halves of grounding this pipeline shows, and whether it raises
+  // suggestions at all. Read before the suggestions are built, because it
+  // governs one of the two routes into them.
+  const { Submission } = require('../../models');
+  const submission = await Submission.findByPk(submissionId);
+  const policy = getPipeline(submission?.pipelineId).grounding;
+
+  const { suggestions, decisions } = buildSuggestionsFromLM(
+    authorRows, generatedKrt, lmDecisions, groundingOutcomes,
+    { deriveSuggestions: policy.deriveSuggestions }
+  );
   const unreviewedCount = decisions.filter(d => d.action === 'unreviewed').length;
   if (unreviewedCount) {
     logger.warn('KRT comparison left some generated resources unreviewed', {
@@ -528,10 +554,6 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
   // rows, so `confirmed` can mean "it repeated what we handed it" and the
   // output cannot tell that from a real find. Withholding it here rather than
   // hiding it in the editor means the unusable verdict never leaves the server.
-  const { Submission } = require('../../models');
-  const submission = await Submission.findByPk(submissionId);
-  const policy = getPipeline(submission?.pipelineId).grounding;
-
   const groundings = groundingOutcomes.map((outcome) => ({
     krtRowId: outcome.krtRowId,
     // Honest in every pipeline.

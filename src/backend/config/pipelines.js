@@ -46,7 +46,17 @@ const PIPELINES = Object.freeze({
       // echo of the author's own rows, so a match means "it repeated what we
       // gave it", and the output cannot distinguish that from a real find.
       surfaceValues: false,
-      deriveSuggestions: false
+      // Grounding verifies the AUTHOR's rows against the manuscript, which is
+      // independent of how detection was prompted — so it derives its
+      // suggestions in both pipelines. True by default in both; kept as a
+      // switch because ASAP may later want conflicts shown for a curator to
+      // resolve by hand, with no suggestion raised on their behalf.
+      //
+      // It governs the EMPTY-CELL fills only. A conflict — the author has a
+      // value and the manuscript disagrees — never becomes a suggestion either
+      // way: it is surfaced as a conflict, and the author's value stands until
+      // a curator decides.
+      deriveSuggestions: true
     }
   },
 
