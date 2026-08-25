@@ -50,6 +50,10 @@ const { buildEvidenceIndex } = require(path.join(ROOT, 'src/backend/services/pdf
 
 const INVENTORY = path.join(ROOT, 'tmp/corpus/inventory.json');
 const ARCHIVES = ['tmp/instance-save-prod', 'tmp/instance-save-dev'].map((d) => path.join(ROOT, d));
+const CONVERTED_DIR = path.join(ROOT, 'tmp/corpus/markdown');
+
+/** Inventory paths are repo-relative so they resolve on the host and in the container. */
+const inRepo = (p) => (p && !path.isAbsolute(p) ? path.join(ROOT, p) : p);
 
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
@@ -80,6 +84,13 @@ function markdownByPdfSha() {
       }
     }
   }
+  // Anything convert-corpus-markdown.js produced, named by the PDF's hash.
+  if (fs.existsSync(CONVERTED_DIR)) {
+    for (const f of fs.readdirSync(CONVERTED_DIR).filter((f) => f.endsWith('.md'))) {
+      const hash = path.basename(f, '.md');
+      if (!out.has(hash)) out.set(hash, path.join(CONVERTED_DIR, f));
+    }
+  }
   return out;
 }
 
@@ -103,26 +114,90 @@ async function loadAuthorRows(krtFile) {
     }));
 }
 
+/**
+ * Score one pair, and separate the two very different reasons a row goes
+ * unfound.
+ *
+ *   ALIAS      the manuscript carries the identifier but never the author's
+ *              wording. The resource IS discussed; the table names it something
+ *              else. These are the rows worth keeping and pairing by hand —
+ *              they are the hard case the pipeline exists to handle, and a
+ *              corpus of only literal matches would never exercise it.
+ *
+ *   ABSENT     neither the name nor any identifier occurs. Could still be an
+ *              alias whose identifier the paper never prints, or a row about
+ *              something the manuscript genuinely does not mention.
+ *
+ * `presenceForRows` reports viaName and viaIdentifier separately rather than
+ * collapsing them, which is what makes the distinction available at all.
+ */
 function scorePair(markdownFile, authorRows) {
   const index = buildEvidenceIndex(fs.readFileSync(markdownFile, 'utf-8'));
   const presence = presenceForRows(index, authorRows);
 
   let found = 0;
-  const byVia = {};
+  let alias = 0;          // identifier present, author's name absent
+  let nameOnly = 0;       // named in the paper, identifier not printed
+  let both = 0;
+  let absent = 0;
+  let absentWithIdentifier = 0;
+
   for (const row of authorRows) {
-    const verdict = presence.get(row.id);
-    if (verdict?.found) {
+    const v = presence.get(row.id) || {};
+    if (v.found) {
       found += 1;
-      const via = verdict.via || 'unknown';
-      byVia[via] = (byVia[via] || 0) + 1;
+      if (v.viaIdentifier && !v.viaName) alias += 1;
+      else if (v.viaName && !v.viaIdentifier) nameOnly += 1;
+      else both += 1;
+    } else {
+      absent += 1;
+      if (String(row.identifier || '').trim()) absentWithIdentifier += 1;
     }
   }
+
+  const rows = authorRows.length;
   return {
-    rows: authorRows.length,
+    rows,
     found,
-    pct: authorRows.length ? Math.round((found / authorRows.length) * 100) : 0,
-    byVia
+    pct: rows ? Math.round((found / rows) * 100) : 0,
+    alias,
+    nameOnly,
+    both,
+    absent,
+    absentWithIdentifier,
+    // How much of what IS findable was found only through the identifier. A
+    // high share means the author's naming and the paper's diverge — the
+    // signature of a table worth pairing by hand rather than discarding.
+    aliasShare: found ? Math.round((alias / found) * 100) : 0
   };
+}
+
+/**
+ * Is this KRT actually about some OTHER manuscript?
+ *
+ * A low score has two very different causes and the number alone cannot tell
+ * them apart: the table may describe this paper in different words, or it may
+ * belong to a different paper entirely. The second is settled by evidence —
+ * score the table against every manuscript we hold and see where it fits best.
+ * A table that scores far higher elsewhere is mispaired; one that scores badly
+ * everywhere is simply a hard table.
+ *
+ * This already caught one: HU1_000350_034's manuscript had been paired with
+ * JJ1_000520_004's table because a round held two PDFs.
+ *
+ * Cheap — string matching, no model — but quadratic, so it runs only for the
+ * pairs that scored below the threshold.
+ */
+function findBetterHome(authorRows, ownSha, markdownBySha, ownPct) {
+  let best = null;
+  for (const [sha, file] of markdownBySha) {
+    if (sha === ownSha) continue;
+    const score = scorePair(file, authorRows);
+    if (!best || score.pct > best.pct) best = { sha, pct: score.pct, file };
+  }
+  // Only interesting when it is a big, unambiguous improvement. Two manuscripts
+  // from one lab share boilerplate, so a few points either way means nothing.
+  return best && best.pct >= ownPct + 25 ? best : null;
 }
 
 async function main() {
@@ -145,7 +220,7 @@ async function main() {
     const md = markdown.get(entry.pdfSha);
     if (!md) { unknown.push(entry); continue; }
     try {
-      const rows = await loadAuthorRows(entry.krt);
+      const rows = await loadAuthorRows(inRepo(entry.krt));
       scored.push({ ...entry, presence: scorePair(md, rows), markdown: path.relative(ROOT, md) });
     } catch (err) {
       unknown.push({ ...entry, error: err.message.slice(0, 100) });
@@ -155,14 +230,19 @@ async function main() {
   scored.sort((a, b) => b.presence.pct - a.presence.pct);
 
   console.log('\n── how much of each author KRT is findable in its manuscript ─────────');
-  console.log(' pct   found/rows  source  manuscript');
+  console.log(' pct   found/rows  alias  both  name  absent  source  manuscript');
   for (const s of scored) {
-    const flag = s.presence.pct < MIN ? '  <-- below threshold' : '';
+    const p = s.presence;
+    const flag = p.pct < MIN ? '  <-- below' : '';
     console.log(
-      String(s.presence.pct).padStart(4) + '%',
-      `${String(s.presence.found).padStart(4)}/${String(s.presence.rows).padEnd(4)}`,
-      ' ' + s.source.padEnd(6),
-      s.manuscriptId.slice(0, 40) + flag
+      String(p.pct).padStart(4) + '%',
+      `${String(p.found).padStart(4)}/${String(p.rows).padEnd(4)}`,
+      String(p.alias).padStart(6),
+      String(p.both).padStart(5),
+      String(p.nameOnly).padStart(5),
+      String(p.absent).padStart(7),
+      '  ' + s.source.padEnd(6),
+      s.manuscriptId.slice(0, 34) + flag
     );
   }
 
@@ -176,6 +256,27 @@ async function main() {
   console.log(`at or above ${MIN}%  ${pass.length}`);
   console.log(`below           ${fail.length}`);
   console.log(`not scored      ${unknown.length}  (no markdown yet — needs a conversion first)`);
+
+  const crossCheck = process.argv.includes('--cross-check');
+  if (crossCheck) {
+    const suspects = scored.filter((s) => s.presence.pct < MIN);
+    console.log(`\n── cross-checking ${suspects.length} low pairs against every other manuscript ──`);
+    let mispaired = 0;
+    for (const s of suspects) {
+      const rows = await loadAuthorRows(inRepo(s.krt));
+      const better = findBetterHome(rows, s.pdfSha, markdown, s.presence.pct);
+      if (better) {
+        mispaired += 1;
+        const owner = [...markdown.entries()].find(([sha]) => sha === better.sha);
+        console.log(`  MISPAIRED  ${s.manuscriptId.slice(0, 34)}`);
+        console.log(`             scores ${s.presence.pct}% here, ${better.pct}% against ${path.basename(owner[1])}`);
+        s.betterHome = { pct: better.pct, markdown: path.relative(ROOT, better.file) };
+      }
+    }
+    console.log(mispaired
+      ? `\n  ${mispaired} of ${suspects.length} low pairs belong to a different manuscript.`
+      : '\n  None of them fits another manuscript better — these are hard tables, not mispairings.');
+  }
 
   if (unknown.length) {
     console.log('\n── not scored ────────────────────────────────────────────────────────');

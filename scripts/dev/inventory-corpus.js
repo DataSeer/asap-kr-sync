@@ -445,8 +445,23 @@ async function main() {
   }
 
   if (jsonAt) {
+    // Paths are written REPO-RELATIVE. The archives live under tmp/, which is
+    // mounted into the `app-tools` container at a different absolute path, and
+    // an inventory only readable on the host cannot drive a conversion that has
+    // to run where the credentials are.
+    const relative = (entry) => (!entry ? entry : {
+      ...entry,
+      pdf: entry.pdf ? path.relative(ROOT, entry.pdf) : entry.pdf,
+      krt: entry.krt ? path.relative(ROOT, entry.krt) : entry.krt
+    });
+    corpus = corpus && corpus.map(relative);
+    const usableOut = usable.map(relative);
+    const unusableOut = unusable.map(relative);
+
     fs.mkdirSync(path.dirname(jsonAt), { recursive: true });
-    fs.writeFileSync(jsonAt, JSON.stringify(corpus ? { corpus, usable, unusable } : { usable, unusable }, null, 2));
+    fs.writeFileSync(jsonAt, JSON.stringify(
+      corpus ? { corpus, usable: usableOut, unusable: unusableOut } : { usable: usableOut, unusable: unusableOut },
+      null, 2));
     console.log(`\nwritten to ${jsonAt}`);
     console.log('These manuscripts are unpublished — keep this under tmp/, never commit it.');
   }
