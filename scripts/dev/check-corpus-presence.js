@@ -270,6 +270,55 @@ async function main() {
   console.log(`below           ${fail.length}`);
   console.log(`not scored      ${unknown.length}  (no markdown yet — needs a conversion first)`);
 
+  if (process.argv.includes('--tiers')) {
+    // Three ways a pair can be worth having, and one way it is not.
+    //
+    // The split matters because a low score is not a verdict. A table whose
+    // resources ARE in the manuscript under different wording is the hard case
+    // the pipeline exists for — worth keeping once its rows are paired to their
+    // sentences by hand. A table with nothing to anchor on is not.
+    //
+    // `alias` rows already have their anchor: the identifier is in the text, so
+    // a human pairing them has somewhere to start. `absentWithIdentifier` rows
+    // have an identifier the manuscript never prints — pairable, but only by
+    // reading for meaning. Rows with neither are the ones nothing can rescue.
+    const tierOf = (s) => {
+      const p = s.presence;
+      if (p.pct >= MIN) return 'usable';
+      const anchored = p.alias + p.absentWithIdentifier;
+      return anchored / p.rows >= 0.4 ? 'pair-by-hand' : 'weak';
+    };
+
+    const tiers = { usable: [], 'pair-by-hand': [], weak: [] };
+    for (const s of scored) tiers[tierOf(s)].push(s);
+
+    const describe = {
+      usable: 'directly usable — string matching already finds most rows',
+      'pair-by-hand': 'alias-heavy — the resources are there under other names; worth pairing manually',
+      weak: 'little to anchor on — most rows have neither a matching name nor an identifier in the text'
+    };
+
+    for (const [tier, list] of Object.entries(tiers)) {
+      console.log(`\n── ${tier} (${list.length}) — ${describe[tier]} ─────`);
+      console.log(' pct  rows  alias  anchored  source  manuscript');
+      for (const s of list) {
+        const p = s.presence;
+        console.log(
+          String(p.pct).padStart(4) + '%',
+          String(p.rows).padStart(5),
+          String(p.alias).padStart(6),
+          String(p.alias + p.absentWithIdentifier).padStart(9),
+          '  ' + s.source.padEnd(6),
+          s.manuscriptId.slice(0, 38)
+        );
+      }
+    }
+    const rows = (t) => tiers[t].reduce((n, s) => n + s.presence.rows, 0);
+    console.log(`\nusable ${tiers.usable.length} pairs / ${rows('usable')} rows`
+      + `   pair-by-hand ${tiers['pair-by-hand'].length} / ${rows('pair-by-hand')}`
+      + `   weak ${tiers.weak.length} / ${rows('weak')}`);
+  }
+
   const crossCheck = process.argv.includes('--cross-check');
   if (crossCheck) {
     const suspects = scored.filter((s) => s.presence.pct < MIN);
