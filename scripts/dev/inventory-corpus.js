@@ -119,7 +119,18 @@ function fromFlatDir(dir) {
     });
 }
 
-/** The highest-numbered round that has both a PDF and a KRT. */
+/**
+ * The highest-numbered round holding a PDF and the KRT that belongs to IT.
+ *
+ * A round can hold more than one manuscript: replacing the PDF mid-round leaves
+ * both files behind, and only one of them has a KRT. Taking the first PDF found
+ * and the first KRT found paired `HU1_000350_034`'s manuscript with
+ * `JJ1_000520_004`'s table — two unrelated papers — and it scored 8% on the
+ * presence check, which is how it was noticed. So the pairing is by NAME, and
+ * an ambiguous round is reported rather than guessed at.
+ *
+ * @returns {{round, pdf, krt}|{ambiguous: true, round, pdfs, krts}|null}
+ */
 function latestUsableRound(submissionDir) {
   const rounds = fs.readdirSync(submissionDir)
     .filter((d) => /^round-\d+$/.test(d))
@@ -131,15 +142,28 @@ function latestUsableRound(submissionDir) {
     const krtDir = path.join(base, 'krt');
     if (!fs.existsSync(pdfDir) || !fs.existsSync(krtDir)) continue;
 
-    const pdf = fs.readdirSync(pdfDir).find((f) => f.toLowerCase().endsWith('.pdf'));
-    const krt = fs.readdirSync(krtDir).find((f) => KRT_EXT.test(f));
-    if (pdf && krt) {
-      return {
-        round: Number(round.split('-')[1]),
-        pdf: path.join(pdfDir, pdf),
-        krt: path.join(krtDir, krt)
-      };
+    const pdfs = fs.readdirSync(pdfDir).filter((f) => f.toLowerCase().endsWith('.pdf'));
+    const krts = fs.readdirSync(krtDir).filter((f) => KRT_EXT.test(f));
+    if (!pdfs.length || !krts.length) continue;
+
+    const roundNumber = Number(round.split('-')[1]);
+    const stem = (f) => f.replace(/\.[^.]+$/, '').toLowerCase();
+
+    // A KRT named after one of the PDFs settles it, however many are present.
+    for (const krt of krts) {
+      const match = pdfs.find((pdf) => stem(pdf) === stem(krt));
+      if (match) {
+        return { round: roundNumber, pdf: path.join(pdfDir, match), krt: path.join(krtDir, krt) };
+      }
     }
+
+    // No name match. One of each is still unambiguous — the archives predate
+    // this convention and plenty of rounds simply hold one manuscript.
+    if (pdfs.length === 1 && krts.length === 1) {
+      return { round: roundNumber, pdf: path.join(pdfDir, pdfs[0]), krt: path.join(krtDir, krts[0]) };
+    }
+
+    return { ambiguous: true, round: roundNumber, pdfs, krts };
   }
   return null;
 }
@@ -152,6 +176,14 @@ function fromArchiveDir(dir) {
     if (!fs.statSync(submissionDir).isDirectory()) continue;
     const found = latestUsableRound(submissionDir);
     if (!found) continue;
+    if (found.ambiguous) {
+      out.push({
+        submissionId, round: found.round, ambiguous: true,
+        manuscriptId: `${found.pdfs.length} PDFs, ${found.krts.length} KRTs, no name match`,
+        pdf: null, krt: null
+      });
+      continue;
+    }
     out.push({
       submissionId,
       round: found.round,
@@ -233,11 +265,24 @@ const EXCLUDED = {
  * strategy. So: one per lab first, widest size spread, most trustworthy source
  * as the tie-break.
  */
-function selectCorpus(usable, size) {
+function selectCorpus(usable, size, presenceByShaOrNull, minPresence) {
   const eligible = usable.filter((d) => {
     if (EXCLUDED[d.manuscriptId]) return false;
     const f = d.krtInfo.families;
-    return f.dataset > 0 && f.protocol > 0 && f.lab_material > 0;
+    if (!(f.dataset > 0 && f.protocol > 0 && f.lab_material > 0)) return false;
+
+    // A pair whose author rows cannot be found in its own manuscript is not a
+    // broken pair — some authors label rows descriptively ("Phenotypic data
+    // TPD") where the paper names the cohort — but it is a poor one to measure
+    // with: neither strategy can match those rows, so the run costs the same
+    // and tells us much less. Unscored pairs are excluded too; "we never
+    // checked" is not evidence of being fine.
+    if (presenceByShaOrNull) {
+      const pct = presenceByShaOrNull.get(d.pdfSha);
+      if (pct === undefined || pct < minPresence) return false;
+      d.presencePct = pct;
+    }
+    return true;
   });
 
   const rank = { prod: 0, demo: 1, dev: 2 };
@@ -279,8 +324,9 @@ async function main() {
   // reaches us as a demo file, a dev upload of that demo file, and sometimes a
   // real prod submission — one document, three rows, and counting it three
   // times would silently triple-weight it in the corpus.
+  const ambiguous = candidates.filter((c) => c.ambiguous);
   const described = [];
-  for (const c of candidates) {
+  for (const c of candidates.filter((c) => !c.ambiguous)) {
     const pdfBytes = fs.statSync(c.pdf).size;
     described.push({
       ...c,
@@ -344,6 +390,11 @@ async function main() {
     const r = d.krtInfo.reason || 'unknown';
     reasons[r] = (reasons[r] || 0) + 1;
   }
+  if (ambiguous.length) {
+    console.log(`\n── ${ambiguous.length} rounds hold several manuscripts and no KRT names one ─────`);
+    for (const a of ambiguous) console.log('  ', a.submissionId, 'round', a.round, '—', a.manuscriptId);
+  }
+
   console.log('\n── why the rest are unusable ─────────────────────────────────────────');
   for (const [reason, n] of Object.entries(reasons).sort((a, b) => b[1] - a[1])) {
     console.log(String(n).padStart(4), reason);
@@ -353,16 +404,34 @@ async function main() {
   const totalIdent = usable.reduce((n, d) => n + d.krtInfo.withIdentifier, 0);
   console.log(`\nusable corpus: ${usable.length} manuscripts, ${totalRows} author rows, ${totalIdent} carrying an identifier`);
 
+  // Presence scores, when they have been computed. Keyed by PDF hash so the
+  // corpus and the check agree on what "the same manuscript" means.
+  const presencePath = path.join(ROOT, 'tmp/corpus/presence.json');
+  let presenceBySha = null;
+  if (fs.existsSync(presencePath)) {
+    presenceBySha = new Map(
+      JSON.parse(fs.readFileSync(presencePath, 'utf-8')).scored.map((s) => [s.pdfSha, s.presence.pct])
+    );
+  }
+  const minPresenceAt = process.argv.indexOf('--min-presence');
+  const MIN_PRESENCE = minPresenceAt !== -1 ? Number(process.argv[minPresenceAt + 1]) : 60;
+
   const selectAt = process.argv.indexOf('--select');
   let corpus = null;
   if (selectAt !== -1) {
-    corpus = selectCorpus(usable, Number(process.argv[selectAt + 1]) || 12);
+    if (!presenceBySha) {
+      console.log('\nNo tmp/corpus/presence.json — selecting without the presence filter.');
+      console.log('Run scripts/dev/check-corpus-presence.js first to screen out pairs whose');
+      console.log('author rows cannot be found in their own manuscript.');
+    }
+    corpus = selectCorpus(usable, Number(process.argv[selectAt + 1]) || 12, presenceBySha, MIN_PRESENCE);
     console.log('\n── proposed corpus ───────────────────────────────────────────────────');
-    console.log('rows  ident   data  prot   mat   sw  source  manuscript');
+    console.log('rows  ident  pres   data  prot   mat   sw  source  manuscript');
     for (const d of corpus) {
       const f = d.krtInfo.families;
       console.log(
         String(d.krtInfo.rows).padStart(4), String(d.krtInfo.withIdentifier).padStart(6),
+        String(d.presencePct === undefined ? '?' : d.presencePct + '%').padStart(5),
         String(f.dataset).padStart(6), String(f.protocol).padStart(5),
         String(f.lab_material).padStart(5), String(f.software).padStart(4),
         ' ' + d.source.padEnd(6), d.manuscriptId.slice(0, 40)
