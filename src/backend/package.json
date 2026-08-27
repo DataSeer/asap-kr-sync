@@ -14,8 +14,8 @@
     "db:create": "sequelize-cli db:create",
     "db:drop": "sequelize-cli db:drop",
     "db:rebuild": "sequelize-cli db:drop; sequelize-cli db:create && sequelize-cli db:migrate && sequelize-cli db:seed:all",
-    "test": "node --test services controllers middleware utils",
-    "test:watch": "node --test --watch services controllers middleware utils",
+    "test": "node --test config services controllers middleware utils models",
+    "test:watch": "node --test --watch config services controllers middleware utils models",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

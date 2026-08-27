@@ -5,7 +5,20 @@
 const winston = require('winston');
 const path = require('path');
 
-const logLevel = process.env.LOG_LEVEL || 'info';
+/**
+ * Default `http`, not `info`.
+ *
+ * winston's npm levels are ordered error(0) < warn(1) < info(2) < http(3) <
+ * verbose(4) < debug(5), and a level only lets through what is numerically at
+ * or below it. So `info` — the documented default, and what production ran —
+ * silently dropped every `http` record, which is where Morgan writes: the app
+ * had NO request logs in production at all, and nothing said so.
+ *
+ * `http` keeps them without turning on `debug`, which is deliberately noisy:
+ * the reconciler logs a line per gated job per sweep there specifically to stay
+ * out of the way. Debug stays opt-in via LOG_LEVEL.
+ */
+const logLevel = process.env.LOG_LEVEL || 'http';
 const logFile = process.env.LOG_FILE || 'logs/app.log';
 
 // Define log format
@@ -34,6 +47,10 @@ const transports = [
   })
 ];
 
+// Files in production only. This is about WHERE the logs go, not which ones:
+// every level above is emitted in both environments. In dev the console is the
+// log — captured by `docker compose logs` — and writing files as well would put
+// a logs/ directory inside the mounted source tree.
 // Add file transport in production
 if (process.env.NODE_ENV === 'production') {
   transports.push(

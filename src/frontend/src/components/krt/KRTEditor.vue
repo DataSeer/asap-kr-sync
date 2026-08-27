@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth.store'
 import api from '@/services/api'
 import krtService from '@/services/krt.service'
 import suggestionService from '@/services/suggestion.service'
+import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import KRTCellEditModal from './KRTCellEditModal.vue'
 
 const props = defineProps({
@@ -94,6 +95,13 @@ const tableContainer = ref(null)
 const activeTooltip = ref(null)
 const activeTabTooltip = ref(null)
 const searchQuery = ref('')
+
+/**
+ * Suggestion fields the search box matches on. The KRT columns are keyed by
+ * their display header ('RESOURCE NAME'); a suggestion carries the same values
+ * under camelCase keys on `data`, so the row predicate cannot be reused as-is.
+ */
+const SUGGESTION_SEARCH_FIELDS = ['resourceType', 'resourceName', 'source', 'identifier', 'newReuse']
 const activeCellTooltip = ref(null) // Format: "rowId-columnKey" for validation errors
 const activeSuggestionTooltip = ref(null) // Format: "rowId-columnKey" for AI suggestions
 const showEditModal = ref(false)
@@ -250,6 +258,54 @@ const SOURCE_LABEL = {
   materials_detection: 'MAT',
   protocols_detection: 'PROT',
   identifier_detection: 'ID'
+}
+
+// ── Provenance dialog (ticket #30 item 5) ────────────────────────────────────
+// "Where in the article does this come from?" Every detector already records an
+// evidence excerpt on `detectorMeta`, and the consolidator carries the
+// pre-dedup contributor under `mergedFrom[].originalItem`, so the sentence is
+// already on the client — it was simply never surfaced.
+//
+// Scope note: this shows the TEXT the detection was based on. Mapping it back
+// to coordinates in the PDF (e.g. sentence segmentation via GROBID) is
+// deliberately out of scope for now — see the ticket.
+const provenanceSuggestion = ref(null)
+
+/**
+ * Flatten a suggestion's contributors into displayable provenance entries.
+ * Falls back through the per-detector excerpt fields: protocols use
+ * `text_excerpt`, the others `context`, and Softcite software rows keep their
+ * blurb on `additionalInformation`.
+ */
+function provenanceEntries(suggestion) {
+  const contributors = Array.isArray(suggestion?.mergedFrom) ? suggestion.mergedFrom : []
+  return contributors.map((entry) => {
+    const item = entry?.originalItem || {}
+    const meta = item.detectorMeta || {}
+    const excerpt = meta.text_excerpt || meta.context || item.additionalInformation || ''
+    return {
+      module: entry?.source || item.origin || 'unknown',
+      confidence: typeof entry?.confidence === 'number' ? entry.confidence : null,
+      relevance: meta.relevance || null,
+      excerpt: String(excerpt).trim(),
+      // Where in the manuscript THIS contributor found it — quote, section and
+      // the surrounding paragraph, rendered by EvidenceContext.
+      evidence: item.evidence || null
+    }
+  })
+}
+
+/** True when at least one contributor carries a usable excerpt or evidence. */
+function hasProvenance(suggestion) {
+  return provenanceEntries(suggestion).some(e => e.excerpt || e.evidence)
+}
+
+function openProvenance(suggestion) {
+  provenanceSuggestion.value = suggestion
+}
+
+function closeProvenance() {
+  provenanceSuggestion.value = null
 }
 
 /**
@@ -565,6 +621,28 @@ function hasCellSuggestion(rowId, columnKey) {
   return !!getCellSuggestion(rowId, columnKey)
 }
 
+/**
+ * The value an AI suggestion proposes for a cell that is currently EMPTY.
+ * Returns '' when the cell already has content, when there is no suggestion,
+ * or when the suggestion proposes an empty value — so the caller can use it
+ * directly as a v-if.
+ *
+ * Rendered in-cell as a greyed placeholder so a curator can see and accept the
+ * proposal without opening the suggestions UI (ASAP request, ticket #36).
+ */
+function cellSuggestionPlaceholder(rowId, columnKey) {
+  const row = krtRows.value.find(r => r.id === rowId)
+  if (row && row[columnKey]) return ''
+  const value = getCellSuggestion(rowId, columnKey)?.data?.newValue
+  return value == null || value === '' ? '' : String(value)
+}
+
+/** Accept the suggestion backing an in-cell placeholder. */
+async function acceptCellSuggestion(rowId, columnKey) {
+  const suggestion = getCellSuggestion(rowId, columnKey)
+  if (suggestion) await acceptSuggestion(suggestion)
+}
+
 function getRowSuggestions(rowId) {
   if (!props.showSuggestions) return []
   return krtStore.getRowSuggestions(rowId)
@@ -572,6 +650,14 @@ function getRowSuggestions(rowId) {
 
 function hasRowSuggestion(rowId) {
   return getRowSuggestions(rowId).length > 0
+}
+
+/**
+ * Grounding verdict for one author row, or null when grounding has not run.
+ * Read-only: the badge it drives never changes the row.
+ */
+function rowGrounding(rowId) {
+  return krtStore.groundingByRowId[rowId] || null
 }
 
 /**
@@ -844,12 +930,23 @@ const addRowSuggestions = computed(() => props.showSuggestions ? (krtStore.addRo
 // by resource name (case-insensitive). On the "all" tab we additionally group
 // by resource-type group order so each group's suggestions stay together.
 const filteredAddRowSuggestions = computed(() => {
-  const list = activeTab.value === 'all'
+  let list = activeTab.value === 'all'
     ? [...addRowSuggestions.value]
     : addRowSuggestions.value.filter(suggestion => {
         const resourceType = suggestion.data?.resourceType
         return getResourceGroup(resourceType) === activeTab.value
       })
+
+  // Apply the same search filter as the rows. Without this the search box hid
+  // matching rows but left every suggested add-row on screen, so a search that
+  // narrowed the table to one row still showed the full suggestion list
+  // interleaved around it.
+  const query = searchQuery.value.trim().toLowerCase()
+  if (query) {
+    list = list.filter(suggestion => SUGGESTION_SEARCH_FIELDS.some(
+      field => (suggestion.data?.[field] || '').toString().toLowerCase().includes(query)
+    ))
+  }
 
   return list.sort((a, b) => {
     const nameA = (a.data?.resourceName || '').toLowerCase()
@@ -1062,6 +1159,24 @@ function inlineShortcutOptions(colKey) {
   if (colKey === 'RESOURCE TYPE') return resourceTypes.value
   if (colKey === 'NEW/REUSE') return NEW_REUSE_OPTIONS
   return []
+}
+/**
+ * A value the author typed that is not one of the options.
+ *
+ * A `<select>` whose value matches no option renders BLANK, so the cell showed
+ * nothing at all — hiding the very thing the curator is here to fix. An
+ * unrecognised resource type or new/reuse value is precisely what the
+ * validation banner is complaining about, and the editor was the one place it
+ * could not be read.
+ *
+ * @param {object} row
+ * @param {string} colKey
+ * @returns {string|null} the off-list value, or null when it is a valid option
+ */
+function offListValue(row, colKey) {
+  const value = row[colKey]
+  if (!value) return null
+  return inlineShortcutOptions(colKey).includes(value) ? null : value
 }
 async function onInlineShortcut(rowId, col, value) {
   if (value === undefined || value === null || value === '') return
@@ -1548,7 +1663,7 @@ defineExpose({
         <div
           class="stat"
           :class="{ 'stat-clickable': displaySummary.errors > 0 }"
-          :title="displaySummary.errors > 0 ? 'Click to go to first error' : ''"
+          v-tooltip="displaySummary.errors > 0 ? 'Click to go to first error' : ''"
           @click="displaySummary.errors > 0 && scrollToFirstError()"
         >
           <span class="stat-value stat-error">{{ displaySummary.errors }}</span>
@@ -1557,7 +1672,7 @@ defineExpose({
         <div
           class="stat"
           :class="{ 'stat-clickable': displaySummary.warnings > 0 }"
-          :title="displaySummary.warnings > 0 ? 'Click to go to first warning' : ''"
+          v-tooltip="displaySummary.warnings > 0 ? 'Click to go to first warning' : ''"
           @click="displaySummary.warnings > 0 && scrollToFirstWarning()"
         >
           <span class="stat-value stat-warning">{{ displaySummary.warnings }}</span>
@@ -1566,7 +1681,7 @@ defineExpose({
         <div
           v-if="displaySummary.suggestions > 0"
           class="stat stat-clickable"
-          title="Click to go to first suggestion"
+          v-tooltip="'Click to go to first suggestion'"
           @click="scrollToFirstSuggestion()"
         >
           <span class="stat-value stat-suggestion">{{ displaySummary.suggestions }}</span>
@@ -1580,7 +1695,7 @@ defineExpose({
           <button
             :disabled="downloading"
             class="btn-secondary text-sm inline-flex items-center"
-            title="Download KRT data"
+            v-tooltip="'Download KRT data'"
             @click="showDownloadMenu = !showDownloadMenu"
           >
             <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1611,7 +1726,7 @@ defineExpose({
           v-if="showRevalidate && !readonly"
           :disabled="loading"
           class="btn-secondary text-sm inline-flex items-center"
-          title="Re-validate KRT"
+          v-tooltip="'Re-validate KRT'"
           @click="emit('revalidate')"
         >
           <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1624,7 +1739,7 @@ defineExpose({
         <button
           v-if="!readonly"
           class="btn-secondary text-sm inline-flex items-center"
-          :title="showAddRow ? 'Cancel adding row' : 'Add a new row'"
+          v-tooltip="showAddRow ? 'Cancel adding row' : 'Add a new row'"
           @click="showAddRow = !showAddRow"
         >
           <svg v-if="!showAddRow" class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1697,7 +1812,7 @@ defineExpose({
           <span
             v-if="tabsWithErrors.has(tab.key)"
             class="tab-error-dot"
-            title="This tab contains errors"
+            v-tooltip="'This tab contains errors'"
           ></span>
           <!-- Custom tooltip. Centered by default, but left-anchored on the
                first (leftmost) tab so its left side isn't clipped off the card
@@ -1718,7 +1833,7 @@ defineExpose({
       </div>
       <!-- Row order switch (#16): input order vs systematic (by resource type).
            Segmented control — both options visible, the active one highlighted. -->
-      <div class="order-segmented" role="group" aria-label="Row order in the table" title="Row order in the table">
+      <div class="order-segmented" role="group" aria-label="Row order in the table" v-tooltip="'Row order in the table'">
         <span class="order-segmented-caption">Order:</span>
         <div class="order-segmented-track">
           <button
@@ -1727,14 +1842,18 @@ defineExpose({
             :class="{ active: rowOrder === 'input' }"
             :aria-pressed="rowOrder === 'input'"
             @click="rowOrder = 'input'"
-          >As submitted</button>
+          >
+            As submitted
+          </button>
           <button
             type="button"
             class="order-segmented-btn"
             :class="{ active: rowOrder === 'systematic' }"
             :aria-pressed="rowOrder === 'systematic'"
             @click="rowOrder = 'systematic'"
-          >By resource type</button>
+          >
+            By resource type
+          </button>
         </div>
       </div>
       <div class="search-wrapper">
@@ -1750,7 +1869,7 @@ defineExpose({
         <button
           v-if="searchQuery"
           class="search-clear"
-          title="Clear search"
+          v-tooltip="'Clear search'"
           @click="searchQuery = ''"
         >
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1835,7 +1954,7 @@ defineExpose({
           :key="group.suggestedValue"
           class="btn-bulk btn-bulk-primary"
           :disabled="bulkSubmitting"
-          :title="`Set ${group.rowIds.length} row(s) to ${group.suggestedValue}`"
+          v-tooltip="`Set ${group.rowIds.length} row(s) to ${group.suggestedValue}`"
           @click="applyResourceTypeFix(group)"
         >
           Set {{ group.rowIds.length }} → “{{ group.suggestedValue }}”
@@ -1855,7 +1974,7 @@ defineExpose({
                   type="checkbox"
                   class="bulk-check"
                   :checked="visibleSuggestionIds.length > 0 ? allVisibleSuggestionsSelected : allVisibleRowsSelected"
-                  :title="visibleSuggestionIds.length > 0 ? 'Select all visible suggestions' : 'Select all visible rows'"
+                  v-tooltip="visibleSuggestionIds.length > 0 ? 'Select all visible suggestions' : 'Select all visible rows'"
                   @click.stop="visibleSuggestionIds.length > 0 ? toggleSelectAllVisibleSuggestions() : toggleSelectAllVisibleRows()"
                 />
               </th>
@@ -1884,7 +2003,7 @@ defineExpose({
                 <!-- Drag to resize this column -->
                 <span
                   class="col-resize-handle"
-                  title="Drag to resize"
+                  v-tooltip="'Drag to resize'"
                   @mousedown.stop.prevent="startColumnResize(col.key, $event)"
                   @click.stop
                 ></span>
@@ -1923,7 +2042,9 @@ defineExpose({
                     v-for="src in getContributingSources(suggestion)"
                     :key="src"
                     class="suggestion-source-badge"
-                    :class="'source-' + src"
+                    :class="['source-' + src, { 'badge-clickable': hasProvenance(suggestion) }]"
+                    v-tooltip="hasProvenance(suggestion) ? 'Show where this comes from in the article' : (SOURCE_LABEL[src] || src)"
+                    @click.stop="hasProvenance(suggestion) && openProvenance(suggestion)"
                   >{{ SOURCE_LABEL[src] || src }}</span>
                   <!-- Same info indicator + tooltip the edit suggestions show
                        on existing rows, mirrored here so every suggestion has
@@ -1960,14 +2081,14 @@ defineExpose({
                     v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
                     v-model="editorSuggestionEdits[suggestion.id].resourceType"
                     class="suggestion-inline-input"
-                    title="Resource Type"
+                    v-tooltip="'Resource Type'"
                   >
                     <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
                   </select>
                   <span v-else class="cell-display">{{ suggestion.data?.resourceType || '' }}</span>
-                  <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
-                  <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
-                  <span v-if="suggestion.tier === 'needs_verification'" class="suggestion-source-badge source-needs-verification" :title="suggestion.tierReason || 'No identifier found — verify before adding'">Verify</span>
+                  <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" v-tooltip="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
+                  <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" v-tooltip="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
+                  <span v-if="suggestion.tier === 'needs_verification'" class="suggestion-source-badge source-needs-verification" v-tooltip="suggestion.tierReason || 'No identifier found — verify before adding'">Verify</span>
                 </div>
               </td>
               <!-- RESOURCE NAME -->
@@ -1977,9 +2098,9 @@ defineExpose({
                   v-model="editorSuggestionEdits[suggestion.id].resourceName"
                   type="text"
                   class="suggestion-inline-input"
-                  title="Resource Name"
+                  v-tooltip="'Resource Name'"
                 />
-                <div v-else class="cell-display" :title="suggestion.data?.resourceName || ''">{{ suggestion.data?.resourceName || '' }}</div>
+                <div v-else class="cell-display" v-tooltip="suggestion.data?.resourceName || ''">{{ suggestion.data?.resourceName || '' }}</div>
               </td>
               <!-- SOURCE -->
               <td class="col-data add-row-cell" @click.stop>
@@ -1988,9 +2109,9 @@ defineExpose({
                   v-model="editorSuggestionEdits[suggestion.id].source"
                   type="text"
                   class="suggestion-inline-input"
-                  title="Source"
+                  v-tooltip="'Source'"
                 />
-                <div v-else class="cell-display" :title="suggestion.data?.source || ''">{{ suggestion.data?.source || '' }}</div>
+                <div v-else class="cell-display" v-tooltip="suggestion.data?.source || ''">{{ suggestion.data?.source || '' }}</div>
               </td>
               <!-- IDENTIFIER -->
               <td class="col-data add-row-cell" @click.stop>
@@ -1999,9 +2120,9 @@ defineExpose({
                   v-model="editorSuggestionEdits[suggestion.id].identifier"
                   type="text"
                   class="suggestion-inline-input"
-                  title="Identifier"
+                  v-tooltip="'Identifier'"
                 />
-                <div v-else class="cell-display" :title="suggestion.data?.identifier || ''">{{ suggestion.data?.identifier || '' }}</div>
+                <div v-else class="cell-display" v-tooltip="suggestion.data?.identifier || ''">{{ suggestion.data?.identifier || '' }}</div>
               </td>
               <!-- NEW/REUSE -->
               <td class="col-data add-row-cell" @click.stop>
@@ -2009,7 +2130,7 @@ defineExpose({
                   v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
                   v-model="editorSuggestionEdits[suggestion.id].newReuse"
                   class="suggestion-inline-input"
-                  title="New/Reuse"
+                  v-tooltip="'New/Reuse'"
                 >
                   <option value="">—</option>
                   <option value="new">new</option>
@@ -2024,16 +2145,16 @@ defineExpose({
                   v-model="editorSuggestionEdits[suggestion.id].additionalInformation"
                   type="text"
                   class="suggestion-inline-input"
-                  title="Additional Information"
+                  v-tooltip="'Additional Information'"
                 />
-                <div v-else class="cell-display" :title="suggestion.data?.additionalInformation || ''">{{ suggestion.data?.additionalInformation || '' }}</div>
+                <div v-else class="cell-display" v-tooltip="suggestion.data?.additionalInformation || ''">{{ suggestion.data?.additionalInformation || '' }}</div>
               </td>
               <td v-if="!readonly" class="col-actions add-row-actions">
                 <div class="add-row-buttons">
-                  <button v-if="suggestion.existsInKRT !== 'exact'" class="btn-accept-add" :title="suggestion.existsInKRT === 'update' ? 'Accept - Update existing row' : 'Accept - Add this row'" @click.stop="acceptAddRowSuggestion(suggestion)">
+                  <button v-if="suggestion.existsInKRT !== 'exact'" class="btn-accept-add" v-tooltip="suggestion.existsInKRT === 'update' ? 'Accept - Update existing row' : 'Accept - Add this row'" @click.stop="acceptAddRowSuggestion(suggestion)">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
                   </button>
-                  <button class="btn-reject-add" title="Reject suggestion" @click.stop="rejectAddRowSuggestion(suggestion)">
+                  <button class="btn-reject-add" v-tooltip="'Reject suggestion'" @click.stop="rejectAddRowSuggestion(suggestion)">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
                 </div>
@@ -2066,8 +2187,28 @@ defineExpose({
                     <span
                       v-if="row.addedByTool"
                       class="tool-added-badge"
-                      title="Added by AI from manuscript analysis"
+                      v-tooltip="'Added by AI from manuscript analysis'"
                     >AI</span>
+                    <!-- Grounding: the manuscript does not mention this row.
+                         Purely informational — the author's row is
+                         authoritative and is never altered or removed because
+                         of it. It flags a possible citation gap for a human to
+                         judge.
+
+                         Driven by PRESENCE — the manuscript searched directly
+                         for the row's name and identifier — not by whether a
+                         detector matched it. Those are different questions, and
+                         the old one was wrong far too often: matching through
+                         candidates locates 55-60% of author rows where a direct
+                         search locates 92%, so this badge was telling curators
+                         a resource was missing from papers that plainly discuss
+                         it. Presence is also the only reading that stays honest
+                         when the detection prompts were seeded with the KRT. -->
+                    <span
+                      v-if="showSuggestions && rowGrounding(row.id)?.presence?.found === false"
+                      class="not-detected-badge"
+                      v-tooltip="'Not found in the manuscript text — check the manuscript cites this resource. Your row is kept as-is.'"
+                    >Not in text</span>
                     <!-- Module badges for any update suggestions on this row.
                          Same chips that ADD suggestions show in the # cell,
                          so the origin column is consistent across both. -->
@@ -2176,34 +2317,46 @@ defineExpose({
                   @mouseenter="handleCellMouseEnter(row.id, col.key)"
                   @mouseleave="handleCellMouseLeave"
                 >
-                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': (col.key === 'IDENTIFIER' || col.key === 'SOURCE') && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" :title="row[col.key] || ''">
+                  <div :class="['cell-display', { editable: !readonly, 'has-quick-action': (col.key === 'IDENTIFIER' || col.key === 'SOURCE') && !row[col.key] && !readonly }]" :style="cellStyle(col.key)" v-tooltip="row[col.key] || (cellSuggestionPlaceholder(row.id, col.key) ? `Suggested: ${cellSuggestionPlaceholder(row.id, col.key)}` : '')">
                     <!-- G3: inline shortcut dropdown for RESOURCE TYPE / NEW/REUSE -->
                     <select
                       v-if="!readonly && INLINE_SHORTCUT_COLUMNS.has(col.key)"
                       class="cell-shortcut-select"
                       :value="row[col.key] || ''"
-                      title="Quick change"
+                      v-tooltip="'Quick change'"
                       @click.stop
                       @change="onInlineShortcut(row.id, col, $event.target.value)"
                     >
                       <option value="" disabled>—</option>
+                      <!-- What the author actually wrote, when it is not one of
+                           the options. Without it the cell renders blank. -->
+                      <option v-if="offListValue(row, col.key)" :value="offListValue(row, col.key)" disabled>
+                        {{ offListValue(row, col.key) }} (not a valid value)
+                      </option>
                       <option v-for="opt in inlineShortcutOptions(col.key)" :key="opt" :value="opt">{{ opt }}</option>
                     </select>
                     <span v-else class="cell-text-content">
-                      {{ row[col.key] }}
+                      <template v-if="row[col.key]">{{ row[col.key] }}</template>
+                      <!-- Empty cell with a pending AI suggestion: show the
+                           proposed value as a greyed placeholder so it can be
+                           accepted without opening the suggestions UI. -->
+                      <span
+                        v-else-if="cellSuggestionPlaceholder(row.id, col.key)"
+                        class="cell-suggestion-placeholder"
+                      >{{ cellSuggestionPlaceholder(row.id, col.key) }}</span>
                     </span>
                     <!-- Quick identifier shortcut buttons for empty IDENTIFIER cells -->
                     <div v-if="col.key === 'IDENTIFIER' && !row[col.key] && !readonly" class="identifier-quick-actions">
                       <button
                         class="btn-quick-id"
-                        title="Set as 'No identifier exists'"
+                        v-tooltip="'Set as \'No identifier exists\''"
                         @click.stop="setQuickNoIdentifier(row.id, col.field)"
                       >
                         None
                       </button>
                       <button
                         class="btn-quick-id"
-                        title="Set as 'Identifier pending'"
+                        v-tooltip="'Set as \'Identifier pending\''"
                         @click.stop="setQuickIdentifierPending(row.id, col.field)"
                       >
                         Pending
@@ -2213,10 +2366,20 @@ defineExpose({
                     <div v-if="col.key === 'SOURCE' && !row[col.key] && !readonly" class="identifier-quick-actions">
                       <button
                         class="btn-quick-id"
-                        title="Set Source to 'None' (no URL to share)"
+                        v-tooltip="'Set Source to \'None\' (no URL to share)'"
                         @click.stop="setQuickSourceNone(row.id, col.field)"
                       >
                         None
+                      </button>
+                    </div>
+                    <!-- Accept the suggested value shown as a placeholder -->
+                    <div v-if="!readonly && cellSuggestionPlaceholder(row.id, col.key)" class="suggestion-quick-action">
+                      <button
+                        class="btn-quick-suggestion"
+                        v-tooltip="`Use the suggested value: ${cellSuggestionPlaceholder(row.id, col.key)}`"
+                        @click.stop="acceptCellSuggestion(row.id, col.key)"
+                      >
+                        ✓ Use
                       </button>
                     </div>
                     <!-- Cell indicators container - shows all applicable icons -->
@@ -2227,7 +2390,7 @@ defineExpose({
                         class="cell-issue-icon icon-suggestion"
                         fill="currentColor"
                         viewBox="0 0 20 20"
-                        title="AI Suggestion"
+                        v-tooltip="'AI Suggestion'"
                       >
                         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
                       </svg>
@@ -2237,7 +2400,7 @@ defineExpose({
                         class="cell-issue-icon icon-error"
                         fill="currentColor"
                         viewBox="0 0 20 20"
-                        title="Error"
+                        v-tooltip="'Error'"
                       >
                         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
                       </svg>
@@ -2247,7 +2410,7 @@ defineExpose({
                         class="cell-issue-icon icon-warning"
                         fill="currentColor"
                         viewBox="0 0 20 20"
-                        title="Warning"
+                        v-tooltip="'Warning'"
                       >
                         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
                       </svg>
@@ -2312,11 +2475,11 @@ defineExpose({
                 <td v-if="!readonly" class="col-actions">
                   <!-- G1: QC / Optional flags — only Admin & DS Annotator see these -->
                   <span v-if="canSeeQcOptional" class="qc-flags" @click.stop>
-                    <label class="qc-flag" title="Mark as QC dataset">
+                    <label class="qc-flag" v-tooltip="'Mark as QC dataset'">
                       <input type="checkbox" :checked="!!row.isQc" @change="onToggleQcFlag(row.id, 'is_qc', $event.target.checked)" />
                       QC
                     </label>
-                    <label class="qc-flag" title="Mark as Optional">
+                    <label class="qc-flag" v-tooltip="'Mark as Optional'">
                       <input type="checkbox" :checked="!!row.isOptional" @change="onToggleQcFlag(row.id, 'is_optional', $event.target.checked)" />
                       Opt
                     </label>
@@ -2325,7 +2488,7 @@ defineExpose({
                   <div v-if="hasDeleteSuggestion(row.id)" class="delete-suggestion-actions">
                     <button
                       class="btn-delete-suggestion"
-                      title="AI suggests deleting this row - Click to accept"
+                      v-tooltip="'AI suggests deleting this row - Click to accept'"
                       @click="acceptDeleteSuggestion(getDeleteSuggestion(row.id))"
                     >
                       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2334,7 +2497,7 @@ defineExpose({
                     </button>
                     <button
                       class="btn-reject-delete"
-                      title="Reject delete suggestion"
+                      v-tooltip="'Reject delete suggestion'"
                       @click="rejectDeleteSuggestion(getDeleteSuggestion(row.id))"
                     >
                       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2343,7 +2506,7 @@ defineExpose({
                     </button>
                   </div>
                   <!-- Normal delete button -->
-                  <button v-else class="btn-delete" title="Delete row" @click="handleDeleteRow(row.id)">
+                  <button v-else class="btn-delete" v-tooltip="'Delete row'" @click="handleDeleteRow(row.id)">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                     </svg>
@@ -2380,7 +2543,9 @@ defineExpose({
                       v-for="src in getContributingSources(suggestion)"
                       :key="src"
                       class="suggestion-source-badge"
-                      :class="'source-' + src"
+                      :class="['source-' + src, { 'badge-clickable': hasProvenance(suggestion) }]"
+                      v-tooltip="hasProvenance(suggestion) ? 'Show where this comes from in the article' : (SOURCE_LABEL[src] || src)"
+                      @click.stop="hasProvenance(suggestion) && openProvenance(suggestion)"
                     >{{ SOURCE_LABEL[src] || src }}</span>
                     <!-- Same info indicator + tooltip the edit suggestions show
                          on existing rows, mirrored here so every suggestion has
@@ -2420,14 +2585,14 @@ defineExpose({
                       v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
                       v-model="editorSuggestionEdits[suggestion.id].resourceType"
                       class="suggestion-inline-input"
-                      title="Resource Type"
+                      v-tooltip="'Resource Type'"
                     >
                       <option v-for="name in resourceTypesStore.resourceTypeNames" :key="name" :value="name">{{ name }}</option>
                     </select>
                     <span v-else class="cell-display">{{ suggestion.data?.resourceType || '' }}</span>
-                    <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
-                    <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" :title="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
-                    <span v-if="suggestion.tier === 'needs_verification'" class="suggestion-source-badge source-needs-verification" :title="suggestion.tierReason || 'No identifier found — verify before adding'">Verify</span>
+                    <span v-if="suggestion.existsInKRT === 'exact'" class="suggestion-source-badge source-in-krt" v-tooltip="suggestion.matchedKRTRow?.resourceName ? `Already in KRT: ${suggestion.matchedKRTRow.resourceName}` : ''">In KRT</span>
+                    <span v-else-if="suggestion.existsInKRT === 'update'" class="suggestion-source-badge source-update-krt" v-tooltip="suggestion.matchedKRTRow?.resourceName ? `Update existing: ${suggestion.matchedKRTRow.resourceName}` : ''">Update</span>
+                    <span v-if="suggestion.tier === 'needs_verification'" class="suggestion-source-badge source-needs-verification" v-tooltip="suggestion.tierReason || 'No identifier found — verify before adding'">Verify</span>
                   </div>
                 </td>
                 <!-- RESOURCE NAME -->
@@ -2437,9 +2602,9 @@ defineExpose({
                     v-model="editorSuggestionEdits[suggestion.id].resourceName"
                     type="text"
                     class="suggestion-inline-input"
-                    title="Resource Name"
+                    v-tooltip="'Resource Name'"
                   />
-                  <div v-else class="cell-display" :title="suggestion.data?.resourceName || ''">{{ suggestion.data?.resourceName || '' }}</div>
+                  <div v-else class="cell-display" v-tooltip="suggestion.data?.resourceName || ''">{{ suggestion.data?.resourceName || '' }}</div>
                 </td>
                 <!-- SOURCE -->
                 <td class="col-data add-row-cell" @click.stop>
@@ -2448,9 +2613,9 @@ defineExpose({
                     v-model="editorSuggestionEdits[suggestion.id].source"
                     type="text"
                     class="suggestion-inline-input"
-                    title="Source"
+                    v-tooltip="'Source'"
                   />
-                  <div v-else class="cell-display" :title="suggestion.data?.source || ''">{{ suggestion.data?.source || '' }}</div>
+                  <div v-else class="cell-display" v-tooltip="suggestion.data?.source || ''">{{ suggestion.data?.source || '' }}</div>
                 </td>
                 <!-- IDENTIFIER -->
                 <td class="col-data add-row-cell" @click.stop>
@@ -2459,9 +2624,9 @@ defineExpose({
                     v-model="editorSuggestionEdits[suggestion.id].identifier"
                     type="text"
                     class="suggestion-inline-input"
-                    title="Identifier"
+                    v-tooltip="'Identifier'"
                   />
-                  <div v-else class="cell-display" :title="suggestion.data?.identifier || ''">{{ suggestion.data?.identifier || '' }}</div>
+                  <div v-else class="cell-display" v-tooltip="suggestion.data?.identifier || ''">{{ suggestion.data?.identifier || '' }}</div>
                 </td>
                 <!-- NEW/REUSE -->
                 <td class="col-data add-row-cell" @click.stop>
@@ -2469,7 +2634,7 @@ defineExpose({
                     v-if="suggestion.status === 'pending' && editorSuggestionEdits[suggestion.id]"
                     v-model="editorSuggestionEdits[suggestion.id].newReuse"
                     class="suggestion-inline-input"
-                    title="New/Reuse"
+                    v-tooltip="'New/Reuse'"
                   >
                     <option value="">—</option>
                     <option value="new">new</option>
@@ -2484,16 +2649,16 @@ defineExpose({
                     v-model="editorSuggestionEdits[suggestion.id].additionalInformation"
                     type="text"
                     class="suggestion-inline-input"
-                    title="Additional Information"
+                    v-tooltip="'Additional Information'"
                   />
-                  <div v-else class="cell-display" :title="suggestion.data?.additionalInformation || ''">{{ suggestion.data?.additionalInformation || '' }}</div>
+                  <div v-else class="cell-display" v-tooltip="suggestion.data?.additionalInformation || ''">{{ suggestion.data?.additionalInformation || '' }}</div>
                 </td>
                 <td v-if="!readonly" class="col-actions add-row-actions">
                   <div class="add-row-buttons">
-                    <button v-if="suggestion.existsInKRT !== 'exact'" class="btn-accept-add" :title="suggestion.existsInKRT === 'update' ? 'Accept - Update existing row' : 'Accept - Add this row'" @click.stop="acceptAddRowSuggestion(suggestion)">
+                    <button v-if="suggestion.existsInKRT !== 'exact'" class="btn-accept-add" v-tooltip="suggestion.existsInKRT === 'update' ? 'Accept - Update existing row' : 'Accept - Add this row'" @click.stop="acceptAddRowSuggestion(suggestion)">
                       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
                     </button>
-                    <button class="btn-reject-add" title="Reject suggestion" @click.stop="rejectAddRowSuggestion(suggestion)">
+                    <button class="btn-reject-add" v-tooltip="'Reject suggestion'" @click.stop="rejectAddRowSuggestion(suggestion)">
                       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                   </div>
@@ -2538,6 +2703,73 @@ defineExpose({
             </button>
             <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-red-600 text-white hover:bg-red-700" @click="confirmRejectModal">
               Reject
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Provenance dialog: where in the article a suggestion comes from -->
+    <Teleport to="body">
+      <div v-if="provenanceSuggestion" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="closeProvenance">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-5 max-h-[80vh] overflow-y-auto">
+          <h3 class="text-sm font-semibold text-gray-900 mb-1">Where does this come from?</h3>
+          <p class="text-sm text-gray-500 mb-4">
+            {{ provenanceSuggestion.title || provenanceSuggestion.data?.resourceName || 'Suggestion' }}
+          </p>
+
+          <div v-if="provenanceSuggestion.reason" class="mb-4 rounded-md bg-blue-50 border border-blue-100 p-3">
+            <div class="text-xs font-semibold text-blue-800 mb-1">Why it was suggested</div>
+            <p class="text-sm text-blue-900">{{ provenanceSuggestion.reason }}</p>
+          </div>
+
+          <!-- The passage in the manuscript this came from. Collapsed to the
+               sentence; expandable to the full paragraph. -->
+          <div v-if="provenanceSuggestion.evidence" class="mb-4 rounded-md bg-gray-50 border border-gray-200 p-3">
+            <div class="text-xs font-semibold text-gray-700 mb-1">Where it appears in the manuscript</div>
+            <EvidenceContext :evidence="provenanceSuggestion.evidence" />
+          </div>
+
+          <div class="text-xs font-semibold text-gray-700 mb-2">
+            Detected by {{ provenanceEntries(provenanceSuggestion).length }} module(s)
+          </div>
+
+          <div
+            v-for="(entry, idx) in provenanceEntries(provenanceSuggestion)"
+            :key="idx"
+            class="mb-3 rounded-md border border-gray-200 p-3"
+          >
+            <div class="flex items-center gap-2 mb-2">
+              <span class="suggestion-source-badge" :class="'source-' + entry.module">
+                {{ SOURCE_LABEL[entry.module] || entry.module }}
+              </span>
+              <span v-if="entry.relevance" class="text-xs text-gray-500">{{ entry.relevance }}</span>
+              <span v-if="entry.confidence !== null" class="text-xs text-gray-400 ml-auto">
+                {{ Math.round(entry.confidence * 100) }}%
+              </span>
+            </div>
+            <!-- A grounded evidence block is strictly better than the raw
+                 excerpt: it is verified against the manuscript and carries the
+                 section plus an expandable paragraph. Fall back to the excerpt
+                 for detectors that have no offsets (Softcite reads the PDF, not
+                 the markdown) and for results produced before grounding. -->
+            <EvidenceContext v-if="entry.evidence" :evidence="entry.evidence" />
+            <blockquote v-else-if="entry.excerpt" class="text-sm text-gray-700 italic border-l-2 border-gray-300 pl-3 whitespace-pre-wrap break-words">
+              {{ entry.excerpt }}
+            </blockquote>
+            <p v-else class="text-sm text-gray-400 italic">
+              This module reported no text excerpt.
+            </p>
+          </div>
+
+          <p class="text-xs text-gray-400 mt-4">
+            Excerpts are the passage each detector matched on. Jumping to the exact
+            location in the PDF is not available yet.
+          </p>
+
+          <div class="flex justify-end mt-4">
+            <button class="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200" @click="closeProvenance">
+              Close
             </button>
           </div>
         </div>
@@ -2628,7 +2860,7 @@ defineExpose({
             <label class="text-xs font-medium text-gray-600">{{ col.label }}</label>
             <div class="mt-1 space-y-1">
               <label v-for="(opt, i) in mergeOptions(col.key)" :key="i" class="flex items-center gap-2 text-sm cursor-pointer">
-                <input type="radio" :name="'merge-' + col.key" :value="opt" v-model="mergeChoices[col.key]" />
+                <input v-model="mergeChoices[col.key]" type="radio" :name="'merge-' + col.key" :value="opt" />
                 <span class="truncate" :class="{ 'text-gray-400 italic': opt === '' }">{{ opt === '' ? '(empty)' : opt }}</span>
               </label>
             </div>
@@ -3417,6 +3649,53 @@ tr:hover {
   border-color: #9ca3af;
 }
 
+/* Suggested value rendered inside an otherwise-empty cell.
+   Deliberately muted and italic so it never reads as real KRT content — it is
+   a proposal until the curator accepts it. */
+/* A module badge becomes a control when provenance is available for it. */
+.suggestion-source-badge.badge-clickable {
+  cursor: pointer;
+}
+
+.suggestion-source-badge.badge-clickable:hover {
+  filter: brightness(0.92);
+  text-decoration: underline;
+}
+
+.cell-suggestion-placeholder {
+  color: #9ca3af;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggestion-quick-action {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 0.25rem;
+}
+
+.btn-quick-suggestion {
+  padding: 0.125rem 0.375rem;
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-quick-suggestion:hover {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #93c5fd;
+}
+
 
 /* Delete Button */
 .btn-delete {
@@ -3669,6 +3948,23 @@ tr:hover {
   white-space: nowrap;
   background: #dcfce7;
   color: #15803d;
+}
+
+/* Grounding: the manuscript never mentions this row. Amber, not red — it is
+   an observation for the curator, not an error in the author's table. */
+.not-detected-badge {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  background: #fef3c7;
+  color: #b45309;
+  cursor: help;
 }
 
 .source-software_detection {

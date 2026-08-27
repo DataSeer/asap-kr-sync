@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const {
   mergeDetections,
   mergeAdditionalInfo,
+  applyVenueSource,
   normalizeResourceTypeKey
 } = require('./merge-detections.service');
 
@@ -64,6 +65,185 @@ test('different new/reuse → NOT merged', () => {
     { source: 'pdf_analysis',       items: [itemAddRow({ resourceName: 'Python', newReuse: 'reuse' })] }
   ]);
   assert.equal(r.length, 2);
+});
+
+test('nameless row merges into a named row with the same identifier, despite different new/reuse', () => {
+  // The published-protocol venue scan emits identifier + SOURCE but cannot know
+  // a name or new/reuse. Without the nameless rule it would surface as a second,
+  // blank-named suggestion beside the real one.
+  const named = itemAddRow({
+    resourceType: 'Protocol', resourceName: 'Chromatin immunoprecipitation',
+    identifier: '10.1038/nprot.2009.97', source: '', newReuse: 'reuse'
+  });
+  const nameless = itemAddRow({
+    resourceType: 'Protocol', resourceName: '',
+    identifier: '10.1038/nprot.2009.97', source: 'Nature Protocols', newReuse: ''
+  });
+
+  const r = mergeDetections([
+    { source: 'protocols_detection',  items: [named] },
+    { source: 'identifier_detection', items: [nameless] }
+  ]);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].resourceName, 'Chromatin immunoprecipitation');
+  assert.equal(r[0].newReuse, 'reuse');            // the named row's value survives
+  assert.equal(r[0].sourceUrl, 'Nature Protocols'); // the scan filled the blank SOURCE
+  assert.equal(r[0].detectedBy.length, 2);
+});
+
+test('nameless row accepted FIRST still yields the named row + its new/reuse', () => {
+  // Contribution order must not change the outcome: when the nameless row wins
+  // the primary slot, the named candidate's new/reuse blank-fills onto it.
+  const named = itemAddRow({
+    resourceType: 'Protocol', resourceName: 'Chromatin immunoprecipitation',
+    identifier: '10.1038/nprot.2009.97', source: '', newReuse: 'reuse'
+  });
+  const nameless = itemAddRow({
+    resourceType: 'Protocol', resourceName: '',
+    identifier: '10.1038/nprot.2009.97', source: 'Nature Protocols', newReuse: ''
+  });
+
+  const r = mergeDetections([
+    { source: 'identifier_detection', items: [nameless] },
+    { source: 'protocols_detection',  items: [named] }
+  ]);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].resourceName, 'Chromatin immunoprecipitation');
+  assert.equal(r[0].newReuse, 'reuse');
+});
+
+test('nameless row matches a NON-FIRST identifier in a semicolon-joined field', () => {
+  // Real shape from the ASAP demo corpus (hu1-000350-018): one protocol row
+  // carrying many protocols.io DOIs. extractIdentifierTokens only indexes the
+  // first, so without the _idParts check the venue scan re-emits DOIs 2..n as
+  // blank duplicate suggestions.
+  const multi = itemAddRow({
+    resourceType: 'Protocol', resourceName: 'Protein expression and purification',
+    identifier: 'https://doi.org/10.17504/protocols.io.aaa/v1 ; https://doi.org/10.17504/protocols.io.bbb/v1; https://doi.org/10.17504/protocols.io.ccc/v1',
+    newReuse: 'reuse'
+  });
+  const second = itemAddRow({
+    resourceType: 'Protocol', resourceName: '',
+    identifier: '10.17504/protocols.io.bbb/v1', source: 'protocols.io', newReuse: ''
+  });
+  const third = itemAddRow({
+    resourceType: 'Protocol', resourceName: '',
+    identifier: '10.17504/protocols.io.ccc/v1', source: 'protocols.io', newReuse: ''
+  });
+
+  const r = mergeDetections([
+    { source: 'protocols_detection',  items: [multi] },
+    { source: 'identifier_detection', items: [second, third] }
+  ]);
+  assert.equal(r.length, 1, 'both trailing DOIs should fold into the multi-DOI row');
+  assert.equal(r[0].resourceName, 'Protein expression and purification');
+});
+
+test('a shared DOI does NOT merge two distinct NAMED protocols', () => {
+  // Guards the _idParts widening against over-reach. Also from hu1-000350-018:
+  // "Flow cytometry" and "Rapalog-induced chemical dimerization" cite one
+  // protocols.io DOI in common and must remain two rows.
+  const flow = itemAddRow({
+    resourceType: 'Protocol', resourceName: 'Flow cytometry',
+    identifier: 'https://doi.org/10.17504/protocols.io.q26g.../v1 ; https://doi.org/10.17504/protocols.io.n92l.../v1',
+    newReuse: 'reuse'
+  });
+  const rapalog = itemAddRow({
+    resourceType: 'Protocol', resourceName: 'Rapalog-induced chemical dimerization experiments',
+    identifier: 'https://doi.org/10.17504/protocols.io.n92l.../v1',
+    newReuse: 'reuse'
+  });
+  const r = mergeDetections([
+    { source: 'protocols_detection', items: [flow, rapalog] }
+  ]);
+  assert.equal(r.length, 2);
+});
+
+test('nameless rule does NOT merge unrelated identifiers', () => {
+  // Relaxing the new/reuse gate must not make a nameless row a wildcard: with
+  // no identifier overlap and no name, there is nothing to match on.
+  const r = mergeDetections([
+    { source: 'protocols_detection', items: [itemAddRow({
+      resourceType: 'Protocol', resourceName: 'ChIP', identifier: '10.1038/nprot.2009.97', newReuse: 'reuse'
+    })] },
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Protocol', resourceName: '', identifier: '10.3791/61234', newReuse: ''
+    })] }
+  ]);
+  assert.equal(r.length, 2);
+});
+
+test('two NAMED rows still never merge across different new/reuse', () => {
+  // Guards the nameless rule against over-reach — this is the pre-existing
+  // invariant, restated with a shared identifier to prove it is name-gated.
+  const r = mergeDetections([
+    { source: 'protocols_detection', items: [itemAddRow({
+      resourceType: 'Protocol', resourceName: 'ChIP', identifier: '10.1038/nprot.2009.97', newReuse: 'new'
+    })] },
+    { source: 'identifier_detection', items: [itemAddRow({
+      resourceType: 'Protocol', resourceName: 'ChIP assay', identifier: '10.1038/nprot.2009.97', newReuse: 'reuse'
+    })] }
+  ]);
+  assert.equal(r.length, 2);
+});
+
+// ---------- protocol venue outranks the detector's SOURCE (ticket #30 item 6) ----------
+
+test('applyVenueSource: demotes the detector wording into parentheses', () => {
+  assert.equal(applyVenueSource('protocols.io', 'Meyer et al., 2024'), 'protocols.io (Meyer et al., 2024)');
+  assert.equal(applyVenueSource('protocols.io', 'This paper'),         'protocols.io (This paper)');
+  assert.equal(applyVenueSource('JoVE', 'Journal of Visualized Experiments'),
+    'JoVE (Journal of Visualized Experiments)');
+});
+
+test('applyVenueSource: no echo when the detector already named the venue', () => {
+  assert.equal(applyVenueSource('protocols.io', 'protocols.io'), 'protocols.io');
+  assert.equal(applyVenueSource('protocols.io', 'Protocols.IO'),  'protocols.io');
+  assert.equal(applyVenueSource('protocols.io', ''),              'protocols.io');
+  assert.equal(applyVenueSource('protocols.io', '   '),           'protocols.io');
+});
+
+test('applyVenueSource: idempotent across repeated consolidations', () => {
+  // Consolidation re-runs on "Regenerate suggestions" — without this guard the
+  // parentheses would nest one level deeper every time.
+  const once  = applyVenueSource('protocols.io', 'Meyer et al., 2024');
+  const twice = applyVenueSource('protocols.io', once);
+  const three = applyVenueSource('protocols.io', twice);
+  assert.equal(twice, 'protocols.io (Meyer et al., 2024)');
+  assert.equal(three, 'protocols.io (Meyer et al., 2024)');
+});
+
+test('venue identifier overrides the SOURCE a detector supplied', () => {
+  const r = mergeDetections([
+    { source: 'protocols_detection', items: [itemAddRow({
+      resourceType: 'Protocol', resourceName: 'Organoid culture',
+      identifier: 'http://doi.org/10.17504/protocols.io.261ge8b9jg47/v2',
+      source: 'Meyer et al., 2024', newReuse: 'reuse'
+    })] }
+  ]);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].sourceUrl, 'protocols.io (Meyer et al., 2024)');
+});
+
+test('a NON-venue inferred source never overrides a detector SOURCE', () => {
+  // Data/code repositories keep the old behaviour: the detector wins.
+  const r = mergeDetections([
+    { source: 'software_detection', items: [itemAddRow({
+      resourceType: 'Software/code', resourceName: 'my-tool',
+      identifier: '10.5281/zenodo.123456', source: 'Lab website', newReuse: 'new'
+    })] }
+  ]);
+  assert.equal(r[0].sourceUrl, 'Lab website');
+});
+
+test('venue override still fills a blank SOURCE with the bare venue', () => {
+  const r = mergeDetections([
+    { source: 'protocols_detection', items: [itemAddRow({
+      resourceType: 'Protocol', resourceName: 'ChIP',
+      identifier: '10.1038/nprot.2009.97', source: '', newReuse: 'reuse'
+    })] }
+  ]);
+  assert.equal(r[0].sourceUrl, 'Nature Protocols');
 });
 
 test('different resourceType → NOT merged', () => {

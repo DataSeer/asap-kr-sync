@@ -6,8 +6,9 @@
 > per-topic docs where useful, but you should not *need* them to get a working deployment.
 >
 > **Deep-dive references** (optional): [Architecture](./architecture.md) · [Database](./database.md) ·
-> [External APIs](./external-apis.md) · [Background Jobs](./background-jobs.md) ·
-> [Background Modules](./background-modules.md) · [Authentication](./authentication.md) ·
+> [External APIs](./external-apis.md) · [Pipeline jobs](./pipeline-jobs.md) ·
+> [Archiving](./archiving.md) ·
+> [Background Modules](./pipeline-modules.md) · [Authentication](./authentication.md) ·
 > [Auth0 Integration](./auth0-integration.md) · [Environment Variables](./environment-variables.md) ·
 > [Submission Workflow](./submission-workflow.md) · [EC2 Deployment](./ec2-deployment.md).
 
@@ -126,13 +127,13 @@ cp .env.example .env
 | `S3_BUCKET_PREFIX` | Key prefix (`dev/`, `prod/`) — lets one bucket serve multiple environments. |
 | `S3_ENDPOINT` | Set to `http://localhost:9000` for **MinIO** local dev; leave empty for real AWS S3. |
 | `PYTHON_BIN` | Python 3 binary used by the **MarkItDown** converter and the **LangExtract** datasets helper. Must have those packages installed. |
-| `LOG_LEVEL` | `info` (default) / `debug` / etc. `debug` surfaces verbose diagnostics (e.g. the Auth0 ID-token claim dump). |
+| `LOG_LEVEL` | `http` (default — includes request logs) / `info` (drops them) / `debug` etc. Levels are ordered `error < warn < info < http < verbose < debug` and only what is at or below the chosen level is emitted, so `info` silently discards every request log. `debug` surfaces verbose diagnostics (e.g. the Auth0 ID-token claim dump). |
 | `LOG_FILE` | File path for the production file transport (default `logs/app.log`, relative to the container workdir `/app`). |
 | `KRT_TEMPLATE_URL` | Link shown in the UI for the blank KRT spreadsheet template. |
 
 ### 4.3 Detection-module configuration — the On / Demo / Off model
 
-**This is the most important configuration concept.** Every background module shares the same two-flag pattern:
+**This is the most important configuration concept.** Every pipeline module shares the same two-flag pattern:
 
 ```
 <MODULE>_ENABLED=true|false              # call the real external service?
@@ -173,7 +174,7 @@ And one of two **outcome states** after a run:
 
 > This table is the **configuration** view. For each module's full internal workflow (the 4-stage detector
 > contract, demo fallback, outputs, and how results become the Generated KRT), see
-> **[Background Modules](./background-modules.md)**.
+> **[Background Modules](./pipeline-modules.md)**.
 
 | Module | `.env` prefix | Engine / how it works | Prompt / config file |
 |--------|---------------|------------------------|----------------------|
@@ -181,7 +182,7 @@ And one of two **outcome states** after a run:
 | **DAS Extraction** | `DAS_EXTRACTION_` | **Google Gemini** (`gemini-2.5-flash`) reads the Markdown and copies the requested section verbatim. Section chosen by `DAS_EXTRACTION_SECTION` (das, funding, consent, ethics, author_contributions, acknowledgements, coi, keywords). | `prompts/das-extraction.txt` |
 | **Datasets Detection** | `DATASETS_DETECTION_` | **Two passes:** (1) **LangExtract** (Python) extracts grounded candidate mentions with source spans; (2) **Gemini** consolidates/dedupes/scores them. Tunables: `..._LANGEXTRACT_MAX_WORKERS/_MAX_CHAR_BUFFER/_EXTRACTION_PASSES/_BATCH_LENGTH/_TIMEOUT`. | Pass 1: `prompts/datasets-signals-extraction.txt` + `prompts/datasets-signals-examples.json`; Pass 2: `prompts/datasets-consolidation.txt` |
 | **Materials Detection** | `MATERIALS_DETECTION_` | **Google Gemini**, **author-seeded** on the author's KRT material rows (minimal). **Skips extraction entirely when the author provided no materials.** | `prompts/materials-detection.txt` |
-| **Protocols Detection** | `PROTOCOLS_DETECTION_` | **Google Gemini** reads the Markdown; **seeded with the author's protocol rows as "Section 0"**; a post-filter reclassifies purely computational "protocols" as software. | `prompts/protocols-detection.txt` |
+| **Protocols Detection** | `PROTOCOLS_DETECTION_` | **Google Gemini** reads the Markdown, seeded with the author's protocol rows under the default `seeded-v1` pipeline ("Section 0"); `blind-v1` removes the seeds and reconciles in `krt_grounding` instead. A post-filter reclassifies purely computational "protocols" as software. | `prompts/{seeded,blind}/protocols-detection.txt` |
 | **Software Detection** | `SOFTCITE_API_` / `SOFTWARE_DETECTION_DEMO_DATA_ENABLED` | **Softcite** external HTTP service (a domain-trained NER model — **not** an LLM, no prompt, no token cost). Point `SOFTCITE_API_BASE_URL` at your Softcite instance. | — |
 | **ORCID / Authors** | `GROBID_API_` / `OPENALEX_` / `ORCID_API_` / `ORCID_EXTRACTION_DEMO_DATA_ENABLED` | Chain: **GROBID** (parses PDF header) → **OpenAlex** (verifies ORCIDs by DOI; free, set `OPENALEX_MAILTO`) → **ORCID public API** (fallback). Writes to `submission.authors`, **not** the KRT. | — |
 | **Identifier Detection** | `IDENTIFIER_DETECTION_` | **Local** scan of the Markdown against the curated `enrichment_list_entries` — no external call, no prompt. Recovers known RRIDs/DOIs/accessions the other detectors miss. Flags: `IDENTIFIER_DETECTION_ENABLED` (default on), `IDENTIFIER_DETECTION_CUT_AT_REFERENCES` (default on — truncate at the bibliography; set `false` for combined manuscript+supplemental PDFs). | uses the enrichment lists (§6.5) |
@@ -193,12 +194,14 @@ And one of two **outcome states** after a run:
 > (KRT generation), AI suggestions (KRT comparison), and the DAS suggestions check. **LangExtract** is datasets pass 1 only.
 > **Softcite/GROBID/OpenAlex/ORCID** are non-LLM HTTP services. **Identifier detection** is fully local, and
 > **PDF analysis** falls back to a local rule-based merge when its LM is off. To enable a Gemini module you set
-> `<MODULE>_ENABLED=true` **and** its `..._GEMINI_API_KEY`.
+> `<MODULE>_ENABLED=true` and give it a key. The key can be the shared
+> `GEMINI_API_KEY`, which every Gemini module inherits — a per-module
+> `..._GEMINI_API_KEY` is only needed for a separate quota.
 
 ### 4.5 Module pipeline order
 
 When a PDF is uploaded, the orchestrator runs modules as a small dependency graph (details in
-[background-jobs.md](./background-jobs.md)):
+[pipeline-jobs.md](./pipeline-jobs.md)):
 
 ```mermaid
 flowchart LR
@@ -207,7 +210,7 @@ flowchart LR
     UP --> MDC["Markdown Convert<br/>(Docling / MarkItDown)"]
     MDC --> DAS["DAS extraction<br/>(Gemini)"]
     MDC --> DS["Datasets<br/>(LangExtract → Gemini)"]
-    MDC --> MAT["Materials<br/>(Gemini — disabled by default)"]
+    MDC --> MAT["Materials<br/>(Gemini — author-seeded)"]
     MDC --> PR["Protocols<br/>(Gemini)"]
     MDC --> ID["Identifier scan<br/>(local)"]
     KRTV{{"KRT validated?"}} -.->|gate| DS
@@ -282,7 +285,7 @@ Full ERD/columns: [database.md](./database.md). The core tables:
 | `validation_results` | Per-row KRT validation issues (insert-only). |
 | `change_logs` | Append-only audit trail (action × source × round). |
 | `reports` | Generated report records per round (insert-only). |
-| `submission_jobs` | One row per background job (type, status, JSONB `result`/`logs`, pg-boss link). |
+| `submission_jobs` | One row per pipeline step (type, status, JSONB `result`/`logs`, pg-boss link). |
 | `user_hidden_submissions` | Per-user dashboard visibility prefs. |
 | `resource_types` | Controlled vocabulary of KRT resource types (drives KRT validation). |
 | `app_config` | Key/value JSONB runtime config (e.g. `validation_rules`). |
@@ -480,8 +483,8 @@ review suggestions → export the report. With all external modules off, demo da
 | `address already in use 0.0.0.0:5432` | A host Postgres already owns 5432. Stop it, or remap the container port. |
 | A detection module always returns empty | It's **Off** or **Demo** without demo data for that manuscript, or `_ENABLED=true` but the API key/endpoint is wrong. Check the job's status pill + logs. |
 | Materials detection never produces results | Expected when the author KRT has **no material rows** — the module is author-seeded and skips extraction in that case. Otherwise check it's **On** and the Gemini key is set. |
-| AI Suggestions panel is empty | AI Suggestions is **LM-only** — set `KRT_COMPARISON_ENABLED=true` and `KRT_COMPARISON_GEMINI_API_KEY`. With no LM configured, no suggestions are produced. Use **Regenerate suggestions** after editing the KRT. |
-| DAS Suggestions always show the legacy checks / never a loader | The LM DAS check is off — set `DAS_SUGGESTIONS_ENABLED=true` and `DAS_SUGGESTIONS_GEMINI_API_KEY`. With no LM configured the `/availability` step falls back to the in-browser rules (and Continue is never blocked). |
+| AI Suggestions panel is empty | AI Suggestions is **LM-only** — set `KRT_COMPARISON_ENABLED=true` and provide a key (the shared `GEMINI_API_KEY` is enough). With no LM configured, no suggestions are produced. Use **Regenerate suggestions** after editing the KRT. |
+| DAS Suggestions always show the legacy checks / never a loader | The LM DAS check is off — set `DAS_SUGGESTIONS_ENABLED=true` and provide a key (the shared `GEMINI_API_KEY` is enough). With no LM configured the `/availability` step falls back to the in-browser rules (and Continue is never blocked). |
 | No `debug` lines despite `LOG_LEVEL=debug` | The running prod image's env-file may not set it (the `docker run` doesn't pass `LOG_LEVEL`); set it in `/opt/asap-kr-sync-prod/.env` and restart. |
 | No `logs/app.log` file in prod | `NODE_ENV` isn't `production` in the env-file (file transport is prod-only). |
 | CORS / cookie auth failing | `FRONTEND_URL` / `API_BASE_URL` don't match the real origins. |

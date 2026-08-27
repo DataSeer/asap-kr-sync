@@ -2,7 +2,7 @@
  * Demo-fallback workflow helper.
  *
  * Encodes the four configuration scenarios x two outcome states for every
- * background process (DAS, software, datasets, protocols, materials,
+ * pipeline step (DAS, software, datasets, protocols, materials,
  * markdown, pdf_analysis, orcid). Centralized here so the contract is
  * defined once instead of being re-implemented in each service.
  *
@@ -11,11 +11,21 @@
  *   - 'demo'  : ENABLED=false, DEMO=true        (demo data is the primary source)
  *   - 'off'   : ENABLED=false, DEMO=false       (process produces no data)
  *
- * The outcome of a run is one of two states:
- *   - 'done'  : external returned (even empty), OR demo filled in,
- *               OR the process is intentionally Off (nothing was attempted)
- *   - 'fail'  : external errored after all retries AND no demo was found,
- *               OR config is Demo but no demo data exists for this manuscript
+ * The outcome of a run is one of three states:
+ *   - 'done'    : external returned (even empty), OR demo filled in,
+ *                 OR the process is intentionally Off (nothing was attempted)
+ *   - 'partial' : the process produced a real result, but one of the engines
+ *                 behind it failed — so the answer is genuine and incomplete at
+ *                 the same time. Declared by the process itself, by setting
+ *                 `meta.degraded = { engine, error }` on what it returns.
+ *   - 'fail'    : external errored after all retries AND no demo was found,
+ *                 OR config is Demo but no demo data exists for this manuscript
+ *
+ * 'partial' exists because the two honest states were not enough. Software
+ * detection runs Softcite AND an LM pass and unions them; when one dies the
+ * other still has a real answer. Reporting that as 'done' puts a green tick
+ * over a half-read manuscript, and reporting it as 'fail' throws away rows
+ * that were correctly found. A process that degrades must be able to say so.
  *
  * The "Off + Done" case carries source=null to distinguish it from external
  * and demo — the UI uses that to show "Process is disabled" instead of a
@@ -125,13 +135,22 @@ async function tryDemo(getDemoData, jobLogger) {
   }
 }
 
+/**
+ * A run that returned data.
+ *
+ * Reads `meta.degraded` — set by the process when one of its engines failed but
+ * another carried the run — and downgrades 'done' to 'partial'. Checked here
+ * rather than in each service so every process reports a degradation the same
+ * way, and so a new one cannot forget to.
+ */
 function done(source, raw, extras = {}) {
+  const degraded = raw?.meta?.degraded || null;
   return {
     data: { items: raw?.items ?? [], meta: raw?.meta ?? {} },
     source,
-    status: 'done',
-    failReason: null,
-    externalError: extras.externalError ?? null
+    status: degraded ? 'partial' : 'done',
+    failReason: degraded ? `${degraded.engine}_failed` : null,
+    externalError: extras.externalError ?? degraded?.error ?? null
   };
 }
 

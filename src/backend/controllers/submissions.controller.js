@@ -3,13 +3,17 @@
  */
 
 const { Op } = require('sequelize');
-const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, sequelize } = require('../models');
-const { NotFoundError, ValidationError } = require('../utils/errors');
+const { Submission, User, ChangeLog, UserHiddenSubmission, File, KRTData, SubmissionJob, sequelize } = require('../models');
+const { NotFoundError, ValidationError, AuthorizationError } = require('../utils/errors');
 const { extractProjectFromManuscriptId, parsePagination, buildPaginationMeta, statusToStep, buildS3Folder } = require('../utils/helpers');
 const s3Service = require('../services/storage/s3.service');
+const archiveService = require('../services/archive/archive.service');
 const parserService = require('../services/krt/parser.service');
 const krtService = require('../services/krt/krt.service');
-const { KRT_COLUMNS } = require('../config/constants');
+const { NO_DAS_SENTINEL } = require('../services/das-suggestions/das-suggestions.service');
+const jobAdminService = require('../services/queue/job-admin.service');
+const { KRT_COLUMNS, SUBMISSION_STATUSES, JOB_TYPES, ROLES } = require('../config/constants');
+const { getPipeline, DEFAULT_PIPELINE_ID } = require('../config/pipelines');
 const logger = require('../utils/logger');
 
 /**
@@ -32,6 +36,13 @@ async function list(req, res, next) {
     // Add optional status filter (supports comma-separated values)
     if (req.query.status) {
       const statuses = req.query.status.split(',').map(s => s.trim()).filter(Boolean);
+      // Allowlisted against the ENUM: an unknown value reached Postgres and came
+      // back as a 500 for what is a caller's typo. The sort column next to this
+      // was already allowlisted; the filter had been missed.
+      const unknown = statuses.filter((st) => !SUBMISSION_STATUSES.includes(st));
+      if (unknown.length > 0) {
+        throw new ValidationError(`Unknown status: ${unknown.join(', ')}`);
+      }
       if (statuses.length === 1) {
         filter.status = statuses[0];
       } else if (statuses.length > 1) {
@@ -126,6 +137,32 @@ async function list(req, res, next) {
 }
 
 /**
+ * May this caller analyse a submission with this pipeline?
+ *
+ * The validator has already refused an unknown id, so what is left is
+ * authorisation. A pipeline marked `adminOnly` is an experiment arm: it detects
+ * differently from what ships, so a submission created under one is not
+ * comparable with the rest of the corpus and its results are not what an author
+ * should be handed. Choosing it is a deliberate act by whoever runs the
+ * experiment.
+ *
+ * Omitting the field is always allowed and means the default.
+ *
+ * @param {object} actor - the authenticated user
+ * @param {string} [pipelineId] - from the validated body; undefined = default
+ * @throws {AuthorizationError} when a non-admin names an adminOnly pipeline
+ */
+function assertMayChoosePipeline(actor, pipelineId) {
+  if (!pipelineId) return;
+  const pipeline = getPipeline(pipelineId);
+  if (pipeline.adminOnly && actor?.role !== ROLES.ADMIN) {
+    throw new AuthorizationError(
+      `The "${pipeline.label}" pipeline is available to admins only.`
+    );
+  }
+}
+
+/**
  * Create submission. Accepts multipart/form-data with metadata fields and a
  * required KRT file ("krt"). The KRT format is validated **before** any DB
  * writes — if the file isn't a properly-formatted Key Resources Table, the
@@ -137,7 +174,17 @@ async function list(req, res, next) {
  */
 async function create(req, res, next) {
   try {
-    const { title, dataAvailabilityStatement, manuscriptId, notes } = req.validatedBody;
+    const { title, dataAvailabilityStatement, manuscriptId, notes, pipelineId } = req.validatedBody;
+
+    // 0. Which detection pipeline analyses this submission. Checked before the
+    //    file is parsed so a caller who may not choose it is refused without
+    //    spending anything, and before any row exists to be half-created.
+    //
+    //    The validator has already rejected an unknown id; what is left is
+    //    authorisation. `adminOnly` pipelines are experiment arms — they detect
+    //    differently, and a submission created under one is not comparable with
+    //    the rest — so they are not something an author can opt into.
+    assertMayChoosePipeline(req.user, pipelineId);
 
     // 1. KRT file is required — frontend always attaches it.
     if (!req.file) {
@@ -189,6 +236,12 @@ async function create(req, res, next) {
       manuscriptId: manuscriptId || null,
       project,
       notes,
+      // Always stamped, never left null. `getPipeline(null)` resolves to
+      // whatever the default is *now*, so a null row would silently start
+      // claiming it ran a different pipeline the day the default changes —
+      // the same fault frozen prompts and frozen models exist to prevent.
+      // What a submission was analysed with is a fact about the past.
+      pipelineId: pipelineId || DEFAULT_PIPELINE_ID,
       status: 'step_krt'
     });
 
@@ -315,9 +368,35 @@ async function update(req, res, next) {
   try {
     const submission = req.submission;
     const { title, dataAvailabilityStatement, manuscriptId, notes, status } = req.validatedBody;
+    let dasNowConfirmed = false;
 
     if (title) submission.title = title;
-    if (dataAvailabilityStatement !== undefined) submission.dataAvailabilityStatement = dataAvailabilityStatement;
+    if (dataAvailabilityStatement !== undefined) {
+      // Writing the statement IS confirming it.
+      //
+      // The confirmation exists because EXTRACTION writes this field: text
+      // pulled out of the manuscript automatically, which the Availability
+      // check would otherwise report on as though the author had written it.
+      // A person who types the statement has already vouched for it, and
+      // asking them to confirm text they just authored is a click that means
+      // nothing — the kind of confirmation people learn to dismiss.
+      //
+      // Only on a real change: re-saving the same text from the metadata modal
+      // is not an authorship event, and re-stamping the confirmation there
+      // would credit the wrong person with the decision.
+      const changed = (submission.dataAvailabilityStatement || '') !== (dataAvailabilityStatement || '');
+      submission.dataAvailabilityStatement = dataAvailabilityStatement;
+      if (changed) {
+        // Emptying the field is not authorship. Nothing to confirm, and a
+        // confirmation left standing over a blank statement would let the
+        // check run against nothing the moment text reappeared.
+        const text = (dataAvailabilityStatement || '').trim();
+        const real = text && text !== NO_DAS_SENTINEL;
+        submission.dasConfirmedAt = real ? new Date() : null;
+        submission.dasConfirmedByUserId = real ? (req.userId || null) : null;
+        dasNowConfirmed = !!real;
+      }
+    }
     if (manuscriptId !== undefined) {
       submission.manuscriptId = manuscriptId || null;
       // Re-derive the project (grant) code if the manuscript ID changed.
@@ -349,6 +428,14 @@ async function update(req, res, next) {
     // wait for the KRT step to be validated), so a status change may unblock
     // waiting jobs. Failure here is non-fatal: the periodic reconciler
     // re-drives gated jobs within one sweep interval.
+    // A statement the author just wrote is one the check may read, and the
+    // check may be sitting in `pending_input` waiting for exactly that. Saving
+    // the form has to release it — otherwise the author writes the statement,
+    // sees nothing happen, and has no way to find out why.
+    if (dasNowConfirmed) {
+      await releaseAvailabilityCheck(submission, req.userId);
+    }
+
     if (statusChanged) {
       try {
         const orchestrator = require('../services/queue/orchestrator.service');
@@ -432,30 +519,52 @@ async function deleteSubmission(req, res, next) {
       throw new NotFoundError('Submission');
     }
 
-    // Delete the entire S3 folder for this submission first (best-effort).
-    // Every file the submission ever produced — uploaded KRT/PDF, generated
-    // reports, job raw responses, logs — lives under a single
-    // {manuscriptId}_{submissionId}/ prefix, so a single prefix delete cleans
-    // up everything. We log but don't fail the DB delete if S3 has issues —
-    // a stranded folder is recoverable, a half-deleted DB row is not.
+    // Cancel any queued work BEFORE the cascade removes the job rows.
+    // `submission_jobs.submission_id` is ON DELETE CASCADE, but pg-boss keeps
+    // its own table with no foreign key to ours — so without this the queue
+    // entries outlive the submission, get picked up by a worker, fail with
+    // "Submission not found", and retry. Best-effort: a stranded queue entry is
+    // noisy, a half-deleted submission is not recoverable.
+    let cancelledJobs = 0;
+    try {
+      cancelledJobs = await jobAdminService.cancelQueuedJobsForSubmission(submission.id);
+    } catch (queueError) {
+      logger.error('Queue cleanup failed during submission delete', {
+        submissionId: submission.id, error: queueError.message
+      });
+    }
+
+    // Ordered, in one transaction. `submission.destroy()` used to stand here and
+    // let Postgres cascade, which walks into the ON DELETE RESTRICT that
+    // `pipeline_run_steps` holds on `step_executions` — so every delete of a
+    // submission that had run the pipeline failed with a foreign-key violation.
+    // The retention path already knew the order; it is shared now rather than
+    // known in one place and assumed in the other.
+    const rows = await archiveService.removeSubmissionRows(submission.id);
+
+    // S3 AFTER the database, not before. It used to go first, on the reasoning
+    // that a stranded folder is recoverable and a half-deleted row is not —
+    // true, but it means a failing delete destroys the files and leaves the
+    // submission, which is what the foreign-key bug did on every attempt: the
+    // log shows the prefix emptied, then the 400, then a retry finding nothing
+    // left to delete. Now the row is gone before anything is unrecoverable, and
+    // the worst case is an orphaned prefix that a sweep can find.
     const s3Folder = buildS3Folder(submission.manuscriptId, submission.id);
     let s3DeletedCount = 0;
     try {
       s3DeletedCount = await s3Service.deletePrefix(`${s3Folder}/`);
     } catch (s3Error) {
-      logger.error('S3 cleanup failed during submission delete', {
-        submissionId: submission.id,
-        s3Folder,
-        error: s3Error.message
+      logger.error('S3 cleanup failed after submission delete', {
+        submissionId: submission.id, s3Folder, error: s3Error.message
       });
     }
-
-    await submission.destroy();
 
     logger.info('Submission deleted', {
       submissionId: req.params.id,
       userId: req.userId,
-      s3ObjectsDeleted: s3DeletedCount
+      rows,
+      s3ObjectsDeleted: s3DeletedCount,
+      cancelledJobs
     });
 
     res.json({ message: 'Submission deleted successfully' });
@@ -684,6 +793,11 @@ async function processNewVersion(req, res, next) {
       submission.currentRound = newRound;
       submission.dataAvailabilityStatement = null;
       submission.extractedDataAvailabilityStatement = null;
+      // The confirmation was about the previous manuscript's statement. Leaving
+      // it standing would let the new round's Availability check run on text
+      // extracted from a document nobody has confirmed anything about.
+      submission.dasConfirmedAt = null;
+      submission.dasConfirmedByUserId = null;
       submission.status = 'step_krt';
       await submission.save({ transaction: t });
 
@@ -818,6 +932,100 @@ async function processNewVersion(req, res, next) {
   }
 }
 
+/**
+ * Release the Availability check now that the statement has a person behind it.
+ *
+ * `requeueStep` resets the row out of `pending_input` — which nothing else
+ * revisits — and runs it as a manual trigger, so whoever authorised the
+ * statement is credited with the run.
+ *
+ * Never throws. The confirmation is recorded either way, and a step left
+ * `waiting` is picked up by the next reconciler sweep; failing the request
+ * would tell the user their statement did not save, which is false, and they
+ * would type it again.
+ *
+ * @param {object} submission
+ * @param {string} [userId] - who authorised it
+ * @returns {Promise<boolean>} whether a run was actually started
+ */
+async function releaseAvailabilityCheck(submission, userId) {
+  try {
+    const orchestrator = require('../services/queue/orchestrator.service');
+    const round = submission.currentRound || 1;
+    const job = await SubmissionJob.getLatest(submission.id, JOB_TYPES.DAS_SUGGESTIONS, round);
+
+    // Only release a step that is actually held. A check that has already run —
+    // or is running — does not need releasing, and requeueStep would happily
+    // reset a `complete` row and spend the call a second time. That turns
+    // re-saving a form into an LM bill.
+    const held = !job || ['waiting', 'pending_input', 'failed'].includes(job.status);
+    if (!held) return false;
+
+    const released = await orchestrator.requeueStep(
+      submission.id, JOB_TYPES.DAS_SUGGESTIONS, round, userId
+    );
+    // `waiting` means accepted but gated to a later step — nothing is running,
+    // so the caller must not promise the user a result is on its way.
+    return released?.status === 'queued' || released?.status === 'processing';
+  } catch (releaseErr) {
+    logger.error('Availability Statement confirmed, but the check did not start', {
+      submissionId: submission.id,
+      error: releaseErr.message
+    });
+    return false;
+  }
+}
+
+/**
+ * Confirm the Availability Statement, and release the check that reads it.
+ *
+ * The Availability check is the one step that will not start on its own. It
+ * reports on a paragraph pulled out of the manuscript automatically, and
+ * extraction gets it wrong often enough to matter — a check of the wrong
+ * paragraph is worse than no check, because it is reported as the author's.
+ *
+ * Confirming is therefore a decision, recorded with who made it and when, and
+ * it is what lets the pipeline spend the call.
+ *
+ * @route POST /api/submissions/:id/das/confirm
+ */
+async function confirmDas(req, res, next) {
+  try {
+    const submission = req.submission;
+
+    // NO_DAS_SENTINEL, not just empty: extraction always persists something,
+    // and "Not found" is the shape of nothing. Confirming it would send the
+    // checker the literal string "Not found" to review.
+    const das = (submission.dataAvailabilityStatement || '').trim();
+    if (!das || das === NO_DAS_SENTINEL) {
+      throw new ValidationError(
+        'There is no Availability Statement to confirm. Add one first, then confirm it.'
+      );
+    }
+
+    submission.dasConfirmedAt = new Date();
+    submission.dasConfirmedByUserId = req.userId || null;
+    await submission.save();
+
+    logger.info('Availability Statement confirmed', {
+      submissionId: submission.id, userId: req.userId
+    });
+
+    // Reported honestly. The check may already have run on this statement, or
+    // be gated to a later step — in both cases nothing is happening now, and a
+    // "checking it now" message would be a small lie the user cannot check.
+    const checking = await releaseAvailabilityCheck(submission, req.userId);
+
+    res.json({
+      dasConfirmedAt: submission.dasConfirmedAt,
+      dasConfirmedByUserId: submission.dasConfirmedByUserId,
+      checking
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   list,
   create,
@@ -831,5 +1039,6 @@ module.exports = {
   listHidden,
   getFilterOptions,
   downloadFile,
-  processNewVersion
+  processNewVersion,
+  confirmDas
 };

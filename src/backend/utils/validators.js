@@ -3,6 +3,7 @@
  */
 
 const Joi = require('joi');
+const { PIPELINES } = require('../config/pipelines');
 const { ROLES, SUBMISSION_STATUSES, REPORT_TYPES, CHANGE_SOURCES } = require('../config/constants');
 
 // Cache for dynamic schemas
@@ -116,7 +117,13 @@ const requestSchemas = {
     title: Joi.string().trim().min(1).max(500).required(),
     dataAvailabilityStatement: Joi.string().trim().max(5000).allow('', null),
     manuscriptId: schemas.manuscriptId.allow('', null),
-    notes: Joi.string().trim().max(2000).allow('')
+    notes: Joi.string().trim().max(2000).allow(''),
+    // Which detection pipeline to analyse with. Omitted means the default, which
+    // is what almost every submission wants. Listed from the registry rather
+    // than hard-coded so a new pipeline is selectable the moment it is defined;
+    // whether the CALLER may choose it is a separate check in the controller,
+    // because `adminOnly` is authorisation, not shape.
+    pipelineId: Joi.string().valid(...Object.keys(PIPELINES))
   }),
 
   updateSubmission: Joi.object({

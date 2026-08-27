@@ -28,7 +28,7 @@
    - [Router Guard](#router-guard)
    - [API Interceptor](#api-interceptor)
    - [Profile View](#profile-view)
-8. [Database Migration](#database-migration)
+8. [Database schema](#database-schema)
 9. [API Reference](#api-reference)
 10. [Security Considerations](#security-considerations)
 11. [Troubleshooting](#troubleshooting)
@@ -635,39 +635,23 @@ The "Change Password" card is conditionally rendered:
 
 ---
 
-## Database Migration
+## Database schema
 
-**File:** `migrations/20250101000022-add-auth0-support.js`
-
-### Up Migration
-
-```sql
--- Make password_hash nullable (Auth0 users don't have local passwords)
-ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
-
--- Add auth0_sub column
-ALTER TABLE users ADD COLUMN auth0_sub VARCHAR(255) UNIQUE;
-
--- Partial unique index (only for non-null values)
-CREATE UNIQUE INDEX users_auth0_sub_unique ON users (auth0_sub) WHERE auth0_sub IS NOT NULL;
-```
-
-### Down Migration
+**There is no separate Auth0 migration.** This section used to name
+`migrations/20250101000022-add-auth0-support.js`, which does not exist and, as
+far as the history goes, never did. Both columns are created by
+`migrations/20250101000001-initial-schema.js` with the rest of `users`:
 
 ```sql
-DROP INDEX users_auth0_sub_unique;
-ALTER TABLE users DROP COLUMN auth0_sub;
-ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL;
+"password_hash" VARCHAR(255),          -- nullable: an Auth0 user has no local password
+"auth0_sub"     VARCHAR(255) UNIQUE,   -- the Auth0 subject claim
 ```
 
-### Running the Migration
+Verified against the running database: both columns exist and both are
+nullable.
 
-```bash
-cd src/backend
-npx sequelize-cli db:migrate
-```
-
-**Note:** The down migration will fail if any Auth0 users exist (rows with `NULL` password_hash). You would need to either delete those users or assign them a placeholder password hash before rolling back.
+Nothing Auth0-specific needs migrating: a database built from
+`db:migrate` already has both columns.
 
 ---
 

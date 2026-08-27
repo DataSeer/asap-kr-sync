@@ -18,8 +18,14 @@ const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { mergeDetections } = require('./merge-detections.service');
 const { consolidateWithLM } = require('./krt-generation.service');
-const { normalizeName, identifiersMatch, computeDedupKey } = require('./identifier-normalize.service');
+const {
+  normalizeName, identifiersMatch, computeDedupKey,
+  stripSoftwareVersion, normalizeResourceTypeKey
+} = require('./identifier-normalize.service');
 const logger = require('../../utils/logger');
+const { repoPath } = require('../detection/repo-path');
+const runInputs = require('../queue/run-inputs.service');
+const inputFreeze = require('../queue/input-freeze.service');
 
 /**
  * Seed-retention invariant (issue #1): the Generated KRT MUST contain every
@@ -41,12 +47,32 @@ const logger = require('../../utils/logger');
  */
 function reconcileWithAuthorKrt(generatedKrt, authorRows) {
   const items = [...generatedKrt];
+
+  /**
+   * Is this author row already present in the Generated KRT?
+   *
+   * The two errors here are not symmetric. Saying "not represented" when it is
+   * costs a duplicate row — visible, harmless, a curator merges it. Saying
+   * "represented" when it is not costs the author's row its place in the
+   * Generated KRT, which breaks the guarantee that every author row survives.
+   * So this deliberately uses only the STRONG keys (identifier, exact name,
+   * and version-insensitive name for software) and never the grounding
+   * matcher's `partial_name` tier — a partial match is precisely the case where
+   * we do NOT know the two are the same item.
+   */
   const isRepresented = (row) => {
     const rn = normalizeName(row.resourceName);
-    return items.some(g =>
-      (g.identifier && row.identifier && identifiersMatch(g.identifier, row.identifier)) ||
-      (!!rn && normalizeName(g.resourceName) === rn)
-    );
+    const isSoftware = normalizeResourceTypeKey(row.resourceType || '') === 'software/code';
+    const rowStripped = isSoftware ? normalizeName(stripSoftwareVersion(row.resourceName)) : '';
+    return items.some((g) => {
+      if (g.identifier && row.identifier && identifiersMatch(g.identifier, row.identifier)) return true;
+      const gn = normalizeName(g.resourceName);
+      if (rn && gn === rn) return true;
+      // "Fiji 2.9.0" (author) is the same tool as "Fiji" (detected); without
+      // this the row was carried in a second time alongside its own detection.
+      if (rowStripped && normalizeName(stripSoftwareVersion(g.resourceName)) === rowStripped) return true;
+      return false;
+    });
   };
   const carried = [];
   for (const row of authorRows || []) {
@@ -54,7 +80,10 @@ function reconcileWithAuthorKrt(generatedKrt, authorRows) {
     if (isRepresented(row)) continue;
     const base = {
       resourceType: row.resourceType || '', resourceName: row.resourceName || '',
-      sourceUrl: row.source || '', identifier: row.identifier || '', newReuse: row.newReuse || ''
+      sourceUrl: row.source || '', identifier: row.identifier || '', newReuse: row.newReuse || '',
+      // Carry the author's own ADDITIONAL INFORMATION too. Omitting it made the
+      // Generated KRT's copy of an author row poorer than the row it came from.
+      additionalInformation: row.additionalInformation || ''
     };
     const carriedItem = {
       ...base,
@@ -137,14 +166,39 @@ async function buildGeneratedKrt(submission, jobLogger) {
   // attaching a `reason` per line (kept/merged/dropped). Falls back to the
   // rule-based candidates when the LM isn't configured or errors.
   const consolidated = await consolidateWithLM(candidates, jobLogger);
+  // Recorded after the call so the assembled prompt's digest can go in with the
+  // rest: the candidate pool is the whole input here, and it is exactly what a
+  // re-run of any detector would change underneath this result.
+  await runInputs.saveRunInputs(jobLogger, {
+    frozen: { candidates },
+    upstream: runInputs.upstreamRefs(contributions),
+    prompt: runInputs.promptRef(
+      repoPath(require('./krt-generation.service').PROMPT_FILE),
+      consolidated.promptDigest || null
+    ),
+    meta: { candidateCount: candidates.length, contributorCount: contributions.length },
+    // What was asked of the model. This step froze its prompt from the start
+    // and never said which model read it, so two runs that disagreed could not
+    // be told apart from two models that disagreed.
+    call: require('../../config/krt-generation-api')
+  });
   const { dropped, usedLM, rawResponse } = consolidated;
   if (rawResponse) {
-    await jobLogger?.saveRawResponse('krt-generation', rawResponse, { extension: '.md', mimeType: 'text/markdown' });
+    // .json, not .md: this is the model's JSON body (possibly still fenced),
+    // never prose. It was written as markdown, which made it look like a
+    // written analysis in the artifact list when it is the raw response.
+    await jobLogger?.saveRawResponse('krt-generation', rawResponse);
   }
 
   // Seed retention: guarantee every author KRT item survives into the Generated
   // KRT, even if the LM consolidation dropped it (see reconcileWithAuthorKrt).
-  const authorRows = await KRTData.findAll({ where: { submissionId, round } });
+  // The round's frozen table, the same one the detectors were seeded from.
+  // Reading the live table here is what produced an analysis whose detections
+  // came from one version of the KRT and whose consolidation reconciled against
+  // another — silently, with nothing to show it had happened.
+  const authorRows = await inputFreeze.resolveKrtRows(submissionId, round, {
+    jobType: JOB_TYPES.PDF_ANALYSIS
+  });
   const { items: generatedKrt, carried } = reconcileWithAuthorKrt(consolidated.items, authorRows);
   if (carried.length) {
     jobLogger?.log('seed_retention', 'Carried author KRT items the consolidation did not reproduce', { carriedCount: carried.length });
@@ -180,6 +234,13 @@ async function buildGeneratedKrt(submission, jobLogger) {
       droppedCount: dropped.length,
       dropped,
       usedLM,
+      // Consolidation falls back to a deterministic merge when the model is
+      // unavailable; naming a prompt on that run would be a lie.
+      promptFile: usedLM ? repoPath(require('./krt-generation.service').PROMPT_FILE) : null,
+      // The Technical panel shows one row per Gemini module; without this the
+      // consolidator was the only one that called Gemini and did not say which
+      // model it used.
+      model: usedLM ? require('../../config/krt-generation-api').model : null,
       multiSourceCount: multiSource,
       carriedCount: carried.length,
       totalMs: Date.now() - startTime
@@ -194,9 +255,7 @@ async function buildGeneratedKrt(submission, jobLogger) {
 async function persistJobData(submissionId, jobType, round, helperResult) {
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 

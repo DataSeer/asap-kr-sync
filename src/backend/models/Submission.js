@@ -50,6 +50,29 @@ module.exports = (sequelize) => {
       allowNull: true,
       field: 'extracted_data_availability_statement'
     },
+    /**
+     * When the author confirmed the Availability Statement.
+     *
+     * `das_suggestions` is the only module that reads the statement, and it
+     * waits for this — the extractor's answer is a proposal, and running before
+     * anyone has looked spends a model call on text that may be the wrong
+     * paragraph. Cleared whenever the statement is edited, so a changed
+     * statement is re-confirmed rather than silently re-used.
+     *
+     * A timestamp rather than a boolean: "when was this agreed, and by whom" is
+     * what an audit asks, and a boolean cannot answer it.
+     */
+    dasConfirmedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: 'das_confirmed_at'
+    },
+    dasConfirmedByUserId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'das_confirmed_by_user_id',
+      references: { model: 'users', key: 'id' }
+    },
     status: {
       type: DataTypes.ENUM(...SUBMISSION_STATUSES),
       allowNull: false,
@@ -70,6 +93,26 @@ module.exports = (sequelize) => {
       allowNull: true,
       defaultValue: null,
       field: 'authors'
+    },
+    /**
+     * Which detection pipeline analysed this submission (`config/pipelines.js`).
+     *
+     * Always stamped on creation, the default included. `getPipeline(null)`
+     * resolves to whatever the default is *now*, so a null row would start
+     * claiming a different pipeline the day the default changes. NULL means
+     * only "created before this column existed".
+     *
+     * Set once, when the submission is created, and never afterwards: the
+     * strategies decide what the detectors are shown, so changing it mid-flight
+     * would leave some steps detected blind and some seeded with nothing
+     * recording the split — the same fault `submission_input_freezes` exists to
+     * prevent for documents.
+     */
+    pipelineId: {
+      type: DataTypes.STRING(32),
+      allowNull: true,
+      defaultValue: null,
+      field: 'pipeline_id'
     },
   }, {
     tableName: 'submissions',

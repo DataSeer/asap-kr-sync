@@ -1,6 +1,12 @@
-node_modules/
+# Recursive on purpose. Docker ignore patterns match the whole context-relative
+# path and are NOT applied per-directory, so `node_modules/` and `.env.*` only
+# ever matched the repo root — `src/frontend/.env.development` and the host's
+# `src/frontend/node_modules` were both being copied into the published image.
+**/node_modules
 .env
 .env.*
+**/.env
+**/.env.*
 credentials/
 .git/
 docs/
@@ -16,3 +22,11 @@ coverage/
 src/frontend/public/demo-files/*
 !src/frontend/public/demo-files/.gitkeep
 !src/frontend/public/demo-files/README.md
+
+# Localhost-only tooling — feature development and quality evaluation. It runs
+# against a developer's machine (gold linkage, A/B prompt arms, scoring,
+# benchmarks), never against a deployed instance, and several of these pull in
+# heavy dev-only dependencies. `scripts/` itself still ships: create-user,
+# init-db, the roster import, the queue purge and the run auditor are all
+# operational tools that belong on the host.
+scripts/dev/

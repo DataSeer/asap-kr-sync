@@ -21,7 +21,7 @@
 const { Submission, KRTData, RejectedResource, ChangeLog, ValidationResult, sequelize } = require('../../models');
 const { applyAddRow, applyEdit } = require('../pdf/pdf.service');
 const { NotFoundError } = require('../../utils/errors');
-const { getPersistedSuggestions } = require('./kr-comparison.service');
+const { getPersistedSuggestions, getPersistedGroundings } = require('./kr-comparison.service');
 
 /**
  * Resolve the round to use. Falls back to the submission's currentRound.
@@ -109,10 +109,11 @@ function rejectedRowToSuggestion(r) {
  */
 async function getAllSuggestions(submissionId, round) {
   const r = await resolveRound(submissionId, round);
-  const [persisted, rejections, approvedIds] = await Promise.all([
+  const [persisted, rejections, approvedIds, groundings] = await Promise.all([
     getPersistedSuggestions(submissionId, r),
     loadRejections(submissionId, r),
-    loadApprovedIds(submissionId, r)
+    loadApprovedIds(submissionId, r),
+    getPersistedGroundings(submissionId, r)
   ]);
   // Split the persisted list by the user's saved decisions so accept/reject
   // survive navigating away and back:
@@ -127,7 +128,10 @@ async function getAllSuggestions(submissionId, round) {
     if (approvedIds.has(s.id)) approved.push({ ...s, status: 'approved' });
     else pending.push(s);
   }
-  return { suggestions: [...pending, ...approved, ...rejections.rejectedSuggestions] };
+  // `groundings` rides alongside, never inside, the suggestion list: a row the
+  // manuscript never mentions is tagged for the curator's judgement, not
+  // offered as an action to accept or reject.
+  return { suggestions: [...pending, ...approved, ...rejections.rejectedSuggestions], groundings };
 }
 
 /** Find a persisted suggestion by id for the current round. */

@@ -27,23 +27,41 @@ const { GoogleGenAI } = require('@google/genai');
 const s3Service = require('../storage/s3.service');
 const langextractClient = require('./langextract-client.service');
 const datasetsConfig = require('../../config/datasets-detection-api');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
+const { seedCoverageShortfall } = require('../detection/seed-coverage');
+const { tagAuthorRows } = require('../detection/tag-author-rows');
+const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
+const runInputs = require('../queue/run-inputs.service');
+const { buildKrtItemFromLM } = require('../pdf-analysis/lm-resource.service');
+const inputFreeze = require('../queue/input-freeze.service');
+const { buildAuthorSeeds, splitKrtIdentifiers } = require('../krt/author-krt-seeds.service');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, extractJsonBlock, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
-const CONSOLIDATION_PROMPT_FILE = path.join(PROMPTS_DIR, 'datasets-consolidation.txt');
+const CONSOLIDATION_PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'datasets-consolidation.txt');
 let _consolidationPromptCache = null;
 
-const RELEVANCE_TO_CONFIDENCE = { HIGH: 0.95, MEDIUM: 0.7, LOW: 0.4 };
-const DEFAULT_CONFIDENCE = 0.7;
+// gemini-2.5-flash allows 65536 output tokens. This was 32768, which a
+// 133 KB manuscript exceeded mid-object: the JSON failed to parse and the
+// module recorded 0 resources after 124s of work. Thinking stays disabled
+// (commit 38a16db), so the whole budget goes to output.
+const MAX_OUTPUT_TOKENS = 65536;
 
+/**
+ * Fallback only. The prompt a run actually uses comes from its strategy and is
+ * passed in as an override; this file backs the no-override path (scripts, and
+ * any caller that has no submission). Availability is decided by
+ * detectionPromptsExist, which asks the submission's own pipeline.
+ */
 function hasConsolidationPrompt() {
   return fs.existsSync(CONSOLIDATION_PROMPT_FILE);
 }
@@ -69,34 +87,44 @@ function getConsolidationPrompt(override) {
       length: _consolidationPromptCache.length
     });
   }
-  return _consolidationPromptCache;
+  // See the note in materials.service getPrompt: a frozen restart uses the
+  // run's own template.
+  return frozenParams.prompt(_consolidationPromptCache);
 }
 
-async function queueDatasetDetection(submissionId, round = 1) {
-  // Reset downstream dependents (PDF Analysis) to 'waiting' so they re-run
-  // once this detection completes — keeps the Generated KRT in sync with the
-  // freshly-produced detection items.
-  const { SubmissionJob } = require('../../models');
+/**
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
+ */
+async function queueDatasetDetection(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.DATASETS_DETECTION, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.DATASETS_DETECTION,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DATASETS_DETECTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.DATASETS_DETECTION, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.DATASETS_DETECTION, round, userId);
+
+  logger.info('Datasets detection re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.DATASETS_DETECTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Datasets detection queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 async function processDatasetDetection(submissionId, jobLogger = null, { isFinalAttempt = true } = {}) {
@@ -105,7 +133,7 @@ async function processDatasetDetection(submissionId, jobLogger = null, { isFinal
   if (!submission) throw new NotFoundError('Submission');
 
   const result = await runWithDemoFallback({
-    isExternalEnabled: datasetsConfig.isConfigured() && hasConsolidationPrompt(),
+    isExternalEnabled: datasetsConfig.isConfigured() && detectionPromptsExist('datasets', submission),
     demoEnabled: process.env.DATASETS_DETECTION_DEMO_DATA_ENABLED !== 'false',
     runExternal: () => detectDatasetsForSubmission(submission, jobLogger),
     getDemoData: async () => {
@@ -140,10 +168,12 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.DATASETS_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for datasets detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', { fileName: mdFile.fileName, s3Key: mdFile.s3Key });
@@ -154,15 +184,42 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
   // ── Step 1: detect (langextract → Gemini)
   jobLogger?.log('extract_signals_start', 'Starting langextract signal extraction', { markdownLength: markdownText.length });
   const signalStartTime = Date.now();
-  const extractions = await langextractClient.extractSignals(markdownText);
+  // Which prompts, and seeded from what. Datasets differs from the other two:
+  // its seeds go into the payload's `author_provided_datasets` field, which the
+  // seeded consolidation prompt reads by name, not into an appended block.
+  const resolved = await resolveDetection('datasets', { submission, markdownText, jobLogger });
+  if (!resolved.run) {
+    return { items: [], meta: { totalCount: 0, skipped: true,
+      reason: resolved.reason, pipeline: resolved.pipeline.id } };
+  }
+
+  const extractions = await langextractClient.extractSignals(markdownText, {
+    prompt: resolved.input.signalsPrompt
+  });
   const signalMs = Date.now() - signalStartTime;
 
   const datasetNames = langextractClient.collectDatasetNames(extractions);
-  const extractedRows = langextractClient.buildExtractedRows(extractions);
+  const allRows = langextractClient.buildExtractedRows(extractions);
+
+  // Pass 1 is a GROUNDING stage, not just a recall stage: LangExtract aligns
+  // each extraction to a span of the article. Anything it could not align did
+  // not come from the article — in practice, the few-shot examples echoed back
+  // out of the prompt. Those must not reach consolidation, where they would be
+  // laundered into ordinary-looking candidate rows.
+  const { grounded: extractedRows, ungrounded } = langextractClient.partitionByGrounding(allRows);
 
   jobLogger?.log('extract_signals_done', 'Signal extraction complete', {
-    totalExtractions: extractions.length, datasetRowCount: extractedRows.length, durationMs: signalMs
+    totalExtractions: extractions.length,
+    datasetRowCount: extractedRows.length,
+    ungroundedDropped: ungrounded.length,
+    durationMs: signalMs
   });
+  if (ungrounded.length > 0) {
+    jobLogger?.log('extract_signals_ungrounded', 'Dropped signals not aligned to the article', {
+      count: ungrounded.length,
+      names: ungrounded.map((r) => r.attributes?.dataset_name).filter(Boolean).slice(0, 10)
+    });
+  }
   await jobLogger?.saveRawResponse('langextract-signals', extractions);
 
   // Empty result: still a valid External outcome (Done with 0 items).
@@ -176,61 +233,126 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
     };
   }
 
-  // Seed the consolidation from the author's KRT dataset rows (empty when the
-  // submission has no KRT — article-only, unchanged behaviour).
-  const authorDatasets = await loadAuthorDatasetSeeds(submissionId, round);
-  if (authorDatasets.length > 0) {
-    jobLogger?.log('author_krt_seeds', 'Loaded author KRT dataset seeds', { count: authorDatasets.length });
-  }
-
+  // Consolidation is KRT-blind: the author's rows are reconciled against this
+  // output by the krt_grounding module, downstream. See
+  // docs/pipeline-modules.md.
   jobLogger?.log('consolidate_start', 'Starting Gemini consolidation', {
-    datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length, authorSeedCount: authorDatasets.length
+    datasetNameCount: datasetNames.length, extractedRowCount: extractedRows.length
   });
   const consolidationStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, undefined, authorDatasets);
+  const { resources: rawItems, rawResponse, promptDigest } = await callGeminiForConsolidation(
+    datasetNames, extractedRows, markdownText,
+    { prompt: resolved.input.prompt, seeds: resolved.input.seeds }
+  );
   const consolidationMs = Date.now() - consolidationStartTime;
 
-  const cleanedConsolidation = stripMarkdownFences(rawResponse);
+  const cleanedConsolidation = extractJsonBlock(rawResponse);
   await jobLogger?.saveRawResponse('gemini-consolidation', cleanedConsolidation || rawResponse || rawItems);
+  // Both passes are recorded: the signals prompt drives extraction, the
+  // consolidation prompt drives the merge, and a run is only reproducible with
+  // the pair. The extracted signals themselves are the `langextract-signals`
+  // artefact beside this one.
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, mdBuffer) },
+    // The consolidation prompt embeds the DERIVED signals, not the raw
+    // extractions — so the raw `langextract-signals` artefact beside this one is
+    // not enough to rebuild it. One file has to be sufficient, or the digest
+    // proves nothing on its own.
+    frozen: {
+      seeds: resolved.input.seeds || [],
+      datasetNames,
+      extractedRows
+    },
+    prompt: runInputs.promptRef(resolved.input.meta?.promptFile || null, promptDigest),
+    // The few-shot examples are recorded as part of the signals prompt, not
+    // beside it. LangExtract takes them as a separate argument and converts
+    // them into structured ExampleData — they never enter the prompt text, so
+    // the saved template alone would NOT reproduce this run. Editing the
+    // examples changes the signals exactly as editing the prompt does.
+    signalsPrompt: runInputs.promptRef(
+      resolved.input.meta?.signalsPromptFile || null,
+      null,
+      [resolved.input.meta?.signalsExamplesFile].filter(Boolean)
+    ),
+    meta: {
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      model: datasetsConfig.model,
+      seedCount: resolved.input.meta?.seedCount ?? 0,
+      signalCount: extractedRows.length
+    },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: datasetsConfig
+  });
 
   // ── Step 2: buildKrtItems
-  const krtItems = buildKrtItemsDatasets(rawItems);
+  const krtItems = tagAuthorRows(buildKrtItemsDatasets(rawItems), resolved.input.seeds);
 
-  // ── Step 3: dedupe
-  const items = dedupeKrtItems(krtItems, 'datasets-gemini');
+  // ── Step 3: ground every claim against the manuscript
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems, stats: evidenceStats } = attachEvidence(krtItems, evidenceIndex, {
+    label: 'datasets'
+  });
+  jobLogger?.log('evidence_grounding', 'Grounded dataset claims against the manuscript', evidenceStats);
+  await jobLogger?.saveRawResponse('evidence-grounding', { stats: evidenceStats, items: groundedItems });
+
+  // ── Step 4: dedupe
+  const items = dedupeKrtItems(groundedItems, 'datasets-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
   jobLogger?.log('consolidate_done', 'Consolidation complete', {
     resourceCount: items.length, highRelevanceCount, durationMs: consolidationMs
   });
 
+  // The seeded prompts promise one row per author seed and say "never drop one".
+  // A run far short of that has broken a contract it was given in writing — and
+  // reported as a clean zero it reads like a manuscript with nothing in it.
+  // Flagged via `meta.degraded`, which demo-fallback turns into `partial`.
+  const seedShortfall = seedCoverageShortfall({
+    seedCount: resolved.input.meta?.seedCount ?? 0,
+    returnedCount: items.length,
+    detector: 'datasets'
+  });
+  if (seedShortfall) {
+    jobLogger?.log('seed_shortfall', 'Seeded run returned far fewer rows than seeds', seedShortfall);
+  }
+
   return {
     items,
     meta: {
       totalCount: items.length, uniqueCount: items.length, highRelevanceCount,
+      ...(seedShortfall ? { degraded: seedShortfall } : {}),
+      seedCount: resolved.input.meta?.seedCount ?? 0,
       signalExtractionCount: extractedRows.length,
       signalMs, consolidationMs,
       totalMs: Date.now() - startTime,
-      model: datasetsConfig.model
+      model: datasetsConfig.model,
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      // The prompt this run used, repo-relative, so the UI can link to it.
+      promptFile: resolved.input.meta?.promptFile || null,
+      signalsPromptFile: resolved.input.meta?.signalsPromptFile || null
     }
   };
 }
 
-async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, promptOverride, authorDatasets = []) {
+async function callGeminiForConsolidation(datasetNames, extractedRows, markdownText, opts = {}) {
+  // A bare prompt string for the pure/benchmark entry point, or {prompt, seeds}
+  // from a strategy.
+  const { prompt: promptOverride, seeds } = typeof opts === 'string' ? { prompt: opts } : opts;
   const ai = new GoogleGenAI({ apiKey: datasetsConfig.apiKey });
   const systemPrompt = getConsolidationPrompt(promptOverride);
 
-  // `author_provided_datasets` is always present (empty when there is no author
-  // KRT). The v3 consolidation prompt seeds the output from it; older prompts
-  // (v1/v2) do not reference the key and simply ignore it.
-  const userPayload = {
-    author_provided_datasets: authorDatasets,
-    dataset_names: datasetNames,
-    extracted_dataset_rows: extractedRows,
-    full_article: markdownText
-  };
-
-  const prompt = systemPrompt + '\n\nINPUT:\n' + JSON.stringify(userPayload, null, 0);
+  // `author_provided_datasets` is ALWAYS emitted, empty when unseeded: prompts
+  // that do not reference the key ignore it, while a missing key breaks the
+  // ones that do.
+  const { prompt } = assemblePayloadPrompt({
+    systemPrompt, seeds, datasetNames, extractedRows, markdownText
+  });
+  const promptDigest = { sha256: runInputs.sha256(prompt), bytes: Buffer.byteLength(prompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -241,35 +363,38 @@ async function callGeminiForConsolidation(datasetNames, extractedRows, markdownT
       // thinking ate the budget and truncated the JSON mid-object.
       config: {
         responseMimeType: 'application/json',
-        maxOutputTokens: 32768,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    }, { label: 'datasets consolidation' });
+    }, {
+      label: 'datasets consolidation',
+      // An empty or unparseable body is a FAILED call, not "found
+      // nothing" — retry it. The prompt states that an empty array is
+      // how to report finding nothing, so a model with nothing to say
+      // still has a valid answer available.
+      validate: (res) => hasParseableBody(res?.text)
+    });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (datasets consolidation) — output hit maxOutputTokens');
     }
 
     const text = response.text;
-    if (!text) {
-      logger.warn('Gemini returned empty response for datasets consolidation');
-      return { resources: [], rawResponse: '' };
+    if (!hasParseableBody(text)) {
+      // Every retry came back with nothing readable. Reporting zero
+      // resources here would be a wrong answer presented as a finished
+      // one: the job goes green with detected: false, indistinguishable
+      // from a manuscript that genuinely mentions none.
+      logger.error('Gemini returned no parseable body for datasets consolidation after retries');
+      throw new ExternalServiceError('Gemini', 'empty or unparseable response after retries');
     }
 
     logger.debug('Gemini consolidation response preview', { preview: text.substring(0, 500) });
-    return { resources: parseGeminiResponse(text), rawResponse: text };
+    return { resources: parseGeminiResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for datasets consolidation', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
   }
-}
-
-function stripMarkdownFences(text) {
-  if (typeof text !== 'string') return '';
-  let s = text.trim();
-  if (!s.startsWith('```')) return s;
-  s = s.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
-  return s.trim();
 }
 
 function mapDatasetRole(role) {
@@ -298,87 +423,6 @@ function joinIdentifiers(item) {
   return unique.join('; ');
 }
 
-const ACCESSION_PREFIX_RE = /^(PRJ|GSE|PXD|SRR|SRP|SRX|EGA|EGAS|EGAD|PDB|EMD|phs|GCA|GCF|E-|SAM)/i;
-
-/**
- * Split a free-text KRT identifier cell into accessions / DOIs / URLs so an
- * author seed matches the `author_provided_datasets` shape the consolidation
- * prompt expects. Never invents identifiers — only classifies what is present.
- * @param {string} text
- * @returns {{ accessions: string[], dois: string[], urls: string[] }}
- */
-function splitKrtIdentifiers(text) {
-  const accessions = [];
-  const dois = [];
-  const urls = [];
-  if (!text) return { accessions, dois, urls };
-
-  for (const token of String(text).split(/[\s;,]+/)) {
-    const t = token.trim().replace(/^[.,;]+|[.,;]+$/g, '');
-    if (!t) continue;
-    const low = t.toLowerCase();
-    if (low.startsWith('http://') || low.startsWith('https://') || low.startsWith('www.')) {
-      urls.push(t);
-    } else if (low.startsWith('10.') || low.includes('doi.org') || low.startsWith('doi:')) {
-      dois.push(t.replace(/^doi:/i, '').trim());
-    } else if (ACCESSION_PREFIX_RE.test(t) && /\d/.test(t)) {
-      // Require a digit so bare words like "PDB" or "EGA" are not treated as accessions.
-      accessions.push(t);
-    }
-  }
-  return { accessions, dois, urls };
-}
-
-/**
- * Map the author's KRT dataset rows (already filtered to dataset-type rows) into
- * the `author_provided_datasets` seed shape consumed by the v3 consolidation
- * prompt. Trusts the curator's values; rows without a resource name are dropped.
- * @param {object[]} krtRows - rows from krt_data ({ resourceName, source, identifier, newReuse, additionalInformation })
- * @returns {object[]}
- */
-function buildAuthorDatasetSeeds(krtRows) {
-  if (!Array.isArray(krtRows)) return [];
-  return krtRows
-    .map((row) => {
-      const name = (row.resourceName || '').trim();
-      if (!name) return null;
-      const ids = splitKrtIdentifiers(row.identifier);
-      // URLs sometimes live in the additional-information cell too.
-      const extraUrls = splitKrtIdentifiers(row.additionalInformation).urls;
-      const urls = [...new Set([...ids.urls, ...extraUrls])];
-      const reuse = String(row.newReuse || '').toLowerCase().startsWith('reuse');
-      return {
-        name,
-        role: reuse ? 'REUSED' : 'GENERATED',
-        source: row.source || '',
-        accessions: ids.accessions,
-        dois: ids.dois,
-        urls,
-        additional_info: row.additionalInformation || ''
-      };
-    })
-    .filter(Boolean);
-}
-
-/**
- * Load the author KRT dataset seeds for a submission/round: read krt_data and
- * keep the rows the curator typed as a dataset (resource-type group 0). Returns
- * an empty array when the submission has no KRT, so the consolidation runs
- * article-only exactly as before.
- * @param {string} submissionId
- * @param {number} round
- * @returns {Promise<object[]>}
- */
-async function loadAuthorDatasetSeeds(submissionId, round) {
-  const { KRTData } = require('../../models');
-  const { getResourceTypeGroupOrder } = require('../../config/constants');
-  const rows = await KRTData.findAll({ where: { submissionId, round } });
-  if (rows.length === 0) return [];
-  const groupOrder = await getResourceTypeGroupOrder();
-  const datasetRows = rows.filter((row) => groupOrder[row.resourceType] === 0);
-  return buildAuthorDatasetSeeds(datasetRows);
-}
-
 /**
  * Convert one consolidated Gemini item (or legacy demo item, which already
  * carries the post-transform shape) into a canonical KrtEntry.
@@ -386,56 +430,8 @@ async function loadAuthorDatasetSeeds(submissionId, round) {
  * Pure function. Returns null if the item lacks a canonical_name (matches the
  * pre-refactor behavior of `parseGeminiResponse`, which dropped these).
  */
-function transformConsolidatedItem(item) {
-  if (!item || typeof item !== 'object') return null;
-  const resourceName = item.canonical_name || item.resourceName || item.name || '';
-  if (!resourceName) return null;
-
-  // Sub-type (e.g. "Microarray") becomes additionalInformation. Pre-refactor
-  // datasets used `Type: ${subType}`; preserve that exact wording so the
-  // consolidator output diffs cleanly.
-  const subType = (item.subtype || item.resource_subtype || '').toString().trim() ||
-                  // Legacy demo items already collapsed subType into resource_type;
-                  // if resource_type is NOT 'Dataset' we treat it as the subtype.
-                  ((item.resource_type && item.resource_type !== 'Dataset') ? item.resource_type : '');
-  const additionalInformation = subType ? `Type: ${subType}` : (item.additionalInformation || '');
-
-  // Identifier: legacy items already have it joined; raw Gemini items have
-  // accessions/dois/urls separately. joinIdentifiers handles both shapes.
-  const identifier = item.identifier && !Array.isArray(item.identifier)
-    ? item.identifier
-    : joinIdentifiers(item);
-
-  const newReuse = item.newReuse || item.new_reuse || mapDatasetRole(item.dataset_role);
-  const source = (item.repository || item.source || '').toString().trim();
-  const relevance = item.krt_relevance || item.relevance || 'MEDIUM';
-
-  return {
-    resourceType: 'Dataset',
-    resourceName,
-    identifier,
-    source,
-    newReuse,
-    origin: 'datasets-gemini',
-    confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-    // Leave ADDITIONAL INFORMATION empty for user-facing suggestions. The
-    // dataset subtype + any detector-supplied notes are persisted on
-    // detectorMeta for internal inspection only.
-    additionalInformation: '',
-    detectorMeta: {
-      relevance,
-      subtype: subType || '',
-      accessions: Array.isArray(item.accessions) ? item.accessions : [],
-      dois:       Array.isArray(item.dois)       ? item.dois       : [],
-      urls:       Array.isArray(item.urls)       ? item.urls       : [],
-      datasetRole: item.dataset_role || '',
-      context: additionalInformation
-    }
-  };
-}
-
 function parseGeminiResponse(text) {
-  const jsonStr = sanitizeJsonEscapes(stripMarkdownFences(text));
+  const jsonStr = sanitizeJsonEscapes(extractJsonBlock(text));
 
   try {
     const parsed = JSON.parse(jsonStr);
@@ -454,45 +450,90 @@ function parseGeminiResponse(text) {
     logger.error('Failed to parse Gemini consolidation JSON response', {
       error: error.message, preview: jsonStr.substring(0, 300)
     });
+    // A response cut off by maxOutputTokens ends mid-object, so the whole body
+    // fails to parse and every already-complete row would be lost. Recover
+    // those rather than returning nothing.
+    const salvaged = salvageTruncatedObjects(jsonStr);
+    if (salvaged.length > 0) {
+      logger.warn('Salvaged rows from a truncated Gemini response (datasets)', { count: salvaged.length });
+      return salvaged;
+    }
     return [];
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pipeline steps (pure-ish, exported)
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Step 1: standalone two-pass detection. Runs langextract + Gemini and
- * returns the raw consolidation items (no canonical transform yet). No DB,
- * no S3.
+ * Step 1: standalone two-pass detection. Runs langextract + Gemini and returns
+ * the raw consolidation items (no canonical transform yet). No DB, no S3.
+ *
  * @param {string} markdownText
- * @returns {Promise<{ resources: object[], signalCount: number }>}
- */
-/**
- * @param {string} markdownText
- * @param {{ prompt?: string, signalsPrompt?: string, signalsExamples?: string|object, authorDatasets?: object[] }} [options]
+ * @param {{ prompt?: string, signalsPrompt?: string, signalsExamples?: string|object }} [options]
  *   `prompt` overrides the Gemini consolidation prompt; `signalsPrompt` and
  *   `signalsExamples` override the langextract signal-extraction prompt and its
  *   few-shot examples JSON (all default to the committed file contents).
- *   `authorDatasets` seeds the consolidation with the author's KRT dataset rows
- *   (empty by default — the v3 prompt uses them, older prompts ignore them).
  * @returns {Promise<{ resources: object[], signalCount: number }>}
  */
-async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples, authorDatasets } = {}) {
+async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples, seeds } = {}) {
   const extractions = await langextractClient.extractSignals(markdownText, {
     prompt: signalsPrompt,
     examples: signalsExamples
   });
   const datasetNames = langextractClient.collectDatasetNames(extractions);
-  const extractedRows = langextractClient.buildExtractedRows(extractions);
+  // Same grounding gate as the job path — see the comment there.
+  const { grounded: extractedRows } = langextractClient.partitionByGrounding(
+    langextractClient.buildExtractedRows(extractions)
+  );
 
   if (extractedRows.length === 0) {
     return { resources: [], signalCount: extractions.length };
   }
 
-  const { resources, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt, authorDatasets || []);
+  // `seeds` forwarded, not dropped. A caller reproducing the seeded strategy
+  // offline gets the seeded prompt AND the rows it refers to; passing only the
+  // prompt makes a seeded run silently blind, and the two arms of a comparison
+  // then differ by prompt text alone.
+  const { resources, rawResponse } = await callGeminiForConsolidation(
+    datasetNames, extractedRows, markdownText, { prompt, seeds }
+  );
   return { resources, signalCount: extractedRows.length, rawResponse };
+}
+
+function transformConsolidatedItem(item) {
+  if (!item || typeof item !== 'object') return null;
+
+  // Sub-type (e.g. "Microarray") becomes the stored context. Pre-refactor
+  // datasets used `Type: ${subType}`; preserve that exact wording so the
+  // consolidator output diffs cleanly.
+  const subType = (item.subtype || item.resource_subtype || '').toString().trim()
+    // Legacy demo items collapsed subType into resource_type; if resource_type
+    // is NOT 'Dataset' we treat it as the subtype.
+    || ((item.resource_type && item.resource_type !== 'Dataset') ? item.resource_type : '');
+  const context = subType ? `Type: ${subType}` : (item.additionalInformation || '');
+
+  const entry = buildKrtItemFromLM(item, {
+    origin: 'datasets-gemini',
+    defaultResourceType: 'Dataset',
+    details: (raw) => ({
+      subtype: subType || '',
+      accessions: Array.isArray(raw.accessions) ? raw.accessions : [],
+      dois: Array.isArray(raw.dois) ? raw.dois : [],
+      urls: Array.isArray(raw.urls) ? raw.urls : [],
+      datasetRole: raw.dataset_role || '',
+      context
+    })
+  });
+  if (!entry) return null;
+
+  // Datasets are always typed as Dataset regardless of the sub-type the model
+  // reported, and their identifier may arrive split across accessions/dois/urls
+  // rather than as one string.
+  entry.resourceType = 'Dataset';
+  entry.identifier = (item.identifier && !Array.isArray(item.identifier))
+    ? item.identifier
+    : joinIdentifiers(item);
+  entry.source = (item.repository || item.source || '').toString().trim();
+  entry.newReuse = item.newReuse || item.new_reuse || mapDatasetRole(item.dataset_role);
+  return entry;
 }
 
 /**
@@ -515,9 +556,7 @@ async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 
@@ -540,6 +579,10 @@ module.exports = {
   // Pipeline steps (pure-ish, exported for benchmarks/tests)
   detectDatasets,
   buildKrtItemsDatasets,
-  buildAuthorDatasetSeeds,
+  // Author-KRT helpers. These used to be a byte-for-byte copy of the shared
+  // implementation living here as well; detection no longer consumes seeds, so
+  // they are re-exported from the one source of truth for the dev scripts and
+  // tests that still call them through this module.
+  buildAuthorDatasetSeeds: buildAuthorSeeds,
   splitKrtIdentifiers
 };

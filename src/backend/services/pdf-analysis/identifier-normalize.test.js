@@ -227,6 +227,65 @@ test('inferSourceFromIdentifier: Zenodo / Dryad / figshare via DOI and URL', () 
 test('inferSourceFromIdentifier: protocols.io', () => {
   assert.equal(inferSourceFromIdentifier('10.17504/protocols.io.764hrgw'), 'protocols.io');
   assert.equal(inferSourceFromIdentifier('https://www.protocols.io/view/abc'), 'protocols.io');
+  assert.equal(inferSourceFromIdentifier('https://protocols.io/private/xyz'), 'protocols.io');
+  assert.equal(inferSourceFromIdentifier('https://www.protocols.io/workspaces/lab'), 'protocols.io');
+});
+
+test('inferSourceFromIdentifier: protocol venues via DOI prefix', () => {
+  assert.equal(inferSourceFromIdentifier('10.3791/61234'),              'JoVE');
+  assert.equal(inferSourceFromIdentifier('10.1016/j.xpro.2021.100442'), 'STAR Protocols');
+  assert.equal(inferSourceFromIdentifier('10.1016/j.mex.2020.100921'),  'MethodsX');
+  assert.equal(inferSourceFromIdentifier('10.21769/bioprotoc.4604'),    'Bio-protocol');
+  assert.equal(inferSourceFromIdentifier('10.21769/p9999'),             'Bio-protocol Preprint');
+  assert.equal(inferSourceFromIdentifier('10.21769/l1234'),             'Bio-protocol Preprint');
+  assert.equal(inferSourceFromIdentifier('10.1002/cpz1.336'),           'Current Protocols');
+  assert.equal(inferSourceFromIdentifier('10.1101/pdb.prot5448'),       'Cold Spring Harbor Protocols');
+  assert.equal(inferSourceFromIdentifier('10.1038/nprot.2009.97'),      'Nature Protocols');
+  assert.equal(inferSourceFromIdentifier('10.1038/s41596-021-00566-6'), 'Nature Protocols');
+  // 'nport' is a real misspelled-in-the-wild Nature Protocols variant.
+  assert.equal(inferSourceFromIdentifier('10.1038/nport.2007.123'),     'Nature Protocols');
+  assert.equal(inferSourceFromIdentifier('10.1038/protex.2017.015'),    'Protocol Exchange');
+});
+
+test('inferSourceFromIdentifier: protocol venues via URL', () => {
+  assert.equal(inferSourceFromIdentifier('https://www.jove.com/v/61234/example-title'), 'JoVE');
+  assert.equal(inferSourceFromIdentifier('https://www.jove.com/t/1234'),                'JoVE');
+  assert.equal(inferSourceFromIdentifier('https://www.cell.com/star-protocols/fulltext/S2666-1667(21)00123-4'), 'STAR Protocols');
+  assert.equal(inferSourceFromIdentifier('https://star-protocols.com/star-protocols/abc'), 'STAR Protocols');
+  assert.equal(inferSourceFromIdentifier('https://bio-protocol.org/e4604'),           'Bio-protocol');
+  assert.equal(inferSourceFromIdentifier('https://cn.bio-protocol.org/en/e4604'),      'Bio-protocol');
+  assert.equal(inferSourceFromIdentifier('https://bio-protocol.org/exchange/xyz'),     'Bio-protocol');
+  assert.equal(inferSourceFromIdentifier('https://bio-protocol.org/p9999'),            'Bio-protocol Preprint');
+  assert.equal(inferSourceFromIdentifier('https://currentprotocols.onlinelibrary.wiley.com/doi/10.1002/cpz1.336'), 'Current Protocols');
+  assert.equal(inferSourceFromIdentifier('http://cshprotocols.cshlp.org/content/2019/2/pdb.prot5448'), 'Cold Spring Harbor Protocols');
+  assert.equal(inferSourceFromIdentifier('https://www.nature.com/articles/nprot.2009.97'), 'Nature Protocols');
+  assert.equal(inferSourceFromIdentifier('https://nature.com/articles/s41596-021-00566-6'), 'Nature Protocols');
+  assert.equal(inferSourceFromIdentifier('https://protocolexchange.researchsquare.com/article/pex-1234/v1'), 'Protocol Exchange');
+});
+
+test('inferSourceFromIdentifier: ambiguous protocol-publisher prefixes stay null', () => {
+  // Every PLOS article shares 10.1371/journal.* — only the "lab protocol"
+  // article subtype is a protocol, and the DOI cannot tell us which.
+  assert.equal(inferSourceFromIdentifier('10.1371/journal.pbio.3001450'), null);
+  // Every Springer book chapter shares these — Springer Protocols needs the
+  // ISBN allowlist.
+  assert.equal(inferSourceFromIdentifier('10.1007/978-1-0716-1084-8_5'), null);
+  assert.equal(inferSourceFromIdentifier('10.1385/1-59259-192-2:123'),   null);
+  // All BioTechniques articles, not just protocols.
+  assert.equal(inferSourceFromIdentifier('10.2144/000113917'), null);
+  // Legacy Protocol Exchange DOIs live in the generic ResearchSquare preprint
+  // range, which is not protocol-specific.
+  assert.equal(inferSourceFromIdentifier('10.21203/rs.3.pex-1234/v1'), null);
+  assert.equal(inferSourceFromIdentifier('10.21203/rs.2.12345/v1'),    null);
+});
+
+test('inferSourceFromIdentifier: protocol venue does not swallow its publisher prefix', () => {
+  // 10.1038 is Nature-wide and 10.1016 is Elsevier-wide: only the
+  // protocol-specific sub-prefix may resolve.
+  assert.equal(inferSourceFromIdentifier('10.1038/s41586-020-2649-2'), null);
+  assert.equal(inferSourceFromIdentifier('10.1016/j.cell.2020.01.001'), null);
+  // 10.1101 without the pdb.prot marker is bioRxiv.
+  assert.equal(inferSourceFromIdentifier('10.1101/2020.01.01.123456'), null);
 });
 
 test('inferSourceFromIdentifier: omics / sequence accessions', () => {

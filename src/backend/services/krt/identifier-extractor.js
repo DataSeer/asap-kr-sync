@@ -9,7 +9,13 @@ const patterns = {
   doi: /\b(10\.\d{4,}\/[^\s,;)\]]+)/gi,
 
   // RRID patterns (e.g., RRID:AB_123456)
-  rrid: /\bRRID:\s*([A-Za-z]+_[A-Za-z0-9]+)/gi,
+  //
+  // The optional `:suffix` matters. Repository RRIDs carry a SECOND colon —
+  // `RRID:IMSR_JAX:000664` — and without this the capture stopped at "IMSR_JAX"
+  // and threw the strain number away. Every JAX mouse strain then produced the
+  // identical token, so the grounding matcher treated all of them as the same
+  // animal and reported `confirmed` against the wrong strain.
+  rrid: /\bRRID:\s*([A-Za-z]+_[A-Za-z0-9]+(?::[A-Za-z0-9][A-Za-z0-9.-]*)?)/gi,
 
   // Bare RRIDs — authors frequently omit the "RRID:" prefix and write only the
   // authority-scoped id (e.g. "AB_2617428"). We accept these, but ONLY for known
@@ -55,8 +61,12 @@ const patterns = {
   // PubMed IDs
   pmid: /\bPMID:\s*(\d+)/gi,
 
-  // GenBank accessions
-  genbank: /\b([A-Z]{1,2}\d{5,6}(\.\d+)?)\b/gi,
+  // GenBank accessions. Case-SENSITIVE on purpose: GenBank accessions are
+  // uppercase ("AB123456", "U12345"), and the case-insensitive form matched
+  // lowercase fragments inside DOIs — "10.1038/s41592-019-0582-9" yielded
+  // `genbank:s41592`, so two unrelated Nature-family DOIs shared a token and
+  // compared as the same identifier.
+  genbank: /\b([A-Z]{1,2}\d{5,6}(\.\d+)?)\b/g,
 
   // UniProt IDs
   uniprot: /\b([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})\b/gi,

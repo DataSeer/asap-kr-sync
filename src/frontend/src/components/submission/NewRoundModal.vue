@@ -119,8 +119,8 @@ function handleSubmit() {
               </div>
               <p class="mt-1 text-xs text-gray-500">
                 {{ hasNewKRT
-                  ? 'You will land on Step 2 with a blank KRT to upload.'
-                  : 'The current KRT is carried forward; you will land on Step 2 to review it.'
+                  ? 'You will land on Step 1 with a blank KRT to upload.'
+                  : 'The current KRT is carried forward; you will land on Step 1 to review it.'
                 }}
               </p>
             </div>

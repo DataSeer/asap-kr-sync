@@ -22,6 +22,7 @@ const { GoogleGenAI } = require('@google/genai');
 const dasConfig = require('../../config/das-extraction-api');
 const { ExternalServiceError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/das-extraction.txt');
@@ -49,7 +50,9 @@ function getPrompt(override) {
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded DAS extraction prompt', { file: PROMPT_FILE, length: _promptCache.length });
   }
-  return _promptCache;
+  // See the note in materials.service getPrompt: a frozen restart uses the
+  // run's own template rather than the file as it stands today.
+  return frozenParams.prompt(_promptCache);
 }
 
 /**
@@ -110,6 +113,8 @@ async function extractDAS(markdownText, { prompt } = {}) {
   const ai = new GoogleGenAI({ apiKey: dasConfig.apiKey });
   const resolvedPrompt = getPrompt(prompt);
   const fullPrompt = `${resolvedPrompt}\n\nSection type: ${dasConfig.section}\n\nMANUSCRIPT:\n${markdownText}`;
+  const { sha256 } = require('../queue/run-inputs.service');
+  const promptDigest = { sha256: sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -122,7 +127,7 @@ async function extractDAS(markdownText, { prompt } = {}) {
     const text = response.text;
     if (!text) {
       logger.warn('Gemini returned empty response for DAS extraction');
-      return { content: '', partialMatch: false, sectionFragmented: false, raw: '' };
+      return { content: '', partialMatch: false, sectionFragmented: false, raw: '', promptDigest };
     }
 
     logger.debug('Gemini raw response preview (DAS)', { preview: text.substring(0, 500) });
@@ -135,7 +140,7 @@ async function extractDAS(markdownText, { prompt } = {}) {
       partialMatch: parsed.partialMatch,
       sectionFragmented: parsed.sectionFragmented
     });
-    return { ...parsed, raw: text };
+    return { ...parsed, raw: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for DAS extraction', { error: error.message });
     throw new ExternalServiceError('DAS Extraction (Gemini)', error.message);
@@ -143,6 +148,8 @@ async function extractDAS(markdownText, { prompt } = {}) {
 }
 
 module.exports = {
+  // Exported so a run can record which prompt produced its statement.
+  PROMPT_FILE,
   extractDAS,
   hasPrompt,
   // Exposed for tests

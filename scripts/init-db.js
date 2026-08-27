@@ -123,7 +123,7 @@ async function resetPreservingUsers(config) {
     }
 
     // Clear SequelizeMeta so migrations re-run
-    await client.query(`DELETE FROM "SequelizeMeta"`);
+    await client.query('DELETE FROM "SequelizeMeta"');
     console.log('  Cleared SequelizeMeta (all migrations will re-run).');
 
     // Count preserved users
@@ -168,9 +168,9 @@ async function main() {
   console.log(`Database: ${config.database}`);
   console.log(`User:     ${config.user}`);
   if (preserveUsers && shouldReset) {
-    console.log(`Options:  --reset --preserve-users`);
+    console.log('Options:  --reset --preserve-users');
   } else if (shouldReset) {
-    console.log(`Options:  --reset`);
+    console.log('Options:  --reset');
   }
   console.log('');
 
@@ -211,7 +211,7 @@ async function main() {
       console.log('Connected successfully.\n');
 
       const checkResult = await adminClient.query(
-        `SELECT 1 FROM pg_database WHERE datname = $1`,
+        'SELECT 1 FROM pg_database WHERE datname = $1',
         [config.database]
       );
 
@@ -260,7 +260,7 @@ async function main() {
       console.log('Connected successfully.\n');
 
       const checkResult = await adminClient.query(
-        `SELECT 1 FROM pg_database WHERE datname = $1`,
+        'SELECT 1 FROM pg_database WHERE datname = $1',
         [config.database]
       );
 

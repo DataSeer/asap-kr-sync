@@ -9,6 +9,7 @@ const suggestionService = require('../services/suggestion/suggestion.service');
 const { JOB_TYPES } = require('../config/constants');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const logger = require('../utils/logger');
+const { describeQueueOutcome } = require('../utils/queue-message');
 
 /**
  * Upload PDF
@@ -45,7 +46,14 @@ async function upload(req, res, next) {
     logger.info('PDF uploaded', { submissionId: submission.id });
 
     // Start the full processing pipeline (DAS → PDF analysis, Software detection in parallel)
-    await orchestrator.runAllProcesses(submission.id, req.userId, submission.currentRound);
+    //
+    // A replaced manuscript is named as such rather than passing as a restart:
+    // the distinction is the whole reason the results differ, and it is one the
+    // orchestrator cannot infer — it sees a full re-run either way. Version 1 is
+    // left to default, so the round's first run reads `create_submission`.
+    await orchestrator.runAllProcesses(submission.id, req.userId, submission.currentRound, {
+      cause: result.version > 1 ? 'new_document' : undefined
+    });
 
     res.json({
       message: 'PDF uploaded successfully',
@@ -108,13 +116,34 @@ async function uploadSupplemental(req, res, next) {
 async function extractDAS(req, res, next) {
   try {
     const submission = req.submission;
-    const result = await pdfService.extractAndSaveDAS(submission.id);
 
-    res.json({
-      message: result.extracted
-        ? 'Availability Statement extracted successfully'
-        : 'Availability Statement not found',
-      ...result
+    // Re-run it as a PIPELINE STEP, like every other module.
+    //
+    // This used to call `extractAndSaveDAS` directly, inside the request. That
+    // ran the extraction but left the pipeline untouched: the `das_extraction`
+    // job row kept the PREVIOUS run's status, result, frozen inputs and prompt,
+    // so the module page described a run that was no longer the latest one —
+    // and nothing downstream re-ran, so consolidation and the Availability
+    // check kept answers built from a statement that had just been replaced.
+    //
+    // `queueDASExtraction` reuses the round's row, cascades to the steps that
+    // read the statement, and respects the gates. It also means the endpoint
+    // answers immediately instead of holding the request open for the length of
+    // an LM call.
+    const { job, alreadyInFlight } = await pdfService.queueDASExtraction(
+      submission.id,
+      submission.currentRound,
+      req.userId
+    );
+
+    logger.info('DAS extraction queued', { submissionId: submission.id, status: job.status });
+
+    res.status(202).json({
+      message: alreadyInFlight
+        ? 'Availability Statement extraction is already running'
+        : 'Availability Statement extraction queued',
+      status: job.status,
+      submissionJobId: job.id
     });
   } catch (error) {
     next(error);
@@ -194,16 +223,16 @@ async function triggerAnalysis(req, res, next) {
 
     // Allow re-running analysis from step_pdf or later (for manual re-runs)
 
-    const submissionJob = await pdfService.queueAnalysis(
+    const { job: submissionJob, alreadyInFlight } = await pdfService.queueAnalysis(
       submission.id,
-      req.userId,
-      submission.currentRound
+      submission.currentRound,
+      req.userId
     );
 
     logger.info('PDF analysis queued', { submissionId: submission.id, submissionJobId: submissionJob.id });
 
     res.json({
-      message: 'Analysis queued',
+      message: describeQueueOutcome('Analysis', submissionJob, alreadyInFlight),
       submissionJobId: submissionJob.id,
       status: submissionJob.status
     });

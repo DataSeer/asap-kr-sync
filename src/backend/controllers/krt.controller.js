@@ -486,6 +486,8 @@ async function batchDeleteRows(req, res, next) {
  */
 async function mergeRows(req, res, next) {
   const t = await sequelize.transaction();
+  // Tracked because the work after commit() can throw; see the catch below.
+  let committed = false;
   try {
     const submissionId = req.params.id;
     const round = req.submission.currentRound;
@@ -540,14 +542,26 @@ async function mergeRows(req, res, next) {
     await KRTData.destroy({ where: { id: originalIds, submissionId, round }, transaction: t });
 
     await t.commit();
+    committed = true;
 
-    // Validate the new row after commit (non-critical).
-    await validatorService.validateRow(newRow, submissionId, true, null, round);
+    // Validate the new row after commit (non-critical) — and genuinely
+    // non-critical: it writes ValidationResult rows of its own and can throw,
+    // which used to reach the catch below and call rollback() on a transaction
+    // that had already committed. Sequelize rejects that, the rejection escaped
+    // before next(error) ran, and Express 4 does not forward an async rejection
+    // — so a merge that had SUCCEEDED left the client waiting forever.
+    try {
+      await validatorService.validateRow(newRow, submissionId, true, null, round);
+    } catch (validationError) {
+      logger.warn('Merged row saved but could not be re-validated', {
+        submissionId, rowId: newRow.id, error: validationError.message
+      });
+    }
 
     logger.info('KRT rows merged', { submissionId, mergedCount: originals.length, newRowId: newRow.id, userId: req.userId });
     res.status(201).json({ row: newRow.toKRTRow() });
   } catch (error) {
-    await t.rollback();
+    if (!committed) await t.rollback();
     next(error);
   }
 }

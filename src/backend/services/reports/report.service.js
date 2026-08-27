@@ -17,6 +17,81 @@ const logger = require('../../utils/logger');
  * @param {string} userId
  * @returns {Promise<object>} Report record
  */
+/**
+ * Every step of this round, in the order it runs, with what became of it.
+ *
+ * Reads the job rows rather than the run history: the question a report answers
+ * is "what is this result built on", which is the CURRENT state of each step —
+ * the history of how it got there belongs to the module pages.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @returns {Promise<object[]>}
+ */
+async function describePipelineForReport(submissionId, round) {
+  const orchestrator = require('../queue/orchestrator.service');
+  const { SubmissionJob, User } = require('../../models');
+
+  const jobs = await SubmissionJob.getForSubmission(submissionId, round);
+  const byType = new Map(jobs.map((j) => [j.jobType, j]));
+
+  // `job.decision` comes from the execution the round's current run holds for
+  // the step — attached by getForSubmission, so the report cannot read a
+  // decision that belongs to a run it is not describing.
+  const deciderIds = [...new Set(jobs.map((j) => j.decision?.byUserId).filter(Boolean))];
+  const deciders = deciderIds.length
+    ? await User.findAll({ where: { id: deciderIds }, attributes: ['id', 'name'], raw: true })
+    : [];
+  const nameById = new Map(deciders.map((u) => [u.id, u.name]));
+
+  // PIPELINE order, so the sheet reads the way the manuscript flows.
+  return orchestrator.PIPELINE.map((step) => {
+    const job = byType.get(step.jobType);
+    if (!job) return { jobType: step.jobType, outcome: 'Not run' };
+
+    const outcomeState = job.result?.service?.outcome?.state || null;
+    const skipped = job.result?.skipped || null;
+
+    return {
+      jobType: step.jobType,
+      status: job.status,
+      outcomeState,
+      /** The one-line verdict a reader needs, in words rather than enum values. */
+      outcome: describeOutcome(job, outcomeState, skipped),
+      detail: skipped
+        ? `needed ${skipped.missing.join(', ')}, which produced nothing`
+        : (job.errorMessage || job.result?.service?.outcome?.externalError || null),
+      /** Present only when somebody chose to carry on despite an issue. */
+      decidedBy: job.decision?.at
+        ? (nameById.get(job.decision.byUserId) || 'a user who has since been removed')
+        : null,
+      decidedAt: job.decision?.at || null,
+      runCount: job.runCount || (job.status === 'complete' ? 1 : 0),
+      durationMs: job.startedAt && job.completedAt
+        ? new Date(job.completedAt) - new Date(job.startedAt)
+        : null,
+      totalTokens: job.result?.tokens?.totalTokens || null
+    };
+  });
+}
+
+/** The verdict, in words. */
+function describeOutcome(job, outcomeState, skipped) {
+  if (skipped) return 'Skipped';
+  switch (job.status) {
+    case 'complete':
+      if (outcomeState === 'partial') return 'Completed, incomplete';
+      if (outcomeState === 'fail') return 'Completed, produced nothing usable';
+      return 'Completed';
+    case 'failed': return 'Failed';
+    case 'cancelled': return 'Cancelled';
+    case 'skipped': return 'Skipped';
+    case 'waiting': return 'Never ran — still waiting';
+    case 'pending_input': return 'Never ran — waiting for you';
+    default: return 'Still running';
+  }
+}
+
 async function generateReport(submissionId, type, userId, round) {
   // Get submission data
   const submission = await Submission.findByPk(submissionId, {
@@ -52,12 +127,22 @@ async function generateReport(submissionId, type, userId, round) {
     return (a.resourceName || '').localeCompare(b.resourceName || '');
   });
 
+  // What the pipeline actually did, and what anyone decided about it.
+  //
+  // A report built without software detection looks exactly like one where
+  // software detection found nothing. Every other sheet here shows the OUTPUT;
+  // this one is the only place a reader can find out how it came to be — which
+  // steps ran, which produced nothing, which were skipped and why, and who
+  // chose to carry on.
+  const pipeline = await describePipelineForReport(submissionId, round || submission.currentRound || 1);
+
   // Prepare data for export
   const exportData = {
     submission,
     krtRows: krtData.map(row => row.toKRTRow()),
     changes,
-    suggestions: suggestions.length > 0 ? suggestions : null
+    suggestions: suggestions.length > 0 ? suggestions : null,
+    pipeline
   };
 
   let result;
@@ -114,6 +199,10 @@ async function getReports(submissionId) {
 }
 
 module.exports = {
+  // Exported for the same reason the KRT formatters are: the Pipeline sheet is
+  // the only record of HOW a result was reached, and it should be checkable
+  // without generating a report and writing to S3 to see it.
+  describePipelineForReport,
   generateReport,
   getReports
 };

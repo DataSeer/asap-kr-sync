@@ -51,14 +51,66 @@ function findValue(sheet, label) {
   return undefined;
 }
 
-test('buildWorkbook: 4 sheets in order when suggestions present', () => {
+test('buildWorkbook: every sheet, in order, when suggestions are present', () => {
   const wb = new ExcelExporter().buildWorkbook(sampleData());
-  assert.deepEqual(wb.worksheets.map(s => s.name), ['Summary', 'KRT', 'Change History', 'Suggestions']);
+  assert.deepEqual(wb.worksheets.map(s => s.name),
+    ['Summary', 'KRT', 'Change History', 'Pipeline', 'Suggestions']);
 });
 
 test('buildWorkbook: omits Suggestions sheet when none', () => {
   const wb = new ExcelExporter().buildWorkbook(sampleData({ suggestions: null }));
-  assert.deepEqual(wb.worksheets.map(s => s.name), ['Summary', 'KRT', 'Change History']);
+  assert.deepEqual(wb.worksheets.map(s => s.name), ['Summary', 'KRT', 'Change History', 'Pipeline']);
+});
+
+test('Pipeline: says what each step did, and who carried on past it', () => {
+  // Every other sheet is the OUTPUT. A report built without software detection
+  // looks exactly like one where software detection found nothing, and this is
+  // the only place the difference is written down.
+  const wb = new ExcelExporter().buildWorkbook(sampleData({
+    pipeline: [
+      { jobType: 'markdown_convert', outcome: 'Completed', runCount: 1, durationMs: 2400 },
+      {
+        jobType: 'software_detection',
+        outcome: 'Failed',
+        detail: 'Softcite timed out',
+        decidedBy: 'Nicolas',
+        decidedAt: '2026-08-22T12:00:00.000Z'
+      },
+      {
+        jobType: 'datasets_detection',
+        outcome: 'Skipped',
+        detail: 'needed markdown_convert, which produced nothing'
+      }
+    ]
+  }));
+  const sheet = wb.getWorksheet('Pipeline');
+  // getSheetValues() is 1-indexed and its [1] is the header row.
+  const rows = sheet.getSheetValues().slice(2).map((r) => r.slice(1));
+
+  assert.deepEqual(rows[0].slice(0, 2), ['Markdown Convert', 'Completed']);
+  assert.equal(rows[1][1], 'Failed');
+  assert.equal(rows[1][3], 'Nicolas', 'the decision is attributed');
+  assert.equal(rows[2][1], 'Skipped');
+  assert.match(rows[2][2], /produced nothing/);
+});
+
+test('Pipeline: acronyms are spelt the way the app spells them', () => {
+  // Title-casing alone produced "Das Extraction", "Krt Grounding", "Pdf
+  // Analysis" and "Orcid Extraction" — four of the twelve steps misspelt in a
+  // document that goes to reviewers.
+  const exporter = new ExcelExporter();
+
+  assert.equal(exporter.humanJobType('das_extraction'), 'DAS Extraction');
+  assert.equal(exporter.humanJobType('krt_grounding'), 'KRT Grounding');
+  assert.equal(exporter.humanJobType('pdf_analysis'), 'PDF Analysis');
+  assert.equal(exporter.humanJobType('orcid_extraction'), 'ORCID Extraction');
+  assert.equal(exporter.humanJobType('software_detection'), 'Software Detection');
+});
+
+test('Pipeline: says so rather than showing a blank sheet', () => {
+  const wb = new ExcelExporter().buildWorkbook(sampleData({ pipeline: [] }));
+
+  assert.equal(wb.getWorksheet('Pipeline').getCell('A1').value, 'No pipeline record for this round');
 });
 
 test('Summary: submission metadata + KRT stats', () => {
@@ -114,5 +166,7 @@ test('buildWorkbook: handles empty KRT / no authors / no DAS gracefully', () => 
   assert.equal(findValue(summary, 'Total resources'), 0);
   assert.equal(findValue(summary, 'Authors'), 'None detected');
   assert.equal(findValue(summary, 'Provided (final)'), '—');
-  assert.deepEqual(wb.worksheets.map(s => s.name), ['Summary', 'KRT', 'Change History']);
+  // Pipeline is always present, even with nothing to say — "no record" is
+  // itself a fact about the round, and a missing sheet reads as an oversight.
+  assert.deepEqual(wb.worksheets.map(s => s.name), ['Summary', 'KRT', 'Change History', 'Pipeline']);
 });

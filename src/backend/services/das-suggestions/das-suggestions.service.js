@@ -7,7 +7,7 @@
  * verdict. The result is persisted on the DAS_SUGGESTIONS SubmissionJob in the
  * exact shape the /availability view renders.
  *
- * Runs as a background job gated so it starts only once the DAS has been
+ * Runs as a pipeline step gated so it starts only once the DAS has been
  * extracted and the KRT is finalized (submission past the review step), and is
  * re-triggerable (e.g. when the author edits the DAS on /availability). When
  * the LM is not configured, the service returns no suggestions and the frontend
@@ -18,14 +18,25 @@ const fs = require('fs');
 const path = require('path');
 const { GoogleGenAI } = require('@google/genai');
 const dasSuggestionsConfig = require('../../config/das-suggestions-api');
-const jobQueue = require('../queue/job-queue.service');
 const { JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const { generateContentWithRetry } = require('../../utils/gemini');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { sanitizeJsonEscapes, extractJsonBlock } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
+const runInputs = require('../queue/run-inputs.service');
+const { repoPath } = require('../detection/repo-path');
 
 const PROMPT_FILE = path.join(__dirname, '../../data/prompts/das-suggestions.txt');
+
+/**
+ * What `extractAndSaveDAS` persists when the manuscript has no statement.
+ *
+ * A sentinel rather than an empty column, so the UI can tell "we looked and
+ * found nothing" from "nobody has run extraction yet". Named here because two
+ * places have to agree on it and they had it spelled out twice.
+ */
+const NO_DAS_SENTINEL = 'Not found';
 let _promptCache = null;
 
 function hasPrompt() {
@@ -39,7 +50,13 @@ function getPrompt(override) {
     }
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
 /**
@@ -146,15 +163,6 @@ function computeKrtSignals(krtRows) {
   };
 }
 
-function extractJsonBlock(text) {
-  if (typeof text !== 'string') return '';
-  const fenced = [...text.matchAll(/```json\s*\n?([\s\S]*?)```/g)];
-  if (fenced.length) return fenced[fenced.length - 1][1].trim();
-  const plain = [...text.matchAll(/```\s*\n?([\s\S]*?)```/g)];
-  if (plain.length) return plain[plain.length - 1][1].trim();
-  return text.trim();
-}
-
 /** Parse the LM response into an array of { rule_id, applies, reason }. */
 function parseFindings(text) {
   try {
@@ -165,6 +173,38 @@ function parseFindings(text) {
     logger.error('Failed to parse DAS suggestions JSON', { error: err.message });
     return [];
   }
+}
+
+/**
+ * Parse the response and refuse an unreadable one.
+ *
+ * `validate` retries an empty body, but after the last attempt
+ * generateContentWithRetry returns the best-effort response rather than
+ * throwing — so this is where an unparseable body has to become a failure.
+ *
+ * It cannot be allowed through. `buildSuggestions` defaults every rule the LM
+ * did not mention to `applies: false`, which the /availability view renders as
+ * a green "check passed" box. Zero verdicts therefore rendered as NINE passed
+ * checks: a statement nobody managed to check, shown as a statement with
+ * nothing wrong with it — the one outcome the module exists to prevent.
+ *
+ * Unlike the detection modules, where an empty list is a real answer ("this
+ * manuscript mentions no antibodies"), an empty list here cannot be: the
+ * rulebook is fixed and every rule gets a verdict. Empty means the call failed.
+ *
+ * @param {string} text - the raw response body
+ * @returns {object[]} the per-rule verdicts, never empty
+ * @throws {ExternalServiceError} when nothing readable came back
+ */
+function readVerdicts(text) {
+  const findings = parseFindings(text);
+  if (findings.length === 0) {
+    logger.error('DAS suggestions: no readable verdicts after retries', {
+      preview: String(text || '').slice(0, 300)
+    });
+    throw new ExternalServiceError('Gemini', 'empty or unparseable response after retries');
+  }
+  return findings;
 }
 
 /**
@@ -203,6 +243,9 @@ async function callGeminiForDas(dasText, signals) {
   const prompt = getPrompt();
   const payload = { data_availability_statement: dasText || '', krt_summary: signals };
   const fullPrompt = prompt + '\n\n---\n\nINPUT:\n\n' + JSON.stringify(payload, null, 2);
+  // The digest of what was actually sent, so the audit record can prove the
+  // prompt rebuilt from the frozen inputs is the one that ran.
+  const promptDigest = { sha256: runInputs.sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -215,8 +258,9 @@ async function callGeminiForDas(dasText, signals) {
       validate: (res) => parseFindings(res?.text || '').length > 0
     });
     const text = response.text || '';
-    return { findings: parseFindings(text), rawResponse: text };
+    return { findings: readVerdicts(text), rawResponse: text, promptDigest };
   } catch (error) {
+    if (error instanceof ExternalServiceError) throw error;
     logger.error('Gemini API call failed for DAS suggestions', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
   }
@@ -232,20 +276,53 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
 
   if (!dasSuggestionsConfig.isConfigured() || !hasPrompt()) {
     jobLogger?.log('das_suggestions_skipped', 'DAS suggestions LM not configured — frontend falls back to legacy rules');
-    return { data: { suggestions: [] }, status: 'done', source: null, meta: { skipped: true, reason: 'lm_not_configured', totalMs: Date.now() - start } };
+    return {
+      data: { suggestions: [] },
+      status: 'done',
+      source: null,
+      meta: { skipped: true, reason: 'lm_not_configured', totalMs: Date.now() - start }
+    };
   }
 
   const submission = await Submission.findByPk(submissionId);
   const rawDas = submission?.dataAvailabilityStatement || '';
-  const dasText = rawDas === 'Not found' ? '' : rawDas;
-  const krtRows = await KRTData.findAll({ where: { submissionId, round } });
+  const dasText = rawDas === NO_DAS_SENTINEL ? '' : rawDas;
+  // The round's frozen table: the signals handed to the checker as ground truth
+  // must describe the KRT the rest of the run was built from.
+  const inputFreeze = require('../queue/input-freeze.service');
+  const krtRows = await inputFreeze.resolveKrtRows(submissionId, round, {
+    jobType: JOB_TYPES.DAS_SUGGESTIONS
+  });
   const signals = computeKrtSignals(krtRows);
 
   jobLogger?.log('das_suggestions_start', 'Checking DAS against the rulebook', {
     dasLength: dasText.length, krtRows: krtRows.length
   });
-  const { findings, rawResponse } = await callGeminiForDas(dasText, signals);
+  const { findings, rawResponse, promptDigest } = await callGeminiForDas(dasText, signals);
   await jobLogger?.saveRawResponse('das-suggestions', rawResponse || findings);
+
+  // Freeze what this run was given. Both of its inputs are mutable — the author
+  // edits their statement on the very step that triggers this check, and their
+  // KRT keeps changing — so a later reader has no way to tell what the model
+  // actually saw unless the run records it. Every other LM module writes one of
+  // these; this one was missed.
+  await runInputs.saveRunInputs(jobLogger, {
+    frozen: {
+      dataAvailabilityStatement: dasText,
+      krtSignals: signals
+    },
+    prompt: runInputs.promptRef(repoPath(PROMPT_FILE), promptDigest),
+    meta: {
+      model: dasSuggestionsConfig.model,
+      dasLength: dasText.length,
+      krtRowCount: krtRows.length
+    },
+    // Everything asked of the external service, sanitised: secrets redacted,
+    // anything large replaced by its digest. Recorded whole rather than
+    // hand-picked — a hand-picked list is one somebody has to remember to
+    // extend, which is how four modules came to record no model at all.
+    call: dasSuggestionsConfig
+  });
 
   const suggestions = buildSuggestions(findings, signals, dasText);
   const applicable = suggestions.filter(s => s.applies).length;
@@ -253,11 +330,25 @@ async function generateDasSuggestions(submissionId, round, jobLogger = null) {
     total: suggestions.length, applicable
   });
 
+  // The helper-return convention: `meta` at the top of the returned object —
+  // the worker reads `result.meta.totalMs` from it — and nested into `data` at
+  // persistence, which is where every module stores it and where the UI reads
+  // it. See processDasSuggestions below.
+  //
+  // dasLength/krtRowCount are also in the frozen inputs record; repeated here
+  // because "what this run was given" belongs beside "what it produced".
   return {
     data: { suggestions, signals },
     status: 'done',
     source: 'external',
-    meta: { total: suggestions.length, applicable, totalMs: Date.now() - start, model: dasSuggestionsConfig.model }
+    meta: {
+      total: suggestions.length,
+      applicable,
+      totalMs: Date.now() - start,
+      model: dasSuggestionsConfig.model,
+      dasLength: dasText.length,
+      krtRowCount: krtRows.length
+    }
   };
 }
 
@@ -272,20 +363,33 @@ async function processDasSuggestions(submissionId, jobLogger = null /*, opts */)
 
   const job = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_SUGGESTIONS, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: result.data, meta: result.meta };
-    job.changed('result', true);
-    await job.save();
+    // meta goes INSIDE data, which is where every other module puts it and
+    // where the UI reads it from. It used to be persisted beside it, and the
+    // one reader that walks every module — the Technical detail panel — found
+    // nothing: this module's statistics and input counts were blank while the
+    // others' were fine.
+    await job.persistData({ ...result.data, meta: result.meta });
   }
   return result;
 }
 
 /**
- * Queue (or re-queue) DAS suggestions as a standalone background job. Each call
- * creates a fresh SubmissionJob row; `getLatest` always returns the newest, so
- * a re-run (e.g. after a DAS edit) supersedes the previous result. Not part of
- * the auto pipeline, so there's no downstream to cascade-restart.
+ * Ask for the DAS check to run.
+ *
+ * A pipeline step now, so this goes through the orchestrator: the round's row is
+ * reused rather than duplicated, and the gate decides whether it starts now or
+ * waits for the Availability step.
+ *
+ * Three outcomes, and they must stay distinguishable — a bare job id could not
+ * tell "there is nothing to check" apart from "accepted, waiting for the right
+ * step", and the caller reported the second as the first.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @returns {Promise<{queued: boolean, reason: 'no_statement'|'gated'|null,
+ *   status?: string, jobId?: string|null, submissionJobId?: string}>}
  */
-async function queueDasSuggestions(submissionId, round = 1) {
+async function queueDasSuggestions(submissionId, round = 1, userId = null) {
   const { SubmissionJob, Submission } = require('../../models');
 
   // Nothing to check without a Data Availability Statement — this happens when
@@ -295,42 +399,93 @@ async function queueDasSuggestions(submissionId, round = 1) {
     attributes: ['dataAvailabilityStatement']
   });
   const das = (submission?.dataAvailabilityStatement || '').trim();
-  if (!das) {
-    logger.info('DAS suggestions skipped — no DAS provided', { submissionId, round });
-    return null;
+  // NO_DAS_SENTINEL, not just empty: extraction always persists something, and
+  // writes this literal when it found no statement. Testing only for empty let
+  // the sentinel through, so the job was queued and generateDasSuggestions then
+  // mapped it back to '' and called the model against an empty statement —
+  // exactly the case this guard exists to skip, one wasted LM call per run.
+  if (!das || das === NO_DAS_SENTINEL) {
+    logger.info('DAS suggestions skipped — no DAS provided', { submissionId, round, das: das || '(empty)' });
+    return { queued: false, reason: 'no_statement' };
   }
 
-  const job = await SubmissionJob.create({
-    submissionId, jobType: JOB_TYPES.DAS_SUGGESTIONS, status: 'queued', round
-  });
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.DAS_SUGGESTIONS,
-    { submissionId, submissionJobId: job.id }
+  // Through the orchestrator, not around it: this is a pipeline step now, so
+  // re-running it must reuse the round's row rather than insert a rival one.
+  // (Inserting a second row is exactly what made PDF Analysis report a finished
+  // run whose result had been consolidated from nothing — getForSubmission
+  // keeps only the newest row per type, and the pipeline's real one was left
+  // stranded behind it.)
+  const orchestrator = require('../queue/orchestrator.service');
+
+  // Read BEFORE re-queueing — see the note in any other queue* function.
+  // (SubmissionJob is already in scope from the top of this function.)
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_SUGGESTIONS, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  // The caller is the trigger: somebody clicked "re-run this check". Passing
+  // null here left the run credited to whoever last touched the row, which for
+  // a reconciler-driven pipeline is nobody at all.
+  const job = await orchestrator.requeueStep(
+    submissionId, JOB_TYPES.DAS_SUGGESTIONS, round, userId
   );
-  job.pgBossJobId = jobId;
-  await job.save();
-  logger.info('DAS suggestions queued', { submissionId, submissionJobId: job.id, jobId });
-  return jobId;
+  logger.info('DAS suggestions re-queued', {
+    submissionId, submissionJobId: job.id, status: job.status, alreadyInFlight
+  });
+
+  // The step is gated to the Availability step, so asking for it earlier leaves
+  // it `waiting` — accepted, and it will run when the submission gets there.
+  // Reported distinctly from "there is nothing to check": a bare job id made
+  // those two indistinguishable, and the caller told an author with a perfectly
+  // good statement that they had not provided one.
+  return {
+    queued: job.status === 'queued',
+    alreadyInFlight,
+    reason: job.status === 'waiting' ? 'gated' : null,
+    status: job.status,
+    jobId: job.pgBossJobId || null,
+    submissionJobId: job.id
+  };
 }
 
 /** Read the persisted DAS suggestions + job status for a submission/round. */
 async function getPersistedDasSuggestions(submissionId, round) {
-  const { SubmissionJob } = require('../../models');
+  const { SubmissionJob, Submission } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, JOB_TYPES.DAS_SUGGESTIONS, round);
+
+  // A bare `waiting` cannot be acted on by the client: waiting for a dependency
+  // and waiting for the gate look identical, and they call for opposite
+  // behaviour. Gated means nothing is running, so the page must NOT block
+  // Continue on it — it did, and the fail-open that would have released it
+  // lives in a poller the gated path never started. Same distinction the jobs
+  // API draws with `waitingReason`.
+  let gated = false;
+  if (job?.status === 'waiting') {
+    const orchestrator = require('../queue/orchestrator.service');
+    const submission = await Submission.findByPk(submissionId, {
+      attributes: ['id', 'status', 'dataAvailabilityStatement']
+    });
+    const all = await SubmissionJob.getForSubmission(submissionId, round);
+    const jobsByType = new Map(all.map(j => [j.jobType, j]));
+    gated = orchestrator.isGateBlocked(JOB_TYPES.DAS_SUGGESTIONS, submission, jobsByType) === 'availability_ready';
+  }
+
   return {
     status: job?.status || 'none',
+    gated,
     suggestions: job?.result?.data?.suggestions || [],
     signals: job?.result?.data?.signals || null,
-    meta: job?.result?.meta || null
+    meta: job?.result?.data?.meta || null
   };
 }
 
 module.exports = {
+  NO_DAS_SENTINEL,
   generateDasSuggestions,
   processDasSuggestions,
   queueDasSuggestions,
   getPersistedDasSuggestions,
   computeKrtSignals,
   buildSuggestions,
+  readVerdicts,
   DAS_RULES
 };

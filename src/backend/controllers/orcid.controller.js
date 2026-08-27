@@ -4,6 +4,7 @@
 
 const orcidService = require('../services/orcid/orcid.service');
 const logger = require('../utils/logger');
+const { describeQueueOutcome } = require('../utils/queue-message');
 
 /**
  * Get authors for a submission
@@ -30,15 +31,17 @@ async function triggerExtraction(req, res, next) {
   try {
     const submission = req.submission;
 
-    await orcidService.queueOrcidExtraction(
+    const { job, alreadyInFlight } = await orcidService.queueOrcidExtraction(
       submission.id,
-      submission.currentRound
+      submission.currentRound,
+      req.userId
     );
 
-    logger.info('ORCID extraction queued', { submissionId: submission.id });
+    logger.info('ORCID extraction queued', { submissionId: submission.id, status: job.status });
 
     res.json({
-      message: 'ORCID extraction queued'
+      message: describeQueueOutcome('Author extraction', job, alreadyInFlight),
+      status: job.status
     });
   } catch (error) {
     next(error);

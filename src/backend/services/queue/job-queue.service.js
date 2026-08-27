@@ -1,11 +1,14 @@
 /**
  * Job Queue Service using pg-boss
- * PostgreSQL-based job queue for background processing
+ * PostgreSQL-based job queue that runs the pipeline
  */
 
 const PgBoss = require('pg-boss');
 const logger = require('../../utils/logger');
 const { JOB_TYPES } = require('../../config/constants');
+const tokenUsage = require('../../utils/token-usage');
+const attemptLog = require('../../utils/attempt-log');
+const frozenParams = require('../../utils/frozen-params');
 
 let boss = null;
 
@@ -23,6 +26,7 @@ const QUEUES = {
   MATERIALS_DETECTION: 'materials-detection',
   PROTOCOLS_DETECTION: 'protocols-detection',
   IDENTIFIER_DETECTION: 'identifier-detection',
+  KRT_GROUNDING: 'krt-grounding',
   SUGGESTION_GENERATION: 'suggestion-generation',
   DAS_SUGGESTIONS: 'das-suggestions',
   EMAIL_NOTIFICATION: 'email-notification'
@@ -136,6 +140,15 @@ const JOB_CONFIG = {
     retryLimit: 1,
     retryDelay: 30
   },
+  // Deterministic matching plus one batched LM pass over the author rows that
+  // matched nothing, so the timeout tracks the grounding LM call.
+  [QUEUES.KRT_GROUNDING]: {
+    apiTimeoutMs: Number(process.env.KRT_GROUNDING_API_TIMEOUT) || 180000,
+    get expireInSeconds() { return getJobExpiry(this.apiTimeoutMs); },
+    typicalSeconds: 20,
+    retryLimit: 2,
+    retryDelay: 30
+  },
   // LM comparison of author KRT vs Generated KRT → suggestions.
   [QUEUES.SUGGESTION_GENERATION]: {
     apiTimeoutMs: parseInt(process.env.KRT_COMPARISON_API_TIMEOUT, 10) || 300000,
@@ -244,24 +257,97 @@ async function addJob(queueName, data, options = {}) {
 }
 
 /**
+ * Translate this codebase's worker options into pg-boss's.
+ *
+ * `concurrency` has to set BOTH of pg-boss's numbers. `teamSize` is how many
+ * jobs are fetched; `teamConcurrency` is how many of them run at once. With
+ * teamConcurrency pinned at 1, every worker declaring `{ concurrency: 2 }`
+ * fetched two jobs and then worked through them one at a time — the setting
+ * read as if it did something and did nothing.
+ *
+ * `concurrency` is our name for the pair, not a pg-boss option, so it is not
+ * passed through. An explicit `teamConcurrency` still wins: fetch a batch, run
+ * fewer of them is a legitimate combination.
+ *
+ * `includeMetadata` is required for `job.retrycount` to be populated on the job
+ * object the handler receives. Without it pg-boss only sends
+ * { id, name, data }, so retry counters always read 0 — which makes the UI's
+ * "Attempt N/3" indicator stick at 1/3 across retries.
+ *
+ * @param {{concurrency?: number, teamConcurrency?: number}} options
+ * @returns {object} pg-boss work() options
+ */
+function buildWorkerOptions(options = {}) {
+  const { concurrency, ...passThrough } = options;
+  return {
+    teamSize: concurrency || 1,
+    teamConcurrency: options.teamConcurrency || concurrency || 1,
+    includeMetadata: true,
+    ...passThrough
+  };
+}
+
+/**
  * Register a job handler for a queue
  * @param {string} queueName - Queue name from QUEUES
  * @param {function} handler - Async function to process jobs
  * @param {object} options - Worker options
  */
+/**
+ * The parameters this job should run with, if its run says `frozen`.
+ *
+ * Null for every live run, which is almost all of them — so the lookup is one
+ * cheap read of the run row, and only a frozen restart pays for the S3 fetch.
+ *
+ * Never throws: a frozen restart that cannot resolve its parent's parameters
+ * runs live and says so in the log. Failing a run the user asked for, over an
+ * artefact that may simply predate the feature, would be the worse answer.
+ *
+ * @param {object} data - the job payload, carrying submissionId/jobType/round
+ * @returns {Promise<object|null>}
+ */
+async function resolveFrozenParams(data) {
+  // The payload carries `submissionJobId`, not the job type or the round — it
+  // is what the handlers need and nothing more. Read the row for both rather
+  // than guessing: the first version of this guarded on `data.jobType`, which
+  // is never set, so every frozen restart silently ran live. A primary-key read
+  // per job is nothing beside the model call that follows it.
+  if (!data?.submissionJobId) return null;
+  try {
+    const { SubmissionJob } = require('../../models');
+    const job = await SubmissionJob.findByPk(data.submissionJobId, {
+      attributes: ['id', 'submissionId', 'jobType', 'round']
+    });
+    if (!job) return null;
+
+    const pipelineRuns = require('./pipeline-run.service');
+    const run = await pipelineRuns.currentRun(job.submissionId, job.round);
+    if (run?.paramsSource !== 'frozen') return null;
+
+    const frozen = await pipelineRuns.frozenParamsFor(job.submissionId, job.round, job.jobType);
+    if (!frozen) {
+      logger.warn('Frozen restart: no recorded parameters for this step, running live', {
+        submissionId: job.submissionId, jobType: job.jobType, round: job.round
+      });
+      return null;
+    }
+    logger.info('Frozen restart: running with an earlier run\'s parameters', {
+      submissionId: job.submissionId, jobType: job.jobType, fromRun: frozen.fromRun,
+      prompt: frozen.promptText ? 'frozen' : 'live', model: frozen.call?.model || null
+    });
+    return frozen;
+  } catch (error) {
+    logger.warn('Frozen restart: parameter lookup failed, running live', {
+      submissionJobId: data.submissionJobId, error: error.message
+    });
+    return null;
+  }
+}
+
 async function registerHandler(queueName, handler, options = {}) {
   const instance = getInstance();
 
-  // includeMetadata is required for `job.retrycount` to be populated on the
-  // job object the handler receives. Without it pg-boss only sends
-  // { id, name, data }, so retry counters always read 0 — which makes the
-  // UI's "Attempt N/3" indicator stuck at 1/3 across retries.
-  const workerOptions = {
-    teamSize: options.concurrency || 1,
-    teamConcurrency: options.teamConcurrency || 1,
-    includeMetadata: true,
-    ...options
-  };
+  const workerOptions = buildWorkerOptions(options);
 
   await instance.work(queueName, workerOptions, async (job) => {
     logger.info('Processing job', {
@@ -271,8 +357,23 @@ async function registerHandler(queueName, handler, options = {}) {
     });
 
     try {
-      // Pass both job.data and the full pg-boss job object to the handler
-      const result = await handler(job.data, job);
+      // A run asked to reproduce its parent uses that run's prompts and model.
+      // Resolved once, here, rather than by each service: the model is read
+      // where the client is called and the prompt in a per-service loader, and
+      // threading a flag to both in twelve services is twelve chances to miss
+      // one. Null on the normal path, which makes `frozenParams.run` a no-op.
+      const frozen = await resolveFrozenParams(job.data);
+
+      // Pass both job.data and the full pg-boss job object to the handler.
+      //
+      // Wrapped in a token tally so every model call underneath is counted
+      // against THIS job, and in an attempt list so every try underneath is
+      // kept. Both stores are per-delivery, so two workers running side by side
+      // cannot see each other's — which a module-level counter would have got
+      // wrong, silently and only under load.
+      const result = await tokenUsage.run(() => attemptLog.run(
+        () => frozenParams.run(frozen, () => handler(job.data, job))
+      ));
       logger.info('Job completed', { queue: queueName, jobId: job.id });
       return result;
     } catch (error) {
@@ -282,6 +383,18 @@ async function registerHandler(queueName, handler, options = {}) {
         retryCount: job.retrycount || 0,
         error: error.message
       });
+
+      // Retry-skip on a deleted submission. The submission (or its job row) is
+      // gone — pg-boss has no foreign key to our tables, so its queue entry
+      // outlived them. Retrying cannot help: nothing will bring the row back.
+      // Swallow it so the failure is terminal on the first attempt instead of
+      // logging the same "Submission not found" three times per orphan.
+      if (await isOrphanedByDeletion(job, error)) {
+        logger.info('Job error suppressed — its submission no longer exists, no retry', {
+          queue: queueName, jobId: job.id
+        });
+        return { orphaned: true };
+      }
 
       // Retry-skip on user cancel: if the run was cancelled while this module
       // was mid-flight, its failure is a consequence of the cancel. The handler
@@ -327,6 +440,42 @@ async function getJobStatus(jobId) {
  * @param {string} jobId - Job ID
  * @returns {Promise<boolean>}
  */
+/**
+ * Did this job fail only because its submission was deleted underneath it?
+ *
+ * A deleted submission cascades away its `submission_jobs` rows, but pg-boss
+ * keeps its own table with no foreign key to ours, so the queue entry survives
+ * and fails on every attempt. That is permanent, not transient — retrying it
+ * just triples the log noise.
+ *
+ * Deliberately narrow: only a not-found error, and only when the submission is
+ * genuinely absent from the database. A transient DB outage that produced a
+ * different error still retries normally.
+ *
+ * @param {object} job - the pg-boss job ({ data })
+ * @param {Error} error - the error the handler threw
+ * @returns {Promise<boolean>}
+ */
+async function isOrphanedByDeletion(job, error) {
+  const looksNotFound = error?.code === 'NOT_FOUND'
+    || error?.statusCode === 404
+    || /not found/i.test(error?.message || '');
+  if (!looksNotFound) return false;
+
+  const submissionId = job?.data?.submissionId;
+  if (!submissionId) return false;
+
+  try {
+    const { Submission } = require('../../models');
+    const submission = await Submission.findByPk(submissionId, { attributes: ['id'] });
+    return !submission;
+  } catch {
+    // Can't confirm — fall through to the normal retry path rather than
+    // silently swallowing a real failure.
+    return false;
+  }
+}
+
 async function cancelJob(queueName, jobId) {
   const instance = getInstance();
   return instance.cancel(queueName, jobId);
@@ -362,6 +511,7 @@ module.exports = {
   getInstance,
   addJob,
   registerHandler,
+  buildWorkerOptions,
   getJobStatus,
   cancelJob,
   getQueueStats,

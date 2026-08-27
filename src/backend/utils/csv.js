@@ -15,12 +15,25 @@ const FORMULA_TRIGGER = /^[=+\-@\t\r]/;
  * @param {*} val - Raw cell value (null/undefined become '')
  * @returns {string} CSV-safe field
  */
+/**
+ * The formula guard alone, without the RFC-4180 quoting.
+ *
+ * For callers that hand their rows to a serialiser which already quotes —
+ * Papa.unparse does — and only need the trigger neutralized. One definition of
+ * the rule, so the two paths cannot disagree about what counts as dangerous.
+ *
+ * @param {*} val
+ * @returns {string} the value with any leading formula trigger neutralized
+ */
+function neutralizeFormula(val) {
+  if (val == null) return '';
+  const str = String(val);
+  return FORMULA_TRIGGER.test(str) ? "'" + str : str;
+}
+
 function escapeCsvField(val) {
   if (val == null) return '';
-  let str = String(val);
-  if (FORMULA_TRIGGER.test(str)) {
-    str = "'" + str;
-  }
+  let str = neutralizeFormula(val);
   if (str.includes(',') || str.includes('"') || str.includes('\n')) {
     return '"' + str.replace(/"/g, '""') + '"';
   }
@@ -42,4 +55,4 @@ function stripCsvFormulaGuard(val) {
   return val;
 }
 
-module.exports = { escapeCsvField, stripCsvFormulaGuard };
+module.exports = { escapeCsvField, neutralizeFormula, stripCsvFormulaGuard };

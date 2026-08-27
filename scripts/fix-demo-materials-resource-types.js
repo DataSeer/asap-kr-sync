@@ -23,7 +23,15 @@ const Papa = require(path.resolve(__dirname, '..', 'node_modules/papaparse'));
 const DEMO_JSON_DIR = path.resolve(__dirname, '..', 'src/backend/data/demo-findings');
 const DEMO_CSV_DIR = path.resolve(__dirname, '..', 'src/frontend/public/demo-files');
 
-const EXCLUDED_CSV_TYPES = new Set(['dataset', 'code/software']);
+// Compared on the NORMALIZED key, not the raw string. The demo CSVs have
+// carried "Software", "Code", "Code/Software" and now the canonical
+// "Software/code" — a raw-string set silently stops excluding as soon as the
+// spelling changes, and a name collision then flips a lab material into
+// software. `normalizeResourceTypeKey` collapses the whole family to one key.
+const { normalizeResourceTypeKey } = require(
+  path.resolve(__dirname, '..', 'src/backend/services/pdf-analysis/identifier-normalize.service')
+);
+const EXCLUDED_CSV_TYPES = new Set(['dataset', 'software/code']);
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 
@@ -72,7 +80,7 @@ function buildLookup(csvRows) {
     const name = getField(row, 'RESOURCE NAME');
     const type = getField(row, 'RESOURCE TYPE');
     if (!name || !type) continue;
-    if (EXCLUDED_CSV_TYPES.has(type.trim().toLowerCase())) continue;
+    if (EXCLUDED_CSV_TYPES.has(normalizeResourceTypeKey(type))) continue;
     const key = normalize(name);
     if (!lookup.has(key)) lookup.set(key, type.trim());
   }

@@ -1,28 +1,11 @@
 [
   {
     "text": "Samples were pooled together and sequenced on a NextSeq 2000 (Illumina) using a P2 flow cell and the following read configuration: R1, R2 = 38bp, I1, I2 = 8bp. Dataset | GEO | This paper | GSE328400 in GEO, can also deposit in CRN | NEW | ",
-    "extractions":
-    [
-      {
-        "extraction_class": "DATASET_ROW",
-        "extracted_text": "Samples were pooled together and sequenced on a NextSeq 2000 (Illumina) using a P2 flow cell and the following read configuration: R1, R2 = 38bp, I1, I2 = 8bp.",
-        "attributes":
-        {
-          "dataset_name": "RNA seq",
-          "resource_type": "DATASET",
-          "reuse_status": "GENERATED",
-          "source_type": "REPOSITORY",
-          "repository": "GEO",
-          "accession": "GSE328400",
-          "doi": "",
-          "url": ""
-        }
-      },
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | GEO | This paper | GSE328400 in GEO, can also deposit in CRN | NEW | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "RNA seq",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -36,41 +19,22 @@
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "GEO",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "GSE328400",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Cells were imaged directly in 384-well plates using the Opera Phenix Plus High-Content Screening System (Perkin Elmer). Dataset | Raw imaging data and analysis | This paper | To be deposited in IDR | NEW | Raw imaging data, analysis pipeline, and tabular results to produce figure panels 1B-D, 2A-L, 3A-C, S1C-E, S2A-E, S3A-C | ",
-    "extractions":
-    [
-      {
-        "extraction_class": "DATASET_ROW",
-        "extracted_text": "Cells were imaged directly in 384-well plates using the Opera Phenix Plus High-Content Screening System (Perkin Elmer).",
-        "attributes":
-        {
-          "dataset_name": "Raw imaging data and analysis",
-          "resource_type": "DATASET",
-          "reuse_status": "GENERATED",
-          "source_type": "",
-          "repository": "",
-          "accession": "",
-          "doi": "",
-          "url": ""
-        }
-      },
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | Raw imaging data and analysis | This paper | To be deposited in IDR | NEW | Raw imaging data, analysis pipeline, and tabular results to produce figure panels 1B-D, 2A-L, 3A-C, S1C-E, S2A-E, S3A-C | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Raw imaging data and analysis",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -85,13 +49,11 @@
   },
   {
     "text": "Dataset | GTEx cortex snRNA-seq, 2 donors | GTEx consortium (tissue), Levin lab (data) | phs003749.v1.p1 | new | dbGaP | ",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | GTEx cortex snRNA-seq, 2 donors | GTEx consortium (tissue), Levin lab (data) | phs003749.v1.p1 | new | dbGaP | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "GTEx cortex snRNA-seq, 2 donors",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -105,27 +67,23 @@
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "dbGaP",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "phs003749.v1.p1",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Dataset | PD-related middle temporal gyrus snRNA-seq, original | ASAP Team Scherzer | zenodo.org/records/14270014 and phs004421.v1.p1 | new | ASAP CRN Cloud and dbGaP | ",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | PD-related middle temporal gyrus snRNA-seq, original | ASAP Team Scherzer | zenodo.org/records/14270014 and phs004421.v1.p1 | new | ASAP CRN Cloud and dbGaP | ",
-        "attributes":
-        {
-          "dataset_name": "GTEx cortex snRNA-seq, 2 donors",
+        "attributes": {
+          "dataset_name": "PD-related middle temporal gyrus snRNA-seq, original",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
           "source_type": "REPOSITORY",
@@ -138,9 +96,8 @@
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | PD-related middle temporal gyrus snRNA-seq, original | ASAP Team Scherzer | zenodo.org/records/14270014 and phs004421.v1.p1 | new | ASAP CRN Cloud and dbGaP | ",
-        "attributes":
-        {
-          "dataset_name": "GTEx cortex snRNA-seq, 2 donors",
+        "attributes": {
+          "dataset_name": "PD-related middle temporal gyrus snRNA-seq, original",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
           "source_type": "REPOSITORY",
@@ -153,32 +110,27 @@
       {
         "extraction_class": "URL",
         "extracted_text": "zenodo.org/records/14270014",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "dbGaP",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "phs004421.v1.p1",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Dataset | microscopy images | Bioimage Archive | 10.6019/S-BIAD3478 | New | Fig 1G, S1C, 2A, 2D, S2A,2C,2H, 3A,3Ff,3H, S3D,S3F,S3G, 4E,4G,4H, S4B",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | microscopy images | Bioimage Archive | 10.6019/S-BIAD3478 | New | Fig 1G, S1C, 2A, 2D, S2A,2C,2H, 3A,3Ff,3H, S3D,S3F,S3G, 4E,4G,4H, S4B",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "microscopy images",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -192,59 +144,51 @@
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "Bioimage Archive",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "DOI",
         "extracted_text": "10.6019/S-BIAD3478",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Dataset | Proteomics | ProteomeXchange Consortium | PXD071594 | New | Supplementary table 1 and 2, Fig 1C, 1D, 4A, 4B",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | Proteomics | ProteomeXchange Consortium | PXD071594 | New | Supplementary table 1 and 2, Fig 1C, 1D, 4A, 4B",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Proteomics",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
           "source_type": "REPOSITORY",
           "repository": "ProteomeXchange Consortium",
-          "accession": "",
-          "doi": "PXD071594",
+          "accession": "PXD071594",
+          "doi": "",
           "url": ""
         }
       },
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "ProteomeXchange Consortium",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "PXD071594",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Dataset | Flow cytometry (MFI) | Zenodo | https://zenodo.org/records/19374070 | New | Tabular data for Fig 4C, 4D",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | Flow cytometry (MFI) | Zenodo | https://zenodo.org/records/19374070 | New | Tabular data for Fig 4C, 4D",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Flow cytometry (MFI)",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -258,20 +202,17 @@
       {
         "extraction_class": "URL",
         "extracted_text": "https://zenodo.org/records/19374070",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "PCR amplicons were sequenced using standard Sanger sequencing (Supp Fig 1A).",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "PCR amplicons were sequenced using standard Sanger sequencing (Supp Fig 1A).",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Sanger sequencing",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -286,13 +227,11 @@
   },
   {
     "text": "Dataset | TH staining images | Zenodo | 10.5281/zenodo.20213678 | new | Images of TH staining of all mice included in the study",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | TH staining images | Zenodo | 10.5281/zenodo.20213678 | new | Images of TH staining of all mice included in the study",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "TH staining images",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -306,20 +245,17 @@
       {
         "extraction_class": "DOI",
         "extracted_text": "10.5281/zenodo.20213678",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Forepaw movement was recorded using a high-speed FLIR camera (Teledyne FLIR, Model: Blackfly S) that was triggered by the custom task controller when the animal approached the frontal slit and placed its paws on a metal bar.",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Forepaw movement was recorded using a high-speed FLIR camera (Teledyne FLIR, Model: Blackfly S) that was triggered by the custom task controller when the animal approached the frontal slit and placed its paws on a metal bar.",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Behavioral videos",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -334,13 +270,11 @@
   },
   {
     "text": "Dataset | Raw transcriptomics | GEO | GSE329088 | new | ",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | Raw transcriptomics | GEO | GSE329088 | new | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "RNA seq",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -354,26 +288,22 @@
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "GEO",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "GSE329088",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Dataset | Proteomics | ProteomeXchange Consortium | PXD059785 | new | ",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | Proteomics | ProteomeXchange Consortium | PXD059785 | new | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Proteomics",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -387,26 +317,22 @@
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "ProteomeXchange Consortium",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "PXD059785",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "The cytosolic fraction was then collected, and mtDNA was isolated and quantified by qPCR using primers listed below, as previously described 67 .",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "The cytosolic fraction was then collected, and mtDNA was isolated and quantified by qPCR using primers listed below, as previously described 67 .",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "qPCR",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -421,28 +347,11 @@
   },
   {
     "text": "Mass spectrometric data were collected on an Orbitrap Ascend MultiOmics mass spectrometer coupled to a Vanquish Neo UHPLC. Dataset | Raw files of TMTpro proteomic data of Immunoprecipitations of PI31 variants with or without FBXO7 present | ProteomeXchange Consortium via PRIDE partner repository | 10.6019/PXD077016 | New | ",
-    "extractions":
-    [
-      {
-        "extraction_class": "DATASET_ROW",
-        "extracted_text": "Mass spectrometric data were collected on an Orbitrap Ascend MultiOmics mass spectrometer coupled to a Vanquish Neo UHPLC.",
-        "attributes":
-        {
-          "dataset_name": "Raw files of TMTpro proteomic data of Immunoprecipitations of PI31 variants with or without FBXO7 present",
-          "resource_type": "DATASET",
-          "reuse_status": "GENERATED",
-          "source_type": "REPOSITORY",
-          "repository": "ProteomeXchange Consortium",
-          "accession": "",
-          "doi": "10.6019/PXD077016",
-          "url": ""
-        }
-      },
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | Raw files of TMTpro proteomic data of Immunoprecipitations of PI31 variants with or without FBXO7 present | ProteomeXchange Consortium via PRIDE partner repository | 10.6019/PXD077016 | New | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Raw files of TMTpro proteomic data of Immunoprecipitations of PI31 variants with or without FBXO7 present",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -456,26 +365,22 @@
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "ProteomeXchange Consortium",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "DOI",
         "extracted_text": "10.6019/PXD077016",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Dataset | Map of human SCF complex (SKP1, CUL1 N-terminal domain, FBXO7 residues 129-398, PI31 residues 1-151) | This paper | EMD-57672 | New | ",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | Map of human SCF complex (SKP1, CUL1 N-terminal domain, FBXO7 residues 129-398, PI31 residues 1-151) | This paper | EMD-57672 | New | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Map of human SCF complex (SKP1, CUL1 N-terminal domain, FBXO7 residues 129-398, PI31 residues 1-151)",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -489,20 +394,17 @@
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "EMD-57672",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Dataset | Human 20S proteasome core particle with α3 and α7 N-terminal deletion | This paper | PDB:30HM | New | ",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | Human 20S proteasome core particle with α3 and α7 N-terminal deletion | This paper | PDB:30HM | New | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "Human 20S proteasome core particle with α3 and α7 N-terminal deletion",
           "resource_type": "DATASET",
           "reuse_status": "GENERATED",
@@ -516,20 +418,17 @@
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "PDB:30HM",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "For the open-gate 20S CP-PI31 structure the chains from the published models of the human 20S CP (PDB 8QYO) along with the chains of PI31 (PDB 8FZ6) were individually fitted into the cryo-EM map with ChimeraX.",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "For the open-gate 20S CP-PI31 structure the chains from the published models of the human 20S CP (PDB 8QYO) along with the chains of PI31 (PDB 8FZ6) were individually fitted into the cryo-EM map with ChimeraX.",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "human 20S CP",
           "resource_type": "DATASET",
           "reuse_status": "REUSED",
@@ -543,8 +442,7 @@
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "For the open-gate 20S CP-PI31 structure the chains from the published models of the human 20S CP (PDB 8QYO) along with the chains of PI31 (PDB 8FZ6) were individually fitted into the cryo-EM map with ChimeraX.",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "chains of PI31",
           "resource_type": "DATASET",
           "reuse_status": "REUSED",
@@ -558,26 +456,22 @@
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "PDB 8QYO",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "ACCESSION",
         "extracted_text": "PDB 8FZ6",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Dataset | UK Biobank WES and phenotypic data | UK Biobank; Backman et al., 2021 | https://www.ukbiobank.ac.uk/ | ",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Dataset | UK Biobank WES and phenotypic data | UK Biobank; Backman et al., 2021 | https://www.ukbiobank.ac.uk/ | ",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "UK Biobank WES and phenotypic data",
           "resource_type": "DATASET",
           "reuse_status": "REUSED",
@@ -591,26 +485,22 @@
       {
         "extraction_class": "REPOSITORY",
         "extracted_text": "UK Biobank",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "URL",
         "extracted_text": "https://www.ukbiobank.ac.uk/",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   },
   {
     "text": "Information sources: GWAS associations from GWAS catalog (https://www.ebi.ac.uk/gwas/); rare variant associations from Genebass 33 , SAIGE-GENE+ 19 , and disease-specific studies 47, 53, 54 ; functional annotations for estrogen receptor regulation pathway members from COSMIC (https://cancer.sanger.ac.uk/cosmic); functional annotations of network genes from SynGO (https://www.syngoportal.org/).",
-    "extractions":
-    [
+    "extractions": [
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Information sources: GWAS associations from GWAS catalog (https://www.ebi.ac.uk/gwas/); rare variant associations from Genebass 33 , SAIGE-GENE+ 19 , and disease-specific studies 47, 53, 54 ; functional annotations for estrogen receptor regulation pathway members from COSMIC (https://cancer.sanger.ac.uk/cosmic); functional annotations of network genes from SynGO (https://www.syngoportal.org/).",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "GWAS catalog",
           "resource_type": "DATASET",
           "reuse_status": "REUSED",
@@ -624,8 +514,7 @@
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Information sources: GWAS associations from GWAS catalog (https://www.ebi.ac.uk/gwas/); rare variant associations from Genebass 33 , SAIGE-GENE+ 19 , and disease-specific studies 47, 53, 54 ; functional annotations for estrogen receptor regulation pathway members from COSMIC (https://cancer.sanger.ac.uk/cosmic); functional annotations of network genes from SynGO (https://www.syngoportal.org/).",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "functional annotations for estrogen receptor regulation pathway members from COSMIC",
           "resource_type": "DATASET",
           "reuse_status": "REUSED",
@@ -639,8 +528,7 @@
       {
         "extraction_class": "DATASET_ROW",
         "extracted_text": "Information sources: GWAS associations from GWAS catalog (https://www.ebi.ac.uk/gwas/); rare variant associations from Genebass 33 , SAIGE-GENE+ 19 , and disease-specific studies 47, 53, 54 ; functional annotations for estrogen receptor regulation pathway members from COSMIC (https://cancer.sanger.ac.uk/cosmic); functional annotations of network genes from SynGO (https://www.syngoportal.org/).",
-        "attributes":
-        {
+        "attributes": {
           "dataset_name": "functional annotations of network genes from SynGO",
           "resource_type": "DATASET",
           "reuse_status": "REUSED",
@@ -654,20 +542,17 @@
       {
         "extraction_class": "URL",
         "extracted_text": "https://www.ebi.ac.uk/gwas/",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "URL",
         "extracted_text": "https://cancer.sanger.ac.uk/cosmic",
-        "attributes":
-        {}
+        "attributes": {}
       },
       {
         "extraction_class": "URL",
         "extracted_text": "https://www.syngoportal.org/",
-        "attributes":
-        {}
+        "attributes": {}
       }
     ]
   }

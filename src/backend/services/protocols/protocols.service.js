@@ -4,10 +4,20 @@
  * Detects protocol mentions via Google Gemini on the manuscript markdown.
  * Requires the MARKDOWN_CONVERT job to have completed first (markdown file).
  *
- * Three-step pipeline:
+ * Four-step pipeline:
  *   1. detectProtocols(md)                 → raw Gemini items (prompt-shape)
  *   2. buildKrtItemsProtocols(raw)         → canonical KrtEntry[]
- *   3. dedupeKrtItems(items, 'protocols')  → one entry per logical resource
+ *   3. attachEvidence(items, index)      → every row TAGGED verified /
+ *                                          embellished / unsupported. Nothing
+ *                                          is dropped here: the `drop` option
+ *                                          is not implemented, and
+ *                                          mergeDetections is what filters, at
+ *                                          the cross-detector stage.
+ *   4. dedupeKrtItems(items, 'protocols')  → one entry per logical resource
+ *
+ * Detection is KRT-blind: the author's own rows are NOT fed to the model. They
+ * are reconciled against this output later, by the krt_grounding module. See
+ * docs/pipeline-modules.md.
  *
  * Note: the curated enrichment list is no longer applied here — only the
  * Identifier Detection module consults the enrichment lists now.
@@ -22,26 +32,36 @@ const { GoogleGenAI } = require('@google/genai');
 // set (the pure pipeline tests don't need the DB at all).
 const s3Service = require('../storage/s3.service');
 const protocolsConfig = require('../../config/protocols-detection-api');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
-const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const inputFreeze = require('../queue/input-freeze.service');
+const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
+const { seedCoverageShortfall } = require('../detection/seed-coverage');
+const runInputs = require('../queue/run-inputs.service');
+const { tagAuthorRows } = require('../detection/tag-author-rows');
+const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
+const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
 
-// KRT resource-type group for protocols (0=dataset, 1=software, 2=protocol, 3=lab_material).
-const PROTOCOL_GROUP = 2;
-
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
-const PROMPT_FILE = path.join(PROMPTS_DIR, 'protocols-detection.txt');
+const PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'protocols-detection.txt');
 let _promptCache = null;
 
 // Same scale as identifier-detection.service.js — keeps confidence comparable
 // across detectors when the merger picks representative fields.
+// gemini-2.5-flash allows 65536 output tokens. This was 32768, which a
+// 133 KB manuscript exceeded mid-object: the JSON failed to parse and the
+// module recorded 0 resources after 124s of work. Thinking stays disabled
+// (commit 38a16db), so the whole budget goes to output.
+const MAX_OUTPUT_TOKENS = 65536;
+
 const RELEVANCE_TO_CONFIDENCE = { HIGH: 0.95, MEDIUM: 0.7, LOW: 0.4 };
 const DEFAULT_CONFIDENCE = 0.7;
 
@@ -51,8 +71,16 @@ function hasPrompt() {
 
 /**
  * Resolve the detection prompt. An explicit `override` (non-empty string) wins
- * — used by tuning/experiment scripts; otherwise the committed default file is
- * read once and cached.
+ * — used by tuning/experiment scripts to run detection with a custom prompt;
+ * otherwise the committed default file is read once and cached.
+ *
+ * Deleted by accident in 288ac67 (the requeueStep refactor) — it sat directly
+ * above the queue function that commit rewrote, and went with it. Nothing
+ * caught it: the only caller is inside the Gemini call, so every test that
+ * mocks Gemini passes and `node --check` sees a perfectly valid file. What
+ * caught it was `eslint --rule no-undef`, which is the cheap check worth
+ * running on any commit that moves whole functions around.
+ *
  * @param {string} [override] - optional prompt text to use instead of the file
  * @returns {string}
  */
@@ -67,31 +95,48 @@ function getPrompt(override) {
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded protocols detection prompt', { file: PROMPT_FILE, length: _promptCache.length });
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
-async function queueProtocolsDetection(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+/**
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
+ */
+async function queueProtocolsDetection(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.PROTOCOLS_DETECTION,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.PROTOCOLS_DETECTION, round, userId);
+
+  logger.info('Protocols detection re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.PROTOCOLS_DETECTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Protocols detection queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 async function processProtocolsDetection(submissionId, jobLogger = null, { isFinalAttempt = true } = {}) {
@@ -100,7 +145,12 @@ async function processProtocolsDetection(submissionId, jobLogger = null, { isFin
   if (!submission) throw new NotFoundError('Submission');
 
   const result = await runWithDemoFallback({
-    isExternalEnabled: protocolsConfig.isConfigured() && hasPrompt(),
+    // Ask the strategy the SUBMISSION'S pipeline selects. This tested the
+    // BLIND prompt while the default pipeline is seeded: a missing blind
+    // file made a perfectly runnable seeded detection serve DEMO rows for a
+    // real manuscript, and a missing seeded file was reported available and
+    // then threw. Same fix datasets already had.
+    isExternalEnabled: protocolsConfig.isConfigured() && detectionPromptsExist('protocols', submission),
     demoEnabled: process.env.PROTOCOLS_DETECTION_DEMO_DATA_ENABLED !== 'false',
     runExternal: () => detectProtocolsForSubmission(submission, jobLogger),
     getDemoData: async () => {
@@ -132,10 +182,12 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.PROTOCOLS_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for protocols detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', { fileName: mdFile.fileName, s3Key: mdFile.s3Key });
@@ -143,34 +195,84 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
   const markdownText = mdBuffer.toString('utf-8');
   jobLogger?.log('download_markdown_done', 'Markdown downloaded', { markdownLength: markdownText.length });
 
-  // Seed from the author's KRT protocol rows (empty when there is no KRT —
-  // article-only, unchanged behaviour). The prompt's Section 0 treats these as
-  // authoritative base records so the LM enriches/adds instead of re-deriving.
-  const authorProtocols = await loadAuthorSeeds(submissionId, round, PROTOCOL_GROUP);
-  if (authorProtocols.length > 0) {
-    jobLogger?.log('author_krt_seeds', 'Loaded author KRT protocol seeds', { count: authorProtocols.length });
-  }
+  // Detection is KRT-blind on purpose: the author's rows are reconciled against
+  // this output by the krt_grounding module, downstream. Seeding the prompt with
+  // them made the model echo seeds it had never located in the text, which made
+  // "did we actually find this in the manuscript?" unanswerable.
 
   // ── Step 1: detect (Gemini)
-  jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection', { authorSeedCount: authorProtocols.length });
+  // Which prompt, and seeded from what — the strategy decides. Protocols runs
+  // in both designs: with no seeds the seeded prompt's Section 0 simply has
+  // nothing to base on, which is article-only and is dev's behaviour.
+  const resolved = await resolveDetection('protocols', { submission, markdownText, jobLogger });
+  if (!resolved.run) {
+    return { items: [], meta: { totalCount: 0, uniqueCount: 0, skipped: true,
+      reason: resolved.reason, pipeline: resolved.pipeline.id } };
+  }
+
+  jobLogger?.log('gemini_start', 'Calling Gemini API for protocols detection',
+    { pipeline: resolved.pipeline.id, seedCount: resolved.input.meta?.seedCount ?? 0 });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForProtocols(markdownText, undefined, authorProtocols);
+  const { resources: rawItems, rawResponse, promptDigest } = await callGeminiForProtocols(markdownText, {
+    prompt: resolved.input.prompt,
+    seeds: resolved.input.seeds,
+    seedTitle: resolved.strategy.seedTitle ? SEED_TITLES[resolved.strategy.seedTitle] : null
+  });
   const geminiMs = Date.now() - geminiStartTime;
 
-  await jobLogger?.saveRawResponse('gemini-protocols-analysis', rawResponse || '', {
-    extension: '.md', mimeType: 'text/markdown'
-  });
+  // Only the parsed JSON is saved. There used to be a second
+  // `gemini-protocols-analysis.md` artifact alongside it, from when the model
+  // was expected to return prose around its JSON. It returns
+  // `responseMimeType: 'application/json'` now, so that file was a byte-for-byte
+  // duplicate of the .json under a misleading name.
   const extractedJson = stripMarkdownEscapes(extractJsonBlock(rawResponse));
   await jobLogger?.saveRawResponse('gemini-protocols', extractedJson || rawItems);
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, mdBuffer) },
+    frozen: { seeds: resolved.input.seeds || [] },
+    prompt: runInputs.promptRef(resolved.input.meta?.promptFile || null, promptDigest),
+    meta: {
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      model: protocolsConfig.model,
+      seedCount: resolved.input.meta?.seedCount ?? 0
+    },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: protocolsConfig
+  });
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
 
   // ── Step 2: buildKrtItems
-  const krtItems = buildKrtItemsProtocols(rawItems);
+  const krtItems = tagAuthorRows(buildKrtItemsProtocols(rawItems), resolved.input.seeds);
 
-  // ── Step 3: dedupe
-  const items = dedupeKrtItems(krtItems, 'protocols-gemini');
+  // ── Step 3: ground every claim against the manuscript
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems, stats: evidenceStats } = attachEvidence(krtItems, evidenceIndex, {
+    label: 'protocols'
+  });
+  jobLogger?.log('evidence_grounding', 'Grounded protocol claims against the manuscript', evidenceStats);
+  await jobLogger?.saveRawResponse('evidence-grounding', { stats: evidenceStats, items: groundedItems });
+
+  // ── Step 4: dedupe
+  const items = dedupeKrtItems(groundedItems, 'protocols-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
+
+  // The seeded prompts promise one row per author seed and say "never drop one".
+  // A run far short of that has broken a contract it was given in writing — and
+  // reported as a clean zero it reads like a manuscript with nothing in it.
+  // Flagged via `meta.degraded`, which demo-fallback turns into `partial`.
+  const seedShortfall = seedCoverageShortfall({
+    seedCount: resolved.input.meta?.seedCount ?? 0,
+    returnedCount: items.length,
+    detector: 'protocols'
+  });
+  if (seedShortfall) {
+    jobLogger?.log('seed_shortfall', 'Seeded run returned far fewer rows than seeds', seedShortfall);
+  }
 
   return {
     items,
@@ -178,23 +280,29 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount,
+      ...(seedShortfall ? { degraded: seedShortfall } : {}),
+      seedCount: resolved.input.meta?.seedCount ?? 0,
       geminiMs,
       totalMs: Date.now() - startTime,
-      model: protocolsConfig.model
+      model: protocolsConfig.model,
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      // The prompt this run used, repo-relative, so the UI can link to it.
+      promptFile: resolved.input.meta?.promptFile || null,
+      signalsPromptFile: resolved.input.meta?.signalsPromptFile || null
     }
   };
 }
 
-async function callGeminiForProtocols(markdownText, promptOverride, authorProtocols = []) {
+async function callGeminiForProtocols(markdownText, opts = {}) {
+  const { prompt: promptOverride, seeds, seedTitle } =
+    typeof opts === 'string' ? { prompt: opts } : opts;
   const ai = new GoogleGenAI({ apiKey: protocolsConfig.apiKey });
   const prompt = getPrompt(promptOverride);
-  // Author-provided protocols are injected before the article so the prompt's
-  // Section 0 can seed the output from them. Omitted entirely when empty so
-  // article-only runs are byte-for-byte unchanged.
-  const seedBlock = authorProtocols && authorProtocols.length > 0
-    ? '\n\n---\n\nAUTHOR-PROVIDED PROTOCOLS (KRT):\n\n' + JSON.stringify(authorProtocols, null, 2)
-    : '';
-  const fullPrompt = prompt + seedBlock + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
+  const fullPrompt = assembleTextPrompt({ prompt, seeds, seedTitle, markdownText });
+  // Digested in place: the assembled prompt is the manuscript plus the
+  // instructions, and only its hash needs to survive the call.
+  const promptDigest = { sha256: runInputs.sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -205,23 +313,34 @@ async function callGeminiForProtocols(markdownText, promptOverride, authorProtoc
       // long text_excerpts) that thinking ate the budget and truncated the JSON.
       config: {
         responseMimeType: 'application/json',
-        maxOutputTokens: 32768,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    }, { label: 'protocols' });
+    }, {
+      label: 'protocols',
+      // An empty or unparseable body is a FAILED call, not "found
+      // nothing" — retry it. The prompt states that an empty array is
+      // how to report finding nothing, so a model with nothing to say
+      // still has a valid answer available.
+      validate: (res) => hasParseableBody(res?.text)
+    });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (protocols) — output hit maxOutputTokens');
     }
 
     const text = response.text;
-    if (!text) {
-      logger.warn('Gemini returned empty response for protocols detection');
-      return { resources: [], rawResponse: '' };
+    if (!hasParseableBody(text)) {
+      // Every retry came back with nothing readable. Reporting zero
+      // resources here would be a wrong answer presented as a finished
+      // one: the job goes green with detected: false, indistinguishable
+      // from a manuscript that genuinely mentions none.
+      logger.error('Gemini returned no parseable body for protocols detection after retries');
+      throw new ExternalServiceError('Gemini', 'empty or unparseable response after retries');
     }
 
     logger.debug('Gemini raw response preview (protocols)', { preview: text.substring(0, 500) });
-    return { resources: parseGeminiResponse(text), rawResponse: text };
+    return { resources: parseGeminiResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for protocols detection', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
@@ -265,6 +384,14 @@ function parseGeminiResponse(text) {
     logger.error('Failed to parse Gemini JSON response (protocols)', {
       error: error.message, preview: jsonStr.substring(0, 300)
     });
+    // A response cut off by maxOutputTokens ends mid-object, so the whole
+    // body fails to parse and every already-complete row would be lost.
+    // Recover those rather than returning nothing.
+    const salvaged = salvageTruncatedObjects(jsonStr);
+    if (salvaged.length > 0) {
+      logger.warn('Salvaged rows from a truncated Gemini response (protocols)', { count: salvaged.length });
+      return salvaged;
+    }
     return [];
   }
 }
@@ -277,13 +404,13 @@ function parseGeminiResponse(text) {
  * Step 1: hit Gemini on the markdown text and return the parsed resources
  * array. Pure-ish — no DB, no S3.
  * @param {string} markdownText
- * @param {{ prompt?: string, authorProtocols?: object[] }} [options] - `prompt`
- *   overrides the default detection prompt; `authorProtocols` seeds the prompt's
- *   Section 0 with the author's KRT protocol rows (empty by default).
+ * @param {{ prompt?: string }} [options] - `prompt` overrides the default
+ *   detection prompt (used by the prompt-comparison scripts).
  * @returns {Promise<{ resources: object[] }>}
  */
-async function detectProtocols(markdownText, { prompt, authorProtocols } = {}) {
-  const { resources, rawResponse } = await callGeminiForProtocols(markdownText, prompt, authorProtocols || []);
+async function detectProtocols(markdownText, { prompt, seeds, seedTitle } = {}) {
+  // Seeds forwarded, not dropped — see the note on detectDatasets.
+  const { resources, rawResponse } = await callGeminiForProtocols(markdownText, { prompt, seeds, seedTitle });
   return { resources, rawResponse };
 }
 
@@ -300,33 +427,20 @@ async function detectProtocols(markdownText, { prompt, authorProtocols } = {}) {
  */
 function buildKrtItemsProtocols(rawItems) {
   if (!Array.isArray(rawItems)) return [];
-  return rawItems
-    .filter(r => !isInSilicoProtocol(r))
-    .map(r => {
-      const resourceName = r.canonical_name || r.name || r.resourceName || '';
-      const resourceType = r.resource_type || r.resourceType || 'Protocol';
-      const relevance = r.krt_relevance || r.relevance || 'MEDIUM';
-      return {
-        resourceType,
-        resourceName,
-        identifier: r.identifier || '',
-        source: r.source || '',
-        newReuse: r.newReuse || r.new_reuse || '',
-        origin: 'protocols-gemini',
-        confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-        // text_excerpt is the prompt-provided ~200-char snippet describing the
-        // protocol use. Per ASAP request, do NOT push it into user-facing
-        // ADDITIONAL INFORMATION — only the internal team needs that context.
-        // Persisted on detectorMeta so the JobStatusPanel modal can still show it.
-        additionalInformation: '',
-        detectorMeta: {
-          relevance,
-          text_excerpt: r.text_excerpt || '',
-          context: r.additionalInformation || r.text_excerpt || '',
-          aliases: Array.isArray(r.aliases) ? r.aliases : []
-        }
-      };
-    });
+  // The in-silico filter runs BEFORE the shared mapping: an entry the ASAP
+  // rules class as Software/code should never become a Protocol KrtEntry.
+  return buildKrtItemsFromLM(rawItems.filter(r => !isInSilicoProtocol(r)), {
+    origin: 'protocols-gemini',
+    defaultResourceType: 'Protocol',
+    // `text_excerpt` is the prompt's ~200-char procedural snippet; the shared
+    // contract already reads it as the evidence quote (FIELD_ALIASES). It is
+    // also kept here because the panel surfaces it directly.
+    details: (r) => ({
+      text_excerpt: r.text_excerpt || '',
+      context: r.additionalInformation || r.text_excerpt || '',
+      section_heading: r.section_heading || ''
+    })
+  });
 }
 
 /**
@@ -350,9 +464,7 @@ async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 

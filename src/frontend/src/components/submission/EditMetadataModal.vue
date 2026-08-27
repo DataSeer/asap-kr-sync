@@ -11,7 +11,7 @@
  *   @saved="handleSaved"
  * />
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, inject } from 'vue'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useAuthStore } from '@/stores/auth.store'
@@ -32,6 +32,13 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'saved'])
+
+
+// The Availability Statement is NOT edited here. It is confirmed and rewritten
+// on the Availability step alone, because that page is the only place that
+// shows what the check will read and what it said — and a statement edited
+// from a modal three steps away clears its confirmation without the person
+// seeing the consequence.
 
 const submissionStore = useSubmissionStore()
 const notificationStore = useNotificationStore()
@@ -84,11 +91,9 @@ const demoQuery = ref('')
 
 const saving = ref(false)
 // DAS value when the modal opened — used to report whether the user changed it.
-const originalDas = ref('')
 const editForm = ref({
   title: '',
   manuscriptId: '',
-  dataAvailabilityStatement: '',
   notes: ''
 })
 
@@ -98,10 +103,8 @@ watch(() => [props.show, props.submission], ([show, submission]) => {
     editForm.value = {
       title: submission.title || '',
       manuscriptId: submission.manuscriptId || '',
-      dataAvailabilityStatement: submission.dataAvailabilityStatement || '',
       notes: submission.notes || ''
     }
-    originalDas.value = submission.dataAvailabilityStatement || ''
     demoSearchOpen.value = false
     demoQuery.value = ''
     selectedOwnerId.value = submission.userId || ''
@@ -181,19 +184,14 @@ async function saveMetadata() {
   if (!props.submission?.id) return
 
   saving.value = true
-  const newDas = editForm.value.dataAvailabilityStatement || ''
-  const dasChanged = newDas !== (originalDas.value || '')
   try {
     await submissionStore.updateSubmission(props.submission.id, {
       title: editForm.value.title,
       manuscriptId: editForm.value.manuscriptId || null,
-      dataAvailabilityStatement: editForm.value.dataAvailabilityStatement,
       notes: editForm.value.notes || null
     })
     notificationStore.success('Metadata updated successfully')
-    // Second arg lets listeners (e.g. SubmissionHeader) decide whether to
-    // advance pdf_analysis: only when the DAS was actually changed.
-    emit('saved', props.submission, { dasChanged, das: newDas })
+    emit('saved', props.submission)
     closeModal()
   } catch (error) {
     // Show detailed validation errors if available
@@ -292,19 +290,6 @@ async function saveMetadata() {
                 </ul>
               </div>
             </div>
-          </div>
-
-          <!-- Data Availability Statement -->
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">
-              Data Availability Statement
-            </label>
-            <textarea
-              v-model="editForm.dataAvailabilityStatement"
-              rows="4"
-              class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-vertical"
-              placeholder="Describe how and where the data will be made available..."
-            ></textarea>
           </div>
 
           <!-- Notes -->

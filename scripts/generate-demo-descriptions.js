@@ -69,7 +69,7 @@ const METADATA_PATTERNS = [
   /^made\s+to\s+the\s+layout\b/i,       // proof-checking continuation
   /online\s+proofing\s+interface/i,     // proof-checking continuation
   /^the\s+copyright\s+holder\b/i,       // bioRxiv copyright line
-  /^cc[\-\s]?by\b/i,                    // standalone "CC-BY 4.0 International license"
+  /^cc[-\s]?by\b/i,                    // standalone "CC-BY 4.0 International license"
   /made\s+available\s+under\s+a?\s*cc/i,// "made available under a CC-BY"
   /^perpetuity\b/i,                     // "perpetuity. It is made available..."
   /^correct\s+and\s+submit\b/i,         // proof continuation

@@ -1,18 +1,36 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useKRTStore } from '@/stores/krt.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import dasSuggestionsService from '@/services/das-suggestions.service'
+import PipelineIssues from '@/components/submission/PipelineIssues.vue'
+import { useJobPoller } from '@/composables'
 
 const route = useRoute()
 const router = useRouter()
 const submissionStore = useSubmissionStore()
 const krtStore = useKRTStore()
 const notificationStore = useNotificationStore()
+
+const { jobs, issues } = useJobPoller(computed(() => route.params.id))
+
+/**
+ * The header reads this to know whether extraction is running and whether the
+ * statement still needs confirming.
+ *
+ * Provided by the VIEW, not by a child: provide() only travels down, and the
+ * header is a sibling of anything that could provide it from below. That is the
+ * exact bug that once left the banner permanently hidden with nothing thrown
+ * and nothing logged — `das-banner-injection.test.js` guards it, and caught
+ * this page the moment it started polling.
+ */
+provide('submissionJobs', jobs)
 
 const submission = computed(() => submissionStore.currentSubmission)
 const latestFiles = computed(() => submissionStore.latestFiles)
@@ -24,6 +42,57 @@ const dasWasModified = computed(() => {
     && extractedDAS.value !== 'Not found'
     && extractedDAS.value !== asText.value
 })
+
+// ── Confirming the statement ──────────────────────────────────────────────
+// The check reads a paragraph that was pulled out of the manuscript
+// automatically, and extraction gets it wrong often enough to matter. A check
+// of the wrong paragraph is worse than none, because the report presents it as
+// the author's own statement.
+//
+// So the check waits for a person. Writing the statement by hand already says
+// the same thing (the server records that as the confirmation), which is why
+// this only appears for text nobody has touched.
+const dasConfirmed = computed(() => !!submission.value?.dasConfirmedAt)
+const needsConfirmation = computed(() =>
+  !!asText.value && asText.value !== 'Not found' && !dasConfirmed.value
+)
+const confirmingDAS = ref(false)
+
+async function confirmDAS() {
+  confirmingDAS.value = true
+  // Optimistic, and set BEFORE the await on purpose: confirming unlocks the
+  // suggestions card, and the card would otherwise render its "the check
+  // failed, here are the built-in rules" state for the round-trip — advice
+  // about the statement, arriving before anything had checked it.
+  //
+  // The loader is the honest thing to show while we do not know yet.
+  dasJobStatus.value = 'queued'
+  try {
+    // The server says whether a run actually started. It may not have: the
+    // check can already have run on this statement, or be gated to a later
+    // step. Promising a result that is not coming sends the user back to watch
+    // a spinner that will never resolve.
+    const { checking } = await submissionStore.confirmDas(route.params.id)
+    notificationStore.success(
+      checking ? 'Statement confirmed — checking it now' : 'Statement confirmed'
+    )
+    if (checking) {
+      // Leave the optimistic `queued` in place; the poller corrects it.
+      startPolling()
+    } else {
+      // Nothing was started, so the optimistic status is a lie — replace it
+      // with whatever is actually there.
+      await fetchDasSuggestions()
+    }
+  } catch (error) {
+    dasJobStatus.value = 'none'
+    notificationStore.error(
+      error.response?.data?.error || 'Could not confirm the Availability Statement'
+    )
+  } finally {
+    confirmingDAS.value = false
+  }
+}
 
 // DAS editing
 const isEditingDAS = ref(false)
@@ -57,12 +126,21 @@ async function saveDAS() {
   }
 }
 
-// ── LM DAS suggestions (background job) ───────────────────────────────
+// ── LM DAS suggestions (pipeline step) ───────────────────────────────
 // The DAS is checked against the ASAP rulebook by a background Gemini job. We
 // poll its status: while it runs we show a loader and block Continue; when it
 // finishes we render its per-rule verdicts. If the LM is disabled or failed we
 // fall back to the legacy in-browser rules (see `allRules` below).
+// Statuses that mean "a run is happening, wait for it". `gated` is deliberately
+// NOT one: the check has been accepted but is held behind its pipeline gate, so
+// nothing is running and there is nothing to wait for. Treating that as running
+// blocked Continue for ever — the fail-open that unblocks it lives in the
+// poller, and the gated branch never started the poller.
 const RUNNING_STATUSES = ['waiting', 'queued', 'processing']
+// What is worth keeping an eye on. Wider than RUNNING_STATUSES: a gated step
+// starts on its own once the statement is saved — which happens on this page —
+// so it is watched without being waited for.
+const POLLABLE_STATUSES = [...RUNNING_STATUSES, 'gated']
 const dasJobStatus = ref('none')
 const lmSuggestions = ref([])
 // The booleans the LM was handed as KRT ground truth, and the run metadata
@@ -75,10 +153,24 @@ let pollTimer = null
 const isGeneratingSuggestions = computed(() => RUNNING_STATUSES.includes(dasJobStatus.value))
 const usingLmSuggestions = computed(() => dasJobStatus.value === 'complete' && lmSuggestions.value.length > 0)
 
+// The page falls back to the built-in browser rules whenever the LM check did
+// not produce verdicts. That fallback is fine — but silent, it is a lie by
+// omission: a weaker set of checks presented in the same green-and-amber cards
+// as the model's, with no way to tell which one you are reading. Say so.
+const lmCheckFailed = computed(() =>
+  ['failed', 'cancelled'].includes(dasJobStatus.value) ||
+  (dasJobStatus.value === 'complete' && lmSuggestions.value.length === 0)
+)
+
+// Accepted, but held behind its gate — it needs a saved statement to read.
+const lmCheckGated = computed(() => dasJobStatus.value === 'gated')
+
 async function fetchDasSuggestions() {
   try {
     const data = await dasSuggestionsService.get(route.params.id)
-    dasJobStatus.value = data.status || 'none'
+    // A gated step is accepted but not running — see the note on
+    // RUNNING_STATUSES. Collapsed into one status the rest of the view reads.
+    dasJobStatus.value = data.gated ? 'gated' : (data.status || 'none')
     lmSuggestions.value = Array.isArray(data.suggestions) ? data.suggestions : []
     lmSignals.value = data.signals || null
     lmMeta.value = data.meta || null
@@ -148,23 +240,54 @@ function startPolling() {
       return
     }
     await fetchDasSuggestions()
-    if (!RUNNING_STATUSES.includes(dasJobStatus.value)) stopPolling()
+    if (!POLLABLE_STATUSES.includes(dasJobStatus.value)) stopPolling()
   }, 3000)
 }
 
 async function regenerateDasSuggestions() {
+  // Same reason as confirmDAS: the loader goes up on the request, not on the
+  // reply. Editing the statement also confirms it server-side, so without this
+  // the card unlocks mid-round-trip and shows the built-in rules for a beat
+  // before the model's arrive.
+  const previousStatus = dasJobStatus.value
+  dasJobStatus.value = 'queued'
   try {
-    await dasSuggestionsService.regenerate(route.params.id)
+    const result = await dasSuggestionsService.regenerate(route.params.id)
+
+    // Three answers, not two. The check is a pipeline step gated to this step,
+    // so it can be accepted-but-waiting — and polling for a job that is not
+    // going to start would leave a loader spinning for ever.
+    if (result?.queued === false) {
+      dasJobStatus.value = result.pending ? 'gated' : 'none'
+      // Poll anyway when it is gated: the gate opens on the statement being
+      // saved, and this is the page that saves it. The poller's own time cap
+      // stops it if that never happens.
+      if (result.pending) startPolling()
+      return
+    }
+
     dasJobStatus.value = 'queued'
     lmSuggestions.value = []
     startPolling()
   } catch (error) {
-    // If we couldn't re-queue, keep whatever suggestions we already have.
+    // Could not re-queue. Put the status back rather than leave the optimistic
+    // `queued` behind — a loader over a request that failed never resolves, and
+    // it also blocks Continue.
+    dasJobStatus.value = previousStatus === 'queued' ? 'failed' : previousStatus
   }
 }
 
 // Step help items
 const helpItems = computed(() => [
+  {
+    title: 'Check your Availability Statement is the right one',
+    children: [
+      'We read it out of your manuscript automatically — it can pick the wrong passage, or miss it',
+      'Edit it here if it is wrong, then confirm it',
+      'No recommendations appear until you do: they would be about the wrong statement'
+    ],
+    done: dasConfirmed.value
+  },
   {
     title: 'Review recommendations',
     children: [
@@ -179,18 +302,54 @@ const helpItems = computed(() => [
   }
 ])
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its usual content — which reads as a statement about the
+// manuscript rather than as a page that never received it.
+const loadError = ref(null)
+
+onMounted(loadPage)
+
+async function loadPage() {
+  loadError.value = null
   krtStore.clearKRT()
-  await submissionStore.fetchSubmission(route.params.id)
-  await krtStore.fetchKRT(route.params.id)
-  await fetchDasSuggestions()
-  if (dasJobStatus.value === 'none') {
-    // First arrival (the user just finished review) → run the DAS check now.
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    // The built-in rules are computed from the KRT and the statement. With
+    // neither loaded they would report a clean statement over nothing at all.
+    loadError.value = describeLoadError(err)
+    return
+  }
+  // The KRT and the suggestions are the rest of the answer, and they fail the
+  // same way. Left outside this guard, a rejected fetchKRT threw out of the
+  // mounted hook: the DAS check never ran, polling never started, and the page
+  // showed a clean statement over data it had not loaded.
+  try {
+    await krtStore.fetchKRT(route.params.id)
+    await fetchDasSuggestions()
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+    return
+  }
+
+  if (dasJobStatus.value === 'none' && dasConfirmed.value) {
+    // First arrival with a statement the author has already vouched for → run
+    // the check now.
+    //
+    // Only when confirmed. This used to fire on every first arrival, and it
+    // goes through the MANUAL path — which deliberately skips the auto-advance
+    // condition, because a person clicking a step by name has decided to run
+    // it. Merely opening a page is not that decision, and the effect was that
+    // the confirmation gate never applied to the one route every author takes:
+    // the check spent an LM call on a paragraph nobody had read, which is the
+    // exact thing it exists to prevent.
     await regenerateDasSuggestions()
-  } else if (RUNNING_STATUSES.includes(dasJobStatus.value)) {
+  } else if (POLLABLE_STATUSES.includes(dasJobStatus.value)) {
     startPolling()
   }
-})
+}
 
 onUnmounted(stopPolling)
 
@@ -334,9 +493,30 @@ const allRules = computed(() => {
   return rules
 })
 
-// Source suggestions: the LM verdicts when the job produced them, else the
-// legacy in-browser rules (LM disabled / failed / not yet run).
-const baseSuggestions = computed(() => usingLmSuggestions.value ? lmSuggestions.value : allRules.value)
+// The built-in browser rules are a FAILURE fallback, not a default.
+//
+// They used to fill in whenever the LM check was not `complete` — which
+// includes "has not run yet". So the moment the statement was confirmed the
+// page showed a full set of built-in recommendations for a beat, then swapped
+// them for the model's when the first poll landed. Two different sets of advice
+// about the same statement, seconds apart, with nothing to say which was which.
+//
+// Now: the model's verdicts when it produced them, the built-in rules only when
+// the check actually failed, and nothing while it is still working — the loader
+// says so instead.
+const usingBuiltinRules = computed(() => lmCheckFailed.value)
+
+// Whether the page has an ANSWER to show, from either engine. Distinct from
+// "the list is empty": before the check answers there are no suggestions
+// because nothing has been checked, and that must never render as a pass.
+const hasCheckAnswer = computed(() => usingLmSuggestions.value || usingBuiltinRules.value)
+
+const baseSuggestions = computed(() => {
+  if (!dasConfirmed.value) return []
+  if (usingLmSuggestions.value) return lmSuggestions.value
+  if (usingBuiltinRules.value) return allRules.value
+  return []
+})
 
 // Filtered suggestions (only applicable ones, or all if showAllRules is true)
 // Always sort: applicable first, then N/A
@@ -350,11 +530,23 @@ const asSuggestions = computed(() => {
   })
 })
 
-// Continue is blocked while the DAS check is still running.
-const canGoNext = computed(() => !isGeneratingSuggestions.value)
-const nextBlockedReason = computed(() =>
-  isGeneratingSuggestions.value ? 'Generating availability suggestions… please wait.' : ''
-)
+// Continue waits for the confirmation, then for the check.
+//
+// Without the first, an author can leave this step having never confirmed, the
+// check never runs, and the report carries no availability review at all — a
+// silence they had no way to notice.
+//
+// Gated on `needsConfirmation`, not on `dasConfirmed`: a submission with no
+// statement has nothing to confirm and nothing to check, so blocking there
+// would be a dead end with no way out of it.
+const canGoNext = computed(() => !isGeneratingSuggestions.value && !needsConfirmation.value)
+const nextBlockedReason = computed(() => {
+  if (needsConfirmation.value) {
+    return 'Confirm your Availability Statement first — it has not been checked yet.'
+  }
+  if (isGeneratingSuggestions.value) return 'Generating availability suggestions… please wait.'
+  return ''
+})
 
 // Current suggestion in carousel mode
 const currentSuggestion = computed(() => asSuggestions.value[currentSuggestionIndex.value] || null)
@@ -425,14 +617,50 @@ async function handleBack() {
       @go-next="handleNext"
     />
 
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
     <!-- Original extracted DAS (shown when user has modified it) -->
-    <div v-if="dasWasModified" class="card extracted-das-card">
+    <div v-if="!loadError && dasWasModified" class="card extracted-das-card">
       <div class="text-xs font-semibold uppercase text-gray-500 mb-1">Original extracted text</div>
       <div class="extracted-das-text">{{ extractedDAS }}</div>
     </div>
 
+    <PipelineIssues
+      :submission-id="route.params.id"
+      :issues="issues"
+      actionable
+      compact
+      @resolved="fetchDasSuggestions"
+    />
+
+    <!-- Confirmation — the check will not run until somebody vouches for the
+         text it is about to read. -->
+    <div v-if="!loadError && needsConfirmation" class="das-confirm-card">
+      <div class="das-confirm-body">
+        <p class="das-confirm-title">Is this your Availability Statement?</p>
+        <p class="das-confirm-sub">
+          We pulled this text out of your manuscript automatically. We will check it against the
+          ASAP requirements once you confirm it is the right passage — or edit it below if it is not.
+        </p>
+      </div>
+      <button
+        type="button"
+        class="das-confirm-btn"
+        :disabled="confirmingDAS"
+        @click="confirmDAS"
+      >
+        {{ confirmingDAS ? 'Confirming…' : 'Yes, check it' }}
+      </button>
+    </div>
+
     <!-- AS Text Display -->
-    <div class="card">
+    <div v-if="!loadError" class="card">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">Data/Code Availability Statement</h2>
         <button
@@ -475,21 +703,21 @@ async function handleBack() {
     </div>
 
     <!-- Suggestions -->
-    <div class="card">
+    <div v-if="!loadError" class="card">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-medium">
           Suggestions
-          <span v-if="!isGeneratingSuggestions" class="text-sm font-normal text-gray-500 ml-2">
+          <span v-if="dasConfirmed && !isGeneratingSuggestions" class="text-sm font-normal text-gray-500 ml-2">
             {{ asSuggestions.filter(s => s.applies).length }} applicable
             <span v-if="showAllRules"> / {{ baseSuggestions.length }} total</span>
           </span>
         </h2>
-        <div v-show="!isGeneratingSuggestions" class="flex items-center gap-4">
+        <div v-show="dasConfirmed && !isGeneratingSuggestions" class="flex items-center gap-4">
           <!-- View mode switch -->
           <div class="view-mode-switch">
             <button
               :class="['view-mode-btn', viewMode === 'list' ? 'view-mode-active' : '']"
-              title="List view"
+              v-tooltip="'List view'"
               @click="viewMode = 'list'"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -499,7 +727,7 @@ async function handleBack() {
             </button>
             <button
               :class="['view-mode-btn', viewMode === 'carousel' ? 'view-mode-active' : '']"
-              title="Single view"
+              v-tooltip="'Single view'"
               @click="viewMode = 'carousel'"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -520,10 +748,38 @@ async function handleBack() {
         </div>
       </div>
 
+      <!-- Locked until the statement has a person behind it.
+           The checks are advice about a specific paragraph. Showing them over a
+           paragraph the author has never agreed is theirs makes the advice look
+           like it is about their statement when it may be about the wrong one —
+           and the reader cannot tell the difference. -->
+      <div v-if="!dasConfirmed" class="das-locked">
+        <svg class="das-locked-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+        <template v-if="needsConfirmation">
+          <p class="das-locked-title">Confirm your statement to see the checks</p>
+          <p class="das-locked-sub">
+            We read the statement above out of your manuscript. Once you confirm it is the right
+            passage, we check it against the ASAP requirements and the recommendations appear here.
+          </p>
+          <button type="button" class="das-locked-btn" :disabled="confirmingDAS" @click="confirmDAS">
+            {{ confirmingDAS ? 'Confirming…' : 'Yes, check it' }}
+          </button>
+        </template>
+        <template v-else>
+          <p class="das-locked-title">Add your Availability Statement to see the checks</p>
+          <p class="das-locked-sub">
+            We could not find one in your manuscript. Enter it above and we will check it against
+            the ASAP requirements.
+          </p>
+        </template>
+      </div>
+
       <!-- What the LM check saw: the KRT summary handed to it as ground truth.
            This is the "more details" for the whole run — it explains why a rule
            fired (e.g. "New code in the KRT: No" → the no-new-code checks apply). -->
-      <div v-if="!isGeneratingSuggestions && signalRows.length" class="signals-panel">
+      <div v-if="dasConfirmed && !isGeneratingSuggestions && signalRows.length" class="signals-panel">
         <button type="button" class="signals-toggle" @click="showSignals = !showSignals">
           <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-90': showSignals }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
@@ -542,6 +798,34 @@ async function handleBack() {
             ground truth. A checklist item fires from these — e.g. if there is no row that is both Software/code and
             marked “new”, the no-new-code checks apply regardless of the statement wording.
             <span v-if="lmMeta?.model"> Checked by {{ lmMeta.model }}.</span>
+          </p>
+        </div>
+      </div>
+
+      <!-- Accepted but waiting on a statement to read -->
+      <div v-if="dasConfirmed && lmCheckGated" class="das-fallback-notice">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div>
+          <p class="das-fallback-title">The AI check is waiting for your statement</p>
+          <p class="das-fallback-sub">
+            Save an Availability Statement above and it runs on its own. The checks below are the built-in ones
+            in the meantime — you are not blocked from continuing.
+          </p>
+        </div>
+      </div>
+
+      <!-- The AI check did not produce verdicts — say which rules are on screen -->
+      <div v-if="dasConfirmed && lmCheckFailed && !isGeneratingSuggestions" class="das-fallback-notice">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+        </svg>
+        <div>
+          <p class="das-fallback-title">The AI check did not run — these are the built-in checks</p>
+          <p class="das-fallback-sub">
+            They are simpler than the model's and will not catch everything it would.
+            <button type="button" class="das-fallback-retry" @click="regenerateDasSuggestions">Try the AI check again</button>
           </p>
         </div>
       </div>
@@ -585,7 +869,7 @@ async function handleBack() {
               <span class="recommended-value">{{ suggestion.recommendedText }}</span>
               <button
                 class="copy-btn"
-                title="Copy to clipboard"
+                v-tooltip="'Copy to clipboard'"
                 @click="copyText(suggestion.recommendedText)"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -633,7 +917,7 @@ async function handleBack() {
               <span class="recommended-value">{{ currentSuggestion.recommendedText }}</span>
               <button
                 class="copy-btn"
-                title="Copy to clipboard"
+                v-tooltip="'Copy to clipboard'"
                 @click="copyText(currentSuggestion.recommendedText)"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -677,7 +961,7 @@ async function handleBack() {
                 'carousel-dot-applicable': index !== currentSuggestionIndex && suggestion.applies,
                 'carousel-dot-na': index !== currentSuggestionIndex && !suggestion.applies
               }"
-              :title="`${suggestion.title} (${suggestion.applies ? suggestion.severity : 'N/A'})`"
+              v-tooltip="`${suggestion.title} (${suggestion.applies ? suggestion.severity : 'N/A'})`"
               @click="goToSuggestion(index)"
             />
           </div>
@@ -696,7 +980,12 @@ async function handleBack() {
       </div>
 
       <!-- No applicable suggestions -->
-      <div v-else class="flex items-center py-4 text-green-700">
+      <!-- `v-else-if`, not `v-else`. The chain's tail is an ALL-CLEAR, and an
+           empty list is not the same as a clean one: with nothing checked there
+           are no suggestions BECAUSE nothing has been checked, and a green tick
+           there tells the author their statement passed a check that never ran.
+           So it renders only when an engine actually answered. -->
+      <div v-else-if="dasConfirmed && hasCheckAnswer" class="flex items-center py-4 text-green-700">
         <svg class="w-6 h-6 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
@@ -1179,6 +1468,19 @@ async function handleBack() {
   line-height: 1.5;
 }
 
+.das-fallback-notice {
+  @apply flex items-start gap-3 p-4 mb-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800;
+}
+.das-fallback-title {
+  @apply text-sm font-semibold;
+}
+.das-fallback-sub {
+  @apply text-sm mt-0.5;
+}
+.das-fallback-retry {
+  @apply underline font-medium hover:text-amber-900;
+}
+
 .das-loader {
   display: flex;
   align-items: center;
@@ -1200,4 +1502,62 @@ async function handleBack() {
   color: #6b7280;
   margin-top: 0.125rem;
 }
+
+/* Confirmation prompt — deliberately the loudest thing on the page while it is
+   showing: nothing downstream happens until it is answered. */
+.das-confirm-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  border: 1px solid #fcd34d;
+  border-left: 4px solid #f59e0b;
+  border-radius: 0.5rem;
+  background: #fffbeb;
+}
+.das-confirm-body { flex: 1; min-width: 0; }
+.das-confirm-title { font-weight: 600; color: #78350f; }
+.das-confirm-sub { margin-top: 0.25rem; font-size: 0.875rem; color: #92400e; }
+.das-confirm-btn {
+  flex-shrink: 0;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  background: #b45309;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+.das-confirm-btn:hover:not(:disabled) { background: #92400e; }
+.das-confirm-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .das-confirm-card { flex-direction: column; align-items: stretch; }
+  .das-confirm-btn { width: 100%; }
+}
+
+/* Suggestions, locked until the statement has a person behind it. */
+.das-locked {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.4rem;
+  padding: 2rem 1rem;
+}
+.das-locked-icon { width: 1.75rem; height: 1.75rem; color: #9ca3af; }
+.das-locked-title { font-weight: 600; color: #374151; }
+.das-locked-sub { max-width: 34rem; font-size: 0.875rem; color: #6b7280; }
+.das-locked-btn {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  background: #b45309;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.das-locked-btn:hover:not(:disabled) { background: #92400e; }
+.das-locked-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>

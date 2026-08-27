@@ -8,39 +8,54 @@
  */
 
 const { Submission, File, SubmissionJob } = require('../../models');
+const inputFreeze = require('../queue/input-freeze.service');
 const s3Service = require('../storage/s3.service');
 const pdfMarkdownClient = require('./pdf-markdown-client.service');
 const markdownFilter = require('./markdown-filter.service');
 const markdownConfig = require('../../config/pdf-markdown-api');
 const demoDataService = require('../demo-data.service');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { generateS3Key } = require('../../utils/helpers');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const logger = require('../../utils/logger');
+const runInputs = require('../queue/run-inputs.service');
 
-async function queueMarkdownConvert(submissionId, round = 1) {
+/**
+ * Re-run the conversion, in the pipeline.
+ *
+ * Downstream is reset first — every detector reads this output, so they all
+ * have to run again — and then the step is re-queued through the orchestrator
+ * rather than by inserting a second row. Inserting was the shape of the bug
+ * that shipped a Generated KRT with zero detections: `getForSubmission` keeps
+ * only the newest row per type, so a rival row hides the pipeline's own and the
+ * advancement that should have followed goes to the wrong row. It also
+ * disagreed with `requeueStep` about in-flight work — a re-run while a
+ * conversion was already running started a second one against the same file.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<object>} the markdown_convert SubmissionJob row
+ */
+async function queueMarkdownConvert(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.MARKDOWN_CONVERT,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // returned row cannot tell a caller whether it started this run or found one
+  // already going — the endpoints reported "already running" for runs they had
+  // just started this instant.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.MARKDOWN_CONVERT, round, userId);
+
+  logger.info('Markdown conversion re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.MARKDOWN_CONVERT,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Markdown conversion queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 async function processMarkdownConvert(submissionId, jobLogger = null, { isFinalAttempt = true } = {}) {
@@ -67,10 +82,12 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  const pdfFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.PDF, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const pdfFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.PDF, { jobType: JOB_TYPES.MARKDOWN_CONVERT }
+  );
   if (!pdfFile) throw new Error('No PDF file found for markdown conversion');
 
   jobLogger?.log('download_pdf', 'Downloading PDF from S3', { fileName: pdfFile.fileName, s3Key: pdfFile.s3Key });
@@ -79,6 +96,16 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
 
   jobLogger?.log('convert_start', `Converting via ${markdownConfig.provider}`, { provider: markdownConfig.provider });
   const convertStartTime = Date.now();
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { pdf: runInputs.fileRef(pdfFile, pdfBuffer) },
+    meta: { provider: markdownConfig.provider },
+    // No prompt and no model to pin here — the conversion is somebody else's
+    // service. The CONVERTER and the endpoint are still ours, and they change
+    // the markdown every later step reads: same PDF, different converter,
+    // different document. Recording them is the most this step can freeze.
+    call: markdownConfig
+  });
+
   const rawMarkdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile.fileName);
   const convertMs = Date.now() - convertStartTime;
   jobLogger?.log('convert_done', 'Conversion complete', { markdownLength: rawMarkdown.length, durationMs: convertMs });
@@ -161,9 +188,7 @@ async function uploadMarkdownAsFile(submission, markdownText, mdFileName) {
 async function persistJobData(submissionId, jobType, round, helperResult) {
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 

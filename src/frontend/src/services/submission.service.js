@@ -43,6 +43,9 @@ export default {
     if (data.manuscriptId) formData.append('manuscriptId', data.manuscriptId)
     if (data.notes) formData.append('notes', data.notes)
     if (data.dataAvailabilityStatement) formData.append('dataAvailabilityStatement', data.dataAvailabilityStatement)
+    // Omitted rather than sent empty: the server reads an absent pipelineId as
+    // "the default", and an empty string would fail its allow-list.
+    if (data.pipelineId) formData.append('pipelineId', data.pipelineId)
     if (krtFile) formData.append('krt', krtFile)
     const response = await api.post('/submissions', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -59,6 +62,22 @@ export default {
    */
   async update(id, data) {
     const response = await api.patch(`/submissions/${id}`, data)
+    return response.data
+  },
+
+  /**
+   * Confirm the Availability Statement — the author agrees the statement the
+   * check will read is the right one. Records who and when, and releases the
+   * check, which does not start on its own.
+   *
+   * Only needed when the statement came from automatic extraction: writing one
+   * by hand already says the same thing.
+   *
+   * @param {string} id - The submission ID
+   * @returns {Promise<Object>} - { dasConfirmedAt, dasConfirmedByUserId }
+   */
+  async confirmDas(id) {
+    const response = await api.post(`/submissions/${id}/das/confirm`)
     return response.data
   },
 

@@ -41,6 +41,36 @@ Since Phase 6 the local JWT pair is delivered via **HttpOnly cookies**, never vi
 
 Refresh tokens are also persisted in the `refresh_tokens` table (sha256 hash, expiry, user agent, IP, optional `revoked_at`/`revoked_reason`/`replaced_by`). Each refresh rotates the pair atomically and revokes the predecessor with `revoked_reason='rotation'`; reuse of an already-rotated token is treated as a compromise signal and revokes the entire chain.
 
+#### `revoked_reason`, and why the refresh handler branches on it
+
+| reason | written when | a later replay is |
+|---|---|---|
+| `rotation` | the token was rotated out by a normal refresh | **the compromise signal** — wipes the chain, forces a full re-login |
+| `logout` | the user logged out (which revokes their whole chain) | benign — a stale tab on another device |
+| `reuse_detected` | the chain was already wiped by a previous replay | benign — the wipe already happened |
+| `account_deleted` | the account was anonymised | benign — there is no longer an account to compromise |
+| `password_changed` | the password was changed or reset | benign — the other device finding out it was signed out |
+
+Only `rotation` (and legacy `NULL`) means "someone is replaying a token that was
+rotated away", which is the genuine compromise signal. The others are sessions
+we ended deliberately, and reporting them as *"Session compromised"* would
+punish exactly the actions we want people to take.
+
+**Changing a password ends the other sessions.** Without it the change does not
+do what the user believes it does — a stolen session survived it for the rest of
+the 7-day refresh window, which is the whole reason someone changes a password
+in a hurry. Two paths, differing deliberately:
+
+- **A user changing their own** (`PATCH /api/profile`) keeps the browser they
+  are typing in — `revokeAllForUser(..., { exceptRawToken })` spares that one
+  token, by hash. Signing someone out of the tab they are using is a bug wearing
+  security's clothes, and it teaches people not to change their password.
+- **An admin resetting someone else's** (`PATCH /api/users/:id`) ends **every**
+  session with no exception: the admin holds none of them, and the usual reason
+  for an admin reset is that the account may be compromised.
+
+Pinned by `controllers/password-change-revokes.test.js`.
+
 ### Automatic Token Refresh
 
 The frontend Axios interceptor (`src/frontend/src/services/api.js`) handles 401 responses by:
@@ -182,12 +212,49 @@ Rate limit configuration is in `conf/rate-limits.json`.
 | Limiter | Applies To | Limit | Window |
 |---------|-----------|-------|--------|
 | `authLimiter` | Login, register, Auth0 endpoints | 10 requests | 15 min / IP |
-| `refreshLimiter` | Token refresh | 30 requests | 1 min / IP |
-| `apiLimiter` | General API endpoints | 200 requests | 1 min / IP |
+| `refreshLimiter` | Token refresh | 10 requests | 1 min / IP |
+| `apiLimiter` | General API endpoints | 120 requests | 1 min / IP |
 | `uploadLimiter` | File uploads | 20 requests | 1 min / user |
-| `lmApiLimiter` | AI analysis operations | 10 requests | 1 min / user |
+| `lmApiLimiter` | Starting analysis work — burst | 10 requests | 1 min / user |
+| `lmApiDailyLimiter` | Starting analysis work — **the policy** | per role, below | 24 h / user |
 
-Authenticated users bypass `apiLimiter`. Auth endpoints are always rate-limited.
+`apiLimiter` applies to **everyone**, keyed by IP: it is mounted on `/api` before any
+router-level `authenticate`, so `req.user` is never set when it runs. Auth endpoints
+are always rate-limited.
+
+### The daily analysis budget
+
+Re-running a module is available to **anyone who can reach the submission** —
+the trigger routes carry `canAccessSubmission` and the limiters, never a staff
+check. The author is the person best placed to notice a wrong result, and they
+were the one person who could not ask for it again: the UI hid the button while
+the server had always accepted the request.
+
+So what separates the roles is a **budget, not a button**. A quota is honest
+about the real constraint (LM spend) and a user can see where they stand; a
+hidden button just leaves them stuck, and the panel had been telling them in
+bold to press it.
+
+| Role | Runs per day |
+|---|---|
+| `author` | 10 |
+| `asap_pm` | 50 |
+| `ds_annotator` | unlimited |
+| `admin` | unlimited |
+
+**One request is one run.** Starting the whole pipeline and re-running a single
+module both cost 1 — the first queues twelve jobs from one request, so counting
+requests is generous to the common case and simple to explain. A limit a user
+cannot predict is a limit they experience as a fault.
+
+`max: 0` in the config means **unlimited**, and those roles are `skip`ped
+outright: express-rate-limit treats 0 as "block everything", and handing them a
+very large number instead would still record every request in the store for a
+limit that can never be reached. An unknown role is unlimited rather than
+zero-allowance — failing closed there would lock out a role added to the app
+before it is added to the config, and it would look like a broken button rather
+than a policy. Every role in `ROLES` is required to have an entry, which is what
+stops that being silent (`middleware/lm-daily-budget.test.js`).
 
 ## Frontend Route Protection
 

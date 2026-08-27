@@ -113,33 +113,49 @@ persisted), uploads the PDF so the background pipeline begins, and navigates to 
 - **Merge rows:** select ≥2 rows → modal to pick each column's value → one merged row replaces them (`POST /api/submissions/:id/krt/merge`)
 - **Resizable columns:** drag a header edge to resize; width is remembered per browser
 - **QC / Optional flags** (boolean) are shown and editable **only** for Administrator and DS Annotator roles; regular users (author, asap_pm) never see them
+- **Filter tabs** (one per resource-type group, with counts), a **row-order** control (*As submitted* / *By resource type*), **column sorting**, and a **search box**
+- **Quick actions on empty cells** — set IDENTIFIER to `No identifier exists` / `Identifier pending`, or SOURCE to `None`, in one click
+- **Download KRT** from the editor toolbar
+- ⚠️ **One automatic write:** when IDENTIFIER is empty and ADDITIONAL INFORMATION holds a value of a kind allowed for that resource type, the validator **silently moves it into IDENTIFIER** and saves the row
+
+> **Full editor reference:** [KRT Editor](./krt-editor.md) documents every feature of the table
+> component. The same component serves Steps 1 and 2; Step 3 uses a separate review-only table.
 
 **Fix validation errors:**
 - Validation runs automatically after upload and after edits
 - A Quick Fixes carousel shows auto-fixable errors with "Fix All" buttons
 - Batch Fix modal lets users select a correct value for multiple rows with the same error (e.g., invalid resource types); resource-type errors carry a machine-actionable `suggestedValue` that powers one-click bulk fixes (e.g. "Set 4 → Software/code")
+- See [KRT Validation Rules](./krt-validation-rules.md) for the full list of what triggers an error / warning / silent pass on each column
 
 ### Proceeding to Step 2
 
 ```mermaid
 flowchart TD
     A{KRT exists?} -->|No| B[Blocked: Upload or create a KRT]
-    A -->|Yes| C{Validation errors = 0?}
-    C -->|No| D[Blocked: Fix X errors]
-    C -->|Yes| E[Re-validate]
-    E --> F[Status → step_pdf]
-    F --> G[Navigate to PDFView]
+    A -->|Yes| C{RESOURCE TYPE errors = 0?}
+    C -->|No| D[Blocked: Fix N resource type errors]
+    C -->|Yes| E{Other errors remain?}
+    E -->|Yes| F[Acknowledge-and-continue modal]
+    E -->|No| G[Re-validate]
+    F --> G
+    G --> H[Status → step_pdf]
+    H --> I[Navigate to PDFView]
 ```
 
-**Conditions (all must be true):**
+**Conditions:**
 - A KRT has been uploaded or created (even if empty)
-- Total validation errors = 0
+- **RESOURCE TYPE errors = 0** — each item needs a correct Resource Type to be classified for the analysis
+
+Only RESOURCE TYPE errors hard-block Continue. Any other remaining errors (Resource Name, Source, Identifier,
+New/Reuse) are non-blocking: the user confirms via an acknowledge-and-continue modal and proceeds; they are handled
+downstream. Warnings never block. See [KRT Validation Rules](./krt-validation-rules.md#how-errors-gate-the-workflow).
 
 **Blocked reasons:**
 - "Upload or create a KRT before continuing" — no KRT exists
-- "Fix X error(s) before continuing" — validation errors remain
+- "Fix N resource type error(s) before continuing — each item needs a correct Resource Type to be classified"
 
-**On Continue:** Re-validates, updates status to `step_pdf`, navigates to PDFView.
+**On Continue:** Re-validates; RESOURCE TYPE errors block, other errors prompt the acknowledge modal; on confirm,
+updates status to `step_pdf` and navigates to PDFView.
 
 ---
 
@@ -150,7 +166,7 @@ flowchart TD
 
 **Instructions shown to the user:**
 1. Upload your manuscript PDF (accepted: .pdf or .docx files, max 50MB)
-2. View background job progress — DAS Extraction, Software Detection, ORCID Extraction, Markdown Convert, Datasets Detection, Materials Detection, Protocols Detection, Identifier Detection, PDF Analysis (Generated KRT), and AI Suggestions (KRT comparison)
+2. View pipeline progress — DAS Extraction, Software Detection, ORCID Extraction, Markdown Convert, Datasets Detection, Materials Detection, Protocols Detection, Identifier Detection, PDF Analysis (Generated KRT), and AI Suggestions (KRT comparison)
 3. Wait for analysis to complete (may take a few minutes)
 4. Click "Continue" to proceed to Step 3
 
@@ -158,15 +174,38 @@ flowchart TD
 
 **Upload a PDF:**
 - Drag-and-drop or click to upload a manuscript PDF
-- Triggers the background job pipeline (see below)
+- Triggers the pipeline (see below)
 - A "Replace PDF" button appears once a PDF exists
 
 **Load demo PDF:**
 - A dropdown offers 6 pre-built demo PDFs with pre-matched detection data
 
+**Review AI suggestions:**
+
+Once the pipeline finishes, the KRT Editor on this step shows the suggestions produced by the
+`suggestion_generation` job. Three kinds appear:
+
+- **Cell update** — a proposed new value for one cell
+- **Add row** — a proposed new resource, rendered as a row with accept / reject controls
+- **Delete row** — an existing row the AI proposes removing
+
+Each suggestion can carry badges: **In KRT** (already present — nothing to add), **Update** (matches
+an existing row, so accepting updates it in place), **Verify** (tier `needs_verification` — the
+detection has no identifier, so confirm before adding), plus the **contributing detection modules**
+that found it.
+
+Actions: accept, **edit the proposed values before accepting** (only changed fields are sent), or
+reject **with an optional free-text reason**. Bulk controls allow select-all-visible then *Approve
+selected* (confirmation prompt at **5 or more**), *Approve with Resource Type…*, *Reject selected*,
+*Edit column…*, *Merge…* (≥2 rows) and *Delete selected*.
+
+**Every suggestion must be accepted or rejected before Continue is enabled.**
+
+> **Full editor reference:** [KRT Editor](./krt-editor.md).
+
 ### Background Job Pipeline
 
-When a PDF is uploaded, ten background jobs start (eight detections, the PDF Analysis Generated-KRT builder, and the AI Suggestions comparison that runs last):
+When a PDF is uploaded, ten pipeline steps start (eight detections, the PDF Analysis Generated-KRT builder, and the AI Suggestions comparison that runs last):
 
 ```mermaid
 graph LR
@@ -232,6 +271,7 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 - **If DAS not detected:** Job moves to `pending_input` — user must click "Advance" to consolidate without DAS context
 - **On complete:** Shows the consolidated resource count (and multi-source overlap count); the AI Suggestions job then runs
 - **Merge rule** (stage 1, `merge-detections.service.js`): two detection items merge iff they share **resource type** (case-insensitive, with `Code/Software` and `Software/code` normalized to the same key) **and** New/Reuse **and** their identifier tokens overlap or their normalized names match. The merged row's display fields come from the highest-precedence contributor (Software / Datasets / Protocols / Materials beat Identifier-scan)
+  - **Nameless exception:** a row with an **empty RESOURCE NAME** carries no independent identity — it is only ever "whatever resource this identifier points at". So when either side is nameless, the New/Reuse equality check is skipped and the identifier decides; the nameless row additionally matches against **every** identifier in the other row's field, not just the first one tokenized. This exists for identifier-only contributors that genuinely cannot know a name or New/Reuse (the published-protocol venue sweep), and prevents them surfacing as blank duplicate "add" suggestions beside the real row. Two **named** rows still never merge across different New/Reuse values, and a DOI cited in common by two distinct named protocols still leaves them as two rows
 
 #### AI Suggestions (KRT comparison)
 - A dedicated `suggestion_generation` job: a **Gemini** call compares the author KRT against the Generated KRT and emits, for **every** generated resource, a decision — **add / skip / update / remove** — each with a reason, plus author-side fixes. Author data is prioritized; the actionable list is kept manageable; `remove` decisions are rare (clear mistakes only).
@@ -276,7 +316,7 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 - **On complete:** Shows "X material(s) detected (Y high relevance)"
 
 #### Protocols Detection
-- Detects protocol mentions in the manuscript via Google Gemini, **seeded with the author's protocol rows as "Section 0"**
+- Detects protocol mentions in the manuscript via Google Gemini, seeded with the author's protocol rows under the default pipeline ("Section 0"); `blind-v1` removes the seeds
 - **Depends on:** Markdown Convert (uses the markdown text as input, not the PDF)
 - **Gated on:** `krt_curated` — waits until the author validates the KRT, then advances automatically (see Datasets Detection)
 - **Prompt fixes:** don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations; exclude analyses; better new/reuse classification
@@ -292,7 +332,7 @@ Each job is displayed in the **JobStatusPanel** with live status updates:
 **Job controls:**
 - Failed jobs show an error message and a "Restart" button
 - `pending_input` jobs show an "Advance" button
-- Admin/ds_annotator roles see additional details: timestamps, retry counts, timeout configuration
+- Everyone except authors sees additional details: timestamps, retry counts, timeout configuration
 
 ### Proceeding to Step 3
 
@@ -309,12 +349,19 @@ flowchart TD
 
 **Conditions (all must be true):**
 - A PDF has been uploaded
-- No background jobs are in `pending_input` status (all must be complete, failed, or not started)
+- No pipeline steps are in `pending_input` status (all must be complete, failed, cancelled, or not started)
+- All AI suggestions have been approved or rejected
+- **RESOURCE TYPE errors = 0** (same gate as Step 1)
 
 **Blocked reasons:**
 - "Upload a PDF file first" — no PDF uploaded
 - "Wait for analysis to complete" — jobs still running
 - "Availability Statement required" — DAS extraction pending user input
+- "Approve or reject N remaining suggestion(s) before continuing"
+- "Fix N resource type error(s) in the KRT before continuing"
+
+As on Step 1, only RESOURCE TYPE errors hard-block; other KRT errors are non-blocking via the acknowledge-and-continue
+modal, and warnings never block. See [KRT Validation Rules](./krt-validation-rules.md#how-errors-gate-the-workflow).
 
 **On Continue:** Updates status to `step_review`, navigates to ReviewView.
 
@@ -336,6 +383,22 @@ flowchart TD
 - Rows Added: "X from AI"
 - Rows Removed: "X from AI"
 
+**"Who edited this table" card** (if any person has edited it): every human
+editor, their change count, and whether they are the submitter. Anyone who is
+not is highlighted, with a badge counting them.
+
+A PM may edit any submission owned by someone in their team, and staff may edit
+any submission at all — so the person approving at Step 3 needs to see that
+someone else has been in the table. It was recorded before but only reachable by
+opening one cell's history at a time, which meant nobody saw it.
+
+Two things it deliberately does not count: changes the pipeline applied (they
+carry no user — `change_logs.user_id` is nullable so the system need not borrow
+someone's name), and log entries that are not edits to the table, such as
+uploads and suggestion decisions. It shares `isTableChange` with the statistics
+above so the two cannot disagree — counting every entry once put "5 changes"
+directly beneath the banner saying nothing had changed.
+
 **KRT table with change visualization:**
 - **Green rows** — newly added
 - **Blue rows** — updated cells
@@ -344,9 +407,12 @@ flowchart TD
 
 **Filter tabs:** All, Datasets, Software/code, Protocols, Key Lab Materials — each showing a resource count.
 
-**Show Changes toggle:**
+**"Show changes" toggle:**
 - ON: Shows color-coded changes with source tags
 - OFF: Shows final KRT data only
+
+**Clickable legend:** the `AI` / `Val` / `User` legend entries toggle the visibility of changes from
+that source, so a reviewer can isolate (for example) only the AI-driven changes.
 
 **Change history** (click any changed cell):
 - Original value (struck-through, red)
@@ -361,6 +427,10 @@ flowchart TD
 - Click cells to inspect change history
 - **Continue** to approve the KRT
 - **Go Back** to return to Step 2
+
+> Step 3 renders its **own review-only table**, not the `KRTEditor` used on Steps 1 and 2 — the
+> search, quick actions, bulk operations and suggestion controls are not available here. See
+> [KRT Editor §5](./krt-editor.md#5-change-visualisation-step-3-reviewview).
 
 ### Proceeding to Step 4
 
@@ -392,14 +462,15 @@ flowchart TD
 
 ### Availability Statement Recommendations (DAS Suggestions)
 
-The DAS is checked against the **ASAP rulebook** by the standalone **`das_suggestions`** background job — a Google
+The DAS is checked against the **ASAP rulebook** by the **`das_suggestions`** pipeline step — a pipeline step
+gated to this step (see [pipeline-modules.md §3.11](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) — a Google
 Gemini call that judges the statement **semantically** (not by literal keyword matching). It runs on first arrival
 at this step (once review is done, so the DAS is extracted and the KRT is final) and re-runs whenever the DAS is
 edited. While it runs, the panel shows a **loader** and **Continue is blocked**. When the LM is disabled or fails,
 the view **falls back** to the same rules computed in-browser and Continue is **not** blocked.
 
 The rulebook — all nine checks — with the exact `rule_id`s and recommended text is documented in
-[background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions).
+[pipeline-modules.md §3.11](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions).
 Quick reference:
 
 | Rule (`rule_id`) | Type | Applies when |
@@ -646,7 +717,7 @@ flowchart TD
 | `src/frontend/src/components/submission/StepIndicator.vue` | Step navigation bar |
 | `src/frontend/src/components/submission/StepHelpPanel.vue` | Contextual help for each step |
 | `src/frontend/src/components/submission/SubmissionHeader.vue` | Header with navigation and actions |
-| `src/frontend/src/components/submission/JobStatusPanel.vue` | Background job status display |
+| `src/frontend/src/components/submission/JobStatusPanel.vue` | Pipeline step status display |
 | `src/frontend/src/components/submission/NewRoundModal.vue` | New round/version dialog |
 | `src/backend/controllers/submissions.controller.js` | Status update logic |
 | `src/backend/config/constants.js` | Status and step constants |

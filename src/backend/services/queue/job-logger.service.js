@@ -1,7 +1,7 @@
 /**
  * Job Logger Service
  *
- * Provides structured logging and raw response caching for background jobs.
+ * Provides structured logging and raw response caching for pipeline steps.
  * Each job gets a logger instance that:
  *   - Collects structured log entries (stored in SubmissionJob.logs JSONB)
  *   - Uploads raw API responses to S3 (stored as S3 keys in SubmissionJob.rawResponses)
@@ -19,7 +19,7 @@ const { generateJobS3Key } = require('../../utils/helpers');
 const logger = require('../../utils/logger');
 
 /**
- * Create a job logger for a background job.
+ * Create a job logger for a pipeline step.
  *
  * @param {object} submissionJob - The SubmissionJob model instance
  * @param {string} manuscriptId - Manuscript ID for S3 key generation
@@ -30,6 +30,7 @@ function createJobLogger(submissionJob, manuscriptId, round) {
   const entries = [];
   const rawResponses = {};
   const jobType = submissionJob.jobType;
+  let executionId;   // undefined = not looked up yet; null = there isn't one
 
   return {
     /**
@@ -69,7 +70,12 @@ function createJobLogger(submissionJob, manuscriptId, round) {
       const ext = options.extension || '.json';
       const mime = options.mimeType || 'application/json';
       const fileName = `${name}${ext}`;
-      const s3Key = generateJobS3Key(manuscriptId, submissionJob.submissionId, round, jobType, fileName);
+      // `runCount` IS this run's number — it is bumped when the run opens, and
+      // the worker loads the row after that. Falls back to unnumbered for a row
+      // that predates run history, which is where its artefacts already are.
+      const s3Key = generateJobS3Key(
+        manuscriptId, submissionJob.submissionId, round, jobType, fileName, submissionJob.runCount
+      );
       const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 
       try {
@@ -108,12 +114,40 @@ function createJobLogger(submissionJob, manuscriptId, round) {
         }
         submissionJob.changed('logs', true);
         await submissionJob.save();
+        // The run's own copy was taken by closeRun, from markComplete — which
+        // happens BEFORE this. Without re-syncing here, every run is recorded
+        // without its artefact keys or its log, which is most of what a past
+        // run is worth opening. Guarded, like every history write.
+        await require('./run-history.service').syncRunPayload(submissionJob);
       } catch (error) {
         logger.error(`[${jobType}] Failed to flush job logs to DB`, {
           submissionId: submissionJob.submissionId,
           error: error.message
         });
       }
+    },
+
+    /**
+     * The execution this step is running as, for attributing what it produces.
+     *
+     * A service that promotes its output into the submission has to say WHICH
+     * run the value came from, and it is handed a logger, not a job row. Looked
+     * up once and cached: within one worker invocation the execution cannot
+     * change, and the alternative is a database round trip per applied field.
+     *
+     * Null when there is no execution — a step run outside the pipeline, or a
+     * history write that failed. The apply still happens; it is recorded
+     * without a source, which is worse than attributed and much better than
+     * refusing to write a value the user is waiting for.
+     *
+     * @returns {Promise<string|null>}
+     */
+    async currentExecutionId() {
+      if (executionId === undefined) {
+        const run = await require('./run-history.service').currentRun(submissionJob.id);
+        executionId = run?.id || null;
+      }
+      return executionId;
     },
 
     /** Get current log entries (for inspection) */

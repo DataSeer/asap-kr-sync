@@ -1,5 +1,5 @@
 /**
- * Job Service - API client for background job status
+ * Job Service - API client for pipeline step status
  *
  * All endpoints support an optional `round` parameter.
  * When omitted, the backend defaults to the submission's current round.
@@ -9,11 +9,64 @@ import api from './api'
 
 export default {
   /**
-   * Get all background jobs for a submission
+   * Get every pipeline step for a submission
    * @param {string} submissionId
    * @param {number} [round] - Optional round number (defaults to current round)
    * @returns {Promise<Object>} - { round, jobs: [...] }
    */
+  /**
+   * Re-run a chosen set of steps as ONE restart.
+   *
+   * One request even for a single step. Restarting them one at a time is not
+   * the same thing: the first to finish releases the work they share — grounding,
+   * the consolidator — which then runs and is thrown away by the next reset, and
+   * both runs are paid for.
+   *
+   * @param {string} submissionId
+   * @param {string[]} jobTypes
+   * @param {string} [paramsSource] - 'live' (default) uses today's prompts and
+   *   settings; 'frozen' uses the ones each step last ran with.
+   * @returns {Promise<{message: string, restarted: string[], reset: string[], paramsSource: string}>}
+   */
+  async restartProcesses(submissionId, jobTypes, paramsSource = 'live') {
+    const response = await api.post(`/submissions/${submissionId}/processes/restart`,
+      { jobTypes, paramsSource })
+    return response.data
+  },
+
+  /**
+   * Run a failed step again, and change nothing else.
+   *
+   * The narrow sibling of `restartProcesses`, for a pipeline stuck behind one
+   * failure after the service it needed came back. The server refuses it once
+   * anything downstream has run since — retrying alone would leave those results
+   * built on the failure.
+   *
+   * @param {string} submissionId
+   * @param {string} jobType
+   * @returns {Promise<{message: string, jobType: string, status: string}>}
+   */
+  async retryJob(submissionId, jobType) {
+    const response = await api.post(`/submissions/${submissionId}/jobs/${jobType}/retry`)
+    return response.data
+  },
+
+  /**
+   * Carry on without a failed step's data.
+   *
+   * Re-runs nothing. The step stays `failed`; what is recorded is that a person
+   * decided the pipeline should proceed without it — the only way anyone can
+   * later tell "this was skipped" from "this found nothing".
+   *
+   * @param {string} submissionId
+   * @param {string} jobType
+   * @returns {Promise<{message: string, jobType: string, acknowledgedAt: string}>}
+   */
+  async continueWithout(submissionId, jobType) {
+    const response = await api.post(`/submissions/${submissionId}/jobs/${jobType}/continue`)
+    return response.data
+  },
+
   async getJobs(submissionId, round = null) {
     const params = round ? { round } : {}
     const response = await api.get(`/submissions/${submissionId}/jobs`, { params })
@@ -21,7 +74,7 @@ export default {
   },
 
   /**
-   * Run (or re-run) all background processes for a submission
+   * Run (or re-run) the whole pipeline for a submission
    * @param {string} submissionId
    * @returns {Promise<Object>}
    */
@@ -31,7 +84,7 @@ export default {
   },
 
   /**
-   * Cancel all in-flight background processing for a submission (#15).
+   * Cancel the in-flight pipeline for a submission (#15).
    * @param {string} submissionId
    * @param {number} [round]
    * @returns {Promise<Object>} - { message, cancelled, round }
@@ -69,6 +122,49 @@ export default {
   async getJobResponseUrl(submissionId, jobType, responseName, round = null) {
     const params = round ? { round } : {}
     const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/responses/${responseName}`, { params })
+    return response.data
+  },
+
+  /**
+   * The prompt(s) a run used, read back from its own frozen inputs.
+   *
+   * Not from the file on disk, and not a link to GitHub: a deployment is not
+   * always at the head of its branch, and prompt files get edited and renamed,
+   * so a link showed a reader a prompt that may not be the one that ran.
+   *
+   * @param {string} submissionId
+   * @param {string} jobType
+   * @param {number} [round]
+   * @returns {Promise<{prompts: Array<{key, file, text, sha256, bytes, attachments}>, reason?: string}>}
+   */
+  async getJobPrompts(submissionId, jobType, round = null, runNumber = null) {
+    const params = { ...(round ? { round } : {}), ...(runNumber ? { run: runNumber } : {}) }
+    const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/prompts`, { params })
+    return response.data
+  },
+
+  /**
+   * Every run of one step, newest first — metadata only, no payloads.
+   *
+   * Gated to non-authors, like the rest of the job internals.
+   *
+   * @returns {Promise<{round, jobType, runCount, runs: Array}>}
+   */
+  async getRuns(submissionId, jobType, round = null) {
+    const params = round ? { round } : {}
+    const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/runs`, { params })
+    return response.data
+  },
+
+  /**
+   * One past run, in full — shaped like a job, so the page renders it through
+   * the same path it uses for the current one.
+   *
+   * @returns {Promise<{run: object}>}
+   */
+  async getRun(submissionId, jobType, runNumber, round = null) {
+    const params = round ? { round } : {}
+    const response = await api.get(`/submissions/${submissionId}/jobs/${jobType}/runs/${runNumber}`, { params })
     return response.data
   }
 }

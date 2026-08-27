@@ -14,19 +14,25 @@ import FilesInfoModal from './FilesInfoModal.vue'
 import StepHelpPanel from './StepHelpPanel.vue'
 import fileService from '@/services/file.service'
 import krtService from '@/services/krt.service'
-import jobService from '@/services/job.service'
 import { useNotificationStore } from '@/stores/notification.store'
+import { useSubmissionStore } from '@/stores/submission.store'
 import { statusToStep } from '@/utils/submission'
 
-// Optional injection — present on step 2 and step 3 (provided by KRTView /
-// PDFView's useJobPoller). Other views render the header without it, so the
-// banner stays hidden.
+// Optional injection — provided by KRTView (step 2) and PDFView (step 3), the
+// two views that poll jobs. Other views render the header without it and the
+// banner stays hidden. NOTE: it must be provided by the VIEW, not by
+// PipelinePanel — that component is this one's sibling, so its provide()
+// does not reach here.
 const injectedJobs = inject('submissionJobs', ref({}))
 
-const pdfAnalysisPendingInput = computed(() => {
-  const j = injectedJobs.value?.pdf_analysis
-  return j?.status === 'pending_input'
-})
+// The Availability Statement check is the one step that waits on a person: it
+// will not spend an LM call on a statement nobody has confirmed. It used to be
+// the consolidator that parked here, which was the wrong step to ask — it never
+// reads the statement, and holding it stalled the whole KRT half of the run.
+
+// While extraction is in flight the statement is about to be overwritten, so
+// the editor says so rather than letting somebody type into a field that is
+// seconds from changing under them.
 
 const props = defineProps({
   /** The submission object */
@@ -79,6 +85,7 @@ const props = defineProps({
 const emit = defineEmits(['go-back', 'go-next'])
 
 const notificationStore = useNotificationStore()
+const submissionStore = useSubmissionStore()
 
 // Show blocked reason tooltip on click for disabled Continue button
 const showBlockedTooltip = ref(false)
@@ -149,43 +156,29 @@ function openEditModal() {
   showEditModal.value = true
 }
 
-/**
- * Handler for the DAS pending-input banner — opens the metadata editor so the
- * user can enter the Data Availability Statement.
- */
-async function handleDasBannerClick() {
-  openEditModal()
-}
-
 function handleDasModalClosed() {
   showEditModal.value = false
 }
 
 /**
- * After metadata is saved, advance pdf_analysis ONLY when it is awaiting input
- * AND the DAS content was actually changed to a non-empty value. Any other
- * metadata change (title, notes, manuscript ID, or DAS edits while the job is
- * not pending_input) has no effect on the pipeline. The `dasChanged`/`das`
- * flags come from the modal so detection doesn't depend on prop-update timing.
+ * Saving metadata no longer starts anything.
+ *
+ * It used to release the consolidator, on the theory that a typed statement was
+ * the missing input. It was not — the consolidator never read it. Editing the
+ * statement now withdraws its confirmation instead (the server does that), and
+ * the Availability check waits for the author to confirm the new text, which is
+ * a decision they make on purpose rather than a side-effect of hitting Save.
  */
-async function handleMetadataSaved(_submission, meta) {
-  if (!(pdfAnalysisPendingInput.value && meta?.dasChanged && meta?.das)) return
-  try {
-    await jobService.advanceJob(props.submission.id, 'pdf_analysis')
-    notificationStore.success('PDF analysis is starting')
-  } catch (err) {
-    const message = err?.response?.data?.error || err?.message || 'Could not start PDF analysis'
-    notificationStore.error(message)
-  }
+function handleMetadataSaved() {
+  if (props.submission?.id) submissionStore.fetchSubmission(props.submission.id)
 }
 
 function openFilesModal() {
   showFilesModal.value = true
 }
 
-// Exposed so parent views (e.g. PDFView) can trigger the metadata/DAS editor
-// from outside this component — for example when the JobStatusPanel emits
-// `edit-das` from its modal.
+// Exposed so parent views can trigger the metadata/DAS editor from outside this
+// component.
 defineExpose({ openEditModal })
 
 async function handleFileDownload(file) {
@@ -245,16 +238,32 @@ async function downloadCurrentKRT(round) {
         <div class="flex items-center space-x-4">
           <div>
             <div class="flex items-center">
-              <h2 class="text-sm font-medium text-gray-500" :title="isTitleTruncated ? submission.title : undefined">{{ truncatedTitle }}</h2>
+              <h2 class="text-sm font-medium text-gray-500" v-tooltip="isTitleTruncated ? submission.title : undefined">{{ truncatedTitle }}</h2>
               <button
                 class="ml-2 text-gray-400 hover:text-gray-600 transition-colors"
-                title="Edit metadata"
+                v-tooltip="'Edit metadata'"
                 @click="openEditModal"
               >
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                 </svg>
               </button>
+
+              <!-- The pipeline, reachable from every step. The module statuses
+                   themselves live on the PDF step and on the pipeline page —
+                   this header is on every submission page, so it is the one
+                   place a link to them works from anywhere. -->
+              <span class="mx-2 text-gray-300">|</span>
+              <RouterLink
+                :to="{ name: 'submission-pipeline', params: { id: submission.id } }"
+                class="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 hover:underline transition-colors"
+                v-tooltip="'See every processing step, what it produced, and what it is waiting for'"
+              >
+                <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+                </svg>
+                Pipeline
+              </RouterLink>
             </div>
             <div class="flex items-center mt-0.5">
               <!-- Manuscript ID or placeholder -->
@@ -262,7 +271,7 @@ async function downloadCurrentKRT(round) {
               <button
                 v-else
                 class="text-xs text-gray-400 italic hover:text-primary-600 hover:underline transition-colors"
-                title="Click to add manuscript ID"
+                v-tooltip="'Click to add manuscript ID'"
                 @click="openEditModal"
               >
                 Manuscript ID not specified
@@ -275,7 +284,7 @@ async function downloadCurrentKRT(round) {
               <button
                 v-if="latestFiles?.krt"
                 class="inline-flex items-center text-xs text-green-600 hover:text-green-700 transition-colors"
-                title="Download current KRT data (CSV)"
+                v-tooltip="'Download current KRT data (CSV)'"
                 @click="downloadCurrentKRT()"
               >
                 <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -283,7 +292,7 @@ async function downloadCurrentKRT(round) {
                 </svg>
                 KRT<span class="text-green-400 ml-0.5">(v{{ submission?.currentRound || 1 }}.{{ latestFiles?.krt?.version || 1 }})</span>
               </button>
-              <span v-else class="inline-flex items-center text-xs text-gray-300 cursor-not-allowed" title="No KRT file uploaded">
+              <span v-else class="inline-flex items-center text-xs text-gray-300 cursor-not-allowed" v-tooltip="'No KRT file uploaded'">
                 <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
@@ -296,7 +305,7 @@ async function downloadCurrentKRT(round) {
               <button
                 v-if="latestFiles?.pdf"
                 class="inline-flex items-center text-xs text-red-600 hover:text-red-700 transition-colors"
-                title="Download PDF file"
+                v-tooltip="'Download PDF file'"
                 @click="downloadLatestFile('pdf')"
               >
                 <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -304,7 +313,7 @@ async function downloadCurrentKRT(round) {
                 </svg>
                 PDF<span class="text-red-400 ml-0.5">(v{{ submission?.currentRound || 1 }}.{{ latestFiles?.pdf?.version || 1 }})</span>
               </button>
-              <span v-else class="inline-flex items-center text-xs text-gray-300 cursor-not-allowed" title="No PDF file uploaded">
+              <span v-else class="inline-flex items-center text-xs text-gray-300 cursor-not-allowed" v-tooltip="'No PDF file uploaded'">
                 <svg class="w-3.5 h-3.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
                 </svg>
@@ -314,7 +323,7 @@ async function downloadCurrentKRT(round) {
               <!-- More info button -->
               <button
                 class="ml-1.5 inline-flex items-center justify-center w-4 h-4 text-xs text-gray-400 hover:text-primary-600 border border-gray-300 hover:border-primary-400 rounded-full transition-colors"
-                title="View all files"
+                v-tooltip="'View all files'"
                 @click="openFilesModal"
               >
                 ?
@@ -369,21 +378,6 @@ async function downloadCurrentKRT(round) {
       </div>
     </div><!-- /.submission-sticky-bar -->
 
-    <!-- DAS pending-input banner — surfaces from step 2 onward whenever the
-         consolidator is waiting for a manually-entered Availability Statement.
-         Resolves anywhere in the flow so the user doesn't have to jump to
-         step 5 just to unblock the pipeline. -->
-    <div v-if="pdfAnalysisPendingInput" class="das-pending-banner" role="alert">
-      <svg class="das-pending-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-      </svg>
-      <div class="das-pending-body">
-        <p class="das-pending-title">Availability Statement not found in the PDF</p>
-        <p class="das-pending-sub">PDF analysis is paused until you enter it. You can resolve this from any step.</p>
-      </div>
-      <button type="button" class="das-pending-btn" @click="handleDasBannerClick">Enter it now</button>
-    </div>
-
     <!-- ─── REST — page title, description, help panel (NOT sticky) ─── -->
     <div class="submission-header-rest" style="overflow: visible;">
       <!-- Page title and actions -->
@@ -394,7 +388,7 @@ async function downloadCurrentKRT(round) {
             v-if="helpItems.length > 0"
             class="help-toggle-btn"
             :class="{ 'help-toggle-active': showHelp }"
-            title="Show step guide"
+            v-tooltip="'Show step guide'"
             @click="showHelp = !showHelp"
           >
             <span>Instructions</span>
@@ -622,47 +616,4 @@ async function downloadCurrentKRT(round) {
   30%, 60% { box-shadow: none; }
 }
 
-/* DAS pending-input banner */
-.das-pending-banner {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  background: #fff7ed;
-  border: 1px solid #fdba74;
-  border-radius: 0.5rem;
-  padding: 0.625rem 0.875rem;
-}
-.das-pending-icon {
-  width: 1.25rem;
-  height: 1.25rem;
-  color: #ea580c;
-  flex-shrink: 0;
-}
-.das-pending-body {
-  flex: 1;
-  min-width: 0;
-}
-.das-pending-title {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: #9a3412;
-}
-.das-pending-sub {
-  font-size: 0.75rem;
-  color: #7c2d12;
-  margin-top: 0.125rem;
-}
-.das-pending-btn {
-  flex-shrink: 0;
-  padding: 0.375rem 0.75rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  background: #ea580c;
-  color: #fff;
-  border-radius: 0.375rem;
-  border: 0;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.das-pending-btn:hover { background: #c2410c; }
 </style>

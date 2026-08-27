@@ -73,6 +73,16 @@ def parse_args():
         default=1,
         help="Number of sequential extraction passes (default: 1)",
     )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help=(
+            "Sampling temperature (default: 0.0 = deterministic). langextract "
+            "leaves this at the model default when unset, which made the same "
+            "manuscript yield different signal sets run to run."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -112,10 +122,20 @@ def load_examples(path):
 def main():
     args = parse_args()
 
-    # Validate API key (per-service var, no fallback)
-    api_key = os.environ.get("DATASETS_DETECTION_GEMINI_API_KEY")
+    # Per-service var first, shared key second. The caller resolves this and
+    # passes the answer in, so the fallback here matters only when the script
+    # is run by hand -- but a script that dies on a key the operator did set,
+    # under a different name, is the kind of failure that costs an afternoon.
+    api_key = (
+        os.environ.get("DATASETS_DETECTION_GEMINI_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+    )
     if not api_key:
-        print("Error: DATASETS_DETECTION_GEMINI_API_KEY environment variable is required", file=sys.stderr)
+        print(
+            "Error: no Gemini API key. Set DATASETS_DETECTION_GEMINI_API_KEY "
+            "or GEMINI_API_KEY.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     # Set GEMINI_API_KEY for langextract (it reads this env var internally)
     os.environ["GEMINI_API_KEY"] = api_key
@@ -171,25 +191,60 @@ def main():
             max_workers=args.max_workers,
             batch_length=args.batch_length,
             max_char_buffer=args.max_char_buffer,
+            temperature=args.temperature,
         )
     except Exception as e:
         print(f"Error: langextract extraction failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Convert result to JSON-serializable format
+    # Convert result to JSON-serializable format.
+    #
+    # The field is `extraction_text`. It was previously read as `extracted_text`
+    # via getattr with a "" default, so every extraction carried an empty text
+    # and nothing failed — the JS client masks it with `|| ''` and reads the
+    # payload out of `attributes` instead. Same trap on the way in: the examples
+    # JSON uses an `extracted_text` key, but it is passed POSITIONALLY to
+    # lx.data.Extraction, so the mismatch never surfaced there either.
+    #
+    # `char_interval` is why LangExtract is in this pipeline at all: it is the
+    # span the extraction was aligned to in the source text. Dropping it made a
+    # grounded extraction indistinguishable from one the model invented — which
+    # is how few-shot examples from the prompt reached the output as findings.
     extractions = []
+    ungrounded = 0
     for doc in (result if isinstance(result, list) else [result]):
         for ext in getattr(doc, "extractions", []) or []:
+            interval = getattr(ext, "char_interval", None)
+            start = getattr(interval, "start_pos", None) if interval else None
+            end = getattr(interval, "end_pos", None) if interval else None
+            alignment = getattr(ext, "alignment_status", None)
+
+            if start is None or end is None:
+                # LangExtract could not align this to the source text. Keep it,
+                # tagged, rather than dropping silently: the caller decides, and
+                # a rising count here is the signal that a prompt change pushed
+                # the model into inventing.
+                ungrounded += 1
+
             extractions.append(
                 {
                     "extraction_class": getattr(ext, "extraction_class", ""),
-                    "extracted_text": getattr(ext, "extracted_text", ""),
+                    "extraction_text": getattr(ext, "extraction_text", "") or "",
+                    "char_interval": (
+                        None if start is None or end is None
+                        else {"start_pos": start, "end_pos": end}
+                    ),
+                    "alignment_status": (
+                        str(getattr(alignment, "value", alignment))
+                        if alignment is not None else None
+                    ),
                     "attributes": getattr(ext, "attributes", None) or {},
                 }
             )
 
     print(
-        f"Extraction complete: {len(extractions)} total extractions",
+        f"Extraction complete: {len(extractions)} total extractions"
+        f" ({ungrounded} not aligned to source text)",
         file=sys.stderr,
     )
 

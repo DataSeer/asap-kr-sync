@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, computed, watch } from 'vue'
+import { formatDateTime } from '@/utils/format-date'
 import { useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useAuthStore } from '@/stores/auth.store'
@@ -8,6 +9,8 @@ import submissionService from '@/services/submission.service'
 import SubmissionCard from '@/components/submission/SubmissionCard.vue'
 import DeleteConfirmModal from '@/components/submission/DeleteConfirmModal.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 
 const router = useRouter()
 const submissionStore = useSubmissionStore()
@@ -50,16 +53,22 @@ const selectedIds = ref(new Set())
 const bulkDeleting = ref(false)
 const showBulkDeleteModal = ref(false)
 
+// Select-all operates on what the table is SHOWING, not on the page behind the
+// search box. `submissions` is the whole fetched page; `visibleSubmissions` is
+// what survives the in-table search. Filtering to two rows, ticking the header
+// box and pressing "Delete selected" deleted all twelve — the checkbox even
+// read as unticked afterwards, because the two visible rows were among those
+// selected but not all of them were.
 const allOnPageSelected = computed(() => {
-  if (submissions.value.length === 0) return false
-  return submissions.value.every(s => selectedIds.value.has(s.id))
+  if (visibleSubmissions.value.length === 0) return false
+  return visibleSubmissions.value.every(s => selectedIds.value.has(s.id))
 })
 
 function toggleSelectAll() {
   if (allOnPageSelected.value) {
-    submissions.value.forEach(s => selectedIds.value.delete(s.id))
+    visibleSubmissions.value.forEach(s => selectedIds.value.delete(s.id))
   } else {
-    submissions.value.forEach(s => selectedIds.value.add(s.id))
+    visibleSubmissions.value.forEach(s => selectedIds.value.add(s.id))
   }
   // Trigger reactivity
   selectedIds.value = new Set(selectedIds.value)
@@ -166,6 +175,16 @@ const visibleSubmissions = computed(() => {
     return haystack.includes(q)
   })
 })
+
+// Narrowing the search must not leave rows selected that the user can no longer
+// see — the count in "Delete selected (N)" would then be about rows that are
+// not on screen.
+watch(visibleSubmissions, (visible) => {
+  if (selectedIds.value.size === 0) return
+  const stillVisible = new Set(visible.map(s => s.id))
+  const kept = new Set([...selectedIds.value].filter(id => stillVisible.has(id)))
+  if (kept.size !== selectedIds.value.size) selectedIds.value = kept
+})
 const loading = computed(() => submissionStore.loading)
 const pagination = computed(() => submissionStore.pagination)
 
@@ -199,6 +218,18 @@ async function fetchFilterOptions() {
   }
 }
 
+/**
+ * A failed list must not read as an empty one. The store rethrows, so this
+ * rejected out of the mounted hook and out of every filter watcher, leaving
+ * `submissions` at [] behind the empty state: "No submissions found. Get
+ * started by creating a new submission." — told to a user whose work is all
+ * still there and whose session or server had simply failed.
+ *
+ * Handled here rather than at each call site because there are nine of them
+ * (mount, five filter watchers, pagination, delete, restore).
+ */
+const loadError = ref(null)
+
 async function fetchSubmissions() {
   const params = {
     page: currentPage.value,
@@ -221,7 +252,12 @@ async function fetchSubmissions() {
     params.title = titleFilter.value.trim()
   }
 
-  await submissionStore.fetchSubmissions(params)
+  try {
+    loadError.value = null
+    await submissionStore.fetchSubmissions(params)
+  } catch (err) {
+    loadError.value = describeLoadError(err)
+  }
 }
 
 // Watch filters and refetch
@@ -295,14 +331,6 @@ function getUserName(userId) {
   return user?.name || user?.email || userId
 }
 
-function handleCreateNew() {
-  router.push({ name: 'create-submission' })
-}
-
-function handleViewSubmission(submission) {
-  const route = router.resolve({ name: 'submission-detail', params: { id: submission.id } })
-  window.open(route.href, '_blank', 'noopener,noreferrer')
-}
 
 async function handleHideSubmission(submission) {
   try {
@@ -486,12 +514,12 @@ const activeFilterCount = computed(() => {
 
         <!-- User Multi-Select (asap_pm, ds_annotator, admin) -->
         <div v-if="canFilterTeamAndAuthor && filterOptions.users.length > 0" class="filter-dropdown relative">
-          <label class="label">Author</label>
+          <label class="label">Owner</label>
           <button
             class="input w-48 text-left flex items-center justify-between"
             @click.stop="showUserDropdown = !showUserDropdown; showStatusDropdown = false; showProjectDropdown = false"
           >
-            <span v-if="selectedUsers.length === 0" class="text-gray-400">All authors</span>
+            <span v-if="selectedUsers.length === 0" class="text-gray-400">All owners</span>
             <span v-else class="truncate">{{ selectedUsers.length }} selected</span>
             <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
@@ -607,7 +635,7 @@ const activeFilterCount = computed(() => {
         <button
           class="p-1.5 transition-colors"
           :class="viewMode === 'card' ? 'bg-primary-100 text-primary-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'"
-          title="Card view"
+          v-tooltip="'Card view'"
           @click="setViewMode('card')"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -617,7 +645,7 @@ const activeFilterCount = computed(() => {
         <button
           class="p-1.5 transition-colors"
           :class="viewMode === 'table' ? 'bg-primary-100 text-primary-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'"
-          title="Table view"
+          v-tooltip="'Table view'"
           @click="setViewMode('table')"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -637,6 +665,15 @@ const activeFilterCount = computed(() => {
       </svg>
     </div>
 
+    <LoadError
+      v-else-if="loadError"
+      title="Your submissions could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      note="This is not an empty list — the page never received one."
+      @retry="fetchSubmissions"
+    />
+
     <!-- Empty state -->
     <div v-else-if="submissions.length === 0" class="card text-center py-12">
       <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -649,9 +686,9 @@ const activeFilterCount = computed(() => {
         creating a new submission.
       </p>
       <div class="mt-6">
-        <button class="btn-primary" @click="handleCreateNew">
+        <RouterLink :to="{ name: 'create-submission' }" class="btn-primary">
           New Submission
-        </button>
+        </RouterLink>
       </div>
     </div>
 
@@ -663,7 +700,6 @@ const activeFilterCount = computed(() => {
           :key="submission.id"
           :submission="submission"
           :is-hidden="selectedVisibility === 'hidden'"
-          @click="handleViewSubmission(submission)"
           @hide="handleHideSubmission"
           @unhide="handleUnhideSubmission"
           @delete="handleDeleteSubmission"
@@ -788,7 +824,7 @@ const activeFilterCount = computed(() => {
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Manuscript ID</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Owner</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Round</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
@@ -816,13 +852,14 @@ const activeFilterCount = computed(() => {
                   />
                 </td>
                 <td class="px-4 py-3">
-                  <button
+                  <!-- A link, not a button — see the note on the other table. -->
+                  <RouterLink
+                    :to="{ name: 'submission-detail', params: { id: sub.id } }"
                     class="text-sm font-medium text-primary-700 hover:text-primary-900 hover:underline text-left max-w-xs truncate block"
-                    :title="sub.title"
-                    @click="handleViewSubmission(sub)"
+                    v-tooltip="sub.title"
                   >
                     {{ sub.title }}
-                  </button>
+                  </RouterLink>
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-600 font-mono">
                   {{ sub.manuscriptId || '—' }}
@@ -830,6 +867,9 @@ const activeFilterCount = computed(() => {
                 <td class="px-4 py-3 text-sm text-gray-600">
                   {{ sub.project || '—' }}
                 </td>
+                <!-- The owner's NAME. It can look like a role — the seeded dev
+                     account for annotator@example.com is literally named
+                     "Annotator" — but `user.role` is never rendered here. -->
                 <td class="px-4 py-3 text-sm text-gray-600 truncate max-w-[120px]">
                   {{ sub.user?.name || '—' }}
                 </td>
@@ -842,14 +882,14 @@ const activeFilterCount = computed(() => {
                   v{{ sub.currentRound || 1 }}
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">
-                  {{ new Date(sub.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) }}
+                  {{ formatDateTime(sub.createdAt) }}
                 </td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end space-x-1">
                     <button
                       v-if="selectedVisibility === 'hidden'"
                       class="p-1 text-gray-400 hover:text-green-600 transition-colors"
-                      title="Unhide"
+                      v-tooltip="'Unhide'"
                       @click="handleUnhideSubmission(sub)"
                     >
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -860,7 +900,7 @@ const activeFilterCount = computed(() => {
                     <button
                       v-else
                       class="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-                      title="Hide"
+                      v-tooltip="'Hide'"
                       @click="handleHideSubmission(sub)"
                     >
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -870,7 +910,7 @@ const activeFilterCount = computed(() => {
                     <button
                       v-if="canDelete"
                       class="p-1 text-gray-400 hover:text-red-600 transition-colors"
-                      title="Delete"
+                      v-tooltip="'Delete'"
                       @click="handleDeleteSubmission(sub)"
                     >
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

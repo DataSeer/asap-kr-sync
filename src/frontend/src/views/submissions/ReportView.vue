@@ -7,7 +7,10 @@ import { setSubmissionTitle } from '@/router'
 import reportService from '@/services/report.service'
 import pdfService from '@/services/pdf.service'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
+import LoadError from '@/components/common/LoadError.vue'
+import { describeLoadError } from '@/utils/load-error'
 import NewRoundModal from '@/components/submission/NewRoundModal.vue'
+import { formatDateTime as formatDate } from '@/utils/format-date'
 
 const route = useRoute()
 const router = useRouter()
@@ -56,14 +59,31 @@ const previousRoundsGrouped = computed(() => {
     .map(([roundNum, roundReports]) => ({ round: Number(roundNum), reports: roundReports }))
 })
 
-onMounted(async () => {
+
+// A failed load must not render as an answer. Without this, a 403 or a 500 on
+// the submission fetch aborted the rest of the mount chain and the view fell
+// through to its usual content — which reads as a statement about the
+// manuscript rather than as a page that never received it.
+const loadError = ref(null)
+
+onMounted(loadPage)
+
+async function loadPage() {
   // Reset local state for new submission
   generating.value = false
   reports.value = []
+  loadError.value = null
 
-  await submissionStore.fetchSubmission(route.params.id)
+  try {
+    await submissionStore.fetchSubmission(route.params.id)
+  } catch (err) {
+    // "Submission Complete!" over a submission we could not read would be the
+    // most confident wrong answer in the app.
+    loadError.value = describeLoadError(err)
+    return
+  }
   await fetchReports()
-})
+}
 
 // Update page title with submission ID or title
 watch(submission, (sub) => {
@@ -127,7 +147,7 @@ async function handleNewRound(data) {
 
     // 2. Upload the new PDF to the round the backend just created. uploadPDF
     //    triggers the full analysis pipeline (markdown → DAS → suggestions),
-    //    so by the time the user lands on Step 2 the background jobs are
+    //    so by the time the user lands on Step 2 the pipeline steps are
     //    already running.
     if (data.pdfFile) {
       await pdfService.upload(route.params.id, data.pdfFile)
@@ -145,10 +165,6 @@ async function handleNewRound(data) {
   } finally {
     newRoundLoading.value = false
   }
-}
-
-function formatDate(date) {
-  return new Date(date).toLocaleString()
 }
 
 async function handleDownload(report) {
@@ -188,8 +204,16 @@ async function handleDownload(report) {
       </template>
     </SubmissionHeader>
 
+    <LoadError
+      v-if="loadError"
+      title="This submission could not be loaded"
+      :message="loadError.message"
+      :retryable="loadError.retryable"
+      @retry="loadPage"
+    />
+
     <!-- Success message -->
-    <div class="card bg-green-50 border-green-200">
+    <div v-else class="card bg-green-50 border-green-200">
       <div class="flex items-center">
         <svg class="w-8 h-8 text-green-500 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />

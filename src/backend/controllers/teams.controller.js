@@ -3,8 +3,8 @@
  */
 
 const { Op } = require('sequelize');
-const { Team, UserTeam, TeamEmail, Submission, User } = require('../models');
-const { NotFoundError, ConflictError, ValidationError } = require('../utils/errors');
+const { Team, UserTeam, TeamEmail, User } = require('../models');
+const { NotFoundError, ConflictError, ValidationError, AuthorizationError } = require('../utils/errors');
 const { parsePagination, buildPaginationMeta } = require('../utils/helpers');
 const teamEmailService = require('../services/teams/team-email.service');
 const { ROLES } = require('../config/constants');
@@ -182,16 +182,19 @@ async function deleteTeam(req, res, next) {
       });
     }
 
-    // ds_annotator cannot delete a team that still has submissions attached;
-    // admins can force-delete.
-    if (req.user.role !== ROLES.ADMIN) {
-      const submissionCount = await Submission.count({ where: { team: team.code } });
-      if (submissionCount > 0) {
-        return res.status(400).json({
-          error: `Cannot delete team with ${submissionCount} attached submission(s). Reassign them first or ask an admin.`
-        });
-      }
-    }
+    // There was a second guard here — "ds_annotator cannot delete a team that
+    // still has submissions attached" — counting `submissions.team`. That column
+    // does not exist: a submission carries a `project` (the 2-letter grant code)
+    // and an owner, and team visibility is derived from the OWNER's teams. The
+    // query therefore threw, so a ds_annotator deleting any team got a 500
+    // rather than either the refusal or the deletion. Admins never saw it —
+    // they skipped the branch.
+    //
+    // Rewriting it against the real model makes it vacuous: submissions are
+    // attached to a team only through their owner's membership, and the check
+    // above has already established that the team has no members. So the
+    // membership check IS the attached-submissions check, and this is one
+    // guard, not two.
 
     await team.destroy();
 
@@ -285,13 +288,40 @@ async function importCsv(req, res, next) {
  * List (team, email) roster mappings
  * GET /api/teams/email-mappings?team=XX&email=foo
  */
+/**
+ * Which teams this caller may act on in the roster, or null for "all of them".
+ *
+ * An `asap_pm` is defined as a super-author SCOPED TO THEIR TEAMS
+ * (docs/roles-and-permissions.md), but the roster endpoints checked only that
+ * the team existed. A PM could therefore map their own email into any team code
+ * — `GET /api/teams/codes` lists them all to any authenticated user — and since
+ * `authenticate` reloads memberships on every request, that granted read AND
+ * write access to another lab's submissions on the very next call. Admins and
+ * ds_annotators keep the global view; they are the roster's owners.
+ *
+ * @returns {string[]|null} allowed team codes, or null when unrestricted
+ */
+function rosterScopeFor(user) {
+  return user?.role === ROLES.ASAP_PM ? (user.teams || []) : null;
+}
+
 async function listEmailMappings(req, res, next) {
   try {
     const { page, limit, offset } = parsePagination(req.query);
 
     const whereClause = {};
+    // A PM sees their own labs' roster only; it is other people's names and
+    // email addresses otherwise.
+    const scope = rosterScopeFor(req.user);
+    if (scope) {
+      whereClause.team = { [Op.in]: scope };
+    }
     if (req.query.team) {
-      whereClause.team = String(req.query.team).trim();
+      const asked = String(req.query.team).trim();
+      if (scope && !scope.includes(asked)) {
+        throw new AuthorizationError('You can only view the roster for your own team(s).');
+      }
+      whereClause.team = asked;
     }
     if (req.query.email) {
       whereClause.email = String(req.query.email).trim().toLowerCase();
@@ -340,6 +370,16 @@ async function createEmailMappings(req, res, next) {
       throw new ValidationError(`Unknown team(s): ${unknownTeams.join(', ')}. Create the team(s) first.`);
     }
 
+    const scope = rosterScopeFor(req.user);
+    if (scope) {
+      const outside = [...new Set(mappings.map(m => m.team).filter(team => !scope.includes(team)))];
+      if (outside.length > 0) {
+        throw new AuthorizationError(
+          `You can only manage the roster for your own team(s): ${outside.join(', ')} is not one of them.`
+        );
+      }
+    }
+
     let created = 0;
     let skipped = 0;
     let applied = 0;
@@ -376,7 +416,12 @@ async function createEmailMappings(req, res, next) {
  */
 async function exportEmailMappings(req, res, next) {
   try {
+    // Scoped like list/create/delete. This handler was the one that was not,
+    // so a PM exporting the roster received every lab's names and addresses —
+    // exactly what listEmailMappings withholds from them.
+    const scope = rosterScopeFor(req.user);
     const rows = await TeamEmail.findAll({
+      where: scope ? { team: { [Op.in]: scope } } : {},
       order: [['team', 'ASC'], ['email', 'ASC']],
       raw: true
     });
@@ -404,6 +449,13 @@ async function deleteEmailMapping(req, res, next) {
   try {
     const mapping = await TeamEmail.findByPk(req.params.id);
     if (!mapping) {
+      throw new NotFoundError('Email mapping');
+    }
+
+    // Deleting a mapping also revokes the matching account's membership, so an
+    // unscoped delete let a PM cut off another lab's members.
+    const scope = rosterScopeFor(req.user);
+    if (scope && !scope.includes(mapping.team)) {
       throw new NotFoundError('Email mapping');
     }
 

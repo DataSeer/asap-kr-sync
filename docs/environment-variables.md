@@ -1,6 +1,13 @@
 # Environment Variables
 
-All environment variables are documented below, organized by category. The single source of truth is `.env.example` at the repo root — this doc tracks what each variable means and the code-side defaults; if it ever drifts, trust `.env.example`.
+Every variable the application reads, what it means, and the default it falls
+back to. **This is the complete reference.**
+
+`.env.example` is deliberately *not* complete: it holds only the decisions a
+deployment has to make, so that a value copied out of it is one somebody meant
+to set. Anything absent from that file and present here has a default in code —
+which means setting it here PINS it, and a default improved later will not
+reach that deployment.
 
 The application loads `.env` via dotenv at startup. Cascading load order is defined in `src/backend/server.js` (look there for the precedence if you maintain multiple env files locally). For most setups one `.env` file is enough.
 
@@ -30,7 +37,7 @@ The application loads `.env` via dotenv at startup. Cascading load order is defi
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `JWT_SECRET` | Secret key for signing local JWT tokens | — | Yes |
-| `JWT_EXPIRES_IN` | Access-token lifetime. Short by design — the SPA silent-refreshes on 401. Shortening this also tightens the window before Auth0 block actions propagate. | `1h` (in `.env.example`); code falls back to `15m` if unset | No |
+| `JWT_EXPIRES_IN` | Access-token lifetime. Short by design — the SPA silent-refreshes on 401. Shortening this also tightens the window before Auth0 block actions propagate. | `15m` (in `.env.example` and in code) | No |
 | `JWT_REFRESH_EXPIRES_IN` | Refresh-token lifetime — also the cookie max-age for `asap_kr_refresh`. | `7d` | No |
 
 Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=Strict` cookies, never in the response body or URL hash. The frontend never sees the raw tokens. See `docs/auth0-integration.md` for the cookie layout.
@@ -51,7 +58,7 @@ Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=St
 | `AUTH0_CLIENT_ID` | Auth0 application client ID | — | If `AUTH0_ENABLED=true` |
 | `AUTH0_CLIENT_SECRET` | Auth0 application client secret | — | If `AUTH0_ENABLED=true` |
 | `AUTH0_SECRET_ID` | AWS Secrets Manager secret ID. When set (production / staging EC2), the four `AUTH0_*` credentials above are loaded from Secrets Manager and override any `.env` values. | — | No |
-| `AUTH0_VERIFY_ON_REFRESH` | Re-check Auth0 user status (blocked/deleted) on every token refresh so disable actions propagate within ~1h (one access-token cycle since Phase 6). Adds 100-300 ms per refresh. | `true` | No |
+| `AUTH0_VERIFY_ON_REFRESH` | Re-check Auth0 user status (blocked/deleted) on every token refresh so disable actions propagate within ~15 min (one access-token cycle, matching `JWT_EXPIRES_IN`). Adds 100-300 ms per refresh. | `true` | No |
 | `AUTH0_DEBUG_CLAIMS` | When `true`, logs verified Auth0 ID-token claim **names + values with PII masked** (email/name/sub/etc. redacted; custom/namespaced claims like a role claim shown in full). Use to discover which claim carries the role and its shape. Safe to enable temporarily in any env; keep off in normal operation. | `false` | No |
 
 ## AWS S3 Storage
@@ -73,14 +80,14 @@ Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=St
 
 ## PDF Analysis (Generated KRT — LM-primary, rule-based fallback)
 
-PDF Analysis regroups + coarse-dedups every detection's items (preserving per-resource `detectedBy` provenance), then asks an **LM (Google Gemini)** to consolidate those candidates into the final Generated KRT (merging near-duplicates, dropping non-resources, cleaning fields, attaching a `reason` per kept line). It is **LM-primary with a rule-based fallback** — when `KRT_GENERATION_ENABLED` is off or the LM errors, it falls back to the rule-based merge so the pipeline always yields a Generated KRT. The `PDF_ANALYSIS_API_*` entries below are vestigial (kept for compatibility with older `.env` files) and unused by the code; the LM call is configured separately (see [KRT Generation](#krt-generation-google-gemini--generated-krt) below).
+PDF Analysis regroups + coarse-dedups every detection's items (preserving per-resource `detectedBy` provenance), then asks an **LM (Google Gemini)** to consolidate those candidates into the final Generated KRT (merging near-duplicates, dropping non-resources, cleaning fields, attaching a `reason` per kept line). It is **LM-primary with a rule-based fallback** — when `KRT_GENERATION_ENABLED` is off or the LM errors, it falls back to the rule-based merge so the pipeline always yields a Generated KRT. It calls no service of its own — the LM step goes through [KRT Generation](#krt-generation-google-gemini--generated-krt), so that is where the model and key are configured.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `PDF_ANALYSIS_ENABLED` | Enable the consolidator | `true` | No |
 | `PDF_ANALYSIS_DEMO_DATA_ENABLED` | Demo data fallback | `false` | No |
+| `PDF_ANALYSIS_API_TIMEOUT` | How long the consolidation job may run before pg-boss expires it and re-delivers (ms). Named for the external API this step used to call; it now sizes the JOB, and the name is kept because changing it would break every existing `.env` | `300000` | No |
 | `PDF_ANALYSIS_SUPPRESS_SUGGESTIONS` | Filter out AI suggestions by kind. Comma-separated `<action>[:<column>[:<state>]]` tokens — **action**: `add`/`edit`/`update`; **column**: `source`/`identifier`/`resourceName`; optional **state**: `empty`/`filled` (the user's current cell value). E.g. `update:source:filled` drops SOURCE edits only when the cell already has a value (no overwrite), still allowing an empty cell to be filled. A value **replaces** the default; use `none` to suppress nothing. The default blocks name-change suggestions and SOURCE overwrites on existing rows. | `update:resourceName,update:source:filled` | No |
-| `PDF_ANALYSIS_API_BASE_URL` / `PDF_ANALYSIS_API_KEY` / `PDF_ANALYSIS_API_TIMEOUT` | Vestigial — unused by code | — | No |
 
 ## KRT Generation (Google Gemini — Generated KRT)
 
@@ -106,7 +113,7 @@ The LM that powers AI Suggestions (the `suggestion_generation` job): it compares
 
 ## DAS Suggestions (Google Gemini — Availability Statement check)
 
-The LM that powers the DAS Suggestions shown on the `/availability` step (the `das_suggestions` job). It checks the Data/Code Availability Statement against the ASAP rulebook (see [background-modules.md → `das_suggestions`](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a per-rule verdict. **LM-only:** when disabled / no key, the frontend **falls back to the legacy in-browser rules** and Continue is not blocked.
+The LM that powers the DAS Suggestions shown on the `/availability` step (the `das_suggestions` job). It checks the Data/Code Availability Statement against the ASAP rulebook (see [pipeline-modules.md → `das_suggestions`](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a per-rule verdict. **LM-only:** when disabled / no key, the frontend **falls back to the legacy in-browser rules** and Continue is not blocked.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
@@ -138,21 +145,66 @@ removed). The DAS Extraction job now depends on Markdown Convert.
 | `SOFTCITE_API_ENABLED` | Enable software detection | `false` | No |
 | `SOFTCITE_API_BASE_URL` | Softcite API endpoint | `http://localhost:8050` | If enabled |
 | `SOFTCITE_API_TIMEOUT` | Request timeout (ms) | `600000` | No |
+| `SOFTWARE_DETECTION_LM_ENABLED` | Enable the Gemini second pass over Softcite's findings. Independent of `SOFTCITE_API_ENABLED`: the rule-based pass and the LM pass are turned on separately. | `false` | No |
+| `SOFTWARE_DETECTION_GEMINI_API_KEY` | Gemini key for the software LM pass | — | No |
+| `SOFTWARE_DETECTION_GEMINI_MODEL` | Model for the LM pass | `gemini-2.5-flash` | No |
+| `SOFTWARE_DETECTION_API_TIMEOUT` | Timeout for the LM pass (ms) | `300000` | No |
 | `SOFTWARE_DETECTION_DEMO_DATA_ENABLED` | Demo data fallback | `true` | No |
+
+## KRT Grounding
+
+Judges each of the author's KRT rows against the manuscript. The deterministic
+matcher always runs; the LM second look only enriches what it could not settle.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `KRT_GROUNDING_GEMINI_API_KEY` | Gemini key for the second look | — | No |
+| `KRT_GROUNDING_GEMINI_MODEL` | Model for the second look | `gemini-2.5-flash` | No |
+| `KRT_GROUNDING_API_TIMEOUT` | Request timeout (ms) | `180000` | No |
+| `KRT_GROUNDING_SECOND_LOOK_ENABLED` | Set to `false` to skip the LM pass entirely. The deterministic matcher still runs, so the module never goes dark — it just settles fewer rows | `true` | No |
+
+## Shared Gemini credentials
+
+Nine modules call Gemini. Each still accepts its own `<MODULE>_GEMINI_API_KEY`
+and `<MODULE>_GEMINI_MODEL`, but both now fall back to a shared value, so one
+line configures the whole pipeline and a per-module override is reserved for
+when you actually need a separate quota or a different model.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `GEMINI_API_KEY` | Used by any Gemini module that has no key of its own | — | For every LM module |
+| `GEMINI_MODEL` | Used by any Gemini module that has no model of its own | `gemini-2.5-flash` | No |
+
+Resolution order per module: `<MODULE>_GEMINI_API_KEY` → `GEMINI_API_KEY` → unset
+(the module reports itself `off`).
+
+The fallback is applied **once at startup**, by `applyGeminiDefaults()` in
+`src/backend/config/gemini.js`: every module's `<MODULE>_GEMINI_API_KEY` and
+`<MODULE>_GEMINI_MODEL` is written into the process environment unless you set
+it yourself. So after boot the per-module variables are really set, not merely
+computed on demand.
+
+That matters for Datasets Detection, the one module that does its work in a
+child process. A child inherits environment variables, not the expression that
+produced them — so while the fallback lived only in JavaScript, a deployment
+with just `GEMINI_API_KEY` had every Node-side check report the module
+configured while the Python script it spawns exited with
+`DATASETS_DETECTION_GEMINI_API_KEY environment variable is required`.
 
 ## PDF-to-Markdown Conversion
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `PDF_MARKDOWN_PROVIDER` | Conversion provider — `modal` or `markitdown` | `modal` | No |
-| `PDF_MARKDOWN_MARKITDOWN_URL` | MarkItDown service URL | `http://markitdown:3001` | If provider=markitdown |
-| `PDF_MARKDOWN_MARKITDOWN_ENDPOINT` | MarkItDown endpoint path | `/convert` | No |
+| `PDF_MARKDOWN_PROVIDER` | Conversion provider — `modal` (remote Docling) or `markitdown` (a **local Python subprocess**, so it needs no URL — see `PYTHON_BIN`) | `modal` | No |
 | `PDF_MARKDOWN_MODAL_API_URL` | Modal endpoint URL | — | If provider=modal |
 | `PDF_MARKDOWN_MODAL_API_KEY` | Modal API key | — | If provider=modal |
 | `PDF_MARKDOWN_MODAL_CONVERTER` | Modal converter name | `docling` | No |
 | `PDF_MARKDOWN_TIMEOUT` | Request timeout (ms) | `120000` | No |
 | `PDF_MARKDOWN_ENABLED` | Enable markdown conversion | `false` | No |
 | `PDF_MARKDOWN_DEMO_DATA_ENABLED` | Demo data fallback | `true` | No |
+| `MARKDOWN_FILTER_ENABLED` | Drop a conversion that looks like junk rather than letting every later step read it | `false` | No |
+| `MARKDOWN_FILTER_MIN_CHARS` | Above this many characters, the conversion is suspected of being a scanned or mis-parsed document | `300000` | No |
+| `MARKDOWN_FILTER_LANG_RATIO` | Minimum ratio of recognisable-language characters | `0.30` | No |
 
 ## Datasets Detection (Google Gemini + langextract)
 
@@ -168,6 +220,7 @@ Datasets is the only detection that uses the langextract two-pass pipeline. Mate
 | `DATASETS_LANGEXTRACT_MAX_WORKERS` | Parallel processing threads in the langextract pass | `60` | No |
 | `DATASETS_LANGEXTRACT_MAX_CHAR_BUFFER` | Character context per chunk | `3000` | No |
 | `DATASETS_LANGEXTRACT_EXTRACTION_PASSES` | Sequential extraction passes | `1` | No |
+| `DATASETS_LANGEXTRACT_TEMPERATURE` | Sampling temperature for the langextract pass. `0` for the same reason every other call uses it: this is extraction over a fixed document, so sampling variety is noise | `0` | No |
 | `DATASETS_LANGEXTRACT_TIMEOUT` | Script timeout (ms) | `600000` | No |
 | `DATASETS_LANGEXTRACT_BATCH_LENGTH` | Items the langextract helper batches per Gemini call | `60` | No |
 
@@ -224,12 +277,74 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 | `IDENTIFIER_DETECTION_ENABLED` | Enable the module. Set to `false` to skip identifier detection (job produces no data). | `true` | No |
 | `IDENTIFIER_DETECTION_CUT_AT_REFERENCES` | Truncate the document at the first "References"/"Bibliography" heading before scanning (avoids bibliography false positives). Set to `false` to scan the whole document — needed for combined manuscript+supplemental PDFs where the Key Resources table sits after the references heading. | `true` | No |
 
+## Rate limits
+
+Defaults live in `conf/rate-limits.json`. Any bucket can be overridden per
+environment without a redeploy, by pattern rather than by a variable per bucket:
+
+```
+RATE_LIMIT_<BUCKET>_MAX          requests allowed in the window
+RATE_LIMIT_<BUCKET>_WINDOW_MS    the window, in milliseconds
+```
+
+`<BUCKET>` is the upper-cased key from that file: `API`, `AUTH`, `REFRESH`,
+`UPLOAD`, `LMAPI`.
+
+| Bucket | What it limits |
+|--------|----------------|
+| `api` | the per-IP baseline across the whole `/api` surface |
+| `auth` | sign-in attempts |
+| `refresh` | token refreshes |
+| `upload` | file uploads |
+| `lmApi` | the per-user cap on triggering LM, detection and conversion jobs — the one that costs money |
+
+Because these are read through a computed name, a search for
+`process.env.RATE_LIMIT_API_MAX` finds nothing. They are live.
+
+## Turning a module on or off
+
+Every pipeline module follows the same two-variable pattern:
+
+```
+<MODULE>_ENABLED=true               opt-IN — a module is off unless this is exactly 'true'
+<MODULE>_DEMO_DATA_ENABLED=false    answer from canned demo data when the real path is unavailable
+```
+
+A module runs only when it is **both** switched on **and** given the credentials
+its service needs; either alone leaves it off. That is deliberate — an
+unconfigured module costs nothing and reports itself as `off` throughout the
+app, so an empty result reads as a configuration choice rather than as a finding
+about the manuscript.
+
+Demo data defaults to **on**, which suits a demo instance and not a real one: a
+canned answer is indistinguishable from a real one in the report, and only the
+run's own record says `source: demo`.
+
+Two modules do not fit the pattern, and the exceptions matter:
+
+- **Software Detection** has no single switch. Softcite
+  (`SOFTCITE_API_ENABLED`) and the Gemini pass (`SOFTWARE_DETECTION_LM_ENABLED`)
+  are enabled separately, and either one alone still produces a result — the run
+  is then recorded as `partial`, naming the engine that was missing.
+- **KRT Grounding** has no enable flag at all. Its deterministic matcher always
+  runs, so the step is never off; only the optional LM second look can be
+  disabled (`KRT_GROUNDING_SECOND_LOOK_ENABLED=false`), which settles fewer rows
+  rather than producing nothing.
+
 ## Logging
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `LOG_LEVEL` | Winston log level (`error`, `warn`, `info`, `http`, `debug`) | `info` | No |
+| `LOG_LEVEL` | Winston log level (`error`, `warn`, `info`, `http`, `verbose`, `debug`) | `http` | No |
 | `LOG_FILE` | Log file path | `logs/app.log` | No |
+
+## Provenance
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `SOURCE_REPO_URL` | Where this deployment's code lives. The UI links a module's result to the prompt that produced it, so a reader can open exactly what was asked | the DataSeer repo | No |
+| `SOURCE_BRANCH` | The branch those links point at | `main` when `NODE_ENV=production`, else `dev` | No |
+| `GIT_SHA` | The commit this build came from. `SOURCE_COMMIT` is accepted as an alias. Recorded on every pipeline run as `app_version`. **Provenance only** — never read to decide whether an old run can be understood; that is `pipeline_version`'s job, and conflating the two turns every deploy into a history wipe. Without it a run records the package version alone, which cannot tell two deploys of the same version apart | package version | No |
 
 ## KRT
 
@@ -237,14 +352,25 @@ Free API — no key required. Providing a `mailto` gets access to the polite poo
 |----------|-------------|---------|----------|
 | `KRT_TEMPLATE_URL` | Google Sheets KRT template URL surfaced as a download link in the SPA | — | No |
 
+## Credentials for the CLI scripts (never put these in `.env`)
+
+Some scripts under `scripts/` sign in to a running instance to do their work.
+They read their credentials from the environment, but they are **operator
+credentials, not application config** — pass them on the command line for the
+one invocation, so they land in neither `.env` nor the app's configuration:
+
+```bash
+ASAP_EMAIL=you@example.org ASAP_PASSWORD='…' node scripts/upload-documents.js --dir DIR
+```
+
+| Variable | Used by | Notes |
+|----------|---------|-------|
+| `ASAP_BASE_URL` | `upload-documents.js` | Target instance. No default — the target is always explicit, so a batch cannot land in the wrong environment by accident. |
+| `ASAP_EMAIL` | `upload-documents.js`, `check-krt.js` | Account the script signs in as. |
+| `ASAP_PASSWORD` | `upload-documents.js`, `check-krt.js` | Its password. Anything written into `.env` outlives the command that needed it and gets read by every later process — including ones that log their configuration. |
+
+`.env` is gitignored (along with every `.env.*` except `.env.example`), and
+`credentials/*.json|pem|key` with it. Nothing in this file should ever hold a
+real secret.
+
 ---
-
-## Removed in Phase 5 (cleanup)
-
-The following variables were previously documented but are not referenced anywhere in the codebase. They were removed from `.env.example` during the audit cleanup:
-
-- `EMAIL_SERVICE`, `EMAIL_API_KEY`, `EMAIL_FROM` — no email service is currently implemented.
-- `GOOGLE_SERVICE_ACCOUNT_KEY_FILE`, `GOOGLE_DRIVE_FOLDER_ID` — no Google Sheets exporter is currently implemented (Excel is the only active report format).
-- `MATERIALS_LANGEXTRACT_*`, `PROTOCOLS_LANGEXTRACT_*` — only datasets detection uses the langextract pipeline.
-
-If any of these features land in the future, document the new vars here and add them back to `.env.example` in the same PR.

@@ -17,10 +17,12 @@
  * Pure function — no DB, no async, no I/O.
  */
 
+const { pickBestEvidence } = require('./evidence.service');
 const {
   extractIdentifierTokens,
   computeDedupKey,
   inferSourceFromIdentifier,
+  isProtocolVenueSource,
   normalizeName,
   normalizeRawValue,
   normalizeResourceTypeKey
@@ -101,6 +103,13 @@ function toResource(item, source) {
     identifier,
     additionalInformation,
     confidence,
+    // Carried explicitly. The intake below filters on
+    // evidence.verification.status, and enumerating the fields here without
+    // this one meant that check read `undefined` on every item and could never
+    // fire — the filter was dead code from the day it was written. Same class
+    // as the four other rebuild-by-enumeration sites: a field is lost because
+    // a rebuild lists what to keep and someone forgets one.
+    evidence: d.evidence ?? item.evidence ?? null,
     source,
     originalItem: item
   };
@@ -120,7 +129,43 @@ function toResource(item, source) {
  */
 function shouldMerge(primary, candidate) {
   if (normalizeResourceTypeKey(primary.resourceType) !== normalizeResourceTypeKey(candidate.resourceType)) return false;
-  if (primary.newReuse !== candidate.newReuse) return false;
+
+  // A NAMELESS row carries no independent identity — it is only ever "whatever
+  // resource this identifier points at". So when either side has no name, skip
+  // the new/reuse gate and let the identifier decide.
+  //
+  // This exists for identifier-only detectors that genuinely cannot know
+  // new/reuse — chiefly the published-protocol venue scan, where the DOI proves
+  // WHERE a protocol was published but not who authored it. Without this, such
+  // a row fails the strict newReuse equality below and surfaces as a second,
+  // blank-named "add" suggestion beside the real one.
+  //
+  // Two NAMED rows still never merge across different new/reuse values (that
+  // invariant is covered by its own test). And relaxing the gate here can only
+  // ever yield an IDENTIFIER-based merge: the name-set branch at the bottom
+  // requires a name on both sides, which is false by construction.
+  const eitherNameless = !normalizeName(candidate.resourceName) || primary._names.size === 0;
+  if (!eitherNameless && primary.newReuse !== candidate.newReuse) return false;
+
+  // Nameless rows additionally match against EVERY identifier in the primary's
+  // field, not just the first one extractIdentifierTokens indexed. Author and
+  // detector rows routinely carry a semicolon-joined DOI list ("Protein
+  // expression and purification" in the ASAP demo corpus carries twelve
+  // protocols.io DOIs); without this, an identifier-only row for the 2nd..12th
+  // DOI cannot see that it already belongs to that row and surfaces as a blank
+  // duplicate suggestion.
+  //
+  // Restricted to the nameless case ON PURPOSE. Applying it to named rows would
+  // over-merge genuinely distinct resources that happen to cite a DOI in
+  // common — in the same manuscript "Flow cytometry" and "Rapalog-induced
+  // chemical dimerization" share one protocols.io DOI and must stay two rows.
+  if (eitherNameless) {
+    const candIdParts = String(candidate.identifier ?? '').split(/[;,\s]+/);
+    for (const part of candIdParts) {
+      const partNorm = normalizeRawValue(part);
+      if (partNorm && primary._idParts.has(partNorm)) return true;
+    }
+  }
   // Identifier-token intersection
   const candTokens = extractIdentifierTokens(candidate.identifier);
   for (const tok of candTokens) {
@@ -141,6 +186,12 @@ function shouldMerge(primary, candidate) {
 function seedAliases(primary) {
   primary._idTokens = new Set();
   primary._idValues = new Set(); // opaque normalized identifier values
+  // EVERY identifier in the field, not just the first. extractIdentifierTokens
+  // returns only the first match per type, so a semicolon-joined field like
+  // "doi.org/A ; doi.org/B ; doi.org/C" indexes A and hides B and C. Consulted
+  // ONLY by the nameless rule in shouldMerge — see the comment there for why it
+  // must not widen matching for named rows.
+  primary._idParts = new Set();
   primary._names = new Set();
   absorbAliases(primary, primary);
 }
@@ -152,8 +203,46 @@ function absorbAliases(primary, other) {
   for (const tok of extractIdentifierTokens(other.identifier)) primary._idTokens.add(tok);
   const idNorm = normalizeRawValue(other.identifier);
   if (idNorm) primary._idValues.add(idNorm);
+  for (const part of String(other.identifier ?? '').split(/[;,\s]+/)) {
+    const partNorm = normalizeRawValue(part);
+    if (partNorm) primary._idParts.add(partNorm);
+  }
   const name = normalizeName(other.resourceName);
   if (name) primary._names.add(name);
+}
+
+/**
+ * Combine a curated protocol VENUE with whatever SOURCE a detector proposed:
+ * the venue leads, the detector's wording is demoted into parentheses.
+ *
+ *   ('protocols.io',    'Meyer et al., 2024') → 'protocols.io (Meyer et al., 2024)'
+ *   ('JoVE', 'Journal of Visualized Experiments')
+ *                                            → 'JoVE (Journal of Visualized Experiments)'
+ *   ('protocols.io',    '')                  → 'protocols.io'
+ *   ('protocols.io',    'protocols.io')      → 'protocols.io'        (no echo)
+ *   ('protocols.io',    'protocols.io (X)')  → 'protocols.io (X)'    (idempotent)
+ *
+ * Idempotency is required, not cosmetic: consolidation re-runs whenever the
+ * user regenerates suggestions, and a naive implementation would nest the
+ * parentheses one level deeper on every pass.
+ *
+ * @param {string} venue    canonical venue name from the catalog
+ * @param {string} existing SOURCE proposed by a detector
+ * @returns {string}
+ */
+function applyVenueSource(venue, existing) {
+  const detector = String(existing ?? '').trim();
+  if (!detector) return venue;
+
+  const lcVenue = venue.toLowerCase();
+  const lcDetector = detector.toLowerCase();
+
+  // Detector already named the venue — nothing to demote.
+  if (lcDetector === lcVenue) return venue;
+  // Already in "Venue (…)" form from an earlier pass — leave it exactly as is.
+  if (lcDetector.startsWith(`${lcVenue} (`) && detector.endsWith(')')) return detector;
+
+  return `${venue} (${detector})`;
 }
 
 /**
@@ -203,6 +292,13 @@ function mergeDetections(contributions) {
       const r = toResource(item, source);
       // Drop entries without enough info to dedup or display.
       if (!r.resourceType || (!r.identifier && !r.resourceName)) continue;
+      // Detectors no longer discard an unverifiable claim — they tag it, so the
+      // claim survives for evaluation. The filtering happens HERE instead:
+      // `unsupported` means neither the quote nor the resource is in the text,
+      // which is not something to show a curator. `embellished` IS shown: the
+      // quote is not verbatim but the resource is genuinely present.
+      if (r.evidence && r.evidence.verification
+          && r.evidence.verification.status === 'unsupported') continue;
       r.detectedBy = []; // populated as we merge
       all.push(r);
     }
@@ -243,6 +339,11 @@ function mergeDetections(contributions) {
           // even when this candidate didn't win the field race.
           if (candidate.confidence > primary.confidence) primary.confidence = candidate.confidence;
         }
+        // Blank-fill new/reuse. Under the strict gate above this is a no-op
+        // (rows only merged when the values were already equal); it matters
+        // only for the nameless path, where an identifier-only primary must
+        // pick up the new/reuse its named contributor knows. Never overwrites.
+        if (!primary.newReuse && candidate.newReuse) primary.newReuse = candidate.newReuse;
         primary.additionalInformation = mergeAdditionalInfo(
           primary.additionalInformation, candidate.additionalInformation
         );
@@ -269,16 +370,31 @@ function mergeDetections(contributions) {
     }
   }
 
-  // Auto-detect SOURCE from the identifier when NO contributor supplied one.
-  // The merge loop above fills `sourceUrl` from any contributor that had a
-  // source, so an empty `sourceUrl` here means none did — only then do we
-  // infer (allowlist-only; ambiguous identifiers return null and leave it
-  // blank). This never overwrites a real detector-provided source, and the
-  // diff engine separately refuses to overwrite a user-filled SOURCE cell.
+  // Auto-detect SOURCE from the identifier (allowlist-only; ambiguous
+  // identifiers return null and leave it blank). Two regimes:
+  //
+  //   * No contributor supplied a source  → fill it, whatever the source kind.
+  //   * A contributor DID supply a source → normally left alone, EXCEPT when
+  //     the identifier resolves to a published-protocol VENUE. There the
+  //     curated catalog outranks the detector: a venue DOI is proof of where
+  //     the protocol was published, whereas the LM tends to write a citation
+  //     ("Meyer et al., 2024") or "This paper" into SOURCE. The venue becomes
+  //     the SOURCE and the detector's wording is demoted into parentheses
+  //     rather than discarded, so the curator keeps the context.
+  //
+  // Restricted to protocol venues on purpose: for data/code repositories a
+  // detector-supplied source is usually at least as good as the inferred one,
+  // and overriding it would be a much wider behavioural change.
+  //
+  // The diff engine separately refuses to overwrite a user-filled SOURCE cell,
+  // so this never fights a curator's own edit.
   for (const r of accepted) {
+    const inferred = inferSourceFromIdentifier(r.identifier);
+    if (!inferred) continue;
     if (!r.sourceUrl) {
-      const inferred = inferSourceFromIdentifier(r.identifier);
-      if (inferred) r.sourceUrl = inferred;
+      r.sourceUrl = inferred;
+    } else if (isProtocolVenueSource(inferred)) {
+      r.sourceUrl = applyVenueSource(inferred, r.sourceUrl);
     }
   }
 
@@ -303,9 +419,15 @@ function mergeDetections(contributions) {
     newReuse: r.newReuse,
     additionalInformation: r.additionalInformation,
     confidence: r.confidence,
+    // The strongest manuscript evidence any contributor carried, lifted to the
+    // top level. It is reachable via detectedBy[].originalItem.evidence, but
+    // every consumer that wants to SHOW where a candidate came from would
+    // otherwise have to re-derive "best" for itself.
+    evidence: pickBestEvidence((r.detectedBy || []).map(c => c?.originalItem?.evidence)),
     detectedBy: r.detectedBy
   }));
 }
+
 
 module.exports = {
   mergeDetections,
@@ -313,6 +435,7 @@ module.exports = {
   toResource,
   shouldMerge,
   mergeAdditionalInfo,
+  applyVenueSource,
   normalizeResourceTypeKey,
   outranks,
   SOURCE_PRECEDENCE

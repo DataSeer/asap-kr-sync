@@ -75,15 +75,24 @@ function buildAuthorSeeds(krtRows) {
  * Load author KRT seeds for a submission/round, filtered to one resource group
  * (0=dataset, 1=software, 2=protocol, 3=lab_material). Returns [] when the
  * submission has no KRT, so detection runs article-only exactly as before.
+ * Reads the round's FROZEN table, not the live one. Each detector seeds itself
+ * when it runs, and the author can edit their table between two of them — the
+ * editor is one click away and the workflow invites it. Before this, detections
+ * from the same run could be seeded from two different tables, and the
+ * consolidation that reconciled them read a third.
+ *
  * @param {string} submissionId
  * @param {number} round
  * @param {number} groupNumber
+ * @param {object} [options]
+ * @param {string} [options.jobType] - the detector asking, recorded if it is
+ *   the first read of the round
  * @returns {Promise<object[]>}
  */
-async function loadAuthorSeeds(submissionId, round, groupNumber) {
-  const { KRTData } = require('../../models');
+async function loadAuthorSeeds(submissionId, round, groupNumber, { jobType = null } = {}) {
+  const inputFreeze = require('../queue/input-freeze.service');
   const { getResourceTypeGroupOrder } = require('../../config/constants');
-  const rows = await KRTData.findAll({ where: { submissionId, round } });
+  const rows = await inputFreeze.resolveKrtRows(submissionId, round, { jobType });
   if (rows.length === 0) return [];
   const groupOrder = await getResourceTypeGroupOrder();
   const groupRows = rows.filter((row) => groupOrder[row.resourceType] === groupNumber);

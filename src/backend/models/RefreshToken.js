@@ -51,7 +51,7 @@ module.exports = (sequelize) => {
       allowNull: true,
       field: 'revoked_reason',
       validate: {
-        isIn: [['logout', 'rotation', 'reuse_detected']]
+        isIn: [['logout', 'rotation', 'reuse_detected', 'account_deleted', 'password_changed']]
       }
     },
     userAgent: {

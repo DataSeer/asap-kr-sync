@@ -1,28 +1,118 @@
 <script setup>
 /**
- * JobStatusPanel - Slim bar showing background job statuses
+ * JobStatusPanel - Slim bar showing the pipeline steps and their statuses
  *
  * Displays each job with a spinner/checkmark/X icon, label, and status.
  * Clicking a job opens a popup with details (richer for admin/ds_annotator).
  * Shows elapsed time, retry count, and timeout warnings.
  */
 import { computed, inject, ref, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import Papa from 'papaparse'
+import { RouterLink, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.store'
 import jobService from '@/services/job.service'
+import configService from '@/services/config.service'
 import fileService from '@/services/file.service'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
-import HighlightText from '@/components/submission/HighlightText.vue'
-import { useColumnResize } from '@/composables/useColumnResize'
 import { isCancelledJob } from '@/composables/useJobPoller'
+import { isFutureStepJob, useIssueDecision } from '@/composables'
+// One vocabulary for job state, shared with the module pages — these were
+// about to be a second copy.
+import { formatFailReason, partialDetail } from '@/utils/job-status'
 
-const emit = defineEmits(['edit-das'])
 const route = useRoute()
+/** For links out of the panel; the id is always in the route on these views. */
+const submissionId = computed(() => route.params.id)
 
 const jobs = inject('submissionJobs', ref({}))
-const restartJobFn = inject('restartJob', null)
-// Cancel-processing action, provided by BackgroundProcesses (#15).
+// A failed poll leaves `jobs` empty, and an empty map renders as twelve steps
+// that have "Not started" — indistinguishable from a pipeline that genuinely
+// has not run. Only shown while there is nothing to show: once a poll has
+// succeeded, the panel keeps displaying the last known state rather than
+// throwing it away over one transient failure.
+const jobsFetchError = inject('jobsFetchError', ref(null))
+const statusUnreadable = computed(() =>
+  !!jobsFetchError.value && Object.keys(jobs.value || {}).length === 0)
+
+/**
+ * Is the analysis parked on the KRT step?
+ *
+ * Read from the job's own `waitingReason`, which the server sets by asking the
+ * orchestrator whether that step's gate is blocked. Deriving it here from a
+ * list of gated types plus the submission status would be a second copy of a
+ * rule that lives in the pipeline table — and every copy of that table in this
+ * app has drifted at least once.
+ *
+ * Without this the panel says "waiting" and gives no way to find out what for,
+ * which reads as a stall. The pipeline is in fact waiting on the user.
+ */
+// There was a "waiting for your Key Resources Table to be validated — click
+// Continue" banner here. It has no audience left: this panel renders on the PDF
+// step only, and reaching that step is what validates the KRT. A user who walks
+// back to the KRT step does not see the panel at all, so the one place the
+// message could still have applied is a page that no longer shows it.
+//
+// The per-job reason for `krt_validation` is kept below — it DESCRIBES a state
+// rather than instructing the user to do something they cannot do from here,
+// and it stays correct if the state ever occurs.
+
+/**
+ * The pipeline is stopped because there is no manuscript text.
+ *
+ * Unlike the KRT gate this one does NOT clear by itself: conversion has already
+ * finished, unsuccessfully. Everything downstream would run against an empty
+ * document and report zero findings, which reads as "your manuscript mentions
+ * none of this" — so the steps hold instead, and this says why.
+ */
+/**
+ * Steps that need a decision, and the two answers.
+ *
+ * The Manuscript step used to stack a separate issue box directly above this
+ * panel, so a failure was announced twice — once in prose at the top, once as a
+ * red pill on the tile — with the buttons only on the copy the user was not
+ * looking at. The tile is where the failure already shows, so the choice
+ * belongs on the tile.
+ */
+const injectedIssues = inject('pipelineIssues', ref([]))
+const submissionIdForDecision = inject('submissionIdForDecision', ref(null))
+const { busy: decisionBusy, act: decide } = useIssueDecision(submissionIdForDecision)
+
+/** Undecided issues, by step. */
+const issueByType = computed(() => {
+  const map = {}
+  for (const i of injectedIssues.value || []) if (!i.decided) map[i.jobType] = i
+  return map
+})
+const issueFor = (job) => issueByType.value[job.type] || null
+
+/** What continuing costs, in this issue's own terms. */
+function issueConsequence(issue) {
+  if (issue.wouldSkip?.length) {
+    return `${issue.wouldSkip.length} step(s) that need it will be skipped`
+  }
+  if (issue.holding?.length) {
+    return `${issue.holding.length} step(s) will run with less to work from`
+  }
+  return 'nothing is waiting on it'
+}
+
+const refreshPipeline = inject('refreshPipeline', null)
+
+async function onDecide(job, action) {
+  await decide(job.type, action, () => refreshPipeline?.())
+}
+
+const BLOCKED_REASON = 'blocked_by_failure'
+
+const blockedByIssue = computed(() =>
+  jobList.value.some((j) => j.status === 'waiting' && j.waitingReason === BLOCKED_REASON))
+
+/** The pipeline is standing still, and will not start again by itself. */
+const paused = computed(() => blockedByIssue.value)
+
+/** How many steps that has stopped — the scale of the problem, not just its name. */
+const blockedCount = computed(() =>
+  jobList.value.filter((j) => j.status === 'waiting' && j.waitingReason === BLOCKED_REASON).length)
+// Cancel-processing action, provided by PipelinePanel (#15).
 const cancelProcessingFn = inject('cancelProcessing', null)
 const cancelling = ref(false)
 // Reactive counter incremented by parent (PDFView) to force-expand the panel
@@ -37,8 +127,6 @@ const serviceStatus = inject('serviceStatus', ref({}))
 const authStore = useAuthStore()
 const resourceTypesStore = useResourceTypesStore()
 
-const restartingJobs = ref(new Set())
-
 // Collapse/expand state — persisted in localStorage
 const isCollapsed = ref(localStorage.getItem('job-panel-collapsed') === 'true')
 
@@ -51,8 +139,9 @@ async function handleCancelProcessing() {
   if (!cancelProcessingFn || cancelling.value) return
   if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
     const ok = window.confirm(
-      'Stop all background processing for this document? ' +
-      'Any running analysis will be cancelled — you can re-run it later.'
+      'Stop the pipeline for this document? ' +
+      'Every step still to run is cancelled too, not just the one in progress, and each has to be started again. ' +
+      'A request already sent to an outside service cannot be recalled — its answer is discarded, but it is still charged.'
     )
     if (!ok) return
   }
@@ -89,16 +178,30 @@ const jobSummary = computed(() => {
   return { complete, running, failed, cancelled, pending, waiting, total, done }
 })
 
-// ── ETA computation ──────────────────────────────────────────────────
-// Pipeline dependency map: each entry lists job types that must finish
-// before this job can finish. Drives the cumulative remaining-time math
-// so siblings run in parallel and downstream jobs stack on top of upstreams.
-const ETA_DEPS = {
-  pdf_analysis: ['das_extraction', 'software_detection', 'datasets_detection', 'materials_detection', 'protocols_detection', 'identifier_detection'],
-  datasets_detection: ['markdown_convert'],
-  protocols_detection: ['markdown_convert'],
-  identifier_detection: ['markdown_convert']
-}
+// ── Pipeline shape ───────────────────────────────────────────────────
+/**
+ * Dependencies, from the server's own pipeline table.
+ *
+ * This used to be two hand-written maps in this file — one for the ETA maths,
+ * one for the "waiting for" tooltip — and they had drifted: the first gave
+ * PDF Analysis seven dependencies, the second gave it two, and the table that
+ * actually runs gives it seven. The tooltip had been under-reporting for as
+ * long as they disagreed.
+ *
+ * Empty until the fetch lands, which degrades to "no dependencies": an ETA
+ * without stacking, and a tooltip that names nothing. Both recover on the next
+ * poll tick.
+ */
+const pipelineDeps = ref({})
+
+onMounted(async () => {
+  try {
+    const { nodes } = await configService.getPipeline()
+    pipelineDeps.value = Object.fromEntries(nodes.map((n) => [n.jobType, n.dependsOn]))
+  } catch {
+    // Non-fatal: the panel still lists jobs and their statuses.
+  }
+})
 
 const now = ref(Date.now())
 let tickTimer = null
@@ -116,11 +219,7 @@ onUnmounted(() => {
   if (tickTimer) clearInterval(tickTimer)
 })
 
-// Authors get a simplified modal: status, summary, results — no logs, no raw
-// responses, no timestamps, no queue config, no restart button. PMs and staff
-// see the full technical detail.
-const canViewInternals = computed(() => authStore.canViewJobInternals)
-const canRestartJobs = computed(() => authStore.canManageJobs)
+const canRestartJobs = computed(() => authStore.canRestartJobs)
 
 // All known job types in display order
 // Job types in display order (grouped logically). Modules whose
@@ -138,56 +237,11 @@ const ALL_JOB_TYPES = [
   { type: 'datasets_detection', label: 'Datasets Detection' },
   { type: 'protocols_detection', label: 'Protocols Detection' },
   { type: 'identifier_detection', label: 'Identifiers Detection' },
+  // Row 3: reconciliation + consolidation
+  { type: 'krt_grounding', label: 'KRT Grounding' },
   { type: 'pdf_analysis', label: 'PDF Analysis' },
   { type: 'suggestion_generation', label: 'AI Suggestions' }
 ]
-
-// Unified modal state
-const showModal = ref(false)
-const modalContent = ref('')
-const modalItems = ref(null)
-const modalTableType = ref(null) // 'software' | 'resources' | 'authors' | null
-const modalLogs = ref([])
-const modalRawResponses = ref({})
-const modalJobType = ref(null)
-const modalExactMatchCount = ref(0)
-// PDF Analysis: candidates the LM dropped (not kept in the Generated KRT).
-const modalDropped = ref([])
-// Modal table controls: text search + resource-type filter (mirrors the KRT
-// editor so curators can find a line without scanning the whole table).
-const modalSearch = ref('')
-const modalTypeFilter = ref('all')
-// Tab-group filter for the consolidated views (Generated KRT, AI
-// suggestions) — same tabs as the KRT editor.
-const modalTabFilter = ref('all')
-// Multi-select decision filter for the AI-suggestions table (toggle chips).
-// Empty set = no filter (all decisions shown).
-const modalDecisionFilter = ref(new Set())
-const MODAL_TAB_GROUPS = [
-  { key: 'all', label: 'All' },
-  { key: 'Datasets', label: 'Datasets' },
-  { key: 'Software/code', label: 'Software/code' },
-  { key: 'Protocols', label: 'Protocols' },
-  { key: 'Lab Materials', label: 'Key Lab Materials' }
-]
-
-// Display-side scrub of internal references that leak into LM reasons —
-// candidate "ref" numbers (PDF Analysis) and raw KRT row UUIDs (AI Suggestions).
-// Applied at render time so already-saved results read cleanly too.
-function cleanReason(reason) {
-  if (!reason) return ''
-  return String(reason)
-    // internal candidate refs ("refs 0 and 4")
-    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, '')
-    // raw KRT row UUIDs: "(row a3d12…)" → drop; "row a3d12…" → friendly text; bare → drop
-    .replace(/\(\s*(?:row\s+)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*\)/gi, '')
-    .replace(/\brow\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'the matching author row')
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+([.,;:])/g, '$1')
-    .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')
-    .trim()
-}
 
 /**
  * Get service status info for a job type
@@ -211,6 +265,13 @@ const jobList = computed(() => {
       waitingReason: job?.waitingReason || null,
       result: job?.result || null,
       errorMessage: job?.errorMessage || null,
+      // { id, name } for a run a user asked for; null when the orchestrator
+      // advanced the step itself. This view-model is built field by field, so
+      // anything not named here never reaches the modal.
+      triggeredBy: job?.triggeredBy || null,
+      runNumber: job?.runNumber ?? null,
+      // How many times this STEP executed, which the run number no longer says.
+      executionCount: job?.executionCount ?? null,
       retryCount: job?.retryCount || 0,
       startedAt: job?.startedAt || null,
       completedAt: job?.completedAt || null,
@@ -225,7 +286,7 @@ const jobList = computed(() => {
       liveDemoEnabled: svcInfo?.hasDemoData ?? false,
       // Persisted execution snapshot (config + outcome)
       configState: svc?.config?.state ?? null,     // 'on' | 'demo' | 'off' | null
-      outcomeState: svc?.outcome?.state ?? null,   // 'done' | 'fail' | null
+      outcomeState: svc?.outcome?.state ?? null,   // 'done' | 'partial' | 'fail' | null
       outcomeSource: svc?.outcome?.source ?? null, // 'external' | 'demo' | null
       outcomeFailReason: svc?.outcome?.failReason ?? null,
       outcomeExternalError: svc?.outcome?.externalError ?? null,
@@ -272,7 +333,7 @@ function effectiveRemainingMs(type, jobMap, which, seen = new Set()) {
   if (seen.has(type)) return 0
   seen.add(type)
   const own = jobRemainingMs(jobMap[type], which)
-  const deps = ETA_DEPS[type] || []
+  const deps = pipelineDeps.value[type] || []
   let upstream = 0
   for (const dep of deps) {
     const depRemaining = effectiveRemainingMs(dep, jobMap, which, seen)
@@ -296,9 +357,23 @@ function pipelineRemainingMs(jobMap, which) {
 }
 
 const etaJobMap = computed(() => {
-  // Use the raw jobs map (not the post-filter jobList) so the ETA still
-  // covers disabled modules' upstream blocking. Same data shape.
-  return jobs.value || {}
+  // The raw jobs map (not the post-filter jobList) so the ETA still covers
+  // disabled modules' upstream blocking — minus anything parked behind a step
+  // the submission has not reached.
+  //
+  // Without that subtraction the panel contradicted itself: the DAS check waits
+  // for the Availability step, so on the PDF step it sits `waiting` for ever.
+  // The tiles said "11/11 done" while this map — which the tiles do not draw —
+  // still held a twelfth job, so the header offered "15s to 3 min remaining"
+  // for work that was finished, kept the "you can keep editing" hint up, and
+  // left Cancel processing on screen.
+  //
+  // Every ETA computed below reads this one map, so excluding it here is the
+  // whole fix.
+  const map = jobs.value || {}
+  return Object.fromEntries(
+    Object.entries(map).filter(([, job]) => !isFutureStepJob(job))
+  )
 })
 const remainingTypicalMs = computed(() => pipelineRemainingMs(etaJobMap.value, 'typical'))
 const remainingMaxMs = computed(() => pipelineRemainingMs(etaJobMap.value, 'max'))
@@ -343,7 +418,7 @@ function formatEtaDuration(ms) {
 
 const etaLabel = computed(() => {
   if (anyPendingInput.value && !anyInFlight.value) return 'Waiting for input'
-  if (allDone.value) return 'All processes complete'
+  if (allDone.value) return 'Pipeline complete'
   if (!anyInFlight.value) return 'Finishing up…'
 
   const typical = remainingTypicalMs.value
@@ -399,6 +474,25 @@ const etaProgress = computed(() => {
  * reflects how the env was configured at execution time. Before the first run
  * we fall back to the live `/api/config/services` value.
  */
+/**
+ * What the "run N" badge means, said precisely.
+ *
+ * N is the PIPELINE run — one attempt at the whole round, the same number on
+ * every tile. How many times THIS step executed is a different number, because
+ * a run can carry a step over rather than re-running it, and the tile is
+ * exactly where somebody would otherwise read the first as the second.
+ *
+ * @param {object} job
+ * @returns {string}
+ */
+function runBadgeTooltip(job) {
+  const ran = job.executionCount;
+  const base = `Run ${job.runNumber} of this round — one attempt at the whole pipeline.`;
+  if (!ran) return `${base} This step has not run in it yet.`;
+  if (ran === 1) return `${base} This step ran once; later runs kept that result.`;
+  return `${base} This step has run ${ran} times; what is shown is the latest.`;
+}
+
 function getConfigPill(job) {
   return job.configState || job.liveConfigState || null
 }
@@ -446,7 +540,7 @@ function isSlowJob(job) {
  * CSS class for the line-2 outcome badge.
  *
  * In-progress statuses keep their existing colors (running, waiting, etc.).
- * Completed jobs read from `outcomeState` ('done' or 'fail').
+ * Completed jobs read from `outcomeState` ('done', 'partial' or 'fail').
  * markFailed jobs (true unexpected errors, distinct from a workflow Fail
  * outcome) keep the red 'failed' styling.
  */
@@ -464,6 +558,10 @@ function getResultBadgeClass(job) {
   if (job.status === 'complete') {
     if (job.outcomeState === 'done') return { 'job-status-complete': true }
     if (job.outcomeState === 'fail') return { 'job-status-failed': true }
+    // Amber, not green: the step produced a real result but one of the engines
+    // behind it failed, so the table is genuine AND short. Green here is the
+    // "nine green ticks over a statement nobody read" mistake in miniature.
+    if (job.outcomeState === 'partial') return { 'job-status-partial': true }
     // No outcome on a completed row should not happen post-migration, but
     // fall through to neutral if it does.
     return { 'job-status-idle': true }
@@ -474,9 +572,9 @@ function getResultBadgeClass(job) {
 }
 
 /**
- * Text for the line-2 outcome badge. Two terminal labels — Done or Fail —
- * plus the existing in-progress labels. Configuration ('On'/'Demo'/'Off') is
- * shown by the line-1 pill, never here.
+ * Text for the line-2 outcome badge. Three terminal labels — Done, Partial or
+ * Fail — plus the existing in-progress labels. Configuration ('On'/'Demo'/'Off')
+ * is shown by the line-1 pill, never here.
  */
 function getResultBadgeText(job) {
   if (!job.status) return 'Not started'
@@ -492,6 +590,7 @@ function getResultBadgeText(job) {
   if (job.status === 'complete') {
     if (job.outcomeState === 'done') return 'Done'
     if (job.outcomeState === 'fail') return 'Fail'
+    if (job.outcomeState === 'partial') return 'Partial'
     return 'Done'
   }
 
@@ -535,6 +634,13 @@ function getResultSummary(job) {
   // Workflow-level Fail: show the reason rather than data counts.
   if (job.outcomeState === 'fail') return formatFailReason(job.outcomeFailReason)
 
+  // Partial: the counts ARE real, so they still lead — but they are a floor,
+  // not a total, and the summary has to say which engine went missing or the
+  // number reads as the whole answer.
+  if (job.outcomeState === 'partial') {
+    return `${getDataSummary(job, r)} — ${formatFailReason(job.outcomeFailReason)}`
+  }
+
   // Off + Done: process is intentionally disabled and nothing was attempted.
   // Showing a "0 mentions" data summary here would imply the process ran and
   // found nothing, which is misleading.
@@ -552,135 +658,10 @@ function getResultSummary(job) {
   return dataSummary
 }
 
-// Short detection-module labels for the AI Suggestions summary "Modules" column.
-const SOURCE_SHORT = {
-  software_detection: 'SW',
-  datasets_detection: 'DS',
-  materials_detection: 'MAT',
-  protocols_detection: 'PROT',
-  identifier_detection: 'ID',
-  pdf_analysis: 'PDF'
-}
-// Label a row in the AI Suggestions summary — handles both decision objects
-// ({action}) and raw suggestion objects ({type}).
-function suggestionDecisionLabel(item) {
-  const a = item.action || item.type
-  const map = { add: 'Add', skip: 'Skip', update: 'Update', remove: 'Remove', add_row: 'Add', edit: 'Update', delete_row: 'Remove', unreviewed: 'Unreviewed' }
-  return map[a] || a || '—'
-}
-
-// The KRT columns shown for each AI-suggestion decision (the concerned row).
-const SUGGESTION_ROW_COLUMNS = [
-  { key: 'resourceType', label: 'Resource Type' },
-  { key: 'resourceName', label: 'Resource Name' },
-  { key: 'source', label: 'Source' },
-  { key: 'identifier', label: 'Identifier' },
-  { key: 'newReuse', label: 'New/Reuse' }
-]
-
-// Resizable-column metadata for each modal table (drag a header's right edge to
-// widen it; widths persist in localStorage). Each entry is { key, label, width }
-// (+ optional cssClass); `width` is the default until the user drags. The order
-// must match the table body's column order. Shared instance below namespaces the
-// keys so one localStorage entry holds every table's widths.
-const colResize = useColumnResize('jobModal.columnWidths')
-const RESIZE_MENTIONS_COLS = [
-  { key: 'resourceType', label: 'Resource Type', width: 120 },
-  { key: 'resourceName', label: 'Resource Name', width: 240 },
-  { key: 'source', label: 'Source', width: 170 },
-  { key: 'identifier', label: 'Identifier', width: 170 },
-  { key: 'newReuse', label: 'New/Reuse', width: 90 },
-  { key: 'additionalInformation', label: 'Additional Information', width: 220 }
-]
-const RESIZE_PDF_COLS = [
-  { key: 'krtNum', label: 'KRT #', width: 70 },
-  { key: 'detection', label: 'Detection', width: 110 },
-  { key: 'reason', label: 'Reason', width: 240 },
-  { key: 'resourceType', label: 'Resource Type', width: 120 },
-  { key: 'resourceName', label: 'Detected Name', width: 220 },
-  { key: 'source', label: 'Source', width: 150 },
-  { key: 'identifier', label: 'Identifier', width: 150 },
-  { key: 'newReuse', label: 'New/Reuse', width: 90 },
-  { key: 'additionalInformation', label: 'Additional Information', width: 200 }
-]
-const RESIZE_DROPPED_COLS = [
-  { key: 'detectedBy', label: 'Detected by', width: 130 },
-  { key: 'resourceType', label: 'Resource Type', width: 120 },
-  { key: 'resourceName', label: 'Resource Name', width: 220 },
-  { key: 'identifier', label: 'Identifier', width: 160 },
-  { key: 'reason', label: 'Reason dropped', width: 260 }
-]
-const RESIZE_AUTHOR_COLS = [
-  { key: 'name', label: 'Name', width: 200 },
-  { key: 'orcid', label: 'ORCID', width: 170 },
-  { key: 'affiliation', label: 'Affiliation', width: 280 },
-  { key: 'source', label: 'Source', width: 130 }
-]
-const RESIZE_SUGGESTION_COLS = [
-  { key: 'decision', label: 'Decision', width: 100 },
-  { key: 'reason', label: 'Reason', width: 240, cssClass: 'suggestion-reason-col' },
-  { key: 'item', label: 'Item', width: 90 },
-  ...SUGGESTION_ROW_COLUMNS.map(c => ({
-    key: c.key,
-    label: c.label,
-    width: c.key === 'resourceName' ? 200 : (c.key === 'newReuse' ? 90 : 150),
-    cssClass: c.key === 'resourceName' ? 'suggestion-name-col' : undefined
-  })),
-  { key: 'modules', label: 'Modules', width: 130 }
-]
-// Value for one column of a decision's row. Prefers the structured `row`
-// (new shape); falls back to the resource name / raw suggestion data for
-// older results so the table still renders.
-function suggestionCellValue(item, key) {
-  if (item.row && item.row[key] != null && item.row[key] !== '') return item.row[key]
-  if (key === 'resourceName') return item.resourceName || item.title || item.data?.resourceName || ''
-  if (item.data && item.data[key] != null) return item.data[key]
-  return ''
-}
-
-// Expand each AI-suggestion decision into the KRT row(s) to display:
-//  - the matched Author KRT row (skip / update / remove) is always shown,
-//  - the Generated row is also shown for add / update (with the diff),
-// so a curator sees the concerned author entry — and, for changes, both sides.
-const suggestionDisplayRows = computed(() => {
-  if (modalTableType.value !== 'suggestions') return []
-  // KRT-editor ordering + type filter + search operate on whole decisions
-  // (each decision expands to 1-2 display rows below).
-  let items = [...(modalItems.value || [])]
-  items.sort((a, b) => compareTypes(suggestionDecisionType(a), suggestionDecisionType(b)))
-  if (modalTabFilter.value !== 'all') {
-    items = items.filter(d => resourceTypesStore.getTabGroup(suggestionDecisionType(d)) === modalTabFilter.value)
-  }
-  if (modalDecisionFilter.value.size) {
-    items = items.filter(d => modalDecisionFilter.value.has(suggestionDecisionLabel(d)))
-  }
-  const q = modalSearch.value.trim().toLowerCase()
-  if (q) {
-    items = items.filter(d => suggestionMatchesSearch(d, q))
-  }
-  const out = []
-  items.forEach((d, gi) => {
-    const action = d.action || d.type
-    const isUpdate = action === 'update' || action === 'edit'
-    const isAdd = action === 'add' || action === 'add_row'
-    const entities = []
-    if (d.authorRow) entities.push({ role: 'Author', side: 'author', cells: d.authorRow })
-    if (d.generatedRow && (isAdd || isUpdate)) entities.push({ role: 'Generated', side: 'generated', cells: d.generatedRow })
-    // skip/old data with no author match → show whatever single row we have
-    if (entities.length === 0 && d.generatedRow) entities.push({ role: 'Generated', side: 'generated', cells: d.generatedRow })
-    if (entities.length === 0) {
-      const cells = d.row || { resourceName: d.resourceName || d.title || (d.data && d.data.resourceName) || '' }
-      entities.push({ role: '', side: 'author', cells })
-    }
-    entities.forEach((e, ei) => {
-      out.push({
-        decision: d, role: e.role, side: e.side, cells: e.cells, changes: d.changes || null,
-        groupIndex: gi, isGroupStart: ei === 0
-      })
-    })
-  })
-  return out
-})
+// Shared by every detection module's modal (software / datasets / materials /
+// protocols / identifier) so a user finds the same information in the same
+// place whichever module they open. Each item renders as TWO rows: these
+// columns, then a full-width context line underneath.
 
 /**
  * Per-job-type data count summary. Pure function of the persisted result;
@@ -704,8 +685,23 @@ function getDataSummary(job, r) {
     case 'software_detection': {
       const unique = r.counts?.unique || 0
       const enriched = r.counts?.enriched || 0
-      if (unique === 0) return 'No mentions'
-      return `${unique} unique mention${unique > 1 ? 's' : ''}${enriched > 0 ? `, ${enriched} enriched` : ''}`
+      const meta = job.result?.data?.meta || {}
+      // Two engines are unioned here, so say what each contributed — otherwise
+      // "5 unique mentions" hides whether the LM pass ran at all.
+      let engines = ''
+      if (meta.softciteFailed) {
+        // NOT "Softcite 0" — that reads as "Softcite looked and found none",
+        // which is the opposite of what happened.
+        engines = ' · LM pass only (Softcite failed)'
+      } else if (meta.lmEnabled === false) {
+        engines = ' · Softcite only (LM pass off)'
+      } else if (meta.lmSkippedReason) {
+        engines = ` · Softcite only (LM ${meta.lmSkippedReason.replace(/_/g, ' ')})`
+      } else if (typeof meta.lmCount === 'number') {
+        engines = ` · Softcite ${meta.softciteCount ?? '?'} + LM ${meta.lmCount} before merge`
+      }
+      if (unique === 0) return `No mentions${engines}`
+      return `${unique} unique mention${unique > 1 ? 's' : ''}${enriched > 0 ? `, ${enriched} enriched` : ''}${engines}`
     }
     case 'orcid_extraction': {
       const authors = r.counts?.authors || 0
@@ -743,6 +739,24 @@ function getDataSummary(job, r) {
       if (total === 0) return 'No identifiers'
       return `${total} match${total > 1 ? 'es' : ''}${high > 0 ? `, ${high} high relevance` : ''}`
     }
+    case 'krt_grounding': {
+      const rows = r.counts?.authorRows || 0
+      const unmatched = r.counts?.unmatchedCandidates || 0
+      // No author KRT is a valid mode, not an empty result: say what the step
+      // did do, which is find candidates nobody has claimed yet.
+      if (rows === 0) return `No author KRT — ${unmatched} candidate${unmatched === 1 ? '' : 's'} found`
+      // "Found" is counted from the DIRECT search of the manuscript, the same
+      // measure the editor badges each row with — not from candidate matching,
+      // which asks a different question and answers it differently.
+      const partial = r.counts?.partial || 0
+      const found = r.counts?.present || 0
+      const missing = r.counts?.absent || 0
+      const parts = [`${found}/${rows} KRT row${rows === 1 ? '' : 's'} found in the manuscript`]
+      if (partial > 0) parts.push(`${partial} partial match${partial === 1 ? '' : 'es'}`)
+      if (missing > 0) parts.push(`${missing} not in the text`)
+      if (unmatched > 0) parts.push(`${unmatched} unmatched candidate${unmatched === 1 ? '' : 's'}`)
+      return parts.join(', ')
+    }
     case 'suggestion_generation': {
       const total = r.counts?.unique || r.counts?.total || 0
       if (total === 0) return 'No suggestions'
@@ -757,14 +771,6 @@ function getDataSummary(job, r) {
  * Human-readable text for the helper's failReason codes. Mirrors the four
  * fail paths defined in demo-fallback.service.js.
  */
-function formatFailReason(reason) {
-  const map = {
-    external_failed_no_demo_data: 'External service failed and no demo data is available for this manuscript',
-    external_failed_demo_disabled: 'External service failed; demo fallback is disabled',
-    process_off_no_demo_data: 'Process is disabled; no demo data is available for this manuscript'
-  }
-  return map[reason] || 'Process did not produce a result'
-}
 
 /**
  * Tooltip for the line-1 config pill. Explains what On/Demo/Off mean for this
@@ -784,6 +790,22 @@ function getLiveConfigTitle(job) {
 /**
  * Get the result tooltip text for line 2.
  */
+/**
+ * Rows whose values contradict the manuscript.
+ *
+ * Shown on the card rather than only inside the modal: a conflict means the KRT
+ * and the paper disagree, so one of the two is wrong. That is a defect to
+ * resolve, not a detail to browse for, and it should not need opening a table
+ * to discover.
+ *
+ * @param {object} job
+ * @returns {number} 0 when there are none, or the job is not grounding
+ */
+function conflictCount(job) {
+  if (job.type !== 'krt_grounding' || job.status !== 'complete') return 0
+  return job.result?.counts?.conflicts || 0
+}
+
 function getResultTitle(job) {
   const summary = getResultSummary(job)
   const base = `Results of ${job.label}`
@@ -793,697 +815,16 @@ function getResultTitle(job) {
 }
 
 /**
- * Build a human-readable detail string for the popup.
+ * Under a seeded pipeline the candidate pool contains the model's echo of the
+ * author's own rows, so "Found" can mean "the model repeated the row we handed
+ * it" and the output cannot tell that from a real find. Those columns are
+ * withheld rather than shown with a caveat nobody reads.
+ *
+ * Presence is unaffected — it searches the manuscript directly and never
+ * consults the candidate pool — so it is shown in every pipeline.
  */
-/**
- * Find which jobs this job is waiting for (from pipeline dependencies)
- */
-function getWaitingFor(job) {
-  const deps = {
-    das_extraction: ['markdown_convert'],
-    pdf_analysis: ['das_extraction'],
-    datasets_detection: ['markdown_convert'],
-    materials_detection: ['markdown_convert'],
-    protocols_detection: ['markdown_convert'],
-    identifier_detection: ['markdown_convert'],
-    suggestion_generation: ['pdf_analysis']
-  }
-  return deps[job.type] || []
-}
 
-function getJobDetail(job) {
-  if (!job.status) return 'Not started yet'
-  if (job.status === 'pending_input') {
-    if (job.type === 'pdf_analysis') {
-      return 'Waiting for Availability Statement — please enter it manually, then start the analysis.'
-    }
-    return 'Waiting for user input before proceeding.'
-  }
-  if (job.status === 'waiting') {
-    if (job.waitingReason === 'krt_validation') {
-      return 'Waiting for the Key Resources Table to be validated — complete the KRT step to start this analysis.'
-    }
-    const deps = getWaitingFor(job)
-    if (deps.length) {
-      const labels = deps.map(d => {
-        const found = ALL_JOB_TYPES.find(j => j.type === d)
-        return found ? found.label : d
-      })
-      return `Waiting for ${labels.join(', ')}...`
-    }
-    return 'Waiting for dependencies...'
-  }
-  if (job.status === 'queued') return 'Waiting in queue...'
-  if (job.status === 'processing') return 'Processing...'
-
-  if (job.status === 'failed') {
-    return job.errorMessage || 'Unknown error'
-  }
-
-  // Complete — return result description without "Done —" prefix
-  if (job.type === 'das_extraction') {
-    if (!job.result) return null
-    return job.result.status?.detected
-      ? 'Availability Statement found'
-      : 'Availability Statement not found'
-  }
-
-  if (job.type === 'pdf_analysis') {
-    if (!job.result) return null
-    const count = job.result.counts?.findings
-    if (count !== undefined) {
-      return `${count} suggestion${count !== 1 ? 's' : ''} found`
-    }
-    return null
-  }
-
-  if (job.type === 'software_detection') {
-    if (!job.result) return null
-    const uniqueCount = job.result.counts?.unique
-    if (uniqueCount !== undefined) {
-      return `${uniqueCount} software mention${uniqueCount !== 1 ? 's' : ''} found`
-    }
-    return null
-  }
-
-  if (job.type === 'datasets_detection' || job.type === 'materials_detection' || job.type === 'protocols_detection' || job.type === 'identifier_detection') {
-    if (!job.result) return null
-    const totalCount = job.result.counts?.total
-    const suggestionsCount = job.result.counts?.suggestions
-    const label = job.type === 'datasets_detection' ? 'dataset'
-      : job.type === 'materials_detection' ? 'material'
-      : job.type === 'protocols_detection' ? 'protocol'
-      : 'identifier match'
-    if (totalCount !== undefined) {
-      const parts = [`${totalCount} ${label}${totalCount !== 1 ? 's' : ''} detected`]
-      if (suggestionsCount) parts.push(`${suggestionsCount} suggestion${suggestionsCount !== 1 ? 's' : ''}`)
-      return parts.join(', ')
-    }
-    return null
-  }
-
-  if (job.type === 'orcid_extraction') {
-    if (!job.result) return null
-    const orcidCount = job.result.counts?.orcids
-    const authorCount = job.result.counts?.authors
-    if (orcidCount !== undefined && authorCount !== undefined) {
-      return `${orcidCount}/${authorCount} ORCIDs found`
-    }
-    return null
-  }
-
-  if (job.type === 'markdown_convert') {
-    if (!job.result) return null
-    if (job.result.status?.detected) {
-      const len = job.result.data?.markdownLength || 0
-      const display = len > 1000 ? `${Math.round(len / 1000)}K` : len
-      return `Converted (${display} chars)`
-    }
-    return 'Conversion skipped'
-  }
-
-  return null
-}
-
-/**
- * Open the unified job detail modal
- */
-function openJobModal(job) {
-  activeJob.value = job
-  modalJobType.value = job.type
-  modalLogs.value = job.logs || []
-  modalRawResponses.value = job.files || {}
-  modalExactMatchCount.value = job.result?.counts?.exactMatch || 0
-  modalDropped.value = job.type === 'pdf_analysis' ? (job.result?.data?.meta?.dropped || []) : []
-
-  // Populate result data based on job type
-  if (job.type === 'das_extraction') {
-    modalContent.value = job.result?.data?.das || ''
-    modalItems.value = null
-    modalTableType.value = null
-  } else if (job.type === 'software_detection') {
-    modalContent.value = ''
-    modalTableType.value = 'software'
-    const items = softwareMentions.value?.length ? softwareMentions.value : (job.result?.data?.items || [])
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'datasets_detection') {
-    modalContent.value = ''
-    modalTableType.value = 'resources'
-    const items = submissionDatasets.value?.length ? submissionDatasets.value : (job.result?.data?.items || [])
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'materials_detection') {
-    modalContent.value = ''
-    modalTableType.value = 'resources'
-    const items = submissionMaterials.value?.length ? submissionMaterials.value : (job.result?.data?.items || [])
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'protocols_detection') {
-    modalContent.value = ''
-    modalTableType.value = 'resources'
-    const items = submissionProtocols.value?.length ? submissionProtocols.value : (job.result?.data?.items || [])
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'identifier_detection') {
-    // Identifier-scan emits KRT-shaped items the same way the other
-    // detectors do, so the generic 'resources' table renders them.
-    modalContent.value = ''
-    modalTableType.value = 'resources'
-    const items = job.result?.data?.items || []
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'orcid_extraction') {
-    modalContent.value = ''
-    modalTableType.value = 'authors'
-    modalItems.value = submissionAuthors.value?.length ? submissionAuthors.value : null
-  } else if (job.type === 'pdf_analysis') {
-    // Generated KRT consolidated from every detection. Each merged item
-    // carries detectedBy[] (one entry per source that contributed) so the
-    // modal can flatten back to the pre-merge view + flag duplicates.
-    modalContent.value = ''
-    modalTableType.value = 'pdf_analysis_krt'
-    const items = job.result?.data?.items || []
-    modalItems.value = items.length ? items : null
-  } else if (job.type === 'suggestion_generation') {
-    // The LM comparison's full decision log (add/update/remove/skip) + reasons.
-    // Falls back to the suggestion list for older results without decisions.
-    modalContent.value = ''
-    modalTableType.value = 'suggestions'
-    const items = job.result?.data?.decisions?.length
-      ? job.result.data.decisions
-      : (job.result?.data?.suggestions || [])
-    modalItems.value = items.length ? items : null
-  } else {
-    modalItems.value = null
-    modalTableType.value = null
-    modalContent.value = ''
-  }
-
-  // Fresh filters per modal open
-  modalSearch.value = ''
-  modalTypeFilter.value = 'all'
-  modalTabFilter.value = 'all'
-  modalDecisionFilter.value = new Set()
-
-  showModal.value = true
-}
-
-function closeModal() {
-  showModal.value = false
-  activeJob.value = null
-  modalContent.value = ''
-  modalItems.value = null
-  modalTableType.value = null
-  modalLogs.value = []
-  modalRawResponses.value = {}
-  modalJobType.value = null
-  modalExactMatchCount.value = 0
-  modalSearch.value = ''
-  modalTypeFilter.value = 'all'
-  modalTabFilter.value = 'all'
-  modalDecisionFilter.value = new Set()
-}
-
-// ── PDF Analysis modal: pre-merge KRT view ─────────────────────────
-//
-// modalItems for pdf_analysis is the merged Generated KRT — each entry has
-// detectedBy[{source, originalItem, confidence}, ...]. The modal shows the
-// PRE-merge view: one row per detection contribution. Rows whose merged
-// parent had >1 contributor are tagged "duplicate" so the user can see
-// which detections collided.
-const PDF_ANALYSIS_SOURCE_LABELS = {
-  software_detection:   'Software',
-  datasets_detection:   'Datasets',
-  materials_detection:  'Materials',
-  protocols_detection:  'Protocols',
-  identifier_detection: 'ID'
-}
-
-function pdfAnalysisSourceLabel(source) {
-  return PDF_ANALYSIS_SOURCE_LABELS[source] || source
-}
-
-// ── Modal table search / type filter / KRT-editor ordering ─────────
-
-/**
- * Compare two resource-type names in the KRT editor's display order:
- * tab-group order first, then per-type sort_order from the DB. Ties return 0
- * so stable sorts preserve the rows' original relative order (same rule the
- * editor applies).
- */
-function compareTypes(a, b) {
-  const ga = resourceTypesStore.getGroupSortOrder(a)
-  const gb = resourceTypesStore.getGroupSortOrder(b)
-  if (ga !== gb) return ga - gb
-  return resourceTypesStore.getTypeSortOrder(a) - resourceTypesStore.getTypeSortOrder(b)
-}
-
-function rowMatchesSearch(fields, query) {
-  return fields.some(f => (f || '').toString().toLowerCase().includes(query))
-}
-
-/** Resource type a suggestion decision belongs to (author row wins). */
-function suggestionDecisionType(d) {
-  return (d.authorRow && d.authorRow.resourceType)
-    || (d.generatedRow && d.generatedRow.resourceType)
-    || ''
-}
-
-/**
- * Whether a suggestion decision matches the given (already lower-cased) search
- * query, across the same fields the suggestions table searches. Empty query
- * matches everything. Shared by the display rows and the facet counts so the
- * tab / decision-chip numbers reflect the active search.
- */
-function suggestionMatchesSearch(d, q) {
-  if (!q) return true
-  const fields = [d.action || d.type, d.reason || d.description, d.resourceName]
-  for (const cells of [d.authorRow, d.generatedRow, d.row]) {
-    if (cells) fields.push(...Object.values(cells))
-  }
-  return rowMatchesSearch(fields, q)
-}
-
-// Distinct resource types present in the open table, in KRT-editor order —
-// the options of the type-filter select.
-const modalTypeOptions = computed(() => {
-  if (modalTableType.value !== 'resources' && modalTableType.value !== 'software') return []
-  const types = (modalItems.value || []).map(it => it.resourceType || it.resource_type || (modalTableType.value === 'software' ? 'Software/code' : ''))
-  return [...new Set(types.filter(Boolean))].sort(compareTypes)
-})
-
-// Decisions present in the suggestions table, with counts, in a fixed
-// Add/Update/Remove/Skip order — the options for the decision filter chips.
-// The chip list stays stable (every decision present in the full result set),
-// but each count reflects the OTHER active filters (tab-group + search) — not
-// the decision filter itself — so a chip can read 0 yet stay clickable.
-const modalDecisionOptions = computed(() => {
-  if (modalTableType.value !== 'suggestions') return []
-  const q = modalSearch.value.trim().toLowerCase()
-  const inTab = (d) => modalTabFilter.value === 'all'
-    || resourceTypesStore.getTabGroup(suggestionDecisionType(d)) === modalTabFilter.value
-  const present = new Set()
-  const counts = new Map()
-  for (const d of (modalItems.value || [])) {
-    const label = suggestionDecisionLabel(d)
-    present.add(label)
-    if (inTab(d) && suggestionMatchesSearch(d, q)) {
-      counts.set(label, (counts.get(label) || 0) + 1)
-    }
-  }
-  const ORDER = ['Add', 'Update', 'Remove', 'Skip', 'Unreviewed']
-  const rank = (l) => { const i = ORDER.indexOf(l); return i === -1 ? ORDER.length : i }
-  return [...present]
-    .sort((a, b) => rank(a) - rank(b))
-    .map(label => ({ label, count: counts.get(label) || 0 }))
-})
-
-function toggleDecisionFilter(label) {
-  const next = new Set(modalDecisionFilter.value)
-  if (next.has(label)) next.delete(label)
-  else next.add(label)
-  modalDecisionFilter.value = next
-}
-
-// Per-tab row counts for the consolidated views (groups for the Generated
-// KRT, decisions for AI suggestions) — mirrors the KRT editor's tab badges.
-const modalTabCounts = computed(() => {
-  const counts = { all: 0 }
-  const bump = (type) => {
-    const g = resourceTypesStore.getTabGroup(type)
-    counts[g] = (counts[g] || 0) + 1
-    counts.all++
-  }
-  if (modalTableType.value === 'pdf_analysis_krt') {
-    for (const r of pdfAnalysisRows.value) {
-      if (r.isGroupStart) bump(r.resourceType || '')
-    }
-  } else if (modalTableType.value === 'suggestions') {
-    // Each tab's count reflects the OTHER active filters (decision chips +
-    // search) but not the tab filter itself, so the numbers track what the
-    // user has filtered to.
-    const q = modalSearch.value.trim().toLowerCase()
-    for (const d of (modalItems.value || [])) {
-      if (modalDecisionFilter.value.size && !modalDecisionFilter.value.has(suggestionDecisionLabel(d))) continue
-      if (!suggestionMatchesSearch(d, q)) continue
-      bump(suggestionDecisionType(d))
-    }
-  }
-  return counts
-})
-
-// Mentions (software/datasets/materials/protocols), sorted in the KRT
-// editor's order, then type-filtered and searched across visible columns.
-const displayedModalItems = computed(() => {
-  if (modalTableType.value !== 'resources' && modalTableType.value !== 'software') {
-    return modalItems.value || []
-  }
-  const typeOf = (it) => it.resourceType || it.resource_type || (modalTableType.value === 'software' ? 'Software/code' : '')
-  let items = [...(modalItems.value || [])].sort((a, b) => compareTypes(typeOf(a), typeOf(b)))
-  if (modalTypeFilter.value !== 'all') {
-    items = items.filter(it => typeOf(it) === modalTypeFilter.value)
-  }
-  const q = modalSearch.value.trim().toLowerCase()
-  if (q) {
-    items = items.filter(it => rowMatchesSearch([
-      typeOf(it), getMentionName(it),
-      it.source || it.suggestedURL || it.url,
-      it.identifier || it.RRID || it.suggestedRRID,
-      it.newReuse,
-      it.additionalInformation || it.additional_information
-    ], q))
-  }
-  return items
-})
-
-// Authors table: search only (no resource types here).
-const displayedAuthorItems = computed(() => {
-  if (modalTableType.value !== 'authors') return modalItems.value || []
-  const q = modalSearch.value.trim().toLowerCase()
-  if (!q) return modalItems.value || []
-  return (modalItems.value || []).filter(it => rowMatchesSearch([
-    it.fullName, it.firstName, it.lastName, it.orcid, it.affiliation, it.source
-  ], q))
-})
-
-const pdfAnalysisRows = computed(() => {
-  if (modalTableType.value !== 'pdf_analysis_krt') return []
-  const items = modalItems.value || []
-  const rows = []
-  // Stable group ordering: each merged item becomes one group; rows for the
-  // same group are emitted consecutively so the template can mark group
-  // boundaries with `isGroupStart` and the CSS can shade alternating groups.
-  let groupIndex = 0
-  for (const merged of items) {
-    const contributors = merged.detectedBy || []
-    const isDuplicate = contributors.length > 1
-    const groupSize = Math.max(contributors.length, 1)
-    // Single-contributor merged items still show one row (no "duplicate"
-    // badge). Multi-contributor items emit one row per contributor — each
-    // row pulls display fields from its own originalItem so the user sees
-    // exactly what each detection produced (source-specific shapes vary).
-    if (contributors.length === 0) {
-      rows.push({
-        source: null,
-        resourceType: merged.resourceType || '',
-        resourceName: merged.resourceName || '',
-        identifier: merged.identifier || '',
-        sourceUrl: merged.sourceUrl || '',
-        newReuse: (merged.newReuse || '').toLowerCase(),
-        additionalInformation: merged.additionalInformation || '',
-        reason: cleanReason(merged.reason),
-        isDuplicate: false,
-        dedupKey: merged.dedupKey,
-        groupIndex,
-        groupNumber: groupIndex + 1,
-        finalName: merged.resourceName || '',
-        groupSize: 1,
-        isGroupStart: true,
-        isGroupEnd: true
-      })
-      groupIndex++
-      continue
-    }
-    contributors.forEach((c, j) => {
-      const orig = c.originalItem || {}
-      const d = orig.data || orig
-      rows.push({
-        source: c.source,
-        resourceType: d.resourceType || d.resource_type || merged.resourceType || '',
-        resourceName: d.canonical_name || d.resourceName || d.resource_name || d.name || merged.resourceName || '',
-        identifier: d.identifier || d.RRID || d.suggestedRRID || merged.identifier || '',
-        sourceUrl: d.source || d.url || d.suggestedURL || merged.sourceUrl || '',
-        newReuse: String(d.newReuse || d.new_reuse || merged.newReuse || '').toLowerCase(),
-        additionalInformation: d.additionalInformation || d.additional_information || merged.additionalInformation || '',
-        reason: cleanReason(merged.reason),
-        isDuplicate,
-        dedupKey: merged.dedupKey,
-        groupIndex,
-        groupNumber: groupIndex + 1,
-        finalName: merged.resourceName || '',
-        groupSize,
-        isGroupStart: j === 0,
-        isGroupEnd:   j === contributors.length - 1
-      })
-    })
-    groupIndex++
-  }
-  return rows
-})
-
-// How many KRT rows were merged from more than one detection module.
-const pdfAnalysisMergedGroups = computed(() =>
-  pdfAnalysisRows.value.filter(r => r.isGroupStart && r.groupSize > 1).length
-)
-
-/**
- * Trigger a browser download of a Blob with the given filename.
- * Used by both CSV and JSON export from the PDF Analysis modal.
- */
-function triggerBlobDownload(blob, filename) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-function downloadPdfAnalysisCsv() {
-  const rows = pdfAnalysisRows.value
-  if (!rows.length) return
-  const csvData = rows.map(r => ({
-    // Rows that share "KRT Row" are the SAME final Generated KRT row — one line
-    // per detection module that found it. "Final KRT Name" is the canonical
-    // name that row carries; "Detected Name" is what each module produced.
-    'KRT Row': r.groupNumber,
-    'Detections in Row': r.groupSize,
-    'Detection Source': r.source ? pdfAnalysisSourceLabel(r.source) : '',
-    'Resource Type': r.resourceType,
-    'Detected Name': r.resourceName,
-    'Final KRT Name': r.finalName,
-    'Source': r.sourceUrl,
-    'Identifier': r.identifier,
-    'New/Reuse': r.newReuse,
-    'Additional Information': r.additionalInformation,
-    'Dedup Key': r.dedupKey || ''
-  }))
-  // Neutralize spreadsheet formula triggers: these cells derive from LM
-  // analysis of an author-uploaded manuscript, so a value like =HYPERLINK(...)
-  // must not execute when a curator opens the export in Excel.
-  const guarded = csvData.map(row => Object.fromEntries(
-    Object.entries(row).map(([k, v]) => [
-      k,
-      typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? `'${v}` : v
-    ])
-  ))
-  const csv = Papa.unparse(guarded)
-  // BOM prefix so Excel opens UTF-8 cleanly without mangling accented chars.
-  const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8;' })
-  triggerBlobDownload(blob, 'pdf-analysis-generated-krt.csv')
-}
-
-function downloadPdfAnalysisJson() {
-  const items = modalItems.value
-  if (!items?.length) return
-  const json = JSON.stringify(items, null, 2)
-  const blob = new Blob([json], { type: 'application/json;charset=utf-8;' })
-  triggerBlobDownload(blob, 'pdf-analysis-generated-krt.json')
-}
-
-function canRestart(job) {
-  // Restart is meaningless when the process is fully off (config 'off') —
-  // there's no source of data to retry against.
-  if (getConfigPill(job) === 'off') return false
-  return !restartingJobs.value.has(job.type) &&
-    (!job.status || job.status === 'complete' || job.status === 'failed' ||
-     job.status === 'pending_input' || job.status === 'cancelled')
-}
-
-async function handleRestart(type) {
-  if (!restartJobFn || restartingJobs.value.has(type)) return
-  // Close the modal immediately so the user sees the panel update without
-  // having to dismiss it manually. The restart call still runs in the
-  // background and the panel polls for the new status.
-  closeModal()
-  restartingJobs.value.add(type)
-  try {
-    await restartJobFn(type)
-  } finally {
-    restartingJobs.value.delete(type)
-  }
-}
-
-function getOrcidSourceClass(source) {
-  if (source === 'grobid+openalex' || source === 'openalex') return 'source-enriched'
-  if (source === 'grobid') return 'source-grobid'
-  if (source === 'orcid_api') return 'source-orcid-api'
-  return 'source-softcite'
-}
-
-function formatOrcidSource(source) {
-  const labels = {
-    'grobid+openalex': 'GROBID + OpenAlex',
-    'openalex': 'OpenAlex',
-    'grobid': 'GROBID',
-    'orcid_api': 'ORCID API'
-  }
-  return labels[source] || source
-}
-
-/**
- * Get the display name from a mention item (different field names across detection types)
- */
-function getMentionName(item) {
-  return item.canonical_name || item.name || item.resourceName || ''
-}
-
-/**
- * Read the enrichment provenance off an item. After the four-step pipeline
- * refactor, this lives under `detectorMeta.enrichmentMeta`. Older persisted
- * items kept it at the top level — we accept either shape.
- */
-function getEnrichmentMeta(item) {
-  return item?.detectorMeta?.enrichmentMeta || item?.enrichmentMeta || null
-}
-
-/**
- * Whether a particular field on this mention was filled in from the enrichment
- * list rather than coming from the detector itself.
- */
-function isFieldFromEnrichment(item, field) {
-  const meta = getEnrichmentMeta(item)
-  return Array.isArray(meta?.filledFields) && meta.filledFields.includes(field)
-}
-
-/**
- * Tooltip text for the "enriched" badge — explains which fields were filled.
- */
-function enrichmentBadgeTitle(item) {
-  const filled = getEnrichmentMeta(item)?.filledFields || []
-  if (filled.length === 0) {
-    return 'This resource is in the curated enrichment list (no missing fields to fill).'
-  }
-  return `Matched in the enrichment list — filled in: ${filled.join(', ')}`
-}
-
-const enrichedItemsCount = computed(() => {
-  if (!modalItems.value) return 0
-  return modalItems.value.filter(i => getEnrichmentMeta(i)?.matched).length
-})
-
-/**
- * After the in-detector dedupe step (P3-P7), each item carries `mergedFrom`
- * — one entry per pre-dedup contribution. Items that didn't merge with
- * anything have mergedFrom.length === 1.
- */
-function getMergedFromCount(item) {
-  return Array.isArray(item?.mergedFrom) ? item.mergedFrom.length : 1
-}
-
-/** Indices of rows whose mergedFrom drill-down is currently expanded. */
-// Generated-KRT view with the modal controls applied at GROUP level (a
-// group = one final KRT row; its contributor lines travel with it): groups
-// are kept whole by search/type-filter and ordered by resource type in the
-// KRT editor's order. displayParity re-alternates shading on the visible set.
-const displayedPdfAnalysisRows = computed(() => {
-  const all = pdfAnalysisRows.value
-  const groupType = new Map()
-  for (const r of all) {
-    if (r.isGroupStart) groupType.set(r.groupIndex, r.resourceType || '')
-  }
-  let keep = new Set(groupType.keys())
-  if (modalTabFilter.value !== 'all') {
-    keep = new Set([...keep].filter(gi => resourceTypesStore.getTabGroup(groupType.get(gi)) === modalTabFilter.value))
-  }
-  const q = modalSearch.value.trim().toLowerCase()
-  if (q) {
-    const matching = new Set(all.filter(r => rowMatchesSearch([
-      r.resourceType, r.resourceName, r.finalName, r.sourceUrl, r.identifier,
-      r.newReuse, r.additionalInformation, r.reason
-    ], q)).map(r => r.groupIndex))
-    keep = new Set([...keep].filter(gi => matching.has(gi)))
-  }
-  const rows = all
-    .filter(r => keep.has(r.groupIndex))
-    .sort((a, b) => a.groupIndex === b.groupIndex
-      ? 0
-      : (compareTypes(groupType.get(a.groupIndex), groupType.get(b.groupIndex)) || (a.groupIndex - b.groupIndex)))
-  let parity = -1
-  let lastGroup = null
-  return rows.map(r => {
-    if (r.groupIndex !== lastGroup) { parity++; lastGroup = r.groupIndex }
-    return { ...r, displayParity: parity % 2 }
-  })
-})
-
-const expandedMergedRows = ref(new Set())
-
-// Row indexes shift when the search/type filter changes — drop any open
-// merged-row expansions so they don't reattach to the wrong line.
-watch([modalSearch, modalTypeFilter, modalTabFilter], () => { expandedMergedRows.value = new Set() })
-
-function toggleMergedRow(idx) {
-  const next = new Set(expandedMergedRows.value)
-  if (next.has(idx)) next.delete(idx)
-  else next.add(idx)
-  expandedMergedRows.value = next
-}
-
-/**
- * Reset the expanded set whenever the modal items change so the open-state
- * doesn't leak across detector views.
- */
-watch(() => modalItems.value, () => {
-  expandedMergedRows.value = new Set()
-})
-
-/**
- * Best-effort one-line context for a pre-dedup contributor. Different
- * detectors expose different fields; pick the most informative one available.
- */
-function getMergedFromContext(originalItem) {
-  if (!originalItem) return '—'
-  const meta = originalItem.detectorMeta || {}
-  if (meta.context) return meta.context
-  if (meta.text_excerpt) return meta.text_excerpt
-  if (typeof meta.position === 'number') return `char offset ${meta.position}`
-  return originalItem.additionalInformation || '—'
-}
-
-/**
- * Modal status pill label. Mirrors getResultBadgeText but kept as its own
- * function in case the modal wants different copy in the future.
- */
-function getStatusLabel(job) {
-  if (!job.status) return 'Not started'
-  if (job.status === 'complete') {
-    if (job.outcomeState === 'fail') return 'Fail'
-    return 'Done'
-  }
-  const labels = {
-    waiting: 'Waiting',
-    pending_input: 'Needs input',
-    queued: 'Queued',
-    processing: 'Processing',
-    failed: 'Failed'
-  }
-  return labels[job.status] || job.status
-}
-
-function getStatusBadgeClass(job) {
-  if (!job.status) return 'job-status-idle'
-  if (isCancelledJob(job)) return 'job-status-cancelled'
-  if (job.status === 'complete') {
-    return job.outcomeState === 'fail' ? 'job-status-failed' : 'job-status-complete'
-  }
-  const classes = {
-    waiting: 'job-status-waiting',
-    pending_input: 'job-status-pending-input',
-    queued: 'job-status-running',
-    processing: 'job-status-running',
-    failed: 'job-status-failed'
-  }
-  return classes[job.status] || 'job-status-idle'
-}
+/** Columns for the grounding table — same two-row shape as the detectors. */
 
 function formatTime(dateStr) {
   if (!dateStr) return null
@@ -1509,17 +850,6 @@ function formatLogsAsText(logs) {
 }
 
 /**
- * Get the file extension from an S3 key (e.g., ".json", ".md").
- * Falls back to ".json" if no extension is found.
- */
-function getFileExtension(s3Key) {
-  if (typeof s3Key !== 'string') return '.json'
-  const lastDot = s3Key.lastIndexOf('.')
-  if (lastDot === -1) return '.json'
-  return s3Key.substring(lastDot)
-}
-
-/**
  * Download a raw response file via presigned URL
  */
 async function downloadRawResponse(jobType, responseName) {
@@ -1534,25 +864,20 @@ async function downloadRawResponse(jobType, responseName) {
   }
 }
 
-/**
- * Download the converted markdown file via presigned URL
- */
-async function downloadMarkdownFile(fileId) {
-  try {
-    const submissionId = route.params.id
-    const data = await fileService.download(submissionId, fileId)
-    if (data.url) {
-      window.open(data.url, '_blank', 'noopener,noreferrer')
-    }
-  } catch {
-    // Silently fail
-  }
-}
-
 </script>
 
 <template>
-  <div class="job-status-wrapper job-status-card">
+  <!-- The whole card carries the state: blue while work is happening, amber
+       when the pipeline is paused on the user, red when it cannot continue. -->
+  <div
+    class="job-status-wrapper job-status-card"
+    :class="{ 'job-status-card-blocked': blockedByIssue }"
+  >
+    <p v-if="statusUnreadable" class="job-status-unreadable" role="status">
+      The status of these steps could not be read — the page did not reach the
+      server. This is not a report that nothing has run.
+    </p>
+
     <!-- ETA header — always visible. The status summary pills (running /
          waiting / failed / done) sit on the right of the title row no matter
          what, so the user always sees pipeline progress even when the
@@ -1563,8 +888,31 @@ async function downloadMarkdownFile(fileId) {
         <svg class="job-status-eta-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <span class="job-status-eta-label">Background processes</span>
-        <span v-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
+        <!-- The title IS the link to the pipeline overview. RouterLink, so
+             ctrl-click opens it beside the submission — which is how you read a
+             result against the KRT. -->
+        <RouterLink
+          :to="{ name: 'submission-pipeline', params: { id: submissionId } }"
+          class="job-status-eta-label job-status-eta-label-link"
+          v-tooltip="'See the whole pipeline: every step, what it waits for, and what it produced'"
+          @click.stop
+        >
+          Pipeline ↗
+        </RouterLink>
+        <!-- The remaining time's slot says why there is no remaining time.
+             Nothing is going to finish while the pipeline is paused, so an
+             estimate there would be a lie — and this is the line the user
+             already reads for "what is happening now". The estimate comes back
+             by itself on the next step. -->
+        <span v-if="blockedByIssue" class="job-status-eta-state job-status-eta-state-blocked">
+          <strong>Analysis is paused: an earlier step needs a decision.</strong>
+          {{ blockedCount }} step{{ blockedCount === 1 ? '' : 's' }}
+          {{ blockedCount === 1 ? 'is' : 'are' }} held behind it. The step that stopped says what went
+          wrong below;
+          <template v-if="canRestartJobs">retry it, or continue without it.</template>
+          <template v-else>ask a curator to retry it or continue without it.</template>
+        </span>
+        <span v-else-if="etaVisible" class="job-status-eta-remaining">{{ etaLabel }}</span>
         <div class="job-header-badges">
           <span v-if="jobSummary.running > 0" class="job-summary-badge job-status-running">
             {{ jobSummary.running }} running
@@ -1581,20 +929,30 @@ async function downloadMarkdownFile(fileId) {
           <span v-if="jobSummary.cancelled > 0" class="job-summary-badge job-status-cancelled">
             {{ jobSummary.cancelled }} cancelled
           </span>
-          <span class="job-summary-badge job-status-complete">
+          <!-- Eleven, not twelve, and deliberately so: this panel is shown on the
+               KRT and Manuscript steps, and the Availability Statement check
+               belongs to the Availability step. Counting a step the user has
+               not reached would leave the badge permanently short of its own
+               total. The tooltip says which step the twelfth is on, so the
+               difference from the pipeline page reads as a scope rather than a
+               missing step. -->
+          <span
+            v-tooltip="'These are the ' + jobSummary.total + ' steps that read the manuscript and your Key Resources Table, which you handle on steps 1 and 2. The pipeline has one more — the Availability Statement check — and it runs on step 4, once you confirm your statement.'"
+            class="job-summary-badge job-status-complete"
+          >
             {{ jobSummary.done }}/{{ jobSummary.total }} done
           </span>
         </div>
       </div>
-      <div v-if="etaVisible" class="job-status-eta-track">
+      <div v-if="etaVisible && !paused" class="job-status-eta-track">
         <div
           class="job-status-eta-fill"
           :class="{ 'job-status-eta-fill-done': allDone }"
           :style="{ width: `${etaProgress * 100}%` }"
         ></div>
       </div>
-      <p v-if="anyInFlight" class="job-status-eta-hint">
-        You can keep editing the Key Resources Table while these finish — suggestions will appear once they're done.
+      <p v-if="anyInFlight && !paused" class="job-status-eta-hint">
+        You can keep editing the Key Resources Table, but these steps read the version frozen when the round started — your edits reach the analysis on the next run, not this one.
       </p>
       <div class="job-status-eta-footer">
         <button type="button" class="job-status-eta-toggle" @click="toggleCollapsed">
@@ -1614,7 +972,7 @@ async function downloadMarkdownFile(fileId) {
           type="button"
           class="job-status-cancel-btn"
           :disabled="cancelling"
-          title="Stop all running background processes for this document"
+          v-tooltip="'Stop every pipeline step still to run for this document'"
           @click="handleCancelProcessing"
         >
           {{ cancelling ? 'Cancelling…' : 'Cancel processing' }}
@@ -1624,19 +982,29 @@ async function downloadMarkdownFile(fileId) {
 
     <!-- Expandable grid -->
     <div v-show="!isCollapsed" class="job-status-panel">
-      <div
+      <!-- Every tile is a LINK to that module's page — whole tile, so ctrl-click
+           and middle-click open it in a tab like anything else.
+           
+           There used to be a second destination: a modal, for any job that was
+           not `complete`. So the same click showed one thing for a finished
+           module and another for a failed one, and the modal was the older,
+           thinner view — no run history, no frozen inputs, no restart that says
+           what it takes with it. A module is worth the same page whatever state
+           it is in; "it failed" is exactly when you want the record. -->
+      <RouterLink
         v-for="job in jobList"
         :key="job.type"
-        class="job-status-item"
-        @click.stop="openJobModal(job)"
+        :to="{ name: 'submission-module', params: { id: submissionId, type: job.type } }"
+        class="job-status-item job-status-item-link"
+        :class="{ 'job-status-item-needs-decision': issueFor(job) }"
       >
         <!-- Line 1: Configuration pill (On / Demo / Off) -->
-        <div class="job-config-line" :title="getLiveConfigTitle(job)">
+        <div class="job-config-line" v-tooltip="getLiveConfigTitle(job)">
           <span :class="getConfigPillClass(job)">{{ getConfigPillText(job) }}</span>
           <span class="job-label">{{ job.label }}</span>
         </div>
         <!-- Line 2: Job result -->
-        <div class="job-result-line" :title="getResultTitle(job)">
+        <div class="job-result-line" v-tooltip="getResultTitle(job)">
           <!-- User input icon for pending_input -->
           <svg
             v-if="job.status === 'pending_input'"
@@ -1697,548 +1065,123 @@ async function downloadMarkdownFile(fileId) {
           >
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 12h14" />
           </svg>
+          <!-- The Partial badge carries its own explanation: the badge says
+               something went wrong, and hovering says what. Anywhere else the
+               user would have to guess why the table is short. -->
           <span
             class="job-status-badge"
             :class="getResultBadgeClass(job)"
+            v-tooltip="partialDetail(job)"
           >
             {{ getResultBadgeText(job) }}
           </span>
+          <!-- Only from run 2 onward: "run 1" on a healthy pipeline is noise on
+               every tile. The number appears exactly when it starts carrying
+               information.
+
+               It is the PIPELINE run's number, the same across every tile — so
+               the tooltip has to say how many times THIS step ran separately,
+               because a run can carry a step over rather than re-executing it,
+               and the two numbers then differ. Saying "run 3" while meaning
+               "this ran three times" was true under the old per-step numbering
+               and is not any more. -->
+          <span
+            v-if="job.runNumber > 1"
+            class="job-run-badge"
+            v-tooltip="runBadgeTooltip(job)"
+          >run {{ job.runNumber }}</span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
+
+          <!-- A KRT/manuscript disagreement is a defect, not a statistic, so it
+               gets its own badge in the error colour rather than a clause at
+               the end of a grey summary line. -->
+          <span
+            v-if="conflictCount(job) > 0"
+            class="job-summary-badge job-conflict-badge"
+            v-tooltip="conflictCount(job) + ' KRT row(s) hold a value the manuscript contradicts. One of the two is wrong — open the module to see which values differ.'"
+          >{{ conflictCount(job) }} conflict{{ conflictCount(job) === 1 ? '' : 's' }}</span>
         </div>
-      </div>
+
+        <!-- The decision, on the step it is about. The buttons stop the click
+             from opening the module page underneath them. -->
+        <div v-if="issueFor(job)" class="job-decision-line">
+          <span class="job-decision-consequence">
+            Continue and {{ issueConsequence(issueFor(job)) }}.
+          </span>
+          <span v-if="canRestartJobs" class="job-decision-actions">
+            <button
+              type="button"
+              class="job-decision-btn job-decision-retry"
+              :disabled="!!decisionBusy"
+              @click.prevent.stop="onDecide(job, 'retry')"
+            >{{ decisionBusy === job.type + ':retry' ? 'Retrying…' : 'Retry' }}</button>
+            <button
+              type="button"
+              class="job-decision-btn job-decision-continue"
+              :disabled="!!decisionBusy"
+              @click.prevent.stop="onDecide(job, 'continue')"
+            >{{ decisionBusy === job.type + ':continue' ? 'Continuing…' : 'Continue without it' }}</button>
+          </span>
+        </div>
+      </RouterLink>
     </div>
   </div>
 
-  <!-- Unified job detail modal -->
-  <Teleport to="body">
-    <Transition name="modal-fade">
-      <div v-if="showModal && activeJob" class="job-modal-overlay" @click.self="closeModal">
-        <div class="job-modal">
-          <!-- Header -->
-          <div class="job-modal-header">
-            <div class="job-modal-header-left">
-              <h3>{{ activeJob.label }}</h3>
-              <div class="job-modal-header-badges">
-                <!-- Config pill — On / Demo / Off (always shown) -->
-                <span :class="getConfigPillClass(activeJob)">{{ getConfigPillText(activeJob) }}</span>
-                <!-- Status pill — in-progress label, or Done/Fail outcome -->
-                <span
-                  v-if="activeJob.status"
-                  class="job-status-badge"
-                  :class="getStatusBadgeClass(activeJob)"
-                >{{ getStatusLabel(activeJob) }}</span>
-              </div>
-            </div>
-            <button class="job-modal-close" @click="closeModal">&times;</button>
-          </div>
-
-          <div class="job-modal-body">
-            <!-- Notice bar — explains how results were produced (or why they're missing) -->
-            <div v-if="activeJob.outcomeSource === 'demo' && activeJob.outcomeExternalError" class="job-modal-notice job-modal-notice-demo">
-              External service failed; falling back to demo data.
-              <span class="job-modal-notice-detail">{{ activeJob.outcomeExternalError }}</span>
-            </div>
-            <div v-else-if="activeJob.outcomeSource === 'demo'" class="job-modal-notice job-modal-notice-demo">
-              Results are from demo data.
-            </div>
-            <div v-else-if="activeJob.outcomeState === 'fail'" class="job-modal-notice job-modal-notice-off">
-              {{ formatFailReason(activeJob.outcomeFailReason) }}
-              <span v-if="activeJob.outcomeExternalError" class="job-modal-notice-detail">{{ activeJob.outcomeExternalError }}</span>
-            </div>
-
-            <!-- ORCID sub-services -->
-            <div v-if="activeJob.type === 'orcid_extraction' && activeJob.serviceSubServices && canViewInternals" class="job-modal-sub-services">
-              <span v-for="(svc, name) in activeJob.serviceSubServices" :key="name" class="job-sub-service" :class="svc.enabled ? 'sub-on' : 'sub-off'">
-                {{ name === 'grobid' ? 'GROBID' : name === 'openalex' ? 'OpenAlex' : 'ORCID API' }}: {{ svc.enabled ? 'on' : 'off' }}
-              </span>
-            </div>
-
-            <!-- Status section -->
-            <div class="job-modal-section">
-              <h4 class="job-modal-section-title">Status</h4>
-              <div class="job-modal-status-content">
-                <p v-if="getJobDetail(activeJob)" class="job-modal-detail" :class="{ 'job-modal-error': activeJob.status === 'failed' }">{{ getJobDetail(activeJob) }}</p>
-
-                <p v-if="isSlowJob(activeJob)" class="job-modal-warning">
-                  Taking longer than expected. This attempt will time out after {{ Math.round((activeJob.config?.expireInSeconds || 0) / 60) }}min{{ activeJob.config?.retryLimit > 0 ? ` (${activeJob.config.retryLimit} retries remaining)` : '' }}.
-                </p>
-
-                <div class="job-modal-timing">
-                  <span v-if="getElapsed(activeJob)" class="job-modal-elapsed">
-                    <template v-if="activeJob.status === 'processing' || activeJob.status === 'queued'">Elapsed: {{ formatDuration(getElapsed(activeJob)) }}</template>
-                    <template v-else>Duration: {{ formatDuration(getElapsed(activeJob)) }}</template>
-                  </span>
-                  <span v-if="activeJob.retryCount > 0 || (activeJob.config && activeJob.status === 'failed')" class="job-modal-retry">
-                    Attempt {{ activeJob.retryCount + 1 }}/{{ (activeJob.config?.retryLimit || 2) + 1 }}
-                  </span>
-                </div>
-
-                <!-- Timestamps (hidden from authors) -->
-                <div v-if="canViewInternals && (activeJob.startedAt || activeJob.completedAt)" class="job-modal-times">
-                  <span v-if="activeJob.createdAt">Queued: {{ formatTime(activeJob.createdAt) }}</span>
-                  <span v-if="activeJob.startedAt">Started: {{ formatTime(activeJob.startedAt) }}</span>
-                  <span v-if="activeJob.completedAt">Completed: {{ formatTime(activeJob.completedAt) }}</span>
-                </div>
-                <div v-if="canViewInternals && activeJob.config" class="job-modal-config">
-                  Per attempt: {{ Math.round(activeJob.config.expireInSeconds / 60) }}min | Max total: {{ Math.round(activeJob.config.maxTotalSeconds / 60) }}min ({{ activeJob.config.retryLimit + 1 }} attempts)
-                </div>
-              </div>
-            </div>
-
-            <!-- Results section -->
-            <div v-if="modalContent || (modalItems && modalItems.length) || modalTableType === 'pdf_analysis_krt'" class="job-modal-section">
-              <h4 class="job-modal-section-title">Results</h4>
-              <!-- PDF Analysis: download actions + summary sit above the
-                   search/tab controls, separated by a divider. -->
-              <div v-if="modalTableType === 'pdf_analysis_krt' && pdfAnalysisRows.length" class="pdf-analysis-header">
-                <div class="pdf-analysis-actions">
-                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisCsv">
-                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-                    </svg>
-                    Download CSV
-                  </button>
-                  <button class="btn-secondary text-xs inline-flex items-center" @click="downloadPdfAnalysisJson">
-                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-                    </svg>
-                    Download JSON
-                  </button>
-                </div>
-                <div class="pdf-analysis-summary">
-                  <div>
-                    <strong>{{ modalItems?.length || 0 }}</strong> KRT row{{ (modalItems?.length || 0) !== 1 ? 's' : '' }}
-                    consolidated from <strong>{{ pdfAnalysisRows.length }}</strong> detection{{ pdfAnalysisRows.length !== 1 ? 's' : '' }}
-                    <span v-if="pdfAnalysisMergedGroups > 0">— {{ pdfAnalysisMergedGroups }} merged from multiple modules</span>
-                  </div>
-                  <div class="pdf-analysis-summary-hint">
-                    Rows sharing a <strong>KRT&nbsp;#</strong> are the <em>same</em> KRT row — one line per detection module that found it.
-                  </div>
-                </div>
-                <hr class="job-modal-divider">
-              </div>
-
-              <!-- Search + resource-type filter (mirrors the KRT editor's
-                   controls) for every table view -->
-              <div v-if="modalTableType && modalItems && modalItems.length" class="job-modal-table-controls">
-                <input
-                  v-model="modalSearch"
-                  type="text"
-                  class="job-modal-search"
-                  placeholder="Search rows…"
-                >
-                <select
-                  v-if="modalTypeOptions.length > 1"
-                  v-model="modalTypeFilter"
-                  class="job-modal-type-filter"
-                >
-                  <option value="all">All resource types</option>
-                  <option v-for="t in modalTypeOptions" :key="t" :value="t">{{ t }}</option>
-                </select>
-              </div>
-
-              <!-- Tab-group filter (same tabs as the KRT editor) sits directly
-                   above the table; the suggestions decision chips share the row. -->
-              <div
-                v-if="(modalTableType === 'pdf_analysis_krt' || modalTableType === 'suggestions') && modalItems && modalItems.length"
-                class="job-modal-tabs-row"
-              >
-                <div class="job-modal-tabs">
-                  <button
-                    v-for="tab in MODAL_TAB_GROUPS"
-                    :key="tab.key"
-                    type="button"
-                    class="job-modal-tab"
-                    :class="{ 'job-modal-tab-active': modalTabFilter === tab.key }"
-                    @click="modalTabFilter = tab.key"
-                  >
-                    {{ tab.label }}
-                    <span class="job-modal-tab-count">{{ modalTabCounts[tab.key] || 0 }}</span>
-                  </button>
-                </div>
-                <!-- Decision filter: toggle chips, multi-select. No chip
-                     active = every decision shown; dimmed = filtered out. -->
-                <div v-if="modalTableType === 'suggestions' && modalDecisionOptions.length > 1" class="job-modal-decision-filter">
-                  <button
-                    v-for="opt in modalDecisionOptions"
-                    :key="opt.label"
-                    type="button"
-                    class="suggestion-decision-badge job-modal-decision-chip"
-                    :class="['sdb-' + opt.label.toLowerCase(), { 'job-modal-decision-chip-off': modalDecisionFilter.size && !modalDecisionFilter.has(opt.label) }]"
-                    :title="modalDecisionFilter.has(opt.label) ? 'Click to stop filtering on ' + opt.label : 'Click to show only ' + opt.label + ' decisions (combine by clicking several)'"
-                    @click="toggleDecisionFilter(opt.label)"
-                  >
-                    {{ opt.label }}
-                    <span class="job-modal-decision-chip-count">{{ opt.count }}</span>
-                  </button>
-                </div>
-              </div>
-              <!-- Plain text content (DAS, markdown info) -->
-              <p v-if="modalContent && !modalItems" class="job-modal-text">{{ modalContent }}</p>
-              <!-- Mentions table (software, datasets, materials, protocols) -->
-              <div v-if="modalItems && modalItems.length && (modalTableType === 'software' || modalTableType === 'resources')" class="job-modal-table-wrapper">
-                <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('mentions', RESIZE_MENTIONS_COLS)">
-                  <thead>
-                    <tr>
-                      <th
-                        v-for="c in RESIZE_MENTIONS_COLS"
-                        :key="c.key"
-                        :style="colResize.headStyle('mentions', c.key, c.width)"
-                      >
-                        {{ c.label }}
-                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('mentions', c.key, c.width, $event)"></span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <template v-for="(item, i) in displayedModalItems" :key="i">
-                      <tr>
-                        <td class="text-xs"><HighlightText :text="item.resourceType || item.resource_type || 'Software/code'" :query="modalSearch" /></td>
-                        <td class="font-medium">
-                          <HighlightText :text="getMentionName(item)" :query="modalSearch" />
-                          <span
-                            v-if="getEnrichmentMeta(item)?.matched"
-                            class="enrichment-badge"
-                            :title="enrichmentBadgeTitle(item)"
-                          >
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
-                            </svg>
-                            enriched
-                          </span>
-                          <button
-                            v-if="getMergedFromCount(item) > 1"
-                            type="button"
-                            class="merged-from-badge"
-                            :title="`Merged from ${getMergedFromCount(item)} pre-dedup mentions — click to expand`"
-                            @click="toggleMergedRow(i)"
-                          >
-                            merged ×{{ getMergedFromCount(item) }}
-                            <span class="merged-from-chevron" :class="{ open: expandedMergedRows.has(i) }">▾</span>
-                          </button>
-                        </td>
-                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'source') }" :title="isFieldFromEnrichment(item, 'source') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.source || item.suggestedURL || item.url" :query="modalSearch" /></td>
-                        <td class="text-xs" :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'identifier') }" :title="isFieldFromEnrichment(item, 'identifier') ? 'Filled in from the enrichment list' : null"><HighlightText :text="item.identifier || item.RRID || item.suggestedRRID" :query="modalSearch" /></td>
-                        <td :class="{ 'cell-from-enrichment': isFieldFromEnrichment(item, 'newReuse') }" :title="isFieldFromEnrichment(item, 'newReuse') ? 'Filled in from the enrichment list' : null">
-                          <span v-if="item.newReuse" class="job-modal-source-badge" :class="item.newReuse === 'new' ? 'source-enriched' : 'source-softcite'">
-                            {{ item.newReuse }}
-                          </span>
-                          <span v-else>—</span>
-                        </td>
-                        <td class="text-xs text-gray-500"><HighlightText :text="item.additionalInformation || item.additional_information" :query="modalSearch" /></td>
-                      </tr>
-                      <tr v-if="item.detectorMeta?.context || item.context" class="context-row">
-                        <td colspan="6" class="context-cell">{{ item.detectorMeta?.context || item.context }}</td>
-                      </tr>
-                      <tr v-if="expandedMergedRows.has(i) && getMergedFromCount(item) > 1" class="merged-from-row">
-                        <td colspan="6">
-                          <div class="merged-from-title">Merged from {{ getMergedFromCount(item) }} pre-dedup mentions:</div>
-                          <table class="merged-from-table">
-                            <thead>
-                              <tr>
-                                <th>Resource Name</th>
-                                <th>Confidence</th>
-                                <th>Identifier</th>
-                                <th>Context / Position</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              <tr v-for="(contrib, j) in item.mergedFrom" :key="j">
-                                <td>{{ contrib.originalItem?.resourceName || contrib.originalItem?.name || '—' }}</td>
-                                <td>{{ typeof contrib.confidence === 'number' ? contrib.confidence.toFixed(2) : '—' }}</td>
-                                <td class="text-xs">{{ contrib.originalItem?.identifier || '—' }}</td>
-                                <td class="text-xs text-gray-500">{{ getMergedFromContext(contrib.originalItem) }}</td>
-                              </tr>
-                            </tbody>
-                          </table>
-                        </td>
-                      </tr>
-                    </template>
-                  </tbody>
-                </table>
-                <div v-if="!displayedModalItems.length" class="job-modal-filter-empty">No rows match the current filters.</div>
-              </div>
-              <!-- Enrichment summary note. The "already in KRT" judgment now
-                   lives solely in the AI Suggestions section, which is fed by
-                   pdf_analysis's diff against the user's KRT. -->
-              <div v-if="modalItems && modalItems.length && (modalTableType === 'resources' || modalTableType === 'software') && enrichedItemsCount > 0" class="mt-3 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-600">
-                {{ enrichedItemsCount }} of {{ modalItems.length }} matched in the enrichment list (fields with a dotted underline were filled from the list)
-              </div>
-              <!-- PDF Analysis: Generated KRT pre-merge view -->
-              <div v-if="modalTableType === 'pdf_analysis_krt'" class="pdf-analysis-modal-section">
-                <div v-if="pdfAnalysisRows.length" class="job-modal-table-wrapper">
-                  <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('pdfAnalysis', RESIZE_PDF_COLS)">
-                    <thead>
-                      <tr>
-                        <th
-                          v-for="c in RESIZE_PDF_COLS"
-                          :key="c.key"
-                          :style="colResize.headStyle('pdfAnalysis', c.key, c.width)"
-                        >
-                          {{ c.label }}
-                          <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('pdfAnalysis', c.key, c.width, $event)"></span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr
-                        v-for="(row, i) in displayedPdfAnalysisRows"
-                        :key="i"
-                        :class="[
-                          'pdf-analysis-row',
-                          row.displayParity === 0 ? 'pdf-analysis-group-even' : 'pdf-analysis-group-odd',
-                          { 'pdf-analysis-row-duplicate': row.isDuplicate,
-                            'pdf-analysis-group-start': row.isGroupStart,
-                            'pdf-analysis-group-end': row.isGroupEnd,
-                            'pdf-analysis-group-merged': row.groupSize > 1 }
-                        ]"
-                      >
-                        <!-- KRT row number — shown once per group so a merged
-                             group reads as one block; merge label clarifies it. -->
-                        <td class="pdf-analysis-krtnum-cell">
-                          <template v-if="row.isGroupStart">
-                            <div class="pdf-analysis-krtnum">#{{ row.groupNumber }}</div>
-                            <div
-                              v-if="row.groupSize > 1"
-                              class="pdf-analysis-merge-label"
-                              :title="'Merged into one KRT row: ' + (row.finalName || '') + ' (dedup key: ' + (row.dedupKey || '?') + ')'"
-                            >
-                              {{ row.groupSize }} detections → 1 row
-                            </div>
-                          </template>
-                        </td>
-                        <td>
-                          <span v-if="row.source" class="job-modal-source-badge source-enriched">
-                            {{ pdfAnalysisSourceLabel(row.source) }}
-                          </span>
-                          <span v-else>—</span>
-                        </td>
-                        <!-- LM consolidation reason — shown once per merged group -->
-                        <td class="text-xs text-gray-500 pdf-analysis-reason-cell"><HighlightText v-if="row.isGroupStart" :text="row.reason" :query="modalSearch" /></td>
-                        <td class="text-xs"><HighlightText :text="row.resourceType" :query="modalSearch" /></td>
-                        <td class="font-medium"><HighlightText :text="row.resourceName" :query="modalSearch" /></td>
-                        <td class="text-xs"><HighlightText :text="row.sourceUrl" :query="modalSearch" /></td>
-                        <td class="text-xs"><HighlightText :text="row.identifier" :query="modalSearch" /></td>
-                        <td>
-                          <span v-if="row.newReuse" class="job-modal-source-badge" :class="row.newReuse === 'new' ? 'source-enriched' : 'source-softcite'">
-                            {{ row.newReuse }}
-                          </span>
-                          <span v-else>—</span>
-                        </td>
-                        <td class="text-xs text-gray-500"><HighlightText :text="row.additionalInformation" :query="modalSearch" /></td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div v-if="!displayedPdfAnalysisRows.length" class="job-modal-filter-empty">No rows match the current filters.</div>
-                </div>
-                <div v-else class="pdf-analysis-empty">
-                  No detections were consolidated yet. Run the upstream detections first.
-                </div>
-
-                <!-- Dropped candidates: detections the LM did not keep in the Generated KRT -->
-                <div v-if="modalDropped.length" class="pdf-analysis-dropped">
-                  <h4 class="job-modal-section-title">
-                    Dropped candidates
-                    <span class="pdf-analysis-dropped-count">{{ modalDropped.length }}</span>
-                  </h4>
-                  <p class="pdf-analysis-dropped-hint">These detections were not kept in the Generated KRT — with the reason for each.</p>
-                  <div class="job-modal-table-wrapper">
-                    <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('dropped', RESIZE_DROPPED_COLS)">
-                      <thead>
-                        <tr>
-                          <th
-                            v-for="c in RESIZE_DROPPED_COLS"
-                            :key="c.key"
-                            :style="colResize.headStyle('dropped', c.key, c.width)"
-                          >
-                            {{ c.label }}
-                            <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('dropped', c.key, c.width, $event)"></span>
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="(d, i) in modalDropped" :key="i" class="pdf-analysis-dropped-row">
-                          <td>
-                            <span v-for="s in (d.sources || [])" :key="s" class="job-modal-source-badge source-enriched mr-1">{{ pdfAnalysisSourceLabel(s) }}</span>
-                            <span v-if="!d.sources || !d.sources.length">—</span>
-                          </td>
-                          <td class="text-xs"><HighlightText :text="d.resourceType" :query="modalSearch" /></td>
-                          <td class="font-medium pdf-analysis-dropped-name"><HighlightText :text="d.resourceName" :query="modalSearch" /></td>
-                          <td class="text-xs"><HighlightText :text="d.identifier" :query="modalSearch" /></td>
-                          <td class="text-xs text-gray-500 pdf-analysis-reason-cell"><HighlightText :text="cleanReason(d.reason)" :query="modalSearch" /></td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Authors table -->
-              <div v-if="modalItems && modalItems.length && modalTableType === 'authors'" class="job-modal-table-wrapper">
-                <table class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('authors', RESIZE_AUTHOR_COLS)">
-                  <thead>
-                    <tr>
-                      <th
-                        v-for="c in RESIZE_AUTHOR_COLS"
-                        :key="c.key"
-                        :style="colResize.headStyle('authors', c.key, c.width)"
-                      >
-                        {{ c.label }}
-                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('authors', c.key, c.width, $event)"></span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(item, i) in displayedAuthorItems" :key="i">
-                      <td><HighlightText :text="item.fullName || [item.firstName, item.lastName].filter(Boolean).join(' ')" :query="modalSearch" /></td>
-                      <td>
-                        <a v-if="item.orcid" :href="'https://orcid.org/' + item.orcid" target="_blank" rel="noopener" class="orcid-link"><HighlightText :text="item.orcid" :query="modalSearch" /></a>
-                        <span v-else>—</span>
-                      </td>
-                      <td><HighlightText :text="item.affiliation" :query="modalSearch" /></td>
-                      <td>
-                        <span v-if="item.source" class="job-modal-source-badge" :class="getOrcidSourceClass(item.source)">
-                          {{ formatOrcidSource(item.source) }}
-                        </span>
-                        <span v-else>—</span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div v-if="!displayedAuthorItems.length" class="job-modal-filter-empty">No rows match the current filters.</div>
-              </div>
-
-              <!-- AI Suggestions: every choice the module made, shown as the
-                   concerned KRT row (with a red/green diff for updates) + the
-                   decision and reason. -->
-              <div v-if="modalTableType === 'suggestions' && modalItems && modalItems.length" class="job-modal-table-wrapper">
-                <table v-if="suggestionDisplayRows.length" class="job-modal-table job-modal-table--resizable" :style="colResize.tableStyle('suggestions', RESIZE_SUGGESTION_COLS)">
-                  <thead>
-                    <tr>
-                      <th
-                        v-for="c in RESIZE_SUGGESTION_COLS"
-                        :key="c.key"
-                        :class="c.cssClass"
-                        :style="colResize.headStyle('suggestions', c.key, c.width)"
-                      >
-                        {{ c.label }}
-                        <span class="job-modal-col-resize" title="Drag to resize" @mousedown.stop.prevent="colResize.startResize('suggestions', c.key, c.width, $event)"></span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="(r, i) in suggestionDisplayRows"
-                      :key="i"
-                      :class="[ r.groupIndex % 2 === 0 ? 'sugg-group-even' : 'sugg-group-odd', { 'sugg-group-start': r.isGroupStart } ]"
-                    >
-                      <!-- Decision / Reason / Modules: shown once per decision group -->
-                      <td>
-                        <span v-if="r.isGroupStart" class="suggestion-decision-badge" :class="'sdb-' + suggestionDecisionLabel(r.decision).toLowerCase()">{{ suggestionDecisionLabel(r.decision) }}</span>
-                      </td>
-                      <td class="text-xs text-gray-500 suggestion-reason-cell"><HighlightText v-if="r.isGroupStart" :text="cleanReason(r.decision.reason || r.decision.description)" :query="modalSearch" /></td>
-                      <td class="text-xs">
-                        <span v-if="r.role" class="sugg-role" :class="'sugg-role-' + r.side">{{ r.role }}</span>
-                      </td>
-                      <td
-                        v-for="c in SUGGESTION_ROW_COLUMNS"
-                        :key="c.key"
-                        class="text-xs"
-                        :class="{ 'suggestion-name-cell': c.key === 'resourceName' }"
-                      >
-                        <HighlightText :class="(r.changes && r.changes[c.key]) ? (r.side === 'author' ? 'diff-old' : 'diff-new') : ''" :text="r.cells && r.cells[c.key]" :query="modalSearch" />
-                      </td>
-                      <td class="text-xs">{{ r.isGroupStart ? ((r.decision.sources && r.decision.sources.length) ? r.decision.sources.map(s => SOURCE_SHORT[s] || s).join(', ') : '—') : '' }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div v-if="!suggestionDisplayRows.length" class="job-modal-filter-empty">No rows match the current filters.</div>
-              </div>
-            </div>
-
-            <!-- Logs section (hidden from authors) -->
-            <div v-if="canViewInternals && modalLogs.length > 0" class="job-modal-section">
-              <h4 class="job-modal-section-title">Process Logs</h4>
-              <textarea
-                readonly
-                :value="formatLogsAsText(modalLogs)"
-                class="w-full text-xs font-mono bg-gray-50 text-gray-600 border border-gray-200 rounded p-2 resize-none"
-                :rows="Math.min(modalLogs.length + 1, 12)"
-              ></textarea>
-            </div>
-
-            <!-- Raw responses section (hidden from authors) -->
-            <div v-if="Object.keys(modalRawResponses).length > 0 && canViewInternals" class="job-modal-section">
-              <h4 class="job-modal-section-title">Raw Responses</h4>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  v-for="(s3Key, name) in modalRawResponses"
-                  :key="name"
-                  class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-700 transition-colors cursor-pointer border border-gray-200"
-                  @click="downloadRawResponse(modalJobType, name)"
-                >
-                  <svg class="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                  {{ name }}{{ getFileExtension(s3Key) }}
-                </button>
-              </div>
-            </div>
-
-            <!-- Action buttons -->
-            <div class="job-modal-actions">
-              <button
-                v-if="activeJob.type === 'das_extraction' && activeJob.status === 'complete'"
-                class="job-action-btn"
-                @click="emit('edit-das'); closeModal()"
-              >
-                Edit Availability Statement
-              </button>
-              <button
-                v-if="activeJob.type === 'markdown_convert' && activeJob.status === 'complete' && activeJob.result?.data?.fileId"
-                class="job-action-btn"
-                @click="downloadMarkdownFile(activeJob.result.data.fileId)"
-              >
-                <svg class="w-4 h-4 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-                Download Markdown
-              </button>
-              <button
-                v-if="restartJobFn && canRestartJobs && canRestart(activeJob)"
-                class="job-restart-btn"
-                :disabled="restartingJobs.has(activeJob.type)"
-                @click="handleRestart(activeJob.type)"
-              >
-                <svg
-                  v-if="activeJob.status === 'pending_input'"
-                  class="job-restart-icon"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-                <svg
-                  v-else
-                  class="job-restart-icon"
-                  :class="{ 'job-icon-spin': restartingJobs.has(activeJob.type) }"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                >
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                {{ restartingJobs.has(activeJob.type) ? 'Starting...' : (activeJob.status === 'pending_input' ? 'Start' : 'Restart') }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
 </template>
 
 <style scoped>
+/* The step that stopped the pipeline, marked where the failure already shows. */
+.job-status-item-needs-decision {
+  background: #fef2f2;
+  box-shadow: inset 0 0 0 1px #fecaca;
+  border-radius: 0.375rem;
+}
+.job-decision-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+  padding-left: 1.5rem;
+}
+.job-decision-consequence {
+  font-size: 0.6875rem;
+  color: #991b1b;
+}
+.job-decision-actions { display: flex; gap: 0.25rem; }
+.job-decision-btn {
+  padding: 0.0625rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.job-decision-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.job-decision-retry { background: #b91c1c; color: #fff; }
+.job-decision-retry:hover:not(:disabled) { background: #991b1b; }
+.job-decision-continue { background: #fff; color: #7f1d1d; border: 1px solid #fca5a5; }
+.job-decision-continue:hover:not(:disabled) { background: #fef2f2; }
+
+.job-run-badge {
+  flex: none;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}.job-status-unreadable {
+  margin: 0 0 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
 .job-status-wrapper {
   margin-top: 0.5rem;
   background: #f9fafb;
@@ -2282,6 +1225,25 @@ async function downloadMarkdownFile(fileId) {
   background: #eff6ff;
   border-color: #bfdbfe;
 }
+/* Blocked, read at a glance from across the page. (There was an amber "paused
+   on the user" treatment beside this one; it went with the KRT-gate banner —
+   nothing pauses this panel on the user any more.) */
+.job-status-card-blocked,
+.job-status-card-blocked.job-status-wrapper {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.job-status-card-blocked .job-status-eta-label { color: #b91c1c; }
+.job-status-card-blocked .job-status-eta-icon { color: #dc2626; }
+/* Takes the room the estimate had, and wraps into it rather than pushing the
+   status badges off the row. */
+.job-status-eta-state {
+  flex: 1 1 16rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.job-status-eta-state-blocked { color: #b91c1c; }
 .job-status-eta {
   display: flex;
   flex-direction: column;
@@ -2302,6 +1264,13 @@ async function downloadMarkdownFile(fileId) {
 .job-status-eta-label {
   font-weight: 600;
   color: #1e40af;
+}
+/* The title carries the link now, so it must not look like body text. */
+.job-status-eta-label-link {
+  text-decoration: none;
+}
+.job-status-eta-label-link:hover {
+  text-decoration: underline;
 }
 .job-status-eta-remaining {
   color: #2563eb;
@@ -2511,6 +1480,14 @@ async function downloadMarkdownFile(fileId) {
   color: #b91c1c;
 }
 
+/* Amber — the run produced real rows but an engine behind it failed. Deliberately
+   not green (a short table would look complete) and not red (the rows it did
+   find are good). Same amber the app uses for "needs your attention". */
+.job-status-partial {
+  background: #fef3c7;
+  color: #92400e;
+}
+
 .job-status-idle {
   background: #f3f4f6;
   color: #6b7280;
@@ -2580,510 +1557,21 @@ async function downloadMarkdownFile(fileId) {
 .sub-off {
   background: #f3f4f6;
   color: #9ca3af;
+}/* An EvidenceContext inside the context line brings its own typography and
+   highlight; the cell's italic + muted colour would fight it. Reset there. */
+.context-cell :deep(.evidence-context) {
+  font-style: normal;
+  border-left-color: #d1d5db;
 }
 
-/* Restart button */
-.job-restart-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.375rem 0.75rem;
-  white-space: nowrap;
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
-  border-radius: 0.375rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #374151;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.job-restart-btn:hover:not(:disabled) {
-  background: #e5e7eb;
-  border-color: #9ca3af;
-}
-
-.job-restart-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.job-restart-icon {
-  width: 0.875rem;
-  height: 0.875rem;
-  flex-shrink: 0;
-}
-
-/* Action button (Edit DAS, etc.) */
-.job-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.375rem 0.75rem;
-  white-space: nowrap;
-  background: #dbeafe;
-  border: 1px solid #93c5fd;
-  border-radius: 0.375rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #1d4ed8;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.job-action-btn:hover {
-  background: #bfdbfe;
-}
-
-/* Modal */
-.job-modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
-}
-
-.job-modal {
-  background: #fff;
-  border-radius: 0.5rem;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
-  /* Detection-result tables can be wide (8+ columns). Give the modal room
-     to breathe — 90% of the viewport, capped at 1600px on ultra-wide
-     screens so columns don't get unreadably stretched. */
-  width: 90vw;
-  max-width: 1600px;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.job-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.job-modal-header-left {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.job-modal-header-badges {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.job-modal-header h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #111827;
-}
-
-.job-modal-close {
-  background: none;
-  border: none;
-  font-size: 1.25rem;
-  color: #9ca3af;
-  cursor: pointer;
-  padding: 0 0.25rem;
-  line-height: 1;
-}
-
-.job-modal-close:hover {
-  color: #374151;
-}
-
-.job-modal-body {
-  padding: 1rem;
-  overflow-y: auto;
-  flex: 1;
-}
-
-.job-modal-text {
-  color: #374151;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
-}
-
-.job-modal-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8125rem;
-}
-
-.job-modal-table th,
-.job-modal-table td {
-  padding: 0.375rem 0.5rem;
-  text-align: left;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-.job-modal-table th {
-  font-weight: 600;
-  color: #6b7280;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.025em;
-  background: #f9fafb;
-  position: sticky;
-  top: 0;
-}
-
-.job-modal-table td {
-  color: #374151;
-}
-
-/* Resizable modal tables: fixed layout so the header widths drive the columns
-   (no per-cell styles needed); an explicit total width lets a widened column
-   scroll horizontally instead of squashing its neighbours. */
-.job-modal-table--resizable {
-  table-layout: fixed;
-  min-width: 100%;
-}
-
-.job-modal-table--resizable th,
-.job-modal-table--resizable td {
-  overflow: hidden;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-/* Drag grip on the right edge of a header cell. The header is already
-   position: sticky (a positioning context), so the handle anchors to it. */
-.job-modal-col-resize {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 7px;
-  height: 100%;
-  cursor: col-resize;
-  user-select: none;
-  z-index: 3;
-}
-
-.job-modal-col-resize:hover {
-  background: #c7d2fe;
-}
-
-/* Inside a resizable table the dragged width is authoritative, so drop the
-   fixed min/max-width caps some cells carry (they'd otherwise stop the drag).
-   Their white-space/line-height rules still apply. */
-.job-modal-table--resizable .suggestion-reason-col,
-.job-modal-table--resizable .suggestion-reason-cell,
-.job-modal-table--resizable .suggestion-name-col,
-.job-modal-table--resizable .suggestion-name-cell,
-.job-modal-table--resizable .pdf-analysis-reason-cell {
-  min-width: 0;
-  max-width: none;
-}
-
-.job-modal-source-badge {
-  display: inline-block;
-  padding: 0.0625rem 0.375rem;
-  border-radius: 9999px;
-  font-size: 0.6875rem;
-  font-weight: 500;
-}
-
-.context-row td {
-  border-bottom: 2px solid #e5e7eb;
-}
-
-.context-cell {
-  font-size: 0.75rem;
-  color: #6b7280;
-  font-style: italic;
-  line-height: 1.4;
-  padding-top: 0 !important;
-  padding-bottom: 0.5rem !important;
-  white-space: normal;
-  word-break: break-word;
-}
-
-.job-modal-table-wrapper {
-  max-height: 400px;
-  overflow: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 0.375rem;
-}
-
-/* Sticky header inside the scrolling wrapper — the body scrolls, the column
-   labels stay visible. */
-.job-modal-table-wrapper .job-modal-table thead th {
-  position: sticky;
-  top: 0;
-  background: #f9fafb;
-  z-index: 1;
-}
-
-/* Tab-group filter for the consolidated modal views */
-.job-modal-tabs {
-  display: flex;
-  gap: 0.25rem;
-  border-bottom: 1px solid #e5e7eb;
-  margin-bottom: 0.5rem;
-}
-
-.job-modal-tab {
-  padding: 0.375rem 0.75rem;
-  font-size: 0.8125rem;
-  color: #6b7280;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.job-modal-tab:hover {
-  color: #374151;
-}
-
-.job-modal-tab-active {
-  color: #1d4ed8;
-  border-bottom-color: #1d4ed8;
-  font-weight: 500;
-}
-
-.job-modal-tab-count {
-  margin-left: 0.25rem;
-  padding: 0 0.375rem;
-  border-radius: 9999px;
-  background: #f3f4f6;
-  color: #6b7280;
-  font-size: 0.6875rem;
-}
-
-/* Tab-group filter row directly above the table. The row carries the bottom
-   rule so the tabs and (for suggestions) the decision chips share one baseline. */
-.job-modal-tabs-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  border-bottom: 1px solid #e5e7eb;
-  margin-bottom: 0.5rem;
-}
-
-.job-modal-tabs-row .job-modal-tabs {
-  border-bottom: none;
-  margin-bottom: 0;
-}
-
-/* PDF Analysis header: download actions + summary above the search/tab controls */
-.pdf-analysis-header {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.job-modal-divider {
-  border: none;
-  border-top: 1px solid #e5e7eb;
-  margin: 0.25rem 0 0.5rem;
-}
-
-/* Modal table controls (search + resource-type filter) */
-.job-modal-table-controls {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.job-modal-search {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid #d1d5db;
-  border-radius: 0.375rem;
-  padding: 0.375rem 0.625rem;
-  font-size: 0.8125rem;
-}
-
-.job-modal-type-filter {
-  border: 1px solid #d1d5db;
-  border-radius: 0.375rem;
-  padding: 0.375rem 0.625rem;
-  font-size: 0.8125rem;
-  background: white;
-  max-width: 14rem;
-}
-
-/* Decision filter chips (multi-select) in the suggestions modal */
-.job-modal-decision-filter {
-  display: flex;
-  gap: 0.25rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.job-modal-decision-chip {
-  cursor: pointer;
-  border: 1px solid transparent;
-}
-
-.job-modal-decision-chip:hover {
-  border-color: currentColor;
-}
-
-.job-modal-decision-chip-off {
-  opacity: 0.35;
-}
-
-.job-modal-decision-chip-count {
-  margin-left: 0.25rem;
-  font-weight: 400;
-  opacity: 0.75;
-}
-
-.job-modal-filter-empty {
-  padding: 1rem;
-  text-align: center;
-  color: #6b7280;
-  font-size: 0.8125rem;
-}
-
-/* ── PDF Analysis modal: Generated KRT pre-merge view ────────────── */
-
-.pdf-analysis-modal-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.pdf-analysis-summary {
-  font-size: 0.8125rem;
-  color: #4b5563;
-  padding: 0.5rem 0.75rem;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 0.375rem;
-}
-.pdf-analysis-summary-hint {
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: #6b7280;
-}
-
-/* AI Suggestions modal: decision badges + update diff (old → new). */
-.suggestion-decision-badge {
-  display: inline-block;
-  padding: 0.0625rem 0.375rem;
-  border-radius: 9999px;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  background: #f3f4f6;
-  color: #4b5563;
-}
 .sdb-add    { background: #dcfce7; color: #166534; }
 .sdb-update { background: #dbeafe; color: #1e40af; }
 .sdb-remove { background: #fee2e2; color: #b91c1c; }
 .sdb-skip   { background: #f3f4f6; color: #6b7280; }
 .sdb-unreviewed { background: #fef3c7; color: #92400e; }
-/* Diff cells: author side = old (red), generated side = new (green). */
-.diff-old { color: #b91c1c; background: #fef2f2; padding: 0 0.2rem; border-radius: 3px; font-weight: 600; }
-.diff-new { color: #166534; background: #f0fdf4; padding: 0 0.2rem; border-radius: 3px; font-weight: 600; }
 
-/* Each decision is a group of 1-2 rows (Author / Generated). */
-.sugg-group-even td { background: #ffffff; }
-.sugg-group-odd td  { background: #fafafa; }
-.sugg-group-start td { border-top: 2px solid #e5e7eb; }
-.sugg-role {
-  display: inline-block;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  padding: 0.0625rem 0.375rem;
-  border-radius: 4px;
-  white-space: nowrap;
-}
 .sugg-role-author    { background: #eef2ff; color: #3730a3; }
 .sugg-role-generated { background: #ecfeff; color: #155e75; }
-
-/* AI Suggestions column sizing: roomy Reason, compact Resource Name. */
-.suggestion-reason-col, .suggestion-reason-cell {
-  min-width: 240px;
-  max-width: 460px;
-  white-space: normal;
-  line-height: 1.35;
-}
-.suggestion-name-col, .suggestion-name-cell {
-  /* min-width matters inside the scrolling wrapper: without it the browser
-     satisfies the reason column's min-width by collapsing this one to ~1ch. */
-  min-width: 160px;
-  max-width: 260px;
-  white-space: normal;
-  word-break: break-word;
-}
-
-/* "KRT #" column — group identity, shown once per merged group. */
-.pdf-analysis-krtnum-cell {
-  white-space: nowrap;
-  vertical-align: top;
-}
-.pdf-analysis-krtnum {
-  font-weight: 700;
-  color: #4b5563;
-}
-.pdf-analysis-merge-label {
-  margin-top: 0.125rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  color: #2563eb;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 9999px;
-  padding: 0.0625rem 0.375rem;
-  display: inline-block;
-  cursor: help;
-}
-
-.pdf-analysis-actions {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-/* Each merged item is a "group". Rows belonging to the same group share a
-   background tint; consecutive groups alternate light/lighter so the eye can
-   track group boundaries even on a long, scrollable table. */
-.pdf-analysis-group-even td {
-  background: #ffffff;
-}
-
-.pdf-analysis-group-odd td {
-  background: #f9fafb; /* gray-50 */
-}
-
-/* A solid divider between groups makes the boundary unambiguous. The first
-   row of each group gets a top border; the last row gets a small bottom gap. */
-.pdf-analysis-group-start td {
-  border-top: 2px solid #d1d5db; /* gray-300 */
-}
-
-/* Multi-contributor groups (the duplicates) take precedence: warmer
-   background + a left-border accent so they're easy to spot. */
-.pdf-analysis-group-merged td {
-  background: #fef3c7 !important; /* soft amber */
-}
-
-.pdf-analysis-group-merged.pdf-analysis-group-start td:first-child {
-  border-left: 3px solid #f59e0b; /* amber-500 accent */
-}
-
-.pdf-analysis-group-merged:not(.pdf-analysis-group-start) td:first-child {
-  border-left: 3px solid #f59e0b;
-}
 
 /* Inline "×N" pill next to the resource name on the group's first row —
    gives a quick count without forcing the reader to look at the last column. */
@@ -3097,13 +1585,6 @@ async function downloadMarkdownFile(fileId) {
   font-size: 0.625rem;
   font-weight: 700;
   vertical-align: middle;
-}
-
-/* Legacy per-row duplicate marker kept for compatibility with any consumer
-   that still uses it (e.g. printed views). New code should rely on the
-   group-* classes above. */
-.pdf-analysis-row-duplicate td {
-  background: #fef3c7;
 }
 
 .pdf-analysis-duplicate-badge {
@@ -3120,146 +1601,8 @@ async function downloadMarkdownFile(fileId) {
   cursor: help;
 }
 
-.pdf-analysis-empty {
-  padding: 1rem;
-  text-align: center;
-  font-size: 0.8125rem;
-  color: #6b7280;
-  background: #f9fafb;
-  border: 1px dashed #d1d5db;
-  border-radius: 0.375rem;
-}
-
-/* Reason cells wrap and get room so sentence-length reasons stay readable. */
-.pdf-analysis-reason-cell {
-  white-space: normal;
-  min-width: 220px;
-  max-width: 360px;
-  line-height: 1.35;
-}
-
-/* Dropped candidates section */
-.pdf-analysis-dropped {
-  margin-top: 1rem;
-}
-.pdf-analysis-dropped-count {
-  display: inline-block;
-  margin-left: 0.375rem;
-  padding: 0.0625rem 0.375rem;
-  border-radius: 9999px;
-  background: #fee2e2;
-  color: #b91c1c;
-  font-size: 0.6875rem;
-  font-weight: 600;
-}
-.pdf-analysis-dropped-hint {
-  font-size: 0.75rem;
-  color: #6b7280;
-  margin: 0.25rem 0 0.5rem;
-}
-.pdf-analysis-dropped-row td {
-  background: #fef2f2;
-}
-.pdf-analysis-dropped-name {
-  text-decoration: line-through;
-  text-decoration-color: #fca5a5;
-  color: #6b7280;
-}
-
-/* Inline badge marking a row as matched in the enrichment list */
-.enrichment-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.1875rem;
-  margin-left: 0.375rem;
-  padding: 0.0625rem 0.375rem;
-  background: #ede9fe;
-  color: #6d28d9;
-  border: 1px solid #c4b5fd;
-  border-radius: 9999px;
-  font-size: 0.625rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  white-space: nowrap;
-  vertical-align: middle;
-}
-
-.enrichment-badge svg {
-  width: 0.625rem;
-  height: 0.625rem;
-}
-
-/* "merged ×N" pill — shown when an item has > 1 entry in mergedFrom.
-   Clickable: toggles the drill-down row below. */
-.merged-from-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.1875rem;
-  margin-left: 0.375rem;
-  padding: 0.0625rem 0.375rem 0.0625rem 0.5rem;
-  background: #fef3c7;
-  color: #92400e;
-  border: 1px solid #fcd34d;
-  border-radius: 9999px;
-  font-size: 0.625rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  white-space: nowrap;
-  vertical-align: middle;
-  cursor: pointer;
-}
-
-.merged-from-badge:hover {
-  background: #fde68a;
-}
-
-.merged-from-chevron {
-  display: inline-block;
-  transition: transform 0.15s ease;
-}
-
 .merged-from-chevron.open {
   transform: rotate(180deg);
-}
-
-.merged-from-row td {
-  background: #fffbeb;
-  padding: 0.5rem 0.75rem;
-  border-top: 1px solid #fde68a;
-}
-
-.merged-from-title {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #92400e;
-  margin-bottom: 0.375rem;
-}
-
-.merged-from-table {
-  width: 100%;
-  font-size: 0.75rem;
-  border-collapse: collapse;
-}
-
-.merged-from-table th,
-.merged-from-table td {
-  padding: 0.25rem 0.5rem;
-  text-align: left;
-  border-bottom: 1px solid #fde68a;
-}
-
-.merged-from-table th {
-  font-weight: 600;
-  color: #78350f;
-  background: #fef3c7;
-}
-
-/* A cell whose value was filled in from the enrichment list (not the detector) */
-.cell-from-enrichment {
-  text-decoration: underline dotted #8b5cf6;
-  text-underline-offset: 2px;
 }
 
 .krt-badge {
@@ -3277,171 +1620,22 @@ async function downloadMarkdownFile(fileId) {
   background: #d1fae5;
   color: #047857;
   margin-left: 0.375rem;
-}
-
-.source-enriched {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.source-softcite {
-  background: #f3f4f6;
-  color: #6b7280;
-}
-
-.source-grobid {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.source-orcid-api {
-  background: #e0e7ff;
-  color: #3730a3;
-}
-
-.orcid-link {
-  color: #2563eb;
-  text-decoration: none;
-  font-family: monospace;
-  font-size: 0.75rem;
-}
-
-.orcid-link:hover {
-  text-decoration: underline;
-}
-
-/* Modal sections */
-.job-modal-section {
-  margin-top: 1rem;
-}
-
-.job-modal-section-title {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #6b7280;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin: 0 0 0.5rem 0;
-  padding-bottom: 0.25rem;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-.job-modal-notice {
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8125rem;
-  border-radius: 0.375rem;
-  margin-bottom: 0.5rem;
-}
-
-.job-modal-notice-demo {
-  background: #eef2ff;
-  color: #3730a3;
-}
-
-.job-modal-notice-off {
-  background: #f9fafb;
-  color: #6b7280;
-}
-
-.job-modal-notice-detail {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  font-family: ui-monospace, monospace;
-  opacity: 0.75;
-  word-break: break-word;
-}
-
-.job-modal-sub-services {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.job-modal-status-content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.job-modal-detail {
-  color: #374151;
-  line-height: 1.5;
-  word-break: break-word;
-  white-space: pre-wrap;
-  margin: 0;
-}
-
-.job-modal-error {
-  color: #b91c1c;
-}
-
-.job-modal-warning {
-  padding: 0.375rem 0.625rem;
-  background: #fef3c7;
-  color: #92400e;
-  border-radius: 0.25rem;
-  font-size: 0.8125rem;
-  margin: 0;
-}
-
-.job-modal-timing {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  font-size: 0.8125rem;
-  color: #6b7280;
-}
-
-.job-modal-elapsed {
-  font-weight: 500;
-  color: #374151;
-}
-
-.job-modal-retry {
-  color: #92400e;
-  font-weight: 500;
-}
-
-.job-modal-times {
-  display: flex;
-  gap: 1rem;
-  font-size: 0.75rem;
-  color: #6b7280;
-  padding: 0.375rem 0.5rem;
-  background: #f9fafb;
-  border-radius: 0.25rem;
-}
-
-.job-modal-config {
-  color: #9ca3af;
-  font-size: 0.75rem;
-}
-
-.job-modal-actions {
-  margin-top: 1rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid #e5e7eb;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  justify-content: flex-end;
-}
-
-.text-center {
+}.text-center {
   text-align: center;
-}
+}.grounding-confirmed { background: #dcfce7; color: #15803d; }
+.grounding-incomplete { background: #fef3c7; color: #b45309; }
+.grounding-not-detected { background: #fee2e2; color: #b91c1c; }
 
-/* Modal transition */
-.modal-fade-enter-active,
-.modal-fade-leave-active {
-  transition: opacity 0.2s ease;
+.job-status-item-link { text-decoration: none; color: inherit; display: block; }
+.job-conflict-badge {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
 }
+/* Outcome verdict: located, but only by a partial name match. Blue reads as
+   "found, low confidence" rather than the grey of a degraded quote. */
+.grounding-partial-match { background: #dbeafe; color: #1d4ed8; }.engine-softcite { background: #e0e7ff; color: #3730a3; }
+.engine-lm { background: #ede9fe; color: #6d28d9; }
 
-.modal-fade-enter-from,
-.modal-fade-leave-to {
-  opacity: 0;
-}
-
+.grounding-fill-empty { color: #9ca3af; font-style: italic; cursor: help; }
 </style>

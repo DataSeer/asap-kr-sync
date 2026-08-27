@@ -3,8 +3,8 @@
 The application integrates with several external services for PDF analysis, software detection, author extraction, and report generation. Each integration follows a consistent pattern: a config module for environment-based settings, a client service with retry logic, and a main service that orchestrates the business logic.
 
 > This document covers the **external-service call specifics** (endpoints, auth, request/response). For how each
-> background module works end-to-end (engine, the 4-stage contract, demo fallback, outputs), see
-> [background-modules.md](./background-modules.md).
+> pipeline module works end-to-end (engine, the 4-stage contract, demo fallback, outputs), see
+> [pipeline-modules.md](./pipeline-modules.md).
 
 ## PDF Analysis (Generated KRT — rule-based merge → LM consolidation)
 
@@ -26,7 +26,7 @@ PDF Analysis builds the Generated KRT in two stages: an **in-app** rule-based me
 
 **Stage 2 (LM consolidation):** Gemini consolidates the merged candidates into the final Generated KRT — merging near-duplicates, dropping non-resources, cleaning fields — attaching a `reason` to each kept line and recording dropped candidates with reasons. The final Generated KRT is persisted under `submission_jobs.result.data.items` for the `pdf_analysis` job and uploaded to S3 as `generated-krt.json`.
 
-**Source auto-detection:** when a merged resource has **no** SOURCE supplied by any contributor, `mergeDetections` infers one from the identifier via `inferSourceFromIdentifier` (`identifier-normalize.service.js`). This is **allowlist-only** — it maps unambiguous repository URLs (GitHub, GitLab, Bitbucket), registered DOI prefixes (Zenodo `10.5281/zenodo.`, Dryad `10.5061/dryad.`, figshare `10.6084/m9.figshare.`, protocols.io `10.17504/protocols.io.`), and structured accessions (NCBI GEO/SRA/BioProject/BioSample, dbGaP, ArrayExpress, ProteomeXchange, EMPIAR, EMDB, Addgene) to a canonical source name. Anything not on the allowlist (journal DOIs, bare RRIDs, PDB/GenBank/UniProt) returns `null` and the SOURCE stays blank — it never guesses. On conflict, a **DOI/accession source outranks a URL source** (the registered identifier is the more authoritative pointer); two distinct DOI/accession sources, or two distinct URL hosts, also return `null`. It never overwrites a detector-supplied source, and the diff engine separately refuses to overwrite a user-filled SOURCE cell.
+**Source auto-detection:** when a merged resource has **no** SOURCE supplied by any contributor, `mergeDetections` infers one from the identifier via `inferSourceFromIdentifier` (`identifier-normalize.service.js`). This is **allowlist-only** — it maps unambiguous repository URLs (GitHub, GitLab, Bitbucket), registered DOI prefixes (Zenodo `10.5281/zenodo.`, Dryad `10.5061/dryad.`, figshare `10.6084/m9.figshare.`, protocols.io `10.17504/protocols.io.`), and structured accessions (NCBI GEO/SRA/BioProject/BioSample, dbGaP, ArrayExpress, ProteomeXchange, EMPIAR, EMDB, Addgene) to a canonical source name. It also maps **protocol-publishing venues** — protocols.io, JoVE (`10.3791/`), STAR Protocols (`10.1016/j.xpro`), MethodsX (`10.1016/j.mex`), Bio-protocol (`10.21769/bio`) and its preprints, Current Protocols (`10.1002/cpz1`), Cold Spring Harbor Protocols (`10.1101/pdb.prot`), Nature Protocols (`10.1038/nprot|nport|s41596`) and Protocol Exchange (`10.1038/protex`); those rows are tagged `venue: 'protocol'` and double as the catalog for the published-protocol sweep. Anything not on the allowlist (journal DOIs, bare RRIDs, PDB/GenBank/UniProt) returns `null` and the SOURCE stays blank — it never guesses. Protocol publishers whose prefix is shared with non-protocol content are deliberately **absent** (`10.1371/journal.*` = all PLOS, `10.1007/*` and `10.1385/*` = all Springer chapters, `10.2144/*` = all BioTechniques, legacy `10.21203/rs.[23]*` = generic ResearchSquare preprints). On conflict, a **DOI/accession source outranks a URL source** (the registered identifier is the more authoritative pointer); two distinct DOI/accession sources, or two distinct URL hosts, also return `null`. It never overwrites a detector-supplied source, and the diff engine separately refuses to overwrite a user-filled SOURCE cell.
 
 ORCID extraction is **not** a contributor — its output writes to `submission.authors`.
 
@@ -34,7 +34,7 @@ ORCID extraction is **not** a contributor — its output writes to `submission.a
 
 ## Google Gemini API (AI Suggestions / KRT Comparison)
 
-Powers the `suggestion_generation` background job. A Gemini call compares the **author KRT** against the **Generated KRT** and emits, for every generated resource, a decision (add / skip / update / remove) with a reason, plus author-side fixes. Author data is prioritized, the actionable list is kept manageable, and `remove` decisions are rare (clear mistakes only). The resulting suggestions are **persisted** on the job result. This module is **LM-only — there is no fallback**: with no LM configured, no suggestions are produced.
+Powers the `suggestion_generation` pipeline step. A Gemini call compares the **author KRT** against the **Generated KRT** and emits, for every generated resource, a decision (add / skip / update / remove) with a reason, plus author-side fixes. Author data is prioritized, the actionable list is kept manageable, and `remove` decisions are rare (clear mistakes only). The resulting suggestions are **persisted** on the job result. This module is **LM-only — there is no fallback**: with no LM configured, no suggestions are produced.
 
 | Property | Value |
 |----------|-------|
@@ -43,7 +43,7 @@ Powers the `suggestion_generation` background job. A Gemini call compares the **
 | **Prompt** | `src/backend/data/prompts/krt-comparison.txt` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `KRT_COMPARISON_GEMINI_MODEL`) |
-| **Auth** | API key (`KRT_COMPARISON_GEMINI_API_KEY`) |
+| **Auth** | API key: `KRT_COMPARISON_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 5 minutes (`KRT_COMPARISON_API_TIMEOUT`) |
 | **Depends on** | PDF Analysis (Generated KRT), which already gates on every KRT detector; runs last in the pipeline |
 | **Disable** | `KRT_COMPARISON_ENABLED=false` (no suggestions are generated) |
@@ -54,7 +54,7 @@ Each suggestion carries the real contributing detection module(s) (software/data
 
 ## Google Gemini API (DAS Suggestions)
 
-Powers the standalone `das_suggestions` background job. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
+Powers the `das_suggestions` pipeline step — a pipeline step gated to the Availability step. A Gemini call checks the **Data/Code Availability Statement** against the ASAP rulebook (9 checks — see [pipeline-modules.md §3.11](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)) and returns a **per-rule verdict** (`applies` + reason), judging the DAS **semantically** rather than by keyword matching. Deterministic KRT signals (new-dataset / new-code / resource-type presence, computed from `KRTData`) are handed to the LM as ground truth. This module is **LM-only but has a fallback**: with no LM configured (or on failure), the `/availability` view renders the same rules **computed in-browser** and Continue is not blocked.
 
 | Property | Value |
 |----------|-------|
@@ -63,9 +63,9 @@ Powers the standalone `das_suggestions` background job. A Gemini call checks the
 | **Prompt** | `src/backend/data/prompts/das-suggestions.txt` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `DAS_SUGGESTIONS_GEMINI_MODEL`) |
-| **Auth** | API key (`DAS_SUGGESTIONS_GEMINI_API_KEY`) |
+| **Auth** | API key: `DAS_SUGGESTIONS_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 2 minutes (`DAS_SUGGESTIONS_API_TIMEOUT`) |
-| **Depends on** | Nothing in the pipeline — standalone; started from `/availability` (DAS already extracted, KRT final) |
+| **Depends on** | `das_extraction` for the statement, then held by the `availability_ready` gate until the submission reaches `step_as` **and** carries a real statement |
 | **Disable** | `DAS_SUGGESTIONS_ENABLED=false` (frontend falls back to legacy in-browser rules) |
 
 The verdicts are **persisted** on the job result and read via `GET /api/submissions/:id/das-suggestions`. Re-run via `POST /api/submissions/:id/das-suggestions/regenerate` (on first arrival at `/availability` and whenever the DAS text is edited).
@@ -81,7 +81,7 @@ Extracts the Data Availability Statement (or another section type) from the manu
 | **Config** | `src/backend/config/das-extraction-api.js` |
 | **Client** | `src/backend/services/pdf/das-extraction.service.js` |
 | **Prompt** | `src/backend/data/prompts/das-extraction.txt` (public, version-controlled) |
-| **Auth** | `DAS_EXTRACTION_GEMINI_API_KEY` |
+| **Auth** | `DAS_EXTRACTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)) |
 | **Model** | `DAS_EXTRACTION_GEMINI_MODEL` (default `gemini-2.5-flash`) |
 | **Timeout** | 2 minutes (`DAS_EXTRACTION_API_TIMEOUT`) |
 | **Disable** | `DAS_EXTRACTION_ENABLED=false` |
@@ -255,8 +255,8 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 | **Library** | `langextract` (Google, Python) |
 | **Input** | Markdown text (from S3, produced by Markdown Convert job) |
 | **Output** | JSON array of `DATASET_ROW` extractions with `extracted_text` and `attributes` |
-| **Model** | `gemini-2.5-flash` (configurable via `DATASETS_DETECTION_GEMINI_MODEL`) |
-| **Auth** | API key (`DATASETS_DETECTION_GEMINI_API_KEY`) |
+| **Model** | `gemini-2.5-flash` (configurable via `DATASETS_DETECTION_GEMINI_MODEL`, or the shared `GEMINI_MODEL`) |
+| **Auth** | API key: `DATASETS_DETECTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). The subprocess reads the per-module variable out of its own environment, which is why the fallback is written into `process.env` at startup rather than resolved in JavaScript only. |
 | **Timeout** | 10 minutes (`DATASETS_LANGEXTRACT_TIMEOUT`) |
 
 **Key parameters:** `max_workers` (60), `max_char_buffer` (3000), `extraction_passes` (1) — all configurable via env vars.
@@ -272,7 +272,7 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 | **Service** | `src/backend/services/datasets/datasets.service.js` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `DATASETS_DETECTION_GEMINI_MODEL`) |
-| **Auth** | API key (`DATASETS_DETECTION_GEMINI_API_KEY`) |
+| **Auth** | API key: `DATASETS_DETECTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 5 minutes (`DATASETS_DETECTION_API_TIMEOUT`) |
 | **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
 | **Disable** | `DATASETS_DETECTION_ENABLED=false` |
@@ -298,10 +298,13 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 
 ## Google Gemini API (Materials Detection)
 
-> **Author-seeded and minimal.** Materials detection is now grounded on the author's KRT: the prompt
-> (`src/backend/data/prompts/materials-detection.txt`) is seeded with the author's KRT material rows (via the
-> shared `src/backend/services/krt/author-krt-seeds.service.js`). The detector **skips extraction entirely when
-> the author provided no materials** — no author material rows → no Gemini call.
+> **Cue-driven.** The prompt tells the model which *textual cues* mark a material — a catalog number, an RRID, a
+> vendor name, a clone ID, a concentration in a methods sentence. Which prompt file it uses depends on the
+> pipeline and on the submission: `seeded/materials-detection.txt` when the author's KRT has materials to seed
+> with, `blind/materials-detection.txt` otherwise. It runs on **every** submission,
+> including ones with no author materials; the author's table enters one step later, at `krt_grounding`.
+> *(Until 2026-08 the prompt was seeded with the author's material rows and skipped entirely when there were
+> none, which made the KRT-less mode blind by construction.)*
 
 Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Follows the same pattern as datasets detection.
 
@@ -311,7 +314,7 @@ Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Fo
 | **Service** | `src/backend/services/materials/materials.service.js` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `MATERIALS_DETECTION_GEMINI_MODEL`) |
-| **Auth** | API key (`MATERIALS_DETECTION_GEMINI_API_KEY`) |
+| **Auth** | API key: `MATERIALS_DETECTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 5 minutes (`MATERIALS_DETECTION_API_TIMEOUT`) |
 | **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
 | **Disable** | `MATERIALS_DETECTION_ENABLED=false` |
@@ -336,7 +339,7 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 | **Service** | `src/backend/services/protocols/protocols.service.js` |
 | **SDK** | `@google/genai` (Google GenAI Node.js SDK) |
 | **Model** | `gemini-2.5-flash` (configurable via `PROTOCOLS_DETECTION_GEMINI_MODEL`) |
-| **Auth** | API key (`PROTOCOLS_DETECTION_GEMINI_API_KEY`) |
+| **Auth** | API key: `PROTOCOLS_DETECTION_GEMINI_API_KEY`, falling back to the shared `GEMINI_API_KEY` (see [environment-variables.md → Shared Gemini credentials](./environment-variables.md#shared-gemini-credentials)). |
 | **Timeout** | 5 minutes (`PROTOCOLS_DETECTION_API_TIMEOUT`) |
 | **Retry** | 2 retries, 60s delay (via pg-boss job retry) |
 | **Disable** | `PROTOCOLS_DETECTION_ENABLED=false` |
@@ -345,7 +348,7 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 - `canonical_name`, `protocol_type` (EXPERIMENTAL, COMPUTATIONAL, etc.), `protocol_role` (NEW/REUSE)
 - `source`, `doi`, `url`, `krt_relevance`
 
-**Author-KRT seeding:** the prompt is seeded with the author's protocol rows as "Section 0" (via the shared `src/backend/services/krt/author-krt-seeds.service.js`). Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
+**Seeding:** the prompt's "Section 0" — the author's protocol rows as authoritative base records — is what `blind-v1` removes; under the default `seeded-v1` those rows are still passed as seeds. Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
 
 **Prompt file:** `src/backend/data/prompts/protocols-detection.txt`
 
@@ -365,12 +368,12 @@ env vars). Excel is the only active export format — see the next section.
 
 ## Excel Report Generation
 
-Active report format using the `xlsx` (SheetJS) library.
+Active report format, written with **exceljs**.
 
 | Property | Value |
 |----------|-------|
 | **Exporter** | `src/backend/services/reports/ExcelExporter.js` |
-| **Library** | `xlsx` (SheetJS) |
+| **Library** | `exceljs` — the app's only spreadsheet library |
 
 **Sheets generated:**
 1. **Summary** — manuscript metadata, resource/change counts

@@ -220,6 +220,7 @@ async function extractHeader(pdfBuffer, fileName = 'article.pdf') {
         return data;
       },
       {
+        label: 'GROBID',
         maxRetries: grobidConfig.retryConfig.maxRetries,
         delay: grobidConfig.retryConfig.retryDelay,
         multiplier: grobidConfig.retryConfig.retryDelayMultiplier,

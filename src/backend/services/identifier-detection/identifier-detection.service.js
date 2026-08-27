@@ -4,9 +4,17 @@
  * Scans the post-conversion markdown for known identifiers (RRID/DOI/PID/URL/
  * catalog) using an in-memory index built from EnrichmentListEntry rows.
  *
+ * Two independent sweeps feed one output:
+ *   a. enrichment-list sweep — matches identifiers that were curated into an
+ *      EnrichmentListEntry. High precision, but blind to anything uncurated.
+ *   b. published-protocol sweep — recognizes protocol-publishing VENUES from
+ *      the identifier shape alone (no list involved), recovering protocol
+ *      DOIs/URLs nobody curated. See published-protocol-scanner.service.js.
+ *
  * Four-step pipeline (matches every other detection module):
  *   1. detectIdentifiers(md, index)         → raw scanner matches
  *   2. buildKrtItemsIdentifier(matches, md) → canonical KrtEntry[]
+ *      buildKrtItemsPublishedProtocol(…)    → canonical KrtEntry[] (sweep b)
  *   3. enrichIdentifiers(items)             → pass-through (the index entries
  *                                              already carry every field the
  *                                              enrichment list could fill in)
@@ -21,16 +29,19 @@
 // Sequelize models are lazy-loaded inside the worker functions below — see
 // the matching comment in protocols.service.js for the rationale.
 const s3Service = require('../storage/s3.service');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const knownIdentifierIndex = require('./known-identifier-index.service');
 const knownIdentifierScanner = require('./known-identifier-scanner.service');
+const publishedProtocolScanner = require('./published-protocol-scanner.service');
 const identifierConfig = require('../../config/identifier-detection-api');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const inputFreeze = require('../queue/input-freeze.service');
 const { canonicalResourceType } = require('../pdf-analysis/identifier-normalize.service');
 const logger = require('../../utils/logger');
+const runInputs = require('../queue/run-inputs.service');
 
 // Confidence floor we hand to merge-detections for tiebreaking. Identifier
 // matches are usually high-precision so even MEDIUM is decent.
@@ -51,32 +62,38 @@ const CATEGORY_FALLBACK_TYPE = {
 };
 
 /**
- * Queue an identifier-detection job for a submission. Same shape as the
- * other queueX functions so the orchestrator's cascade-restart works without
- * special-casing.
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
  */
-async function queueIdentifierDetection(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+async function queueIdentifierDetection(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.IDENTIFIER_DETECTION,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.IDENTIFIER_DETECTION, round, userId);
+
+  logger.info('Identifier detection re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.IDENTIFIER_DETECTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Identifier detection queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 /**
@@ -168,6 +185,15 @@ function buildKrtItemsIdentifier(matches, markdownText) {
       // ADDITIONAL INFORMATION. It's stored on detectorMeta.context for
       // internal review only.
       additionalInformation: '',
+      // Grounded by construction: the scanner matched this identifier at a
+      // known offset in the markdown, so the evidence is already resolved and
+      // attachEvidence only fills in the section.
+      evidence: {
+        quote: snippetAt(markdownText, m.position, 80),
+        offset: m.position,
+        section: '',
+        match: 'exact'
+      },
       detectorMeta: {
         relevance: m.relevance,
         matchedTypes: m.types,
@@ -178,6 +204,50 @@ function buildKrtItemsIdentifier(matches, markdownText) {
       }
     };
   });
+}
+
+/**
+ * Step 2b: published-protocol scanner matches → canonical KrtEntry[].
+ *
+ * These rows come from the venue catalog, not the enrichment list, so they
+ * carry an identifier and a SOURCE but no name and no new/reuse — see the
+ * module header of published-protocol-scanner.service.js for why neither is
+ * inferable from an identifier.
+ *
+ * Pure function.
+ *
+ * @param {object[]} matches - from publishedProtocolScanner.scanPublishedProtocols
+ * @param {string} markdownText
+ * @returns {object[]} KrtEntry[]
+ */
+function buildKrtItemsPublishedProtocol(matches, markdownText) {
+  if (!Array.isArray(matches)) return [];
+  return matches.map(m => ({
+    resourceType: 'Protocol',
+    resourceName: '',
+    identifier: m.identifier,
+    source: m.source,
+    newReuse: '',
+    origin: 'protocol-venue-scan',
+    // Allowlist-only venue match — as high-precision as an enrichment-list hit.
+    confidence: RELEVANCE_TO_CONFIDENCE.HIGH,
+    additionalInformation: '',
+    evidence: {
+      quote: snippetAt(markdownText, m.position, 80),
+      offset: m.position,
+      section: '',
+      match: 'exact'
+    },
+    detectorMeta: {
+      relevance: 'HIGH',
+      matchedTypes: [m.type],
+      position: m.position,
+      catalogContext: null,
+      category: 'protocols',
+      venue: m.source,
+      context: snippetAt(markdownText, m.position, 80)
+    }
+  }));
 }
 
 /**
@@ -207,10 +277,12 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
   const startTime = Date.now();
 
   // 1. Latest markdown for this round.
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.IDENTIFIER_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for identifier detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', {
@@ -244,6 +316,28 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     durationMs: scanMs
   });
 
+  // No model here, so the curated list is the whole variable input — it is
+  // edited between runs, and a match that appears or vanishes is explained by
+  // its size and digest rather than by anything in the manuscript.
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, markdownText) },
+    // The index is three maps, not one — `index.size` was always undefined, so
+    // the audit record stored null for the very thing it says it is recording.
+    frozen: {
+      enrichmentIndex: {
+        byIdentifier: index?.byIdentifier?.size ?? null,
+        byCatalog: index?.byCatalog?.size ?? null,
+        catalogTokens: index?.catalogTokens?.size ?? null
+      }
+    },
+    meta: { engine: 'local-scan', scannedLength, referencesCutoff },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: identifierConfig
+  });
+
   // Persist raw scan output for forensics.
   await jobLogger?.saveRawResponse('identifier-scan', {
     matchCount: matches.length,
@@ -265,9 +359,36 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     }))
   });
 
+  // 3b. Published-protocol sweep. List-free: recognizes protocol-publishing
+  // venues from the identifier shape alone, so it recovers protocol DOIs/URLs
+  // that were never curated into an enrichment list. Shares the references
+  // cutoff so both sweeps see exactly the same body text.
+  const protocolMatches = publishedProtocolScanner.scanPublishedProtocols(markdownText, {
+    cutoff: referencesCutoff
+  }).matches;
+  jobLogger?.log('protocol_venue_scan_done', 'Published-protocol scan complete', {
+    matchCount: protocolMatches.length,
+    venues: [...new Set(protocolMatches.map(p => p.source))]
+  });
+  await jobLogger?.saveRawResponse('published-protocol-scan', {
+    matchCount: protocolMatches.length,
+    matches: protocolMatches
+  });
+
   const krtItems = buildKrtItemsIdentifier(matches, markdownText);
   const { enriched } = enrichIdentifiers(krtItems);
-  const items = dedupeKrtItems(enriched, 'identifier-scan');
+  const protocolItems = buildKrtItemsPublishedProtocol(protocolMatches, markdownText);
+
+  // These items are grounded by construction (the scanner matched at a real
+  // offset), so nothing can be dropped here — the pass only resolves the
+  // heading path for each hit, which downstream uses to tell an authors' own
+  // accession in Methods/Data-Availability from one cited in the Discussion.
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems } = attachEvidence([...enriched, ...protocolItems], evidenceIndex, {
+    drop: false,
+    label: 'identifier-scan'
+  });
+  const items = dedupeKrtItems(groundedItems, 'identifier-scan');
 
   // Stats by relevance + category for the worker's job-summary panel.
   // Read from detectorMeta (canonical shape).
@@ -288,6 +409,7 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
       highRelevanceCount: byRelevance.HIGH,
       byRelevance,
       byCategory,
+      publishedProtocolCount: protocolMatches.length,
       indexStats: {
         byIdentifier: index.byIdentifier.size,
         byCatalog: index.byCatalog.size,
@@ -306,9 +428,7 @@ async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 
@@ -330,5 +450,6 @@ module.exports = {
   // Pipeline steps (pure, exported for benchmarks/tests)
   detectIdentifiers,
   buildKrtItemsIdentifier,
+  buildKrtItemsPublishedProtocol,
   enrichIdentifiers
 };

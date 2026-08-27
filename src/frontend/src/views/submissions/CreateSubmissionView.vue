@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useAuthStore } from '@/stores/auth.store'
@@ -8,6 +8,7 @@ import submissionService from '@/services/submission.service'
 import pdfService from '@/services/pdf.service'
 import krtService from '@/services/krt.service'
 import demosService from '@/services/demos.service'
+import configService from '@/services/config.service'
 import api from '@/services/api'
 
 
@@ -129,6 +130,23 @@ function clearSupplementalFile() {
   if (input) input.value = ''
 }
 
+// Detection pipelines. The server sends only the arms this user may choose, so
+// a single-entry list means there is nothing to pick between and the selector
+// does not render.
+//
+// One option per pipeline, the default pre-selected — there is no separate
+// "Default" entry. An earlier version had both, which put the same pipeline in
+// the list twice under two labels; whatever is picked is sent explicitly, and
+// the server stamps it, so the submission records what it actually ran rather
+// than deferring to a default that may change later.
+const detectionPipelines = ref([])
+const pipelineId = ref('')
+
+/** The description of whatever is selected, so the choice explains itself. */
+const selectedPipelineDescription = computed(() =>
+  detectionPipelines.value.find((p) => p.id === pipelineId.value)?.description || ''
+)
+
 // Demo documents — discovered server-side from src/frontend/public/demo-files/.
 // Includes every PDF demo whether or not it has a matching KRT file.
 const demoDocuments = ref([])
@@ -146,6 +164,16 @@ onMounted(async () => {
       }))
   } catch {
     demoDocuments.value = []
+  }
+
+  try {
+    const { pipelines, defaultPipelineId } = await configService.getDetectionPipelines()
+    detectionPipelines.value = pipelines || []
+    pipelineId.value = defaultPipelineId || pipelines?.[0]?.id || ''
+  } catch {
+    // A failure here costs the selector, not the form: creating with the
+    // default is still correct and is what almost every submission wants.
+    detectionPipelines.value = []
   }
 
   // KRT template URL — used by the format-error block to link users to a
@@ -263,7 +291,10 @@ async function proceedWithSubmit(krtFileToSend) {
       {
         title: title.value,
         manuscriptId: null,
-        notes: notes.value
+        notes: notes.value,
+        // Left out entirely when nothing was picked, so the server stores null
+        // and "ran on whatever ships" stays distinguishable from a chosen arm.
+        pipelineId: pipelineId.value || undefined
       },
       krtFileToSend
     )
@@ -305,7 +336,7 @@ async function proceedWithSubmit(krtFileToSend) {
     const failures = results.filter(r => r && r.error)
 
     if (failures.length === 0) {
-      notificationStore.success('Submission created — background processes started')
+      notificationStore.success('Submission created — the pipeline has started')
     } else {
       // Submission is created; surface the file failures so the user can
       // retry the individual upload from step 2/3.
@@ -329,9 +360,6 @@ async function proceedWithSubmit(krtFileToSend) {
   }
 }
 
-function handleCancel() {
-  router.push({ name: 'dashboard' })
-}
 </script>
 
 <template>
@@ -342,7 +370,7 @@ function handleCancel() {
         <button
           type="button"
           class="btn-secondary text-sm"
-          title="Load demo metadata and files (PDF, Key Resources Table if available) in one click"
+          v-tooltip="'Load demo metadata and files (PDF, Key Resources Table if available) in one click'"
           @click="showDemoSelector = !showDemoSelector"
         >
           Use Demo Data
@@ -379,7 +407,7 @@ function handleCancel() {
                 <span
                   v-if="doc.krt"
                   class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium flex-shrink-0"
-                  :title="'Includes a Key Resources Table file: ' + doc.krt"
+                  v-tooltip="'Includes a Key Resources Table file: ' + doc.krt"
                 >Key Resources Table</span>
               </div>
               <div class="text-sm text-gray-700 mt-1 line-clamp-2">{{ doc.title }}</div>
@@ -435,7 +463,7 @@ function handleCancel() {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ krtFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (krtFile.size / 1024).toFixed(1) }} KB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearKrtFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearKrtFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -448,7 +476,7 @@ function handleCancel() {
         <label for="pdfFile" class="label">
           Upload Manuscript <span class="text-red-500">*</span>
         </label>
-        <p class="mb-2 text-sm text-gray-500">PDF or DOCX. Background processes start automatically after upload.</p>
+        <p class="mb-2 text-sm text-gray-500">PDF or DOCX. The pipeline starts automatically after upload.</p>
         <div v-if="!pdfFile">
           <div class="flex items-center">
             <input
@@ -467,7 +495,7 @@ function handleCancel() {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ pdfFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (pdfFile.size / 1024 / 1024).toFixed(1) }} MB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearPdfFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearPdfFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -496,7 +524,7 @@ function handleCancel() {
           </svg>
           <span class="text-sm text-gray-700 truncate flex-1">{{ supplementalFile.name }}</span>
           <span class="text-xs text-gray-400">{{ (supplementalFile.size / 1024 / 1024).toFixed(1) }} MB</span>
-          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove file" @click="clearSupplementalFile">
+          <button type="button" class="text-gray-400 hover:text-red-500 transition-colors" v-tooltip="'Remove file'" @click="clearSupplementalFile">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -514,6 +542,29 @@ function handleCancel() {
           class="input"
           placeholder="Add any notes about this submission"
         ></textarea>
+      </div>
+
+      <!--
+        6. Detection pipeline. Only rendered when there is genuinely a choice:
+        the server withholds admin-only arms from anyone who cannot pick one, so
+        for almost everybody this list has a single entry and no selector appears.
+        Chosen once, here — it decides what the detectors are shown, so it cannot
+        be changed later without splitting the analysis in two.
+      -->
+      <div v-if="detectionPipelines.length > 1">
+        <label for="pipelineId" class="label">
+          Detection pipeline <span class="text-gray-400 text-sm font-normal">(optional)</span>
+        </label>
+        <select id="pipelineId" v-model="pipelineId" class="input">
+          <option
+            v-for="p in detectionPipelines"
+            :key="p.id"
+            :value="p.id"
+          >{{ p.label }}{{ p.isDefault ? ' — default' : '' }}{{ p.adminOnly ? ' (experiment)' : '' }}</option>
+        </select>
+        <p class="mt-1 text-xs text-gray-500">
+          {{ selectedPipelineDescription }}
+        </p>
       </div>
 
       <!-- KRT format error — surfaced when the server rejects the file
@@ -541,13 +592,15 @@ function handleCancel() {
       </div>
 
       <div class="flex items-center justify-end space-x-4 pt-4 border-t">
-        <button type="button" class="btn-secondary" @click="handleCancel">Cancel</button>
+        <!-- Cancel goes somewhere; it does not DO anything. So it is a link,
+             and ctrl-click opens the dashboard in a new tab like any other. -->
+        <RouterLink :to="{ name: 'dashboard' }" class="btn-secondary">Cancel</RouterLink>
         <!-- Always clickable (except while loading) so the click handler can
              highlight missing required inputs (title + PDF). A missing KRT opens
              a confirmation modal instead of blocking. -->
         <button type="submit" :disabled="loading" class="btn-primary">
           <span v-if="loading">Creating...</span>
-          <span v-else>Create & Continue to Step 2</span>
+          <span v-else>Create & Continue to Step 1</span>
         </button>
       </div>
     </form>

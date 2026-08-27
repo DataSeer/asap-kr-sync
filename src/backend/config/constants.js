@@ -102,14 +102,20 @@ module.exports = {
     'approve_change',
     'reject_change',
     'import_findings',
-    'new_round'
+    'new_round',
+    // A pipeline result promoted into the submission's own data. Distinct from
+    // `edit` on purpose: "the extractor filled this in" and "a person typed
+    // this" are the two facts the Availability step exists to tell apart, and
+    // one enum value for both buries the distinction in a mixed list.
+    'apply'
   ],
 
   // Change log sources (what triggered the change)
   CHANGE_SOURCES: [
     'manual',           // User manually edited the value
     'ai_suggestion',    // User accepted an AI/LM suggestion
-    'krt_validation'    // User accepted a KRT validation fix
+    'krt_validation',   // User accepted a KRT validation fix
+    'pipeline'          // A step's output, promoted with nobody behind it
   ],
 
   // Job types for the unified SubmissionJob tracking system
@@ -124,6 +130,10 @@ module.exports = {
     MATERIALS_DETECTION: 'materials_detection',
     PROTOCOLS_DETECTION: 'protocols_detection',
     IDENTIFIER_DETECTION: 'identifier_detection',
+    // Reconciles the author's KRT against the candidate pool the detectors
+    // produced: per author row, confirmed / incomplete / not_detected. Never
+    // mutates the author's data — the outcome is a tag, not an edit.
+    KRT_GROUNDING: 'krt_grounding',
     // LM-based comparison of the author KRT vs the Generated KRT that produces
     // the add/update/remove suggestions (runs after PDF_ANALYSIS; re-triggerable).
     SUGGESTION_GENERATION: 'suggestion_generation',
@@ -139,7 +149,10 @@ module.exports = {
     'queued',
     'processing',
     'complete',
-    'failed'
+    'failed',
+    // Added with the enum in 20260722120000. Missing here, the admin job
+    // filter had no way to select the cancelled rows it was already listing.
+    'cancelled'
   ],
 
   // Validation severity levels

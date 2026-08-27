@@ -9,10 +9,11 @@
  */
 
 const logger = require('../utils/logger');
+const { geminiKey, geminiModel } = require('./gemini');
 
 module.exports = {
-  apiKey: process.env.KRT_GENERATION_GEMINI_API_KEY || '',
-  model: process.env.KRT_GENERATION_GEMINI_MODEL || 'gemini-2.5-flash',
+  apiKey: geminiKey('KRT_GENERATION'),
+  model: geminiModel('KRT_GENERATION'),
   timeout: parseInt(process.env.KRT_GENERATION_API_TIMEOUT, 10) || 300000,
   disabled: process.env.KRT_GENERATION_ENABLED !== 'true',
 

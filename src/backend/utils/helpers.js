@@ -93,18 +93,31 @@ function generateS3Key(manuscriptId, submissionId, round, fileType, originalName
 
 /**
  * Generate an S3 key for job log/response files.
- * Structure: {manuscriptId}_{submissionId}/round-{round}/jobs/{jobType}/{fileName}
+ * Structure: {manuscriptId}_{submissionId}/round-{round}/jobs/{jobType}/run-{n}/{fileName}
  *
  * @param {string} manuscriptId - Manuscript ID (can be null)
  * @param {string} submissionId - Submission UUID
  * @param {number} round - Submission round number
  * @param {string} jobType - Job type (e.g., "datasets_detection")
  * @param {string} fileName - File name (e.g., "logs.json", "gemini-consolidation.json")
+ * @param {number} [runNumber] - Which run of this step these artefacts belong to
  * @returns {string} S3 key (without bucket prefix)
  */
-function generateJobS3Key(manuscriptId, submissionId, round, jobType, fileName) {
+function generateJobS3Key(manuscriptId, submissionId, round, jobType, fileName, runNumber) {
   const folder = buildS3Folder(manuscriptId, submissionId);
-  return `${folder}/round-${round}/jobs/${jobType}/${fileName}`;
+  // Keyed by RUN, so a re-run cannot overwrite the previous run's artefacts.
+  //
+  // This used to be the job row's id, which separated runs only because
+  // `runAllProcesses` created a new row every time. Reusing the row is the
+  // rival-row fix, and it silently took that separation with it: re-running a
+  // step wrote over its own previous raw responses and frozen inputs. Nothing
+  // reported it, because the row and the artefacts still agreed — they were
+  // simply both the newest run.
+  //
+  // Runs recorded before this change keep their old `.../{jobRowId}/` path;
+  // each run row carries its own `s3_prefix`, so nothing has to be moved.
+  const run = runNumber ? `/run-${runNumber}` : '';
+  return `${folder}/round-${round}/jobs/${jobType}${run}/${fileName}`;
 }
 
 /**
@@ -199,15 +212,25 @@ async function retry(fn, options = {}) {
     maxDelay = Infinity,
     jitter = 0,
     shouldRetry = () => true,
-    onRetry = () => {}
+    onRetry = () => {},
+    // Names the service in the run's attempt record. Optional: a caller that
+    // omits it still has its tries counted, just not attributed.
+    label = null
   } = options;
 
+  const attemptLog = require('./attempt-log');
   let lastError;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await fn();
+      const value = await fn();
+      // Only worth a line when something went wrong before it: a run whose
+      // record is one "ok" per successful call says nothing and buries the
+      // attempts that matter.
+      if (attempt > 1) attemptLog.add({ layer: 'client', engine: label, ok: true });
+      return value;
     } catch (error) {
       lastError = error;
+      attemptLog.add({ layer: 'client', engine: label, ok: false, error });
       if (attempt >= maxRetries || !shouldRetry(error)) break;
       const backoff = Math.min(maxDelay, delay * Math.pow(multiplier, attempt - 1));
       const waitTime = backoff + (jitter > 0 ? Math.floor(Math.random() * jitter) : 0);

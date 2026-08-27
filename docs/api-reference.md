@@ -72,8 +72,25 @@ Create a user. **admin, ds_annotator only.** Non-admins cannot create admin-role
 ### `PATCH /api/users/:id`
 Update a user. **admin, ds_annotator only.** Body accepts any of `name, role, password, teams[]` (at least one required). Non-admins cannot edit existing admin users or promote anyone to admin. Replaces the full team list when `teams` is provided.
 
+`password` is **admin only** — a 403 for anyone else, even on a user they may
+otherwise edit. Whoever sets a password knows it and can then sign in as that
+person, so this is account takeover rather than a lesser form of editing; every
+other field here is recoverable. Setting it also revokes all of the target's
+sessions. Users change their own password through `PATCH /api/profile`, which
+requires the current one. Creating a user with an initial password is not
+affected — that starts an account rather than seizing one.
+
 ### `DELETE /api/users/:id`
-Delete a user. **admin only.** Self-deletion is blocked (400).
+Delete a user. **admin only.** Self-deletion is blocked (400); an
+already-deleted user is a 409.
+
+**This anonymises rather than removes.** The row survives so that the user's
+submissions and their edits to other people's submissions survive with it
+(both FKs cascade). The identity does not: the email is replaced with a random
+`@deleted.invalid` address, the name becomes `Deleted user`, the password hash
+and Auth0 link are nulled, team memberships are dropped and live refresh tokens
+are revoked, all in one transaction. The account is then absent from
+`GET /api/users`, and `GET`/`PATCH /api/users/:id` return 404 for it.
 
 ---
 
@@ -100,7 +117,9 @@ Create a team.
 Update a team. **Body**: any of `{ code, name, active }` (at least one).
 
 ### `DELETE /api/teams/:id`
-Delete a team.
+Delete a team. Refused with a 400 while the team still has members — that is the
+only thing attaching anything to a team, since a submission carries a *project*
+and an owner, and team visibility is derived from the owner's memberships.
 
 ### `GET /api/teams/export`
 Download all teams as CSV (`code,name,active`), re-importable via import.
@@ -206,12 +225,21 @@ Get a submission by ID. **Requires submission access.**
 ### `PATCH /api/submissions/:id`
 Update a submission (title, status, DAS, notes, etc.).
 
+Changing `dataAvailabilityStatement` **confirms it in the caller's name** and
+releases the Availability check: a person writing the statement has vouched for
+it, and asking them to confirm a sentence they just typed is a dialog people
+learn to dismiss. Re-saving the same text is not a change, so it does not
+re-stamp the confirmation — that would credit the wrong person with the
+decision. Emptying the field clears the confirmation instead.
+
 ### `DELETE /api/submissions/:id`
 Delete a submission. **admin, ds_annotator only.**
 
 ### `POST /api/submissions/:id/new-round`
 Start a new round (revision) for a submission. The submission must be at `step_report` or `completed`.
 - **Body**: `{ hasNewKRT: boolean }` (required) — when `true`, the user lands at `step_krt` to upload a fresh KRT; when `false`, the current KRT is carried forward and the user lands at `step_pdf`.
+- Clears `dataAvailabilityStatement`, `extractedDataAvailabilityStatement` and
+  the confirmation: they were about the previous manuscript.
 
 ### `POST /api/submissions/:id/hide`
 Hide a submission from the current user's dashboard.
@@ -336,10 +364,28 @@ Get the current PDF Analysis (Generated-KRT builder) job status.
 Get the unified suggestions list once PDF Analysis is complete.
 
 ### `POST /api/submissions/:id/pdf/analyze`
-Re-trigger PDF Analysis (the Generated-KRT builder: rule-based merge → LM consolidation). Rate-limited via `lmApiLimiter` (10 / min / user).
+Re-run the PDF Analysis step (the Generated-KRT builder: rule-based merge → LM
+consolidation). Rate-limited via `lmApiLimiter` (10 / min / user).
+
+Re-runs it **in the pipeline**: the round's existing `pdf_analysis` row is
+reused, and it only starts once every detector has finished and the gates pass —
+otherwise it stays `waiting` for the orchestrator to advance. It does not create
+a second job row, and it cannot jump ahead of the detectors it consolidates.
 
 ### `POST /api/submissions/:id/pdf/extract-das`
-Re-trigger DAS extraction from the latest PDF.
+Re-run DAS extraction **as a pipeline step**, and return immediately (202).
+- **Returns**: `{ message, status, submissionJobId }`
+- ⚠️ **Clears `dataAvailabilityStatement` first.** Asking for extraction again is
+  asking for a fresh reading of the manuscript, and the working field is only
+  filled while it is empty — without the reset the module would run and change
+  nothing visible. Any statement a person wrote is discarded by this call; the
+  previous extraction survives in `extractedDataAvailabilityStatement`.
+- It used to run the extraction inside the request. That worked, but left the
+  pipeline untouched: the `das_extraction` job row kept the previous run's
+  status, result, frozen inputs and prompt — so the module page described a run
+  that was no longer the latest — and nothing downstream re-ran, so
+  consolidation and the Availability check kept answers built from a statement
+  that had just been replaced.
 
 ---
 
@@ -351,10 +397,10 @@ Get all pending AI Suggestions.
 - **Returns**: `{ suggestions: Suggestion[] }`
 
 Suggestions are **persisted**, not diff-computed at read time. They are produced by the dedicated
-**`suggestion_generation`** background job (AI Suggestions / KRT Comparison): a Gemini call compares the author
+**`suggestion_generation`** pipeline step (AI Suggestions / KRT Comparison): a Gemini call compares the author
 KRT against the **Generated KRT** and emits, for every generated resource, a decision (add / skip / update /
 remove) with a reason, plus author-side fixes (see
-[background-modules.md §3.10](./background-modules.md#310-suggestion_generation--ai-suggestions-krt-comparison)).
+[pipeline-modules.md §3.10](./pipeline-modules.md#310-suggestion_generation--ai-suggestions-krt-comparison)).
 The module is **LM-only — with no LM configured, no suggestions are produced.** Because the list is persisted on
 the job result, editing the KRT does **not** silently change it; suggestions change only when the job is re-run
 (the "Regenerate suggestions" button → `POST /api/submissions/:id/suggestions/regenerate`, or a module restart
@@ -472,7 +518,7 @@ recomputed on read).
 The LM check of the **Data/Code Availability Statement** shown on the `/availability` step (the standalone
 `das_suggestions` job). It judges the DAS against the ASAP rulebook and returns a **per-rule verdict**. LM-only:
 when disabled / no key (or on failure), the frontend falls back to the legacy in-browser rules. See
-[background-modules.md §3.11](./background-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)
+[pipeline-modules.md §3.11](./pipeline-modules.md#311-das_suggestions--availability-statement-check-das-suggestions)
 for the full rulebook (the 9 checks).
 
 ### `GET /api/submissions/:id/das-suggestions`
@@ -492,9 +538,32 @@ Get the latest DAS check status + verdicts. Author-accessible (unlike the raw `/
 
 The `/availability` view shows a **loader** and **blocks Continue** while `status` is `queued`/`processing`.
 
+### `POST /api/submissions/:id/das/confirm`
+Confirm that the Availability Statement is the passage the check should read, and
+release the check — which does not start on its own.
+
+- **Returns**: `{ dasConfirmedAt, dasConfirmedByUserId, checking }`
+- `checking` says whether a run actually started. It is `false` when the check
+  already ran on this statement, when it is gated to a later step, and when the
+  enqueue failed. The UI uses it to choose its message and whether to poll —
+  promising a result that is not coming sends the user to watch a spinner that
+  never resolves, with no way to find out why.
+- **400** when there is nothing to confirm: an empty statement, or the
+  `"Not found"` sentinel extraction writes when it found none. Confirming those
+  would send the checker two literal words to review, and bill for it.
+- Only needed for a statement that came from automatic **extraction**. Writing
+  one by hand records the same thing, in the same person's name — see
+  [pipeline-jobs.md](./pipeline-jobs.md#the-availability-statement-and-who-vouches-for-it).
+- Releases the step only when it is actually held (`waiting`, `pending_input` or
+  `failed`). A check that already ran is not re-run by confirming again, so
+  re-opening the confirmation screen cannot turn into a second LM bill.
+- No LM rate limiter: confirming spends nothing itself, and rate-limiting a "yes"
+  would leave the pipeline parked.
+
 ### `POST /api/submissions/:id/das-suggestions/regenerate`
 Re-run the DAS check (creates a fresh `das_suggestions` job). Called on first arrival at `/availability` and again
 whenever the author edits the DAS text. **Returns**: `{ queued: true, jobId }` (202).
+The run is credited to the caller — this is somebody asking for it by name.
 
 ---
 
@@ -555,8 +624,23 @@ Trigger identifier detection (re-run). Cascade-restarts PDF Analysis.
 
 ## Markdown Convert
 
+### `GET /api/submissions/:id/markdown`
+The converted manuscript text for the current round. Returns `{ content, fileName, length, version, round }`.
+404 when conversion has not produced a file yet.
+
+Served through the API rather than as a presigned S3 link because the Markdown Convert module page *displays*
+it: a cross-origin fetch of a presigned URL depends on the bucket's CORS policy, which a view should not be
+hostage to. The presigned download still exists via `GET /api/submissions/:id/files/:fileId/download`.
+
 ### `POST /api/submissions/:id/markdown/convert`
-Re-trigger PDF → Markdown conversion. Cascade-restarts Datasets / Protocols / Identifier Detection / PDF Analysis.
+Re-trigger PDF → Markdown conversion. Cascade-restarts every step that reads the
+manuscript, then re-queues conversion through the orchestrator.
+- **Returns**: `{ message, status }` — `status` is the step's job status. A
+  re-run asked for while a conversion is already in flight is a no-op, and the
+  message says so instead of reporting a queued run that will never start.
+  The distinction is read **before** re-queueing: `requeueStep` leaves a re-run
+  at `queued`, so deciding from the returned row made every re-run report
+  "already running", including ones started that instant.
 
 ---
 
@@ -567,7 +651,9 @@ Get extracted authors with ORCIDs.
 - **Returns**: `{ authors: [...], meta }`
 
 ### `POST /api/submissions/:id/authors/extract`
-Trigger ORCID extraction (re-run).
+Trigger ORCID extraction (re-run). Same contract as the conversion re-run above:
+goes through the orchestrator, reuses the round's row, and returns
+`{ message, status }`.
 
 ---
 
@@ -593,15 +679,123 @@ Get a presigned download URL for a report.
 All job endpoints support an optional `?round=N` query parameter. When omitted, defaults to the submission's current round.
 
 ### `GET /api/submissions/:id/jobs?round=N`
-Get all background job statuses for a submission.
-- **Returns**: `{ round, jobs: [...] }` — each job includes `logs`, `rawResponses`, `result`, `config`
+Get the status of every pipeline step for a submission.
+- **Returns**: `{ round, inputs, jobs: [...] }` — each job includes `logs`, `files`, `result`, `config`
+- `issues` is everything about this round needing a person: `{ jobType, kind
+  ('failure' | 'unusable' | 'partial'), blocking, holding, wouldSkip,
+  producedOutput, detail, decided }`. Computed server-side so the five surfaces
+  that render it cannot disagree.
+- Each job carries `blockedBy` — the failed steps holding it, by name — and
+  `waitingReason: 'blocked_by_failure'`, which takes precedence over a gate: a
+  step behind a failed conversion is also behind `markdown_ready`, and naming the
+  gate would be true but useless.
+- `inputs` is what the round is being **processed from**: one entry per frozen
+  input (`pdf`, `markdown`, `krt`), each with the version the run read, what is
+  live now, and `stale`. The pipeline page turns a stale entry into *"This
+  analysis used an earlier version of your data"*, naming the document and both
+  versions. For the KRT the comparison is row COUNTS, which cannot see an edited
+  cell — `stale` means rows were added or removed, never "nothing has changed".
+  See [pipeline-jobs.md](./pipeline-jobs.md#one-round-one-pdf-one-krt).
+- Non-fatal: if the freeze state cannot be computed, `inputs` is `[]` and the
+  page simply says nothing about provenance rather than failing to load.
 - A `waiting` job that is held by a submission-state gate (datasets/materials/protocols before KRT validation)
   carries `waitingReason: 'krt_validation'`, so the UI can show *"Waiting for the Key Resources Table to be
   validated."* These advance automatically once the KRT is validated — no `advance` call is needed (that is only
   for `pending_input` jobs).
 
 ### `POST /api/submissions/:id/processes/run`
-Run (or re-run) all background processes for a submission.
+Run (or re-run) the whole pipeline for a submission. Every step in the
+round is about to run, so **every input freeze is released** — this is the call a
+PDF upload makes, and it is what lets a replaced manuscript reach the pipeline.
+
+### `POST /api/submissions/:id/processes/restart`
+Re-run a **chosen set** of steps as one restart.
+
+- **Body**: `{ jobTypes: string[], paramsSource?: 'live' | 'frozen' }` — step
+  names, at most 20.
+- **Returns**: `{ message, restarted, reset, paramsSource }`. `reset` is what
+  the selection carried with it (its shared downstream) — the UI already showed
+  the user, but a script or a log has to be told.
+- **`paramsSource`** decides which prompts and model the re-run uses. `live`
+  (the default) is today's; `frozen` is what each step's previous execution
+  recorded. A restart already re-reads the round's frozen INPUTS, so without
+  this a re-run that disagrees with the original cannot be told apart from a
+  prompt somebody edited in between. Default is `live` because the common
+  restart is "I changed the prompt, run it again".
+- **400** on an unknown or empty list, *before anything is touched*: half a
+  restart is worse than none, because the caller has to work out which half ran.
+- **Not a loop of single restarts.** The first step to finish would release the
+  work the selection shares — grounding, the consolidator — which then runs and
+  is thrown away by the next reset, and both runs are paid for. Every selected
+  step's downstream is reset before any of them is enqueued.
+- Behind the LM budget: a selection of five detectors is five detectors' worth of
+  model work.
+
+### `GET /api/submissions/:id/runs?round=N`
+Every **pipeline run** of the round, and what each one contains.
+
+- **Returns**: `{ round, runCount, runs: [{ runNumber, cause, status,
+  paramsSource, causedBy, createdAt, completedAt, pipelineVersion, appVersion,
+  steps: [{ jobType, carriedOver, status, outcomeState, counts, durationMs }] }] }`
+- The submission-wide view: "run 2" as ONE number across every module, rather
+  than a different number per module shown in the same place. Not derivable from
+  the per-step endpoints — those say what happened to a step across runs, and
+  cannot say what a run did.
+- Same audience as the other job internals: an author reads the latest result.
+
+### `GET /api/submissions/:id/jobs/:jobType/runs?round=N`
+Every pipeline run **containing this step**, newest first, metadata only.
+
+- **Returns**: `{ round, jobType, runCount, runs: [...] }`, each entry carrying
+  `runNumber`, `isLatest`, `cause`, `carriedOver`, `producedByRun`, `status`,
+  `outcomeState`, `counts`, `attemptCount`, `cancelledAt`, `discardedCount`,
+  `triggeredBy`, `triggerKind` and the timings.
+- A step the run **carried over** appears, flagged, naming the run that did the
+  work. Under the old per-step numbering it simply was not in the list, so
+  comparing run 2 with run 3 made the step look like it had vanished.
+- A step the run has **not reached** appears as `not_started` rather than being
+  hidden, which would make the current run look shorter than it is.
+
+### `GET /api/submissions/:id/jobs/:jobType/runs/:runNumber?round=N`
+One run of one step, in full — shaped like a job, so a past run renders through
+exactly the same path as the current one.
+
+- Adds `result`, `logs`, `files`, `inputs`, `documents`, `attempts`,
+  `cancelledAt`, `cancelledBy`, `discarded` and `artefactsAreOwn`.
+- **Not a 404** when the run contains the step but has not executed it: the run
+  is real and the answer is "nothing yet", which a spinner cannot say.
+
+### `POST /api/submissions/:id/jobs/:jobType/continue?round=N`
+Proceed despite a step's **issue** — a failure, a partial, or a run that
+completed while producing nothing usable.
+
+- **Returns**: `{ message, jobType, acknowledgedAt }`
+- Re-runs nothing and does not mark the step successful — it stays `failed`.
+  What is recorded is `step_executions.decision` — `{ at, byUserId, choice }` on
+  the EXECUTION it was made about, not on the step: a report built without
+  software detection looks exactly like one where software detection found
+  nothing, and only this tells them apart.
+- **400** unless the step actually has an issue. Deciding twice is *not* an
+  error, and the second caller does not overwrite the first's name.
+- What it releases depends on what the step produced: dependants that can run on
+  less do; dependants that REQUIRED its output are marked `skipped`, recording
+  what was missing.
+- No LM limiter: it starts nothing itself, it releases steps that were already
+  going to run.
+
+### `POST /api/submissions/:id/jobs/:jobType/retry?round=N`
+Run a **failed** step again, and change nothing else.
+
+- **Returns**: `{ message, jobType, status }`
+- **400** unless the step failed **and nothing downstream has run since**. The
+  message names the step that already ran and points at the restart that would
+  work — "cannot retry" with no way forward is a dead end.
+- Deliberately does **not** release the round's input freezes, cascade, or run
+  `onManualRestart`. Each of those would make it a restart wearing a smaller
+  name; in particular a retry of DAS extraction must not clear a statement the
+  author typed while the service was down.
+- `retryCount` is reset with the row — those attempts belonged to the run that
+  failed.
 
 ### `POST /api/submissions/:id/jobs/:jobType/advance?round=N`
 Manually advance a `pending_input` job to `queued`.
@@ -613,6 +807,19 @@ Get a presigned S3 download URL for a job's raw API response file.
 ---
 
 ## Configuration (Public)
+
+### `GET /api/submissions/:id/jobs/:jobType/prompts`
+The prompt(s) a run used, read back from its own frozen inputs. Scoped by
+`canAccessSubmission` — whoever may open the submission may read them.
+- **Returns**: `{ prompts: [{ key, file, text, sha256, bytes, attachments: [{ file, text, sha256, bytes }] }] }`
+- Served from the run's **stored copy** — never from the file on disk, and never
+  as a link to GitHub: a deployment is not always at the head of its branch, so
+  a link can show a prompt that is not the one that ran.
+- Not folded into `GET /jobs`: that payload is polled every few seconds, and a
+  template per module would add tens of kilobytes to every poll for something
+  read only when the Technical detail panel is opened.
+- A run with no stored inputs returns `{ prompts: [], reason: 'no_inputs_artefact' }`
+  rather than a 404 — a skipped or fallback run legitimately has none.
 
 ### `GET /api/config/krt-template`
 Get the KRT template URL. Returns `{ url }`.

@@ -4,10 +4,22 @@
  * Detects lab material/reagent mentions via Google Gemini on the manuscript
  * markdown (same input as protocols/datasets; only software still reads the PDF).
  *
- * Three-step pipeline:
+ * Four-step pipeline:
  *   1. detectMaterials(markdownText)        → raw Gemini items (prompt-shape)
  *   2. buildKrtItemsMaterials(raw)          → canonical KrtEntry[]
- *   3. dedupeKrtItems(items, 'materials')   → one entry per logical resource
+ *   3. attachEvidence(items, index)      → every row TAGGED verified /
+ *                                          embellished / unsupported. Nothing
+ *                                          is dropped here: the `drop` option
+ *                                          is not implemented, and
+ *                                          mergeDetections is what filters, at
+ *                                          the cross-detector stage.
+ *   4. dedupeKrtItems(items, 'materials')   → one entry per logical resource
+ *
+ * Detection is KRT-blind and ALWAYS runs. It was previously author-seeded only
+ * — skipped outright when the author listed no materials — which left the
+ * module with no discovery capacity in the case that needs it most. The prompt
+ * now works from textual cues; the author's rows are reconciled against this
+ * output by the krt_grounding module. See docs/pipeline-modules.md.
  *
  * Note: the curated enrichment list is no longer applied here — only the
  * Identifier Detection module consults the enrichment lists now.
@@ -20,23 +32,33 @@ const { GoogleGenAI } = require('@google/genai');
 // the matching comment in protocols.service.js for the rationale.
 const s3Service = require('../storage/s3.service');
 const materialsConfig = require('../../config/materials-detection-api');
-const jobQueue = require('../queue/job-queue.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
-const { loadAuthorSeeds } = require('../krt/author-krt-seeds.service');
-const { sanitizeJsonEscapes } = require('../../utils/gemini-json');
+const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
+const inputFreeze = require('../queue/input-freeze.service');
+const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
+const { seedCoverageShortfall, batchSeeds } = require('../detection/seed-coverage');
+const { tagAuthorRows } = require('../detection/tag-author-rows');
+const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
+const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
+const { sanitizeJsonEscapes, salvageTruncatedObjects, hasParseableBody } = require('../../utils/gemini-json');
 const logger = require('../../utils/logger');
+const frozenParams = require('../../utils/frozen-params');
 const { generateContentWithRetry } = require('../../utils/gemini');
-
-// KRT resource-type group for lab materials (0=dataset, 1=software, 2=protocol, 3=lab_material).
-const MATERIAL_GROUP = 3;
+const runInputs = require('../queue/run-inputs.service');
 
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
-const PROMPT_FILE = path.join(PROMPTS_DIR, 'materials-detection.txt');
+const PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'materials-detection.txt');
 let _promptCache = null;
+
+// gemini-2.5-flash allows 65536 output tokens. This was 32768, which a
+// 133 KB manuscript exceeded mid-object: the JSON failed to parse and the
+// module recorded 0 resources after 124s of work. Thinking stays disabled
+// (commit 38a16db), so the whole budget goes to output.
+const MAX_OUTPUT_TOKENS = 65536;
 
 const RELEVANCE_TO_CONFIDENCE = { HIGH: 0.95, MEDIUM: 0.7, LOW: 0.4 };
 const DEFAULT_CONFIDENCE = 0.7;
@@ -49,6 +71,14 @@ function hasPrompt() {
  * Resolve the detection prompt. An explicit `override` (non-empty string) wins
  * — used by tuning/experiment scripts to run detection with a custom prompt;
  * otherwise the committed default file is read once and cached.
+ *
+ * Deleted by accident in 288ac67 (the requeueStep refactor) — it sat directly
+ * above the queue function that commit rewrote, and went with it. Nothing
+ * caught it: the only caller is inside the Gemini call, so every test that
+ * mocks Gemini passes and `node --check` sees a perfectly valid file. What
+ * caught it was `eslint --rule no-undef`, which is the cheap check worth
+ * running on any commit that moves whole functions around.
+ *
  * @param {string} [override] - optional prompt text to use instead of the file
  * @returns {string}
  */
@@ -63,31 +93,48 @@ function getPrompt(override) {
     _promptCache = fs.readFileSync(PROMPT_FILE, 'utf-8').trim();
     logger.info('Loaded materials detection prompt', { file: PROMPT_FILE, length: _promptCache.length });
   }
-  return _promptCache;
+  // A restart asked to run with a past run's parameters uses THAT run's
+  // template, not the file as it stands today. Resolved here, in every prompt
+  // loader, because there is no shared one — and a loader that skipped this
+  // would run the current prompt while the page said the run was reproduced.
+  //
+  // Returns `live` untouched outside a frozen restart, which is the normal path.
+  return frozenParams.prompt(_promptCache);
 }
 
-async function queueMaterialsDetection(submissionId, round = 1) {
-  const { SubmissionJob } = require('../../models');
+/**
+ * Re-run this step, in the pipeline.
+ *
+ * Through `requeueStep`: the round's own row is reused, and the step is only
+ * enqueued when it is actually runnable — dependencies terminal, gates
+ * satisfied. This used to INSERT a second row set straight to `queued`, which
+ * is the shape of the bug that shipped a Generated KRT with zero detections:
+ * `getForSubmission` keeps only the NEWEST row per type, so a rival row hides
+ * the pipeline's own and the advancement that should follow lands on the wrong
+ * one.
+ *
+ * @param {string} submissionId
+ * @param {number} round
+ * @param {string} [userId]
+ * @returns {Promise<{job: object, alreadyInFlight: boolean}>}
+ */
+async function queueMaterialsDetection(submissionId, round = 1, userId = null) {
   const orchestrator = require('../queue/orchestrator.service');
-  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MATERIALS_DETECTION, round);
+  const { SubmissionJob } = require('../../models');
 
-  const submissionJob = await SubmissionJob.create({
-    submissionId,
-    jobType: JOB_TYPES.MATERIALS_DETECTION,
-    status: 'queued',
-    round
+  // Read BEFORE re-queueing. `requeueStep` leaves a re-run at `queued`, so the
+  // row it returns cannot tell a caller whether it started this run or found
+  // one already going.
+  const before = await SubmissionJob.getLatest(submissionId, JOB_TYPES.MATERIALS_DETECTION, round);
+  const alreadyInFlight = ['queued', 'processing'].includes(before?.status);
+
+  await orchestrator.cascadeRestart(submissionId, JOB_TYPES.MATERIALS_DETECTION, round, userId);
+  const job = await orchestrator.requeueStep(submissionId, JOB_TYPES.MATERIALS_DETECTION, round, userId);
+
+  logger.info('Materials detection re-queued', {
+    submissionId, round, submissionJobId: job.id, status: job.status, alreadyInFlight
   });
-
-  const jobId = await jobQueue.addJob(
-    jobQueue.QUEUES.MATERIALS_DETECTION,
-    { submissionId, submissionJobId: submissionJob.id }
-  );
-
-  submissionJob.pgBossJobId = jobId;
-  await submissionJob.save();
-
-  logger.info('Materials detection queued', { submissionId, submissionJobId: submissionJob.id, jobId });
-  return jobId;
+  return { job, alreadyInFlight };
 }
 
 async function processMaterialsDetection(submissionId, jobLogger = null, { isFinalAttempt = true } = {}) {
@@ -96,7 +143,12 @@ async function processMaterialsDetection(submissionId, jobLogger = null, { isFin
   if (!submission) throw new NotFoundError('Submission');
 
   const result = await runWithDemoFallback({
-    isExternalEnabled: materialsConfig.isConfigured() && hasPrompt(),
+    // Ask the strategy the SUBMISSION'S pipeline selects. This tested the
+    // BLIND prompt while the default pipeline is seeded: a missing blind
+    // file made a perfectly runnable seeded detection serve DEMO rows for a
+    // real manuscript, and a missing seeded file was reported available and
+    // then threw. Same fix datasets already had.
+    isExternalEnabled: materialsConfig.isConfigured() && detectionPromptsExist('materials', submission),
     demoEnabled: process.env.MATERIALS_DETECTION_DEMO_DATA_ENABLED !== 'false',
     runExternal: () => detectMaterialsForSubmission(submission, jobLogger),
     getDemoData: async () => {
@@ -126,22 +178,12 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const round = submission.currentRound || 1;
   const startTime = Date.now();
 
-  // Materials detection is author-seeded only (request D): without author KRT
-  // material rows the prompt has nothing to ground on and tends to be noisy, so
-  // we skip the Gemini call entirely and return an empty result.
-  const authorMaterials = await loadAuthorSeeds(submissionId, round, MATERIAL_GROUP);
-  if (authorMaterials.length === 0) {
-    jobLogger?.log('materials_skipped', 'No author KRT materials — skipping materials detection');
-    return {
-      items: [],
-      meta: { totalCount: 0, uniqueCount: 0, highRelevanceCount: 0, skipped: true, reason: 'no_author_materials', totalMs: Date.now() - startTime }
-    };
-  }
-
-  const mdFile = await File.findOne({
-    where: { submissionId, type: FILE_TYPES.MARKDOWN, round },
-    order: [['version', 'DESC']]
-  });
+  // The document this ROUND is reading, not whatever is newest right now.
+  // The first step to ask freezes it; every later reader in the round is
+  // handed the same one, so a file replaced mid-run cannot split the round.
+  const mdFile = await inputFreeze.resolveFile(
+    submissionId, round, inputFreeze.INPUT_KINDS.MARKDOWN, { jobType: JOB_TYPES.MATERIALS_DETECTION }
+  );
   if (!mdFile) throw new Error('No markdown file found for materials detection');
 
   jobLogger?.log('download_markdown', 'Downloading markdown from S3', { fileName: mdFile.fileName, s3Key: mdFile.s3Key });
@@ -149,21 +191,114 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   const markdownText = mdBuffer.toString('utf-8');
   jobLogger?.log('download_markdown_done', 'Markdown downloaded', { markdownLength: markdownText.length });
 
-  // ── Step 1: detect (Gemini), seeded from the author's KRT materials
-  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection', { authorSeedCount: authorMaterials.length });
+  // ── Step 0: which prompt, and seeded from what?
+  //
+  // The strategy owns both, including whether to run at all: the seeded design
+  // is author-seeded ONLY, because a prompt framed as "re-ground and lightly
+  // enrich the rows you were given" has nothing to do without them. The blind
+  // design always runs. Putting that gate here instead would make one of the
+  // two designs wrong, silently, by returning nothing.
+  const resolved = await resolveDetection('materials', { submission, markdownText, jobLogger });
+  if (!resolved.run) {
+    return { items: [], meta: { totalCount: 0, uniqueCount: 0, highRelevanceCount: 0,
+      skipped: true, reason: resolved.reason, pipeline: resolved.pipeline.id, totalMs: Date.now() - startTime } };
+  }
+
+  // ── Step 1: detect (Gemini)
+  jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection',
+    { pipeline: resolved.pipeline.id, seedCount: resolved.input.meta?.seedCount ?? 0 });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse } = await callGeminiForMaterials(markdownText, undefined, authorMaterials);
+
+  // No seeds means the discovery prompt is in play, so there is no block to
+  // title. seedBlock() already omits an empty block, but passing the title here
+  // would be a lie about what the prompt expects.
+  const seedTitle = (resolved.strategy.seedTitle && resolved.input.seeds?.length)
+    ? SEED_TITLES[resolved.strategy.seedTitle] : null;
+
+  // A seed list past the ceiling is split across calls. The ceiling sits ABOVE
+  // every list observed to work (90) and below the one that did not (190), so
+  // no working manuscript changes behaviour and nothing pays for a second call
+  // it did not need. Every seed travels — none is dropped to fit — and the
+  // per-batch results are concatenated, then deduped downstream like any other
+  // detector output.
+  //
+  // Partial mitigation, not the fix: the worse failure returned nothing at 42
+  // seeds, well inside a single batch. `seedCoverageShortfall` below is what
+  // catches that.
+  const batches = batchSeeds(resolved.input.seeds);
+  if (batches.length > 1) {
+    jobLogger?.log('seeds_batched', 'Seed list split across several calls', {
+      seedCount: resolved.input.seeds.length, batches: batches.length
+    });
+  }
+
+  const rawItems = [];
+  let rawResponse = null;
+  let promptDigest = null;
+  for (const batch of batches) {
+    const call = await callGeminiForMaterials(markdownText, {
+      prompt: resolved.input.prompt,
+      seeds: batch,
+      seedTitle
+    });
+    rawItems.push(...(call.resources || []));
+    // The last batch's response and digest stand for the run. Imperfect for a
+    // split run, and recorded as such by `seeds_batched` above.
+    rawResponse = call.rawResponse ?? rawResponse;
+    promptDigest = call.promptDigest ?? promptDigest;
+  }
   const geminiMs = Date.now() - geminiStartTime;
   await jobLogger?.saveRawResponse('gemini-materials', rawResponse || rawItems);
+  // Frozen now, while the seeds are the ones this run was actually given: the
+  // author can edit that table a minute later, and this record must not follow.
+  await runInputs.saveRunInputs(jobLogger, {
+    documents: { markdown: runInputs.fileRef(mdFile, mdBuffer) },
+    frozen: { seeds: resolved.input.seeds || [] },
+    prompt: runInputs.promptRef(resolved.input.meta?.promptFile || null, promptDigest),
+    meta: {
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      model: materialsConfig.model,
+      seedCount: resolved.input.meta?.seedCount ?? 0
+    },
+    // Everything asked of the external service, sanitised: secrets
+    // redacted, anything large replaced by its digest. Recorded whole rather
+    // than hand-picked — a hand-picked list is one somebody has to remember
+    // to extend, which is how four modules came to record no model at all.
+    call: materialsConfig
+  });
   jobLogger?.log('gemini_done', 'Gemini response parsed', { resourceCount: rawItems.length, durationMs: geminiMs });
 
   // ── Step 2: buildKrtItems
-  const krtItems = buildKrtItemsMaterials(rawItems);
+  const krtItems = tagAuthorRows(buildKrtItemsMaterials(rawItems), resolved.input.seeds);
 
-  // ── Step 3: dedupe
-  const items = dedupeKrtItems(krtItems, 'materials-gemini');
+  // ── Step 3: ground every claim against the manuscript
+  const evidenceIndex = buildEvidenceIndex(markdownText);
+  const { items: groundedItems, stats: evidenceStats } = attachEvidence(krtItems, evidenceIndex, {
+    label: 'materials'
+  });
+  jobLogger?.log('evidence_grounding', 'Grounded material claims against the manuscript', evidenceStats);
+  await jobLogger?.saveRawResponse('evidence-grounding', { stats: evidenceStats, items: groundedItems });
+
+  // ── Step 4: dedupe
+  const items = dedupeKrtItems(groundedItems, 'materials-gemini');
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
+
+  // The seeded prompts promise one row per author seed and say "never drop one".
+  // A run far short of that has broken a contract it was given in writing — and
+  // reported as a clean zero it reads exactly like a manuscript with no
+  // materials in it. Flagged through `meta.degraded`, which demo-fallback turns
+  // into a `partial` outcome, so it travels the same path as every other
+  // degradation and the results stay usable.
+  const seedShortfall = seedCoverageShortfall({
+    seedCount: resolved.input.meta?.seedCount ?? 0,
+    returnedCount: items.length,
+    detector: 'materials'
+  });
+  if (seedShortfall) {
+    jobLogger?.log('seed_shortfall', 'Seeded run returned far fewer rows than seeds', seedShortfall);
+  }
 
   return {
     items,
@@ -171,22 +306,34 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount,
+      ...(seedShortfall ? { degraded: seedShortfall } : {}),
+      seedCount: resolved.input.meta?.seedCount ?? 0,
       geminiMs,
       totalMs: Date.now() - startTime,
-      model: materialsConfig.model
+      model: materialsConfig.model,
+      // Stamped on the result so a run records which configuration produced it.
+      pipeline: resolved.pipeline.id,
+      strategy: resolved.strategy.id,
+      // The prompt this run used, repo-relative, so the UI can link to it.
+      promptFile: resolved.input.meta?.promptFile || null,
+      signalsPromptFile: resolved.input.meta?.signalsPromptFile || null
     }
   };
 }
 
-async function callGeminiForMaterials(markdownText, promptOverride, authorMaterials = []) {
+async function callGeminiForMaterials(markdownText, opts = {}) {
+  // Accepts a bare prompt string for the pure/benchmark entry point, or the
+  // {prompt, seeds, seedTitle} a strategy produced.
+  const { prompt: promptOverride, seeds, seedTitle } =
+    typeof opts === 'string' ? { prompt: opts } : opts;
   const ai = new GoogleGenAI({ apiKey: materialsConfig.apiKey });
-  const prompt = getPrompt(promptOverride);
-  // The prompt's Section 0 seeds from these. Omitted when empty so a custom
-  // prompt override can still be run article-only by callers/benchmarks.
-  const seedBlock = authorMaterials && authorMaterials.length > 0
-    ? '\n\n---\n\nAUTHOR-PROVIDED MATERIALS (KRT):\n\n' + JSON.stringify(authorMaterials, null, 2)
-    : '';
-  const fullPrompt = prompt + seedBlock + '\n\n---\n\nARTICLE MARKDOWN:\n\n' + markdownText;
+  const fullPrompt = assembleTextPrompt({
+    prompt: getPrompt(promptOverride), seeds, seedTitle, markdownText
+  });
+  // Hashed here, where the assembled prompt exists, rather than returned: it is
+  // the manuscript plus the instructions, and it has no business travelling
+  // back up the stack just to be digested.
+  const promptDigest = { sha256: runInputs.sha256(fullPrompt), bytes: Buffer.byteLength(fullPrompt) };
 
   try {
     const response = await generateContentWithRetry(ai, {
@@ -197,23 +344,34 @@ async function callGeminiForMaterials(markdownText, promptOverride, authorMateri
       // thinking ate the budget and truncated the JSON mid-object.
       config: {
         responseMimeType: 'application/json',
-        maxOutputTokens: 32768,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         thinkingConfig: { thinkingBudget: 0 }
       }
-    }, { label: 'materials' });
+    }, {
+      label: 'materials',
+      // An empty or unparseable body is a FAILED call, not "found
+      // nothing" — retry it. The prompt states that an empty array is
+      // how to report finding nothing, so a model with nothing to say
+      // still has a valid answer available.
+      validate: (res) => hasParseableBody(res?.text)
+    });
 
     if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
       logger.warn('Gemini response truncated (materials) — output hit maxOutputTokens');
     }
 
     const text = response.text;
-    if (!text) {
-      logger.warn('Gemini returned empty response for materials detection');
-      return { resources: [], rawResponse: '' };
+    if (!hasParseableBody(text)) {
+      // Every retry came back with nothing readable. Reporting zero
+      // resources here would be a wrong answer presented as a finished
+      // one: the job goes green with detected: false, indistinguishable
+      // from a manuscript that genuinely mentions none.
+      logger.error('Gemini returned no parseable body for materials detection after retries');
+      throw new ExternalServiceError('Gemini', 'empty or unparseable response after retries');
     }
 
     logger.debug('Gemini raw response preview (materials)', { preview: text.substring(0, 500) });
-    return { resources: parseGeminiResponse(text), rawResponse: text };
+    return { resources: parseGeminiResponse(text), rawResponse: text, promptDigest };
   } catch (error) {
     logger.error('Gemini API call failed for materials detection', { error: error.message });
     throw new ExternalServiceError('Gemini', error.message);
@@ -242,6 +400,14 @@ function parseGeminiResponse(text) {
     logger.error('Failed to parse Gemini JSON response (materials)', {
       error: error.message, preview: jsonStr.substring(0, 300)
     });
+    // A response cut off by maxOutputTokens ends mid-object, so the whole
+    // body fails to parse and every already-complete row would be lost.
+    // Recover those rather than returning nothing.
+    const salvaged = salvageTruncatedObjects(jsonStr);
+    if (salvaged.length > 0) {
+      logger.warn('Salvaged rows from a truncated Gemini response (materials)', { count: salvaged.length });
+      return salvaged;
+    }
     return [];
   }
 }
@@ -254,13 +420,13 @@ function parseGeminiResponse(text) {
  * Step 1: standalone Gemini call. Hits Gemini on the manuscript markdown and
  * returns the parsed resources array. No DB, no S3.
  * @param {string} markdownText - the full manuscript as markdown
- * @param {{ prompt?: string, authorMaterials?: object[] }} [options] - `prompt`
- *   overrides the default detection prompt; `authorMaterials` seeds the prompt's
- *   Section 0 with the author's KRT material rows (empty by default).
+ * @param {{ prompt?: string }} [options] - `prompt` overrides the default
+ *   detection prompt (used by the prompt-comparison scripts).
  * @returns {Promise<{ resources: object[], rawResponse?: string }>}
  */
-async function detectMaterials(markdownText, { prompt, authorMaterials } = {}) {
-  const { resources, rawResponse } = await callGeminiForMaterials(markdownText, prompt, authorMaterials || []);
+async function detectMaterials(markdownText, { prompt, seeds, seedTitle } = {}) {
+  // Seeds forwarded, not dropped — see the note on detectDatasets.
+  const { resources, rawResponse } = await callGeminiForMaterials(markdownText, { prompt, seeds, seedTitle });
   return { resources, rawResponse };
 }
 
@@ -273,31 +439,12 @@ async function detectMaterials(markdownText, { prompt, authorMaterials } = {}) {
  * @returns {object[]} KrtEntry[]
  */
 function buildKrtItemsMaterials(rawItems) {
-  if (!Array.isArray(rawItems)) return [];
-  return rawItems.map(r => {
-    const resourceName = r.canonical_name || r.name || r.resourceName || '';
-    const resourceType = r.resource_type || r.resourceType || 'Lab Material';
-    const relevance = r.krt_relevance || r.relevance || 'MEDIUM';
-    return {
-      resourceType,
-      resourceName,
-      identifier: r.identifier || '',
-      source: r.source || '',
-      newReuse: r.newReuse || r.new_reuse || '',
-      origin: 'materials-gemini',
-      confidence: RELEVANCE_TO_CONFIDENCE[relevance] ?? DEFAULT_CONFIDENCE,
-      // Leave ADDITIONAL INFORMATION empty for user-facing suggestions. The
-      // detector's contextual info (the "why we picked this") is stashed in
-      // detectorMeta.context for the internal team to inspect via the
-      // background-processes panel; we don't want to push it into the KRT
-      // where it competes with the user's own notes.
-      additionalInformation: '',
-      detectorMeta: {
-        relevance,
-        aliases: Array.isArray(r.aliases) ? r.aliases : [],
-        context: r.additionalInformation || ''
-      }
-    };
+  return buildKrtItemsFromLM(rawItems, {
+    origin: 'materials-gemini',
+    defaultResourceType: 'Lab Material',
+    // Materials carry no extras beyond the shared contract; the resource_type
+    // enum in the prompt already captures antibody/cell line/organism/etc.
+    details: (r) => ({ context: r.additionalInformation || '' })
   });
 }
 
@@ -305,9 +452,7 @@ async function persistJobData(submissionId, jobType, round, helperResult) {
   const { SubmissionJob } = require('../../models');
   const job = await SubmissionJob.getLatest(submissionId, jobType, round);
   if (job) {
-    job.result = { ...(job.result || {}), data: helperResult.data };
-    job.changed('result', true);
-    await job.save();
+    await job.persistData(helperResult.data);
   }
 }
 

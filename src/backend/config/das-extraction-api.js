@@ -10,19 +10,21 @@
  * S3-stored output, so this service depends on that job — see
  * orchestrator PIPELINE.
  *
- * Authentication: per-service API key via DAS_EXTRACTION_GEMINI_API_KEY.
+ * Authentication: DAS_EXTRACTION_GEMINI_API_KEY, falling back to the shared
+ * GEMINI_API_KEY. Placeholder values are rejected by geminiKey().
  */
 
 const logger = require('../utils/logger');
+const { geminiKey, geminiModel } = require('./gemini');
 
 module.exports = {
   // Gemini API key (per-service so it can be rate-limited / rotated
   // independently of the other Gemini-using detectors)
-  apiKey: process.env.DAS_EXTRACTION_GEMINI_API_KEY || '',
+  apiKey: geminiKey('DAS_EXTRACTION'),
 
   // Model to use. 2.5-flash is plenty for verbatim section extraction and
   // keeps cost / latency low.
-  model: process.env.DAS_EXTRACTION_GEMINI_MODEL || 'gemini-2.5-flash',
+  model: geminiModel('DAS_EXTRACTION'),
 
   // Which section to ask the prompt for. Defaults to the Data Availability
   // Statement, matching the previous Modal endpoint's `section=das` value.

@@ -6,7 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { computeKrtSignals, buildSuggestions, DAS_RULES } = require('./das-suggestions.service');
+const { computeKrtSignals, buildSuggestions, readVerdicts, DAS_RULES } = require('./das-suggestions.service');
 
 // ── computeKrtSignals ────────────────────────────────────────────────
 
@@ -82,4 +82,42 @@ test('buildSuggestions: ignores malformed findings (non-boolean applies, missing
   const out = buildSuggestions([{ applies: true }, { rule_id: 'no_new_code', applies: 'yes' }]);
   // no_new_code got a non-boolean applies → treated as not-applicable
   assert.equal(out.find(o => o.ruleId === 'no_new_code').applies, false);
+});
+
+// ── readVerdicts ─────────────────────────────────────────────────────
+//
+// A statement nobody managed to check must never render as a statement with
+// nothing wrong with it. buildSuggestions defaults an unmentioned rule to
+// `applies: false`, which the /availability view draws as a green "check
+// passed" box — so zero verdicts drew NINE passed checks. This is the guard
+// that turns that into a failed job instead.
+
+test('readVerdicts: an unreadable body fails the run rather than passing every check', () => {
+  for (const body of ['', '   ', null, undefined, 'I could not complete this request.', '```json\n```']) {
+    assert.throws(
+      () => readVerdicts(body),
+      /empty or unparseable/,
+      `${JSON.stringify(body)} must not be read as nine passed checks`
+    );
+  }
+});
+
+test('readVerdicts: an empty array is not an answer here', () => {
+  // Unlike the detection modules, where [] means "this manuscript mentions no
+  // antibodies", the rulebook is fixed — every rule gets a verdict.
+  assert.throws(() => readVerdicts('[]'), /empty or unparseable/);
+  assert.throws(() => readVerdicts('{"findings": []}'), /empty or unparseable/);
+});
+
+test('readVerdicts: a partial answer is kept — some verdicts beat none', () => {
+  const findings = readVerdicts('[{"rule_id":"no_new_dataset","applies":true,"reason":"x"}]');
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].rule_id, 'no_new_dataset');
+});
+
+test('readVerdicts: the documented envelopes are all accepted', () => {
+  const one = '{"rule_id":"no_new_dataset","applies":false,"reason":"x"}';
+  for (const body of [`[${one}]`, `{"findings":[${one}]}`, `{"rules":[${one}]}`, '```json\n[' + one + ']\n```']) {
+    assert.equal(readVerdicts(body).length, 1, `${body} must parse`);
+  }
 });

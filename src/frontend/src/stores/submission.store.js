@@ -89,6 +89,23 @@ export const useSubmissionStore = defineStore('submission', () => {
     }
   }
 
+  /**
+   * Confirm the Availability Statement and refresh, so every surface that reads
+   * `dasConfirmedAt` (the header banner, the Availability page) settles at once
+   * rather than one poll later.
+   */
+  async function confirmDas(id) {
+    const result = await submissionService.confirmDas(id)
+    if (currentSubmission.value?.id === id) {
+      currentSubmission.value = {
+        ...currentSubmission.value,
+        dasConfirmedAt: result.dasConfirmedAt,
+        dasConfirmedByUserId: result.dasConfirmedByUserId
+      }
+    }
+    return result
+  }
+
   async function updateSubmission(id, data) {
     loading.value = true
     error.value = null
@@ -269,6 +286,7 @@ export const useSubmissionStore = defineStore('submission', () => {
     fetchSubmission,
     createSubmission,
     updateSubmission,
+    confirmDas,
     reassignOwner,
     deleteSubmission,
     hideSubmission,

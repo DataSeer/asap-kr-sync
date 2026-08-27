@@ -1,0 +1,190 @@
+/**
+ * The Generated KRT, flattened for display.
+ *
+ * PDF Analysis merges every detection into one row per resource, keeping a
+ * `detectedBy[]` entry for each module that contributed. Showing only the merged
+ * row hides the disagreement — two modules can name the same resource
+ * differently, and which name won is exactly what a curator wants to see. So
+ * each merged item becomes a GROUP of rows, one per contributor, carrying its
+ * own module's values.
+ *
+ * Kept out of the component because the page needs the same grouping to count
+ * rows per tab, and two copies of this would drift.
+ */
+
+/**
+ * Which module a contributing detection came from, in the words on screen.
+ *
+ * `author_krt` is not a detector: it marks a row carried over from the author's
+ * own table because nothing re-found it in the PDF. That is the most important
+ * rbadge on the table — it says "we did not confirm this" — so it must not fall
+ * through to the raw key.
+ */
+export const SOURCE_LABELS = {
+  software_detection: 'Software',
+  datasets_detection: 'Datasets',
+  materials_detection: 'Materials',
+  protocols_detection: 'Protocols',
+  identifier_detection: 'ID',
+  author_krt: 'Author KRT',
+  // Steps rather than detectors, but they appear as sources on a suggestion —
+  // without a label they printed as the raw job type.
+  krt_grounding: 'Grounding',
+  pdf_analysis: 'Consolidation'
+}
+
+export const sourceLabel = (source) => SOURCE_LABELS[source] || source
+
+/**
+ * The rbadge class for a contributing source.
+ *
+ * A detector takes the colour of what it finds, so a "Materials" rbadge matches
+ * a Lab Materials row wherever both appear. Identifier detection spans every
+ * category and the author's own table is not a finding at all, so neither
+ * borrows a category colour.
+ */
+const SOURCE_BADGES = {
+  software_detection: 'rbadge-software',
+  datasets_detection: 'rbadge-datasets',
+  materials_detection: 'rbadge-materials',
+  protocols_detection: 'rbadge-protocols',
+  identifier_detection: 'rbadge-neutral',
+  krt_grounding: 'rbadge-neutral',
+  pdf_analysis: 'rbadge-neutral',
+  author_krt: 'rbadge-own'
+}
+
+export const sourceBadge = (source) => SOURCE_BADGES[source] || 'rbadge-neutral'
+
+/**
+ * The rbadge class for a resource CATEGORY, keyed by the tab-group names the
+ * resource-types store returns.
+ *
+ * The same four colours the module badges use, for the same reason: a row's
+ * category and the module that found it are the same fact seen from two sides,
+ * and they should not be two different colours on one screen.
+ */
+const GROUP_BADGES = {
+  Datasets: 'rbadge-datasets',
+  'Software/code': 'rbadge-software',
+  Protocols: 'rbadge-protocols',
+  'Lab Materials': 'rbadge-materials'
+}
+
+export const groupBadge = (tabGroup) => GROUP_BADGES[tabGroup] || 'rbadge-neutral'
+
+/**
+ * Display-side scrub of internal references that leak into LM reasons —
+ * candidate "ref" numbers and raw KRT row UUIDs. Applied at render time so
+ * already-saved results read cleanly too.
+ */
+export function cleanReason(reason) {
+  if (!reason) return ''
+  return String(reason)
+    // Each removal leaves a SPACE: these patterns eat the whitespace on both
+    // sides of what they match, so deleting outright welded the surrounding
+    // words together ("merged refs 1, 2 & 3 into one row" → "mergedinto one
+    // row"). The collapse further down restores single spacing.
+    // Mirrored in src/backend/utils/lm-reason.js — same rules, same order.
+    .replace(/\(?\s*\brefs?\b\s*#?\s*\d+(\s*(?:,|and|&|\/)\s*#?\s*\d+)*\s*\)?/gi, ' ')
+    .replace(/\(\s*(?:row\s+)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*\)/gi, ' ')
+    .replace(/\brow\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'the matching author row')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, '')
+    .trim()
+}
+
+/**
+ * Flatten merged KRT items into contributor rows.
+ *
+ * Rows for one group are emitted consecutively and carry `isGroupStart` /
+ * `isGroupEnd`, so the table can draw the group as one block without needing
+ * to look ahead.
+ *
+ * @param {Array} items merged items from `pdf_analysis`
+ * @returns {Array} one row per contributing detection (or one row for a merged
+ *   item that records no contributor at all)
+ */
+export function buildKrtRows(items) {
+  const rows = []
+  let groupIndex = 0
+  for (const merged of items || []) {
+    const contributors = merged.detectedBy || []
+    const isDuplicate = contributors.length > 1
+    // When several detections were merged, the row that reaches the KRT is not
+    // necessarily any one of them: consolidation may take the type from one
+    // candidate and the name from another, or write its own. Showing only the
+    // contributors left the actual answer invisible — a block whose lines read
+    // "Software/code" and "Protocol" gave no clue which was kept.
+    const showResult = contributors.length > 1
+    const groupSize = Math.max(contributors.length, 1)
+    const base = {
+      reason: cleanReason(merged.reason),
+      dedupKey: merged.dedupKey,
+      groupIndex,
+      groupNumber: groupIndex + 1,
+      finalName: merged.resourceName || '',
+      groupSize
+    }
+    if (showResult) {
+      rows.push({
+        ...base,
+        isResult: true,
+        source: null,
+        resourceType: merged.resourceType || '',
+        resourceName: merged.resourceName || '',
+        identifier: merged.identifier || '',
+        sourceUrl: merged.sourceUrl || '',
+        newReuse: (merged.newReuse || '').toLowerCase(),
+        additionalInformation: merged.additionalInformation || '',
+        isDuplicate: false,
+        isGroupStart: true,
+        isGroupEnd: false
+      })
+    }
+
+    if (contributors.length === 0) {
+      rows.push({
+        ...base,
+        source: null,
+        resourceType: merged.resourceType || '',
+        resourceName: merged.resourceName || '',
+        identifier: merged.identifier || '',
+        sourceUrl: merged.sourceUrl || '',
+        newReuse: (merged.newReuse || '').toLowerCase(),
+        additionalInformation: merged.additionalInformation || '',
+        isDuplicate: false,
+        groupSize: 1,
+        isGroupStart: true,
+        isGroupEnd: true
+      })
+      groupIndex++
+      continue
+    }
+    contributors.forEach((c, j) => {
+      // Each module writes its own field names; the merged item is the
+      // fallback, so a module that contributed nothing to a field still shows
+      // the value the row ended up with rather than a blank.
+      const orig = c.originalItem || {}
+      const d = orig.data || orig
+      rows.push({
+        ...base,
+        source: c.source,
+        resourceType: d.resourceType || d.resource_type || merged.resourceType || '',
+        resourceName: d.canonical_name || d.resourceName || d.resource_name || d.name || merged.resourceName || '',
+        identifier: d.identifier || d.RRID || d.suggestedRRID || merged.identifier || '',
+        sourceUrl: d.source || d.url || d.suggestedURL || merged.sourceUrl || '',
+        newReuse: String(d.newReuse || d.new_reuse || merged.newReuse || '').toLowerCase(),
+        additionalInformation: d.additionalInformation || d.additional_information || merged.additionalInformation || '',
+        isDuplicate,
+        // The result row above already opened the block when there is one.
+        isGroupStart: j === 0 && !showResult,
+        isGroupEnd: j === contributors.length - 1
+      })
+    })
+    groupIndex++
+  }
+  return rows
+}

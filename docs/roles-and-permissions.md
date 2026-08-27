@@ -55,18 +55,20 @@ Team membership can be auto-assigned from an admin-managed email→team roster
 | View / edit KRT QC & Optional flags | — | — | ✓ | ✓ |
 | Hide / unhide submission | own | teammates' | all | all |
 | Delete submission (hard delete) | — | — | ✓ | ✓ |
-| Trigger AI analysis | own | teammates' | all | all |
+| Trigger AI analysis / re-run a module | own | teammates' | all | all |
+| — capped at, per day | 10 runs | 50 runs | unlimited | unlimited |
 | View job summary status (panel) | ✓ | ✓ | ✓ | ✓ |
-| View job internals (logs, raw responses, timestamps, queue config) | — | ✓ | ✓ | ✓ |
-| Restart / advance / retry jobs | — | — | ✓ | ✓ |
+| View job internals (prompts, raw responses, run history) | own | teammates' | all | all |
+| Cross-submission queue admin (the admin Jobs page) | — | — | — | ✓ |
+| Start a job parked awaiting your own input (`/jobs/:type/advance`) | own | teammates' | all | all |
 | View users (scoped) | — | team | all | all |
 | Create non-admin users | — | — | ✓ | ✓ |
-| Edit non-admin users | — | — | ✓ | ✓ |
+| Edit non-admin users (name, role, teams) | — | — | ✓ | ✓ |
+| Set another user's password | — | — | — | ✓ |
 | Create / edit admin users | — | — | — | ✓ |
 | Delete users | — | — | — | ✓ |
 | List / create / edit teams (lab, by leader name) | — | — | ✓ | ✓ |
-| Delete teams (no users/submissions attached) | — | — | ✓ | ✓ |
-| Force-delete teams (with submissions attached) | — | — | — | ✓ |
+| Delete teams (no members) | — | — | ✓ | ✓ |
 | Manage projects (grant codes) + CSV import/export | — | — | ✓ | ✓ |
 | Manage team-email roster (Team Email Assignment) + CSV import/export | — | ✓ | ✓ | ✓ |
 | Manage resource types | — | — | ✓ | ✓ |
@@ -85,9 +87,37 @@ Team membership can be auto-assigned from an admin-managed email→team roster
     (owner ∈ {self, teammates}, minus staff-owned for non-staff).
 - **Coarse role gates** — `src/backend/middleware/role.middleware.js`
   - `requireRole(...roles)`, `requireAdmin`, `canCreateSubmission`.
-- **Feature-specific gates** — `src/backend/middleware/feature-access.middleware.js`
-  - `canViewJobInternals` — blocks authors from `/jobs/:jobType/responses/...`.
-  - `canManageJobs` — restricts `/jobs/:jobType/advance` to staff.
+  - There is no second axis. `canViewJobInternals` used to withhold prompts,
+    raw responses and run history from authors on submissions they owned; it
+    was removed along with `feature-access.middleware.js`, because access runs
+    along ownership only. Technical detail is collapsed by default in the UI —
+    a default, not a permission.
+- **The analysis budget** — `src/backend/middleware/rate-limit.middleware.js`
+  - Re-running a module is not a role gate at all. Every trigger route carries
+    `canAccessSubmission` plus `lmApiLimiter` (burst) and `lmApiDailyLimiter`
+    (the policy: 10 runs a day for an author, 50 for a PM, unlimited for staff).
+    The UI used to hide the Restart button from authors and PMs while the server
+    accepted their requests — so the panel told an author in bold to re-run a
+    module and gave them no button, and the person best placed to notice a wrong
+    result was the only one who could not ask for it again. What separates the
+    roles is a budget, which is honest about the real constraint (LM spend) and
+    which a user can see themselves against.
+  - **Order matters: `canAccessSubmission` comes first, then the limiters.** The
+    daily limiter *is* the policy for re-runs, so counting a request before
+    checking the caller may touch that submission means a 403 spends one of the
+    day's runs — refused and charged, and a mistyped id costs one every time.
+    Two routes had it the other way round (`/das-suggestions/regenerate` and
+    `/reports/generate`); `routes/limiter-ordering.test.js` reads the route
+    declarations and fails if any submission-scoped route rate-limits before it
+    authorises.
+  - (`canManageJobs` was removed. It guarded `/jobs/:jobType/advance` only, and
+    that route is not job management: the orchestrator refuses any status but
+    `pending_input`, so it can only start a job the pipeline parked awaiting the
+    user's own input. Restricting it to staff stalled any submission whose
+    Availability Statement had to be typed in by hand — the page told the author
+    to enter it and press the button, and the button returned 403. Genuine
+    staff-only job actions live behind `requireRole(ADMIN)` in
+    `job-admin.routes.js`.)
 - **Controller-level guards**
   - `src/backend/controllers/users.controller.js` — `assertCanTouchAdminRole` blocks ds_annotator from creating, editing, or promoting admin users.
   - `src/backend/controllers/teams.controller.js` — `deleteTeam` refuses team deletion when submissions are attached unless the actor is admin.
@@ -100,7 +130,13 @@ Team membership can be auto-assigned from an admin-managed email→team roster
   flags that mirror the backend rules. UI components consume these instead of
   hardcoding role strings.
   - Submission: `canDeleteSubmission`, `canHideSubmission`, `canEditSubmission(submission)`.
-  - Jobs: `canViewJobInternals`, `canManageJobs`.
+  - Jobs: `canRestartJobs` (true for any signed-in user — what separates the
+    roles is the daily LM budget, not a flag).
+  - (`canManageJobs` and `canViewJobInternals` are both gone. Each gated a
+    control while the server answered differently: the first hid the restart
+    button the server would have accepted, the second showed a prompt viewer
+    the server refused. A flag that disagrees with the server is worse than no
+    flag.)
   - Users: `canEditAnyUser`, `canEditAdminUsers`, `canDeleteUsers`.
   - Teams/projects: `canManageTeams`, `canManageTeamEmails` (admin/ds/pm). Owner
     reassignment lives in `EditMetadataModal.vue`, gated on `isStaff`.

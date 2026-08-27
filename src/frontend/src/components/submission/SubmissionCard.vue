@@ -5,11 +5,13 @@
  * @component
  */
 import { ref, computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.store'
 import StatusBadge from './StatusBadge.vue'
 import ProjectBadge from './ProjectBadge.vue'
 import StepIndicator from './StepIndicator.vue'
 import EditMetadataModal from './EditMetadataModal.vue'
+import { formatDateTime } from '@/utils/format-date'
 import { statusToStep } from '@/utils/submission'
 
 const props = defineProps({
@@ -30,7 +32,20 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['click', 'hide', 'unhide', 'delete', 'updated'])
+const emit = defineEmits(['hide', 'unhide', 'delete', 'updated'])
+
+/**
+ * Where this card goes, as a route the RouterLink below renders into an <a>.
+ *
+ * It used to emit a `click` the dashboard turned into `window.open(..., '_blank')`,
+ * so every card opened a new tab whether you wanted one or not, and a middle
+ * click — the gesture that MEANS "new tab" — did nothing at all, because a div
+ * has no link behaviour to invoke.
+ */
+const linkTo = computed(() => ({
+  name: 'submission-detail',
+  params: { id: props.submission.id }
+}))
 
 const authStore = useAuthStore()
 
@@ -38,14 +53,10 @@ const canDelete = computed(() => authStore.canDeleteSubmission)
 const canEdit = computed(() => authStore.canEditSubmission(props.submission))
 const isComplete = computed(() => props.submission.status === 'completed')
 
-const formattedDate = computed(() => {
-  const date = new Date(props.submission.createdAt)
-  return date.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric'
-  })
-})
+// Date AND time, matching the table view — two submissions created the same
+// day are otherwise indistinguishable, and the order they happen to be listed
+// in is the only clue about which came first.
+const formattedDate = computed(() => formatDateTime(props.submission.createdAt))
 
 // Edit modal state
 const showEditModal = ref(false)
@@ -76,10 +87,22 @@ function handleMetadataSaved() {
 </script>
 
 <template>
-  <div
-    class="card cursor-pointer hover:shadow-md transition-shadow relative"
-    @click="emit('click')"
-  >
+  <div class="card hover:shadow-md transition-shadow relative">
+    <!--
+      The whole card is one link, stretched over it, rather than a click handler.
+      An <a> is what a browser already knows how to open: left click navigates
+      here, middle click and ctrl-click open a tab, and the status bar shows the
+      destination on hover. None of that is reimplementable with @click.
+
+      It sits UNDER the interactive controls (z-0 against their z-10), so the
+      action buttons keep their own clicks — nesting them inside the anchor
+      would be invalid HTML and would swallow them.
+    -->
+    <RouterLink
+      :to="linkTo"
+      class="absolute inset-0 z-0 rounded-lg"
+      :aria-label="`Open ${submission.title}`"
+    />
     <!-- Badges in top right corner: Version on top, Team below -->
     <div class="absolute top-3 right-3 flex flex-col items-end gap-1">
       <!-- Version badge (always shown) -->
@@ -118,12 +141,12 @@ function handleMetadataSaved() {
         </div>
 
         <!-- Action buttons -->
-        <div v-if="showActions" class="flex items-center space-x-2">
+        <div v-if="showActions" class="relative z-10 flex items-center space-x-2">
           <!-- Edit button (own submission for authors, team for PMs, all for staff) -->
           <button
             v-if="canEdit"
             class="p-1 text-gray-400 hover:text-primary-600 transition-colors"
-            title="Edit metadata"
+            v-tooltip="'Edit metadata'"
             @click="handleEdit"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -135,7 +158,7 @@ function handleMetadataSaved() {
           <button
             v-if="isHidden"
             class="p-1 text-gray-400 hover:text-primary-600 transition-colors"
-            title="Unhide submission"
+            v-tooltip="'Unhide submission'"
             @click="handleUnhide"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -146,7 +169,7 @@ function handleMetadataSaved() {
           <button
             v-else
             class="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-            title="Hide submission"
+            v-tooltip="'Hide submission'"
             @click="handleHide"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -158,7 +181,7 @@ function handleMetadataSaved() {
           <button
             v-if="canDelete"
             class="p-1 text-gray-400 hover:text-red-600 transition-colors"
-            title="Delete submission"
+            v-tooltip="'Delete submission'"
             @click="handleDelete"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

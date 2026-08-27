@@ -81,7 +81,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Baseline DoS protection on the whole API surface (200 req/min/IP from
+// Baseline DoS protection on the whole API surface (120 req/min/IP from
 // conf/rate-limits.json). Auth/upload/LM endpoints add their own stricter,
 // per-user limiters on top. Tune the `api` limit if shared-NAT offices hit it.
 app.use('/api', apiLimiter);

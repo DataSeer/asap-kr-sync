@@ -4,6 +4,7 @@
 
 const identifierDetectionService = require('../services/identifier-detection/identifier-detection.service');
 const logger = require('../utils/logger');
+const { describeQueueOutcome } = require('../utils/queue-message');
 
 /**
  * Get identifier-detection mentions for a submission.
@@ -28,12 +29,16 @@ async function getIdentifierMentions(req, res, next) {
 async function triggerDetection(req, res, next) {
   try {
     const submission = req.submission;
-    await identifierDetectionService.queueIdentifierDetection(
+    const { job, alreadyInFlight } = await identifierDetectionService.queueIdentifierDetection(
       submission.id,
-      submission.currentRound
+      submission.currentRound,
+      req.userId
     );
-    logger.info('Identifier detection queued', { submissionId: submission.id });
-    res.json({ message: 'Identifier detection queued' });
+    logger.info('Identifier detection queued', { submissionId: submission.id, status: job.status });
+    res.json({
+      message: describeQueueOutcome('Identifier detection', job, alreadyInFlight),
+      status: job.status
+    });
   } catch (error) {
     next(error);
   }

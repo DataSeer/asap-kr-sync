@@ -53,6 +53,20 @@ module.exports = (sequelize) => {
       type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 1
+    },
+    /**
+     * Who put this file here.
+     *
+     * Null for files the pipeline produces (the converted markdown), which no
+     * person uploaded, and for rows that predate the column. Without it, "who
+     * replaced the PDF with v2" was answerable only by correlating change_logs
+     * timestamps and parsing a description.
+     */
+    uploadedByUserId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'uploaded_by_user_id',
+      references: { model: 'users', key: 'id' }
     }
   }, {
     tableName: 'files',

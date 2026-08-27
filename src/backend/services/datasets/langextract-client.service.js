@@ -13,12 +13,14 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const apiConfig = require('../../config/datasets-detection-api');
+const { applyGeminiDefaults } = require('../../config/gemini');
 const { ExternalServiceError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
 
 const SCRIPT_PATH = path.join(__dirname, '../../python/datasets/extract-signals.py');
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
-const PROMPT_FILE = path.join(PROMPTS_DIR, 'datasets-signals-extraction.txt');
+const PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'datasets-signals-extraction.txt');
 const EXAMPLES_FILE = path.join(PROMPTS_DIR, 'datasets-signals-examples.json');
 
 // Default configuration — can be overridden via per-process env vars
@@ -27,7 +29,16 @@ const MAX_WORKERS = parseInt(process.env.DATASETS_LANGEXTRACT_MAX_WORKERS, 10) |
 const MAX_CHAR_BUFFER = parseInt(process.env.DATASETS_LANGEXTRACT_MAX_CHAR_BUFFER, 10) || 3000;
 const BATCH_LENGTH = parseInt(process.env.DATASETS_LANGEXTRACT_BATCH_LENGTH, 10) || 60;
 const EXTRACTION_PASSES = parseInt(process.env.DATASETS_LANGEXTRACT_EXTRACTION_PASSES, 10) || 1;
-const GEMINI_MODEL = process.env.DATASETS_DETECTION_GEMINI_MODEL || 'gemini-2.5-flash';
+// Deterministic by default, matching every other LM call in the app (see
+// utils/gemini.js). langextract otherwise leaves temperature at the model
+// default, which made the same manuscript yield different signal sets per run.
+const TEMPERATURE = Number.isFinite(parseFloat(process.env.DATASETS_LANGEXTRACT_TEMPERATURE))
+  ? parseFloat(process.env.DATASETS_LANGEXTRACT_TEMPERATURE)
+  : 0;
+// Read from the config rather than the environment directly: it resolves the
+// shared GEMINI_MODEL fallback too, and a client that skipped it would send
+// one model while every status line in the app named another.
+const GEMINI_MODEL = apiConfig.model;
 
 // Timeout: 10 minutes (langextract processes many chunks in parallel)
 const TIMEOUT_MS = parseInt(process.env.DATASETS_LANGEXTRACT_TIMEOUT, 10) || 600000;
@@ -42,7 +53,8 @@ const TIMEOUT_MS = parseInt(process.env.DATASETS_LANGEXTRACT_TIMEOUT, 10) || 600
  *   object/array is JSON-stringified). Both default to the committed files.
  *   The Python script reads both from file paths, so any override is written
  *   to a temp file for the duration of the call.
- * @returns {Promise<Array<object>>} Array of extraction objects with extraction_class, extracted_text, attributes
+ * @returns {Promise<Array<object>>} Extraction objects with extraction_class,
+ *   extraction_text, char_interval, alignment_status, attributes
  */
 async function extractSignals(markdownText, { prompt, examples } = {}) {
   const startTime = Date.now();
@@ -89,7 +101,8 @@ async function extractSignals(markdownText, { prompt, examples } = {}) {
     '--max-workers', String(MAX_WORKERS),
     '--batch-length', String(BATCH_LENGTH),
     '--max-char-buffer', String(MAX_CHAR_BUFFER),
-    '--extraction-passes', String(EXTRACTION_PASSES)
+    '--extraction-passes', String(EXTRACTION_PASSES),
+    '--temperature', String(TEMPERATURE)
   ];
 
   try {
@@ -100,7 +113,7 @@ async function extractSignals(markdownText, { prompt, examples } = {}) {
 
     const child = spawn(PYTHON_BIN, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env }
+      env: buildChildEnv()
     });
 
     // Set timeout. SIGTERM first; escalate to SIGKILL if the process is
@@ -229,13 +242,65 @@ function buildExtractedRows(extractions) {
   return extractions
     .filter(e => e.extraction_class === 'DATASET_ROW')
     .map(e => ({
-      text: e.extracted_text || '',
+      text: e.extraction_text || '',
+      charInterval: e.char_interval || null,
+      alignmentStatus: e.alignment_status || null,
       attributes: e.attributes || {}
     }));
 }
 
+/**
+ * Split extractions into the ones LangExtract aligned to a span of the source
+ * text and the ones it could not.
+ *
+ * An unaligned extraction is not evidence of anything: the model produced text
+ * that does not occur in the article. The observed failure mode is the model
+ * echoing the few-shot examples out of the prompt when a manuscript is sparse —
+ * those arrive looking exactly like real findings (plausible name, real
+ * accession) and are only distinguishable by having no span.
+ *
+ * @param {Array<object>} rows - Rows from buildExtractedRows
+ * @returns {{grounded: Array<object>, ungrounded: Array<object>}}
+ */
+function partitionByGrounding(rows) {
+  const grounded = [];
+  const ungrounded = [];
+  for (const row of rows) {
+    if (row.charInterval && Number.isInteger(row.charInterval.start_pos)) {
+      grounded.push(row);
+    } else {
+      ungrounded.push(row);
+    }
+  }
+  return { grounded, ungrounded };
+}
+
+/**
+ * The environment the LangExtract child runs in.
+ *
+ * The script reads DATASETS_DETECTION_GEMINI_API_KEY out of its own
+ * environment, and a child process inherits variables, not the expression that
+ * produced them. `server.js` already normalises the whole environment at
+ * startup, so under the app this call has nothing left to do -- but the
+ * detection scripts under `scripts/` load their own .env and never run that
+ * pass, and the child would inherit an environment with the per-module
+ * variable still missing.
+ *
+ * It applies the SAME function startup applies, rather than a second copy of
+ * the rule. One rule, two places it is enforced, no way for them to disagree.
+ *
+ * @returns {Record<string, string>} env for the child process
+ */
+function buildChildEnv() {
+  const env = { ...process.env };
+  applyGeminiDefaults(env);
+  return env;
+}
+
 module.exports = {
   extractSignals,
+  buildChildEnv,
   collectDatasetNames,
-  buildExtractedRows
+  buildExtractedRows,
+  partitionByGrounding
 };
