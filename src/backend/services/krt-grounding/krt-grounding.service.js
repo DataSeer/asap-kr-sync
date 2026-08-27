@@ -44,6 +44,7 @@ const groundingConfig = require('../../config/krt-grounding-api');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { matchAuthorRows } = require('./match-author-rows.service');
+const { verifyRow } = require('./verify-against-manuscript');
 const { getPipeline } = require('../../config/pipelines');
 const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
   findAllOccurrences, findNormalisedOccurrences, identifierParts } = require('../pdf-analysis/evidence.service');
@@ -293,16 +294,19 @@ async function checkPresence(submissionId, round, authorRows, jobLogger) {
   const markdownText = await loadMarkdown(submissionId, round);
   if (!markdownText) {
     jobLogger?.log('presence_skipped', 'No markdown — presence cannot be judged', {});
-    return { available: false, byRowId, stats: { checked: 0, present: 0, absent: 0 } };
+    return { available: false, byRowId, index: null, stats: { checked: 0, present: 0, absent: 0 } };
   }
 
-  const found = presenceForRows(buildEvidenceIndex(markdownText), authorRows);
+  // The index is returned as well as used: verifying a conflict needs the
+  // manuscript text, and building it twice for the same round would be waste.
+  const index = buildEvidenceIndex(markdownText);
+  const found = presenceForRows(index, authorRows);
   for (const [rowId, value] of found) byRowId.set(rowId, value);
 
   const present = [...byRowId.values()].filter((p) => p.found).length;
   const stats = { checked: authorRows.length, present, absent: authorRows.length - present };
   jobLogger?.log('presence_checked', 'Searched the manuscript for each author row directly', stats);
-  return { available: true, byRowId, stats };
+  return { available: true, byRowId, index, stats };
 }
 
 /**
@@ -360,6 +364,76 @@ async function groundSubmission(submission, jobLogger) {
   // is in the paper; the outcome says what detection made of it.
   for (const outcome of matched.outcomes) {
     outcome.presence = presence.byRowId.get(outcome.krtRowId) || null;
+
+    /**
+     * A conflict may only cite the manuscript for what the manuscript says.
+     *
+     * The matcher raised one by comparing the author's cell against a
+     * CANDIDATE's field and labelling the result `manuscriptValue`. For an
+     * identifier-scan candidate that field comes from the curated enrichment
+     * list, so curators were shown "the manuscript says" followed by values the
+     * paper never contained — and told their correct rows disagreed with it.
+     *
+     * Re-derived here from the text itself. Everything the matcher proposed is
+     * discarded; what survives is what the manuscript supports.
+     */
+    if (presence.index && outcome.presence) {
+      const verified = verifyRow({
+        identifiers: outcome.presence.identifiers || [],
+        index: presence.index,
+        mentions: outcome.presence.mentions || []
+      });
+
+      outcome.identifierVerdicts = verified.identifiers;
+      // Only a value of the same kind, actually in the text, beside this
+      // resource. Anything else is not evidence the author is wrong.
+      outcome.conflicts = verified.mismatches.map((m) => ({
+        field: 'identifier',
+        authorValue: m.value,
+        manuscriptValue: m.competing,
+        kind: m.kind,
+        source: 'manuscript'
+      }));
+      // Present in the KRT, absent from the paper, nothing contradicting it.
+      // NOT an error — a KRT may carry more than the manuscript prints — so it
+      // travels separately from `conflicts` and is shown as a note.
+      outcome.unverifiedIdentifiers = verified.unverified.map((u) => u.value);
+
+      /**
+       * The same rule for the empty-cell fills.
+       *
+       * `foundValues` came from the same candidate field as the conflicts did,
+       * so a blank IDENTIFIER could be offered a homepage URL the enrichment
+       * list knows and the paper never printed — proposed to the curator, and
+       * accepted, it writes into their table something no source supports.
+       *
+       * A fill is kept only if the manuscript actually contains it. `source` is
+       * exempt: it is the repository or supplier, inferred from where a thing
+       * lives rather than asserted by the text, so requiring it to appear
+       * verbatim would reject every legitimate fill.
+       */
+      const flat = presence.index.flat || '';
+      const inText = (value) => {
+        const needle = String(value).replace(/[\s\\]/g, '').toLowerCase();
+        return needle.length > 2 && flat.includes(needle);
+      };
+      for (const [field, value] of Object.entries(outcome.foundValues || {})) {
+        if (field === 'source') continue;
+        const parts = String(value).split(';').map((v) => v.trim()).filter(Boolean);
+        const supported = parts.filter(inText);
+        if (supported.length) outcome.foundValues[field] = supported.join(' ; ');
+        else {
+          delete outcome.foundValues[field];
+          outcome.missingFields = (outcome.missingFields || []).filter((f) => f !== field);
+        }
+      }
+    } else {
+      // No manuscript to check against: assert nothing rather than fall back to
+      // the candidate comparison this replaced.
+      outcome.conflicts = [];
+      outcome.identifierVerdicts = [];
+      outcome.unverifiedIdentifiers = [];
+    }
   }
 
   // Present in the text, yet no candidate matched it: a detection miss, which

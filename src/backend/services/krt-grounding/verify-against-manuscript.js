@@ -69,6 +69,26 @@ const CONTEXT_CHARS = 600;
  */
 const KINDS = ['doi', 'rrid', 'scr', 'cas', 'accession', 'addgene', 'pdb', 'pmid', 'url'];
 
+/**
+ * Kinds where a DIFFERENT nearby value is evidence of a disagreement.
+ *
+ * `url` is excluded, and the exclusion was earned. An RRID, a DOI, an accession
+ * identify one thing; two different ones beside the same resource is worth a
+ * look. A URL identifies nothing in particular — a methods paragraph carries the
+ * tool's homepage, the lab's site, the journal's link and the paper's own data
+ * deposit, and any of them will differ from any other.
+ *
+ * With `url` included, the first live run raised two conflicts, both comparing a
+ * tool's homepage against the paper's Zenodo record:
+ *
+ *     https://imagej.net/software/fiji/         vs  https://zenodo.org/record/16877070
+ *     https://www.wavemetrics.com/products/igo  vs  https://zenodo.org/record/16877070
+ *
+ * Neither says anything about the other. Trading one class of false conflict for
+ * another is not a fix, so a URL can be `found` or `absent` — never a mismatch.
+ */
+const MISMATCH_KINDS = KINDS.filter((k) => k !== 'url');
+
 /** The kind of identifier a single author-written value is. */
 function kindOf(value) {
   const found = extractAll(String(value || ''));
@@ -113,8 +133,9 @@ function verdictFor({ value, foundInText, context }) {
   // is no neighbourhood to have found a competing value in.
   if (!context) return { value, verdict: 'absent', kind };
 
-  // Only a value of the SAME kind can disagree with this one.
-  if (!kind) return { value, verdict: 'absent', kind };
+  // Only a value of the SAME kind can disagree with this one, and only for kinds
+  // where a difference means something — see MISMATCH_KINDS.
+  if (!kind || !MISMATCH_KINDS.includes(kind)) return { value, verdict: 'absent', kind };
 
   // Unescaped here as well as in contextAround. It is idempotent, and a caller
   // that passes raw manuscript text would otherwise get a quiet `absent` for

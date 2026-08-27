@@ -89,10 +89,16 @@ function foundVerdict(o) {
   // contradicts the KRT, or the KRT contradicts the paper, and both are errors
   // a reader has to resolve rather than note. It is the only verdict here that
   // reports a defect rather than a degree of confidence.
+  // AMBER, not red. It used to be red and called "Incoherence", on the premise
+  // that one of the two sources must be wrong. That premise was false twice over:
+  // the value it compared against came from the curated enrichment list rather
+  // than the manuscript, so the "disagreement" was often with something the paper
+  // never said — and even a real difference is not proof the author is wrong,
+  // since the paper can be the thing that is out of date.
   if (conflicts > 0) {
     return {
-      label: 'Incoherence', cls: 'grounding-error',
-      title: `${conflicts} value(s) in this row disagree with the manuscript — one of the two is wrong. Your row is kept unchanged; the conflicting values are listed under More information.`
+      label: 'Possible mismatch', cls: 'grounding-warn',
+      title: `The manuscript names ${conflicts === 1 ? 'a different value' : `${conflicts} different values`} of the same kind beside this resource. Your row is unchanged — compare them under More information and decide which is right.`
     }
   }
 
@@ -266,7 +272,23 @@ defineExpose({ foundVerdict })
               </template>
               <!-- Conflicts travel in every pipeline: a value contradicting the
                    manuscript is a defect either way. -->
-              <div v-for="(c, ci) in groundingConflicts(o)" :key="'c' + ci" class="grounding-conflict">
+              <!--
+              Not in the paper, and nothing contradicting it. A KRT is allowed to
+              carry more than the manuscript prints — most good ones do — so this
+              is a note about what was checked, not a finding. Grey, no icon, no
+              call to action.
+            -->
+            <div v-if="(o.unverifiedIdentifiers || []).length" class="grounding-unverified">
+              <span class="unverified-label">Not mentioned in the manuscript</span>
+              <span class="unverified-note">
+                kept as you wrote {{ (o.unverifiedIdentifiers || []).length === 1 ? 'it' : 'them' }} — nothing in the paper contradicts
+                {{ (o.unverifiedIdentifiers || []).length === 1 ? 'it' : 'them' }}
+              </span>
+              <ul class="unverified-list">
+                <li v-for="(u, ui) in o.unverifiedIdentifiers" :key="'u' + ui">{{ u }}</li>
+              </ul>
+            </div>
+            <div v-for="(c, ci) in groundingConflicts(o)" :key="'c' + ci" class="grounding-conflict">
                 <div class="conflict-field">⚠ {{ c.field }}</div>
                 <div class="conflict-line">
                   <span class="conflict-side">your row</span>
@@ -313,12 +335,24 @@ defineExpose({ foundVerdict })
   font-size: 0.68rem; font-weight: 600; white-space: nowrap;
 }
 /* One rule each: green asks nothing of the reader, blue is a real signal that
-   still wants a glance, orange is nothing found, red is a defect. */
+   still wants a glance, orange is nothing found, amber is worth comparing.
+   There is no red here any more — this module reports what the manuscript does
+   and does not say, and neither of those is the author making a mistake. */
 .grounding-ok { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
 .grounding-check { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
 .grounding-absent { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
-.grounding-error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+.grounding-warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
 .grounding-unknown { background: #f9fafb; color: #6b7280; border: 1px solid #e5e7eb; }
+
+/* Deliberately quiet: no warning colour, no icon. It reports that something was
+   not checkable, which is not the same as something being wrong. */
+.grounding-unverified {
+  margin-top: 0.4rem; padding: 0.45rem 0.6rem; border-radius: 0.25rem;
+  background: #f9fafb; border: 1px solid #e5e7eb; font-size: 0.78rem; color: #4b5563;
+}
+.unverified-label { font-weight: 600; color: #374151; }
+.unverified-note { color: #6b7280; }
+.unverified-list { margin: 0.3rem 0 0; padding-left: 1.1rem; font-family: ui-monospace, monospace; font-size: 0.74rem; }
 
 .grounding-why { color: #4b5563; line-height: 1.35; max-width: 34rem; }
 .grounding-fill { color: #047857; margin-top: 0.2rem; }

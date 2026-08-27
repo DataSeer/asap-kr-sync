@@ -145,17 +145,41 @@ describe('GroundingTable', () => {
     expect(wrapper.text()).not.toContain('partial ids')
   })
 
-  it('a conflict still outranks a partly-corroborated cell', () => {
-    // One of the two sources being wrong is the more serious reading, and it
-    // must not be softened into "partial".
+  it('a possible mismatch still outranks a partly-corroborated cell', () => {
+    // The row IS in the paper and the paper names something different beside it;
+    // that is the thing worth reading, and it must not be softened into
+    // "partial".
+    //
+    // The label was "Incoherence" and red, on the premise that one of the two
+    // sources must be wrong. It is amber now: the value compared against used to
+    // come from the enrichment list rather than the manuscript, and even a real
+    // difference is not proof the author is wrong — the paper can be the thing
+    // that is out of date.
     const wrapper = mountGrounding({
       outcomes: [withPresence({ identifiersNotFound: ['Cat#657012'] }, {
         conflicts: [{ field: 'identifier', authorValue: 'a', manuscriptValue: 'b' }]
       })]
     })
 
-    expect(wrapper.text()).toContain('Incoherence')
+    expect(wrapper.text()).toContain('Possible mismatch')
     expect(wrapper.text()).not.toContain('partial ids')
+  })
+
+  it('an identifier the paper does not print is a note, not a finding', () => {
+    // A KRT may carry more than the manuscript prints, and most good ones do.
+    // This must read as "we checked and it is not there", never as an error.
+    const wrapper = mountGrounding({
+      outcomes: [withPresence({}, {
+        conflicts: [],
+        unverifiedIdentifiers: ['https://imagej.net/ij/plugins/time-series.html']
+      })]
+    })
+
+    expect(wrapper.text()).toContain('Not mentioned in the manuscript')
+    expect(wrapper.text()).toContain('nothing in the paper contradicts')
+    expect(wrapper.text()).not.toContain('Possible mismatch')
+    // The quiet class, not a warning one.
+    expect(wrapper.find('.grounding-unverified').exists()).toBe(true)
   })
 
   it('treats anything other than an explicit true as "do not surface"', () => {
