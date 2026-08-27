@@ -240,7 +240,15 @@ async function runArm({ entry, pipeline, markdown, fullRows, ablation, staggerMs
     inputs,
     detected: Object.fromEntries(Object.entries(items).map(([k, v]) => [k, v.length])),
     detectedTotal: all.length,
-    supported: Object.fromEntries(Object.entries(evidence).map(([k, s]) => [k, s.verified ?? null])),
+    // verified + embellished, matching what the pipeline KEEPS. `dropUnsupported`
+    // discards only the items whose quote AND resource are both absent from the
+    // manuscript; an embellished item is a real find whose quote is not verbatim,
+    // and counting it as unsupported understated the seeded arm badly — its
+    // materials came back 100% embellished and read as 0 supported.
+    supported: Object.fromEntries(Object.entries(evidence).map(
+      ([k, st]) => [k, st.error ? null : (st.verified || 0) + (st.embellished || 0)]
+    )),
+    evidence,
     recall: {
       all: score(fullRows),
       kept: score(ablation.kept),
