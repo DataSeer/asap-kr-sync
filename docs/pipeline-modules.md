@@ -276,16 +276,16 @@ Every stage, in order, with what it adds and where it can lose something.
 ```
  PDF ──► markdown_convert ──► markdown on S3 (every text detector reads THIS)
                                   │
-      ┌───────────────────────────┴───────────────────────────┐
-      │  5 DETECTORS — seeded under seeded-v1 (default),      │
-│  KRT-blind under blind-v1; all in parallel            │
-      │                                                       │
-      │  software    Softcite (PDF) + optional LM (markdown)  │
-      │  datasets    LangExtract signals → Gemini consolidate  │
-      │  materials   Gemini, cue-driven                        │
-      │  protocols   Gemini                                    │
-      │  identifier  local regex vs curated lists + venue sweep│
-      └───────────────────────────┬───────────────────────────┘
+      ┌───────────────────────────┴─────────────────────────────┐
+      │  5 DETECTORS — seeded under seeded-v1 (default),        │
+      │  KRT-blind under blind-v1; all in parallel              │
+      │                                                         │
+      │  software    Softcite (PDF) + optional LM (markdown)    │
+      │  datasets    LangExtract signals → Gemini consolidate   │
+      │  materials   Gemini, cue-driven                         │
+      │  protocols   Gemini                                     │
+      │  identifier  local regex vs curated lists + venue sweep │
+      └───────────────────────────┬─────────────────────────────┘
                                   │  each detector, per item:
                                   │   1. detect          → raw model/scanner output
                                   │   2. buildKrtItems   → canonical KrtEntry
@@ -296,40 +296,40 @@ Every stage, in order, with what it adds and where it can lose something.
                                   ▼
                         persisted per job: result.data.items
                                   │
-      ┌───────────────────────────┴───────────────────────────┐
-      │  krt_grounding            (gated on krt_curated)      │
-      │  author KRT × candidate pool                          │
-      │   • deterministic match: identifier → alias → name    │
-      │   • LM second look over the rows nothing matched      │
-      │     (every quote re-verified; an unlocatable one      │
-      │      changes nothing)                                 │
-      │   → per author row: confirmed / incomplete /          │
-      │                     partial / not_detected            │
-      │   → conflicts where the paper disagrees with the row  │
-      └───────────────────────────┬───────────────────────────┘
+      ┌───────────────────────────┴────────────────────────────┐
+      │  krt_grounding            (gated on krt_curated)       │
+      │  author KRT × candidate pool                           │
+      │   • deterministic match: identifier → alias → name     │
+      │   • LM second look over the rows nothing matched       │
+      │     (every quote re-verified; an unlocatable one       │
+      │      changes nothing)                                  │
+      │   → per author row: confirmed / incomplete /           │
+      │                     partial / not_detected             │
+      │   → conflicts where the paper disagrees with the row   │
+      └───────────────────────────┬────────────────────────────┘
                                   ▼
-      ┌───────────────────────────────────────────────────────┐
-      │  pdf_analysis — builds the GENERATED KRT              │
-      │                                                       │
-      │   a. mergeDetections   cross-detector merge; drops    │
-      │                        `unsupported`; detectedBy[]    │
-      │                        keeps provenance; infers       │
-      │                        SOURCE from the identifier     │
-      │   b. consolidateWithLM Gemini merges near-duplicates, │
-      │                        drops non-resources, gives a   │
-      │                        `reason` per kept/dropped line │
-      │                        (rule-based fallback if off)   │
-      │   c. reconcileWithAuthorKrt — every author row is     │
-      │                        guaranteed to survive          │
-      └───────────────────────────┬───────────────────────────┘
+      ┌────────────────────────────────────────────────────────┐
+      │  pdf_analysis — builds the GENERATED KRT               │
+      │                                                        │
+      │   a. mergeDetections   cross-detector merge; drops     │
+      │                        `unsupported`; detectedBy[]     │
+      │                        keeps provenance; infers        │
+      │                        SOURCE from the identifier      │
+      │   b. consolidateWithLM Gemini merges near-duplicates,  │
+      │                        drops non-resources, gives a    │
+      │                        `reason` per kept/dropped line  │
+      │                        (rule-based fallback if off)    │
+      │   c. reconcileWithAuthorKrt — every author row is      │
+      │                        guaranteed to survive           │
+      └───────────────────────────┬────────────────────────────┘
                                   ▼
               Generated KRT  (result.data.items + generated-krt.json on S3)
                                   │
-      ┌───────────────────────────┴───────────────────────────┐
-      │  suggestion_generation                                │
-      │   author KRT × Generated KRT × grounding outcomes     │
-      │   → add / skip / update / remove, + grounding tags    │
-      └───────────────────────────────────────────────────────┘
+      ┌───────────────────────────┴────────────────────────────┐
+      │  suggestion_generation                                 │
+      │   author KRT × Generated KRT × grounding outcomes      │
+      │   → add / skip / update / remove, + grounding tags     │
+      └────────────────────────────────────────────────────────┘
 ```
 
 **Where data can be lost, and what protects it**
