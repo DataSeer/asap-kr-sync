@@ -96,6 +96,11 @@ const SOURCES = [
 
 const KRT_EXT = /\.(xlsx|csv|xls|ods)$/i;
 
+const arg = (name, fallback) => {
+  const at = process.argv.indexOf(name);
+  return at === -1 ? fallback : process.argv[at + 1];
+};
+
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const mib = (bytes) => (bytes / 1024 / 1024);
 
@@ -297,10 +302,19 @@ function selectCorpus(usable, size, presenceByShaOrNull, minPresence) {
     list.sort((a, b) => (rank[a.source] - rank[b.source]) || (b.krtInfo.rows - a.krtInfo.rows));
   }
 
-  // One per lab, then spread the picks across the size range rather than taking
-  // the biggest — a corpus of only large tables says nothing about small ones,
-  // and the ablation is most informative where there is least to remove.
-  const oneEach = [...byLab.values()].map((l) => l[0]).sort((a, b) => b.krtInfo.rows - a.krtInfo.rows);
+  // One per lab by default. That guards a comparison ACROSS manuscripts, where a
+  // lab's house style would otherwise be measured as a property of the corpus.
+  //
+  // `--per-lab N` relaxes it, and for a PAIRED comparison it should be relaxed:
+  // both arms see the same manuscript, so house style is present on both sides
+  // of every difference and cancels. What it costs is independence — two
+  // manuscripts from one lab are not two independent samples — so it inflates
+  // apparent power slightly, which is worth knowing but far cheaper than
+  // discarding half the corpus.
+  const perLab = Math.max(1, Number(arg('--per-lab', 1)) || 1);
+  const oneEach = [...byLab.values()]
+    .flatMap((l) => l.slice(0, perLab))
+    .sort((a, b) => b.krtInfo.rows - a.krtInfo.rows);
   if (size >= oneEach.length) return oneEach;
 
   const picked = [];
