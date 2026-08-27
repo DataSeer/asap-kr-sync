@@ -738,6 +738,16 @@ const tabConflicts = computed(() => {
       <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
         ← Pipeline
       </RouterLink>
+      <!--
+        Two ways back, because they go to different places. The pipeline is the
+        page above this one; the submission is where the work is. Arriving here
+        from a step and having to go up through the pipeline to get back to it
+        is one click more than it needs to be.
+      -->
+      <span class="mrv-back-sep" aria-hidden="true">·</span>
+      <RouterLink :to="{ name: 'submission-detail', params: { id: submissionId } }" class="mrv-back">
+        ← Submission
+      </RouterLink>
       <h1 class="mrv-title">{{ label }}</h1>
       <!-- Beside the title, not off in a corner: it is a fact about THIS
          module's result, not a property of the page. -->
@@ -1221,6 +1231,7 @@ const tabConflicts = computed(() => {
 
 .mrv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
 .mrv-back:hover { text-decoration: underline; }
+.mrv-back-sep { font-size: 0.8rem; color: #9ca3af; margin: 0 0.35rem; }
 .mrv-title { font-size: 1.25rem; font-weight: 600; color: #111827; margin: 0; }
 .mrv-conflicts {
   padding: 0.1rem 0.45rem; border-radius: 0.25rem; font-size: 0.72rem; font-weight: 600;
