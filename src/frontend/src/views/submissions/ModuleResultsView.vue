@@ -735,19 +735,23 @@ const tabConflicts = computed(() => {
          same identity and the same file links as every step view. -->
 
     <div class="mrv-head">
-      <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
-        ← Pipeline
-      </RouterLink>
       <!--
         Two ways back, because they go to different places. The pipeline is the
         page above this one; the submission is where the work is. Arriving here
         from a step and having to go up through the pipeline to get back to it
         is one click more than it needs to be.
+
+        Stacked rather than side by side: inline they read as one long run of
+        small blue text next to a large title, and neither is easy to hit.
       -->
-      <span class="mrv-back-sep" aria-hidden="true">·</span>
-      <RouterLink :to="{ name: 'submission-detail', params: { id: submissionId } }" class="mrv-back">
-        ← Submission
-      </RouterLink>
+      <div class="mrv-backs">
+        <RouterLink :to="{ name: 'submission-pipeline', params: { id: submissionId } }" class="mrv-back">
+          ← Pipeline
+        </RouterLink>
+        <RouterLink :to="{ name: 'submission-detail', params: { id: submissionId } }" class="mrv-back">
+          ← Submission
+        </RouterLink>
+      </div>
       <h1 class="mrv-title">{{ label }}</h1>
       <!-- Beside the title, not off in a corner: it is a fact about THIS
          module's result, not a property of the page. -->
@@ -1229,9 +1233,9 @@ const tabConflicts = computed(() => {
 .mrv-status-busy { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
 .mrv-status-idle { background: #f9fafb; border-color: #e5e7eb; color: #4b5563; }
 
-.mrv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; }
+.mrv-backs { display: flex; flex-direction: column; gap: 0.15rem; }
+.mrv-back { font-size: 0.8rem; color: #2563eb; text-decoration: none; white-space: nowrap; }
 .mrv-back:hover { text-decoration: underline; }
-.mrv-back-sep { font-size: 0.8rem; color: #9ca3af; margin: 0 0.35rem; }
 .mrv-title { font-size: 1.25rem; font-weight: 600; color: #111827; margin: 0; }
 .mrv-conflicts {
   padding: 0.1rem 0.45rem; border-radius: 0.25rem; font-size: 0.72rem; font-weight: 600;
