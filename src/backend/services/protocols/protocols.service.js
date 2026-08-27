@@ -392,8 +392,9 @@ function parseGeminiResponse(text) {
  *   detection prompt (used by the prompt-comparison scripts).
  * @returns {Promise<{ resources: object[] }>}
  */
-async function detectProtocols(markdownText, { prompt } = {}) {
-  const { resources, rawResponse } = await callGeminiForProtocols(markdownText, prompt);
+async function detectProtocols(markdownText, { prompt, seeds, seedTitle } = {}) {
+  // Seeds forwarded, not dropped — see the note on detectDatasets.
+  const { resources, rawResponse } = await callGeminiForProtocols(markdownText, { prompt, seeds, seedTitle });
   return { resources, rawResponse };
 }
 

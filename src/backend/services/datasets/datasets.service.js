@@ -457,7 +457,7 @@ function parseGeminiResponse(text) {
  *   few-shot examples JSON (all default to the committed file contents).
  * @returns {Promise<{ resources: object[], signalCount: number }>}
  */
-async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples } = {}) {
+async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExamples, seeds } = {}) {
   const extractions = await langextractClient.extractSignals(markdownText, {
     prompt: signalsPrompt,
     examples: signalsExamples
@@ -472,7 +472,13 @@ async function detectDatasets(markdownText, { prompt, signalsPrompt, signalsExam
     return { resources: [], signalCount: extractions.length };
   }
 
-  const { resources, rawResponse } = await callGeminiForConsolidation(datasetNames, extractedRows, markdownText, prompt);
+  // `seeds` forwarded, not dropped. A caller reproducing the seeded strategy
+  // offline gets the seeded prompt AND the rows it refers to; passing only the
+  // prompt makes a seeded run silently blind, and the two arms of a comparison
+  // then differ by prompt text alone.
+  const { resources, rawResponse } = await callGeminiForConsolidation(
+    datasetNames, extractedRows, markdownText, { prompt, seeds }
+  );
   return { resources, signalCount: extractedRows.length, rawResponse };
 }
 
