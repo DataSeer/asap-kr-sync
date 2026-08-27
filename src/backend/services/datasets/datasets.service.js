@@ -34,6 +34,7 @@ const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
+const { seedCoverageShortfall } = require('../detection/seed-coverage');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assemblePayloadPrompt } = require('../detection/prompt-assembly');
 const runInputs = require('../queue/run-inputs.service');
@@ -306,10 +307,25 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
     resourceCount: items.length, highRelevanceCount, durationMs: consolidationMs
   });
 
+  // The seeded prompts promise one row per author seed and say "never drop one".
+  // A run far short of that has broken a contract it was given in writing — and
+  // reported as a clean zero it reads like a manuscript with nothing in it.
+  // Flagged via `meta.degraded`, which demo-fallback turns into `partial`.
+  const seedShortfall = seedCoverageShortfall({
+    seedCount: resolved.input.meta?.seedCount ?? 0,
+    returnedCount: items.length,
+    detector: 'datasets'
+  });
+  if (seedShortfall) {
+    jobLogger?.log('seed_shortfall', 'Seeded run returned far fewer rows than seeds', seedShortfall);
+  }
+
   return {
     items,
     meta: {
       totalCount: items.length, uniqueCount: items.length, highRelevanceCount,
+      ...(seedShortfall ? { degraded: seedShortfall } : {}),
+      seedCount: resolved.input.meta?.seedCount ?? 0,
       signalExtractionCount: extractedRows.length,
       signalMs, consolidationMs,
       totalMs: Date.now() - startTime,

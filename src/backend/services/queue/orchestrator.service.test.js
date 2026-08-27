@@ -1229,9 +1229,29 @@ test('but a step whose OPTIONAL input is missing still runs', () => {
   // to run.
   const analysis = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.PDF_ANALYSIS);
 
-  for (const detector of [JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.KRT_GROUNDING]) {
+  for (const detector of [JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.DATASETS_DETECTION]) {
     assert.ok(analysis.optional.includes(detector), `${detector} is optional to the consolidator`);
   }
+  // Grounding is no longer among them because it is no longer a dependency at
+  // all — consolidation never read the outcomes. The same tolerance now sits on
+  // SUGGESTION_GENERATION, which does read them.
+  assert.ok(!analysis.dependsOn.includes(JOB_TYPES.KRT_GROUNDING),
+    'consolidation must not wait on a step it does not read');
+
+  const suggestions = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.SUGGESTION_GENERATION);
+  assert.ok(suggestions.dependsOn.includes(JOB_TYPES.KRT_GROUNDING),
+    'the step that DOES read grounding must depend on it');
+  assert.ok(suggestions.optional.includes(JOB_TYPES.KRT_GROUNDING),
+    'and tolerate its absence — groundingOutcomes falls back to []');
+});
+
+test('consolidation declares the KRT gate rather than inheriting it', () => {
+  // It used to reach krt_curated through its grounding dependency. Removing that
+  // edge without declaring the gate here would have let consolidation start on a
+  // table the author is still editing — the exact fault the gate exists for.
+  const analysis = orchestrator.PIPELINE.find((s) => s.jobType === JOB_TYPES.PDF_ANALYSIS);
+
+  assert.ok((analysis.gate || []).includes('krt_curated'));
 });
 
 test('the issue list says what continuing would cost', () => {
@@ -1547,7 +1567,11 @@ test('a missing Availability Statement no longer blocks the consolidator', async
     rows.get(JOB_TYPES.DAS_EXTRACTION).result = result;
     mockDb(t, rows, { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: null });
 
-    await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
+      // Advanced from a step the consolidator actually depends on. It used to be
+      // driven from KRT_GROUNDING, which stopped being a dependency when
+      // consolidation and grounding were parallelised — finishing grounding no
+      // longer advances the consolidator, so this would assert the wrong thing.
+    await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.IDENTIFIER_DETECTION, 1, 'user-1');
 
     assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued',
       `result ${JSON.stringify(result)} must not hold up the consolidator`);
@@ -1564,7 +1588,7 @@ test('a failed DAS extraction does not hold up the consolidator either', async (
   rows.get(JOB_TYPES.DAS_EXTRACTION).result = null;
   mockDb(t, rows, { id: 'sub-1', status: 'step_pdf', dataAvailabilityStatement: null });
 
-  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1, 'user-1');
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.IDENTIFIER_DETECTION, 1, 'user-1');
 
   assert.equal(rows.get(JOB_TYPES.PDF_ANALYSIS).status, 'queued');
 });

@@ -54,7 +54,14 @@ test('a seed reaches the model only if it is passed', () => {
 test('an empty seed list adds no block at all', () => {
   // Not merely "no names" — an empty heading would still tell the model it was
   // given a list and found it empty, which is a different instruction.
-  assert.equal(seedBlock([], SEED_TITLES.materials), '');
+  //
+  // The argument order is (title, seeds). An earlier draft had it reversed and
+  // passed anyway: `Array.isArray(aTitleString)` is false, so it returned '' for
+  // the wrong reason and would have kept passing with the function broken.
+  assert.equal(seedBlock(SEED_TITLES.materials, []), '');
+  assert.equal(seedBlock(SEED_TITLES.materials, null), '');
+  // And the positive case, so the assertion above cannot pass vacuously.
+  assert.match(seedBlock(SEED_TITLES.materials, SEEDS), /Rabbit anti-TH/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

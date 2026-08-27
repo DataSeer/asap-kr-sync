@@ -40,6 +40,7 @@ const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const inputFreeze = require('../queue/input-freeze.service');
 const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
+const { seedCoverageShortfall, batchSeeds } = require('../detection/seed-coverage');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
 const { buildKrtItemsFromLM } = require('../pdf-analysis/lm-resource.service');
@@ -207,15 +208,45 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   jobLogger?.log('gemini_start', 'Calling Gemini API for materials detection',
     { pipeline: resolved.pipeline.id, seedCount: resolved.input.meta?.seedCount ?? 0 });
   const geminiStartTime = Date.now();
-  const { resources: rawItems, rawResponse, promptDigest } = await callGeminiForMaterials(markdownText, {
-    prompt: resolved.input.prompt,
-    seeds: resolved.input.seeds,
-    // No seeds means the discovery prompt is in play, so there is no block to
-    // title. seedBlock() already omits an empty block, but passing the title
-    // here would be a lie about what the prompt expects.
-    seedTitle: (resolved.strategy.seedTitle && resolved.input.seeds?.length)
-      ? SEED_TITLES[resolved.strategy.seedTitle] : null
-  });
+
+  // No seeds means the discovery prompt is in play, so there is no block to
+  // title. seedBlock() already omits an empty block, but passing the title here
+  // would be a lie about what the prompt expects.
+  const seedTitle = (resolved.strategy.seedTitle && resolved.input.seeds?.length)
+    ? SEED_TITLES[resolved.strategy.seedTitle] : null;
+
+  // A seed list past the ceiling is split across calls. The ceiling sits ABOVE
+  // every list observed to work (90) and below the one that did not (190), so
+  // no working manuscript changes behaviour and nothing pays for a second call
+  // it did not need. Every seed travels — none is dropped to fit — and the
+  // per-batch results are concatenated, then deduped downstream like any other
+  // detector output.
+  //
+  // Partial mitigation, not the fix: the worse failure returned nothing at 42
+  // seeds, well inside a single batch. `seedCoverageShortfall` below is what
+  // catches that.
+  const batches = batchSeeds(resolved.input.seeds);
+  if (batches.length > 1) {
+    jobLogger?.log('seeds_batched', 'Seed list split across several calls', {
+      seedCount: resolved.input.seeds.length, batches: batches.length
+    });
+  }
+
+  const rawItems = [];
+  let rawResponse = null;
+  let promptDigest = null;
+  for (const batch of batches) {
+    const call = await callGeminiForMaterials(markdownText, {
+      prompt: resolved.input.prompt,
+      seeds: batch,
+      seedTitle
+    });
+    rawItems.push(...(call.resources || []));
+    // The last batch's response and digest stand for the run. Imperfect for a
+    // split run, and recorded as such by `seeds_batched` above.
+    rawResponse = call.rawResponse ?? rawResponse;
+    promptDigest = call.promptDigest ?? promptDigest;
+  }
   const geminiMs = Date.now() - geminiStartTime;
   await jobLogger?.saveRawResponse('gemini-materials', rawResponse || rawItems);
   // Frozen now, while the seeds are the ones this run was actually given: the
@@ -254,12 +285,29 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 
+  // The seeded prompts promise one row per author seed and say "never drop one".
+  // A run far short of that has broken a contract it was given in writing — and
+  // reported as a clean zero it reads exactly like a manuscript with no
+  // materials in it. Flagged through `meta.degraded`, which demo-fallback turns
+  // into a `partial` outcome, so it travels the same path as every other
+  // degradation and the results stay usable.
+  const seedShortfall = seedCoverageShortfall({
+    seedCount: resolved.input.meta?.seedCount ?? 0,
+    returnedCount: items.length,
+    detector: 'materials'
+  });
+  if (seedShortfall) {
+    jobLogger?.log('seed_shortfall', 'Seeded run returned far fewer rows than seeds', seedShortfall);
+  }
+
   return {
     items,
     meta: {
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount,
+      ...(seedShortfall ? { degraded: seedShortfall } : {}),
+      seedCount: resolved.input.meta?.seedCount ?? 0,
       geminiMs,
       totalMs: Date.now() - startTime,
       model: materialsConfig.model,

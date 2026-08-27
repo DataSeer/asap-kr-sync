@@ -235,28 +235,41 @@ const PIPELINE = [
     // revisits (see the retry tests below). The statement is confirmed by the
     // author on the Availability step, where the one module that reads it runs.
     //
-    // It also depends on KRT_GROUNDING even though it does not read the
-    // outcomes itself: SUGGESTION_GENERATION does, and it reaches this table
-    // only through PDF_ANALYSIS. Ordering it here is what guarantees the
-    // grounding verdicts exist by the time suggestions are built — and it is
-    // how PDF_ANALYSIS inherits the krt_curated gate.
+    // It does NOT depend on KRT_GROUNDING. It used to, for two reasons that were
+    // both real and neither of which was "it reads the outcomes" — it does not,
+    // and `pdf-analysis.service` deliberately re-implements its own
+    // is-this-represented test rather than trust grounding's `partial_name` tier.
+    //
+    // The two reasons were: SUGGESTION_GENERATION does read the outcomes and
+    // reached this table only through PDF_ANALYSIS, so ordering here guaranteed
+    // the verdicts existed by the time suggestions were built; and PDF_ANALYSIS
+    // inherited the krt_curated gate through grounding rather than declaring it.
+    //
+    // Both are now stated where they belong: SUGGESTION_GENERATION depends on
+    // KRT_GROUNDING directly, which is the honest edge since it is the consumer,
+    // and the gate is declared here. Consolidation and grounding read the same
+    // candidate pool and neither needs the other, so they now run in parallel —
+    // two heavy steps that were serialised for a dependency neither had.
     jobType: JOB_TYPES.PDF_ANALYSIS,
     reads: ['krt'],
+    // Declared, not inherited. It was reaching this through the grounding edge,
+    // so removing that edge without this would have let consolidation start on a
+    // KRT the author is still editing.
+    gate: ['krt_curated'],
     // It consolidates what it is given, and seed retention carries every author
     // row through regardless — so with no detector output at all it still
     // produces the author's KRT rather than nothing.
     optional: [
       JOB_TYPES.SOFTWARE_DETECTION, JOB_TYPES.DATASETS_DETECTION,
       JOB_TYPES.MATERIALS_DETECTION, JOB_TYPES.PROTOCOLS_DETECTION,
-      JOB_TYPES.IDENTIFIER_DETECTION, JOB_TYPES.KRT_GROUNDING
+      JOB_TYPES.IDENTIFIER_DETECTION
     ],
     dependsOn: [
       JOB_TYPES.SOFTWARE_DETECTION,
       JOB_TYPES.DATASETS_DETECTION,
       JOB_TYPES.MATERIALS_DETECTION,
       JOB_TYPES.PROTOCOLS_DETECTION,
-      JOB_TYPES.IDENTIFIER_DETECTION,
-      JOB_TYPES.KRT_GROUNDING
+      JOB_TYPES.IDENTIFIER_DETECTION
     ],
   },
   {
@@ -267,7 +280,14 @@ const PIPELINE = [
     jobType: JOB_TYPES.SUGGESTION_GENERATION,
     // Reads only PDF Analysis's output — no document of its own.
     reads: [],
-    dependsOn: [JOB_TYPES.PDF_ANALYSIS]
+    // It reads the grounding outcomes too, via getGroundingResult, and now says
+    // so. That dependency used to be borrowed from PDF_ANALYSIS, which meant the
+    // graph recorded consolidation as needing grounding when it is this step
+    // that does. Optional, because `groundingOutcomes` falls back to [] — a
+    // failed grounding costs suggestions the empty-cell and conflict route, not
+    // the ability to run.
+    optional: [JOB_TYPES.KRT_GROUNDING],
+    dependsOn: [JOB_TYPES.PDF_ANALYSIS, JOB_TYPES.KRT_GROUNDING]
   }
   ,
   {

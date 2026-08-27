@@ -217,7 +217,10 @@ test('an automatic advance keeps the credit it already had', async (t) => {
   completeUpstreamOf(rows, JOB_TYPES.PDF_ANALYSIS);
   mockDb(t, rows);
 
-  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.KRT_GROUNDING, 1);
+  // From a real dependency of the consolidator. Grounding stopped being one
+  // when it and consolidation were parallelised, so advancing from it no longer
+  // queues this step and the assertion below would pass vacuously.
+  await orchestrator.checkAndAdvance('sub-1', JOB_TYPES.IDENTIFIER_DETECTION, 1);
 
   const analysis = rows.get(JOB_TYPES.PDF_ANALYSIS);
   assert.equal(analysis.status, 'queued', 'the step did advance');

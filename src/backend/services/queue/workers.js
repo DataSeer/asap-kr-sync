@@ -326,7 +326,16 @@ async function initializeWorkers() {
           data: {
             das: result.data?.meta?.das || null,
             meta: (({ das, ...rest }) => rest)(result.data?.meta || {})
-          }
+          },
+          // Whether a statement was found, and how long it was. The module
+          // produces one thing or nothing, so the count is 0 or 1 — but a
+          // module with no `counts` at all reads as "not measured" to the
+          // panels that walk every job through the same accessors.
+          counts: {
+            statements: result.data?.meta?.das ? 1 : 0,
+            characters: (result.data?.meta?.das || '').length
+          },
+          timing: { totalMs: result.data?.meta?.totalMs || 0 }
         });
         await jobLogger?.flush();
         await advancePipeline(submissionId, 'das_extraction', round);
@@ -458,7 +467,11 @@ async function initializeWorkers() {
           // overwrites — so a past ORCID run had a count and no list, and the
           // page could only show whoever the latest run found. Kept on the run
           // too, which is the only copy that stays true to it.
-          data: { doi: m.doi || null, items: result.data?.items || [], meta: result.data?.meta || null }
+          data: { doi: m.doi || null, items: result.data?.items || [], meta: result.data?.meta || null },
+          // The only module that recorded no timing. It makes three network
+          // calls — GROBID, OpenAlex, ORCID — so it is one of the more useful
+          // durations to have when a run feels slow.
+          timing: { totalMs: m.totalMs || 0 }
         });
         await jobLogger?.flush();
         await advancePipeline(submissionId, 'orcid_extraction', round);
@@ -502,7 +515,23 @@ async function initializeWorkers() {
         await submissionJob?.markComplete({
           status: { detected: isProductive(result) },
           service: buildServiceSnapshot('markdown_convert', result),
-          data: { fileId: m.fileId || null, provider: m.provider || null, markdownLength: m.markdownLength || 0 },
+          // `meta` carried through rather than three fields hand-picked out of
+          // it. This was the only module with no `data.meta`, which the result
+          // contract says every module must have — and the service had been
+          // producing one all along (convertMs, rawMarkdownLength, filterStats,
+          // totalMs); the worker was dropping it on the floor. Everything that
+          // reads results walks them through the same accessors, so the one
+          // module missing the key is the one that renders an empty panel.
+          data: {
+            fileId: m.fileId || null,
+            provider: m.provider || null,
+            markdownLength: m.markdownLength || 0,
+            meta: result.data?.meta || {}
+          },
+          // The conversion's one number worth counting: how much text came out.
+          // Zero here is exactly the "completed cleanly, produced nothing" case
+          // the `produced` gate exists for, so it is worth being explicit.
+          counts: { characters: m.markdownLength || 0 },
           timing: { totalMs: m.totalMs || 0 }
         });
         await jobLogger?.flush();

@@ -40,6 +40,7 @@ const { runWithDemoFallback } = require('../demo-fallback.service');
 const { buildEvidenceIndex, attachEvidence } = require('../pdf-analysis/evidence.service');
 const inputFreeze = require('../queue/input-freeze.service');
 const { resolveDetection, detectionPromptsExist } = require('../detection/resolve');
+const { seedCoverageShortfall } = require('../detection/seed-coverage');
 const runInputs = require('../queue/run-inputs.service');
 const { tagAuthorRows } = require('../detection/tag-author-rows');
 const { assembleTextPrompt, SEED_TITLES } = require('../detection/prompt-assembly');
@@ -260,12 +261,27 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 
+  // The seeded prompts promise one row per author seed and say "never drop one".
+  // A run far short of that has broken a contract it was given in writing — and
+  // reported as a clean zero it reads like a manuscript with nothing in it.
+  // Flagged via `meta.degraded`, which demo-fallback turns into `partial`.
+  const seedShortfall = seedCoverageShortfall({
+    seedCount: resolved.input.meta?.seedCount ?? 0,
+    returnedCount: items.length,
+    detector: 'protocols'
+  });
+  if (seedShortfall) {
+    jobLogger?.log('seed_shortfall', 'Seeded run returned far fewer rows than seeds', seedShortfall);
+  }
+
   return {
     items,
     meta: {
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount,
+      ...(seedShortfall ? { degraded: seedShortfall } : {}),
+      seedCount: resolved.input.meta?.seedCount ?? 0,
       geminiMs,
       totalMs: Date.now() - startTime,
       model: protocolsConfig.model,

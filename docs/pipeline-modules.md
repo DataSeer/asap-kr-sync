@@ -26,23 +26,32 @@ extraction finishes; see §3.11 and [submission-workflow.md](./submission-workfl
 | `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` + gate `krt_curated` | PDF Analysis |
 | `materials_detection` | Lab materials / reagents | Google Gemini (cue-driven; seeded with the author rows under `seeded-v1`) | `markdown_convert` + gate `krt_curated` | PDF Analysis |
 | `protocols_detection` | Protocols | Google Gemini | `markdown_convert` + gate `krt_curated` | PDF Analysis |
-| `krt_grounding` | Author KRT ↔ manuscript reconciliation | Deterministic matcher + optional LM second look | every detector + gate `krt_curated` | Suggestion Generation |
+| `krt_grounding` | Author KRT ↔ manuscript reconciliation | Deterministic matcher + optional LM second look | every detector + gate `krt_curated` | Suggestion Generation *(directly — it does not pass through PDF Analysis)* |
 | `identifier_detection` | Known RRIDs / DOIs / accessions | **Local** scan of curated lists | `markdown_convert` + gate `krt_curated` | PDF Analysis |
 | `orcid_extraction` | Authors + ORCIDs | GROBID → OpenAlex → ORCID API | — | `submission.authors` (not the KRT) |
-| `pdf_analysis` | The consolidated Generated KRT | Rule-based merge → **LM (Gemini)** consolidation, rule-based fallback | all detectors above | Suggestion Generation |
-| `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
+| `pdf_analysis` | The consolidated Generated KRT | Rule-based merge → **LM (Gemini)** consolidation, rule-based fallback | the five detectors + gate `krt_curated` *(not grounding — see below)* | Suggestion Generation |
+| `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` + `krt_grounding` *(optional)* | the persisted suggestions list |
 | `das_suggestions` | DAS vs the ASAP rulebook (per-rule verdict) | **LM (Gemini)** — LM-only, **legacy-rules fallback** | `das_extraction` *(gated to the Availability step)* | the `/availability` suggestions list, and its own module page |
 
 Pipeline shape (the orchestrator's dependency graph; see [pipeline-jobs.md](./pipeline-jobs.md#pipeline)).
-Solid arrows carry DATA. The one dotted arrow is an ordering edge that carries none:
-`pdf_analysis` waits for `krt_grounding` but never reads it — its candidate pool is
-`CONTRIBUTOR_SOURCES`, the five detectors, and grounding is not among them. It even
-re-implements its own "is this author row already represented" check rather than reuse
-the grounding matcher, deliberately: grounding's `partial_name` tier is precisely the
-case where we do not know two items are the same, and trusting it would cost an author
-row its guaranteed place in the Generated KRT.
-`das_extraction` feeds no arrow into `pdf_analysis` at all — that dependency was removed
-when the Availability step became a gated branch, and what it actually feeds is
+**Grounding and consolidation run in parallel.** They read the same candidate pool and
+neither reads the other, so nothing is gained by serialising them. `pdf_analysis` used to
+depend on `krt_grounding` for two reasons, both real and neither of them data:
+`suggestion_generation` reads the grounding outcomes and reached the graph only through
+`pdf_analysis`, and `pdf_analysis` inherited the `krt_curated` gate through that edge.
+Both are now stated where they belong — `suggestion_generation` depends on
+`krt_grounding` directly, since it is the consumer, and `pdf_analysis` declares the gate
+itself — so the two heavy steps overlap instead of queueing.
+
+Consolidation never read grounding's verdicts: its candidate pool is
+`CONTRIBUTOR_SOURCES`, the five detectors. It even re-implements its own "is this author
+row already represented" check rather than reuse the grounding matcher, deliberately —
+grounding's `partial_name` tier is precisely the case where we do not know two items are
+the same, and trusting it would cost an author row its guaranteed place in the Generated
+KRT.
+
+`das_extraction` feeds no arrow into `pdf_analysis` either — that dependency went when
+the Availability step became a gated branch, and what it actually feeds is
 `das_suggestions`. `das_suggestions` is omitted from the diagram below for readability — it hangs off `das_extraction` and is gated to the Availability step (see §3.11). On the app's own pipeline page it is drawn in the **Suggest** stage rather than beside its dependency, via the step's `displayStage`: it depends on something early but runs last, and a reader following the page top to bottom should find it where it actually runs.
 
 ```mermaid
@@ -66,12 +75,12 @@ flowchart LR
     KRTV -.-> PR
     KRTV -.-> ID
     KRTV -.-> KG
+    KRTV -.-> PA
     SW --> PA["pdf_analysis<br/>(rule-merge → LM consolidate)"]
     MAT --> PA
     DS --> PA
     PR --> PA
     ID --> PA
-    KG -.->|"ordering only"| PA
     KG --> GR(["grounding outcomes"])
     PA --> SG["suggestion_generation<br/>(LM — AI Suggestions)"]
     GR --> SG
