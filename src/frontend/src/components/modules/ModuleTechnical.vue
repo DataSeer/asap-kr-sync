@@ -554,7 +554,11 @@ const READS = {
   protocols_detection: ['markdown', 'seeds'],
   identifier_detection: ['markdown'],
   krt_grounding: ['markdown', 'krt', 'candidates'],
-  pdf_analysis: ['candidates'],
+  // The author KRT as well as the candidate pool: consolidation reconciles the
+  // generated rows AGAINST the author's table (reconcileWithAuthorKrt), and
+  // every author row is carried into the Generated KRT. Listing candidates alone
+  // said this module never looks at what the author wrote.
+  pdf_analysis: ['candidates', 'krt'],
   suggestion_generation: ['krt', 'generatedKrt'],
   // The statement is not a file — it is a field on the submission, written by
   // DAS extraction and then editable by the author on the very step that runs

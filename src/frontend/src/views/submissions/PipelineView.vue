@@ -300,9 +300,9 @@ const consumersOf = computed(() => {
  *
  * That is what "does the same job" means structurally, and it needs no list to
  * maintain: the five detectors all feed Grounding and PDF Analysis, so they
- * cluster, while DAS Extraction sits in the same stage but feeds only PDF
- * Analysis and stays separate. Add a sixth detector to the orchestrator and it
- * joins the cluster on its own.
+ * cluster, while DAS Extraction sits in the same stage but feeds only the
+ * Availability check and stays separate. Add a sixth detector to the
+ * orchestrator and it joins the cluster on its own.
  */
 function groupsForStage(nodes) {
   const by = new Map()

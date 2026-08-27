@@ -1120,7 +1120,7 @@ Data passed to workers when a job starts:
 
 ## Result Summaries
 
-Each job stores a structured result blob on completion. Every entry has the same outer envelope (`status`, `service`, `counts`, `timing`, `data`, `files`) — the table below lists the **distinguishing** keys per job type.
+Each job stores a structured result blob on completion. `status`, `service`, `data` and `files` are present on every job; `counts`, `timing` and `tokens` are present only where they mean something — `tokens` only where a model was called (so `identifier_detection` and `markdown_convert` have none), and `counts`/`timing` are absent on the two modules noted in the table. The table below lists the **distinguishing** keys per job type.
 
 ### The shape is a contract, not a convention
 
@@ -1148,16 +1148,16 @@ other module looked fine. Nothing threw, nothing logged, and the tests passed. T
 
 | Job Type | Distinguishing keys |
 |----------|---------------------|
-| DAS Extraction | `status.detected` (boolean — drives the PDF Analysis auto-advance gate); `data.das` (the extracted text); `files['das-extractor-response' \| 'demo-das']` |
+| DAS Extraction | `status.detected` (boolean); `data.das` (the extracted text); `files['das-extractor-response' \| 'demo-das']`. **No `counts`, no `timing`.** It feeds `das_suggestions` — it does not gate PDF Analysis, which lists no DAS dependency and never reads `status.detected` |
 | Software Detection | `counts: {total, unique, enriched}`; `data: {items, meta}`; `files['softcite-response' \| 'demo-software']` |
-| ORCID Extraction | `counts: {authors, orcids}`; `data: {doi}`; `files['grobid-header', 'openalex-response']`. Items themselves go to `submission.authors`, not `data.items` |
-| Markdown Convert | `data: {fileId, provider, markdownLength}`; `timing.totalMs`. The markdown text itself is uploaded to S3 as a File row of type `markdown` |
+| ORCID Extraction | `counts: {authors, orcids}`; `data: {doi, items}`; `files['grobid-header', 'openalex-response']`. `data.items` IS populated, but the rest of the app reads the authors from `submission.authors` |
+| Markdown Convert | `data: {fileId, provider, markdownLength}`; `timing.totalMs`. **No `counts`, and no `data.meta`** — the only module without one. The markdown text itself is uploaded to S3 as a File row of type `markdown` |
 | Datasets Detection | `counts: {total, unique, highRelevance}`; `timing: {totalMs, apiMs, signalMs, enrichMs}`; `data: {items, meta}`; `files['langextract-signals', 'gemini-consolidation']` |
 | Materials Detection | `counts: {total, unique, highRelevance}`; `data: {items, meta}`; `files['gemini-response']` |
 | Protocols Detection | `counts: {total, unique, highRelevance}`; `data: {items, meta}`; `files` includes the raw Gemini response and the extracted JSON |
 | Identifier Detection | `counts`; `timing: {totalMs, indexMs, scanMs}`; `data: {items, meta: {byRelevance: {HIGH, MEDIUM, LOW}, byCategory: {software, materials, datasets, protocols}}}`; `files['detection-results', 'identifier-scan']` |
 | PDF Analysis | `counts: {resources, contributors, multiSource}`; `data: {items}` (the Generated KRT); `files['generated-krt']` |
-| Suggestion Generation | `counts` per decision (`add`/`skip`/`update`/`remove`); `data: {suggestions}` — the **persisted** AI Suggestions list (not recomputed on read), each carrying its decision, reason, and contributing detection module(s) |
+| Suggestion Generation | `counts` per decision (`add`/`skip`/`update`/`remove`); `data: {suggestions, decisions, groundings, groundingPolicy}`. `suggestions` is the **persisted** AI Suggestions list (not recomputed on read), each carrying its decision, reason and contributing module(s); `decisions` is the full add/skip/update/remove list the module page renders; `groundings` the per-author-row tag list; `groundingPolicy` records which halves of grounding this pipeline may show, stamped on the run so a result stays readable after the submission's pipeline changes |
 | DAS Suggestions | `counts: {total, unique}` (unique = rules needing action); `data: {suggestions, signals, meta: {model, dasLength, krtRowCount, total, applicable, totalMs}}`; `files['inputs', 'das-suggestions']` |
 | Report Generation | `data: {reportId, fileUrl}` |
 

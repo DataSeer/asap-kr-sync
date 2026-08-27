@@ -21,7 +21,7 @@ extraction finishes; see §3.11 and [submission-workflow.md](./submission-workfl
 | Module (`job_type`) | What it finds | Engine | Depends on | Feeds |
 |---------------------|---------------|--------|-----------|-------|
 | `markdown_convert` | — (PDF → Markdown text) | Modal/Docling **or** local MarkItDown | — | the text detectors below |
-| `das_extraction` | Data Availability Statement | Google Gemini | `markdown_convert` | the PDF-Analysis gate |
+| `das_extraction` | Data Availability Statement | Google Gemini | `markdown_convert` | `das_suggestions`, and the submission's statement while it is empty |
 | `software_detection` | Software / code | Softcite (NER) **+ optional Gemini LM pass**, unioned | `markdown_convert` + gate `krt_curated` | PDF Analysis |
 | `datasets_detection` | Datasets | LangExtract → Google Gemini (two-pass) | `markdown_convert` + gate `krt_curated` | PDF Analysis |
 | `materials_detection` | Lab materials / reagents | Google Gemini (cue-driven; seeded with the author rows under `seeded-v1`) | `markdown_convert` + gate `krt_curated` | PDF Analysis |
