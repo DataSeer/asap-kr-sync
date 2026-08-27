@@ -44,6 +44,7 @@ const groundingConfig = require('../../config/krt-grounding-api');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const { matchAuthorRows } = require('./match-author-rows.service');
+const { verifyRow } = require('./verify-against-manuscript');
 const { getPipeline } = require('../../config/pipelines');
 const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
   findAllOccurrences, findNormalisedOccurrences, identifierParts } = require('../pdf-analysis/evidence.service');
@@ -293,16 +294,19 @@ async function checkPresence(submissionId, round, authorRows, jobLogger) {
   const markdownText = await loadMarkdown(submissionId, round);
   if (!markdownText) {
     jobLogger?.log('presence_skipped', 'No markdown — presence cannot be judged', {});
-    return { available: false, byRowId, stats: { checked: 0, present: 0, absent: 0 } };
+    return { available: false, byRowId, index: null, stats: { checked: 0, present: 0, absent: 0 } };
   }
 
-  const found = presenceForRows(buildEvidenceIndex(markdownText), authorRows);
+  // The index is returned as well as used: verifying a conflict needs the
+  // manuscript text, and building it twice for the same round would be waste.
+  const index = buildEvidenceIndex(markdownText);
+  const found = presenceForRows(index, authorRows);
   for (const [rowId, value] of found) byRowId.set(rowId, value);
 
   const present = [...byRowId.values()].filter((p) => p.found).length;
   const stats = { checked: authorRows.length, present, absent: authorRows.length - present };
   jobLogger?.log('presence_checked', 'Searched the manuscript for each author row directly', stats);
-  return { available: true, byRowId, stats };
+  return { available: true, byRowId, index, stats };
 }
 
 /**
@@ -352,14 +356,82 @@ async function groundSubmission(submission, jobLogger) {
   // any detector found, and independent of what the prompts were seeded with.
   const presence = await checkPresence(submissionId, round, authorRows, jobLogger);
 
+  /**
+   * Is this value one the MANUSCRIPT actually prints?
+   *
+   * Handed to the matcher so a conflict can only ever cite the paper for what
+   * the paper says. An `identifier-scan` candidate carries the whole enrichment
+   * entry — every identifier and homepage URL the curated list holds for the one
+   * RRID it found in the text — and quoting that as `manuscriptValue` told
+   * authors their correct rows contradicted a source that never mentioned them.
+   *
+   * Uses the index's own lookup rather than a hand-rolled string compare. The
+   * conversion escapes identifiers (`SCR\_014269`), respaces them and moves
+   * hyphens, and `findNormalisedOccurrences` is the routine that already folds
+   * all of that away — the same one that decides presence. A separate
+   * normalisation here silently disagreed with it: it kept the dots and hyphens
+   * that `index.flat` strips, so every value read as missing and the check
+   * quietly passed everything.
+   */
+  const inManuscript = (value) => (
+    presence.index ? findNormalisedOccurrences(presence.index, String(value), 1).length > 0 : false
+  );
+
   // ── Step 3: deterministic matching against the candidate pool
-  const matched = matchAuthorRows(authorRows, candidates);
+  // Without a manuscript there is no predicate, and the matcher then asserts no
+  // conflicts at all — rather than falling back to comparing candidate values.
+  const matched = matchAuthorRows(authorRows, candidates, presence.index ? inManuscript : undefined);
   jobLogger?.log('deterministic_match', 'Matched author rows against candidates', matched.stats);
 
   // Both readings travel on the outcome. `presence` says whether the resource
   // is in the paper; the outcome says what detection made of it.
   for (const outcome of matched.outcomes) {
     outcome.presence = presence.byRowId.get(outcome.krtRowId) || null;
+
+    /**
+     * Per-identifier verdicts, separate from the conflicts above.
+     *
+     * The conflicts say "the paper prints something different here". These say,
+     * for each identifier the author wrote, whether the paper prints it at all.
+     * An identifier the paper never mentions, with nothing contradicting it, is
+     * NOT an error — a KRT may carry more than the manuscript does, and most
+     * good tables do — so it travels separately and is shown as a quiet note.
+     */
+    if (presence.index && outcome.presence) {
+      const verified = verifyRow({ identifiers: outcome.presence.identifiers || [] });
+
+      outcome.identifierVerdicts = verified.identifiers;
+      outcome.unverifiedIdentifiers = verified.unverified.map((u) => u.value);
+
+      /**
+       * The same rule for the empty-cell fills.
+       *
+       * `foundValues` came from the same candidate field as the conflicts did,
+       * so a blank IDENTIFIER could be offered a homepage URL the enrichment
+       * list knows and the paper never printed — proposed to the curator, and
+       * accepted, it writes into their table something no source supports.
+       *
+       * A fill is kept only if the manuscript actually contains it. `source` is
+       * exempt: it is the repository or supplier, inferred from where a thing
+       * lives rather than asserted by the text, so requiring it to appear
+       * verbatim would reject every legitimate fill.
+       */
+      for (const [field, value] of Object.entries(outcome.foundValues || {})) {
+        if (field === 'source') continue;
+        const parts = String(value).split(';').map((v) => v.trim()).filter(Boolean);
+        const supported = parts.filter(inManuscript);
+        if (supported.length) outcome.foundValues[field] = supported.join(' ; ');
+        else {
+          delete outcome.foundValues[field];
+          outcome.missingFields = (outcome.missingFields || []).filter((f) => f !== field);
+        }
+      }
+    } else {
+      // No manuscript to check against: assert nothing. The matcher was given no
+      // predicate and so raised no conflicts either.
+      outcome.identifierVerdicts = [];
+      outcome.unverifiedIdentifiers = [];
+    }
   }
 
   // Present in the text, yet no candidate matched it: a detection miss, which

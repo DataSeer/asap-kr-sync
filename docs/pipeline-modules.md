@@ -64,7 +64,8 @@ flowchart LR
     MDC --> MAT["materials_detection<br/>(Gemini — cue-driven)"]
     MDC --> PR["protocols_detection<br/>(Gemini)"]
     MDC --> ID["identifier_detection<br/>(local)"]
-    SW --> KG["krt_grounding<br/>(match + LM second look)"]
+    MDC --> KG["krt_grounding<br/>(match + LM second look)"]
+    SW --> KG
     DS --> KG
     MAT --> KG
     PR --> KG
@@ -296,6 +297,10 @@ Every stage, in order, with what it adds and where it can lose something.
                                   ▼
                         persisted per job: result.data.items
                                   │
+                 the next TWO both read these items,
+                 neither reads the other, and they
+                 run AT THE SAME TIME
+                                  │
       ┌───────────────────────────┴────────────────────────────┐
       │  krt_grounding            (gated on krt_curated)       │
       │  author KRT × candidate pool                           │
@@ -307,9 +312,12 @@ Every stage, in order, with what it adds and where it can lose something.
       │                     partial / not_detected             │
       │   → conflicts where the paper disagrees with the row   │
       └───────────────────────────┬────────────────────────────┘
-                                  ▼
+                 outcomes go straight to suggestions,
+                 NOT through pdf_analysis
+                                  │
       ┌────────────────────────────────────────────────────────┐
       │  pdf_analysis — builds the GENERATED KRT               │
+      │                 (gated on krt_curated)                 │
       │                                                        │
       │   a. mergeDetections   cross-detector merge; drops     │
       │                        `unsupported`; detectedBy[]     │
@@ -347,9 +355,16 @@ separate stages before it was recognised as a class. `evidence-pipeline.test.js`
 whole chain and asserts evidence survives each hop — necessary because the symptom (a suggestion
 with no context in the UI) always surfaces far from the stage that caused it.
 
-**Ordering note.** `krt_grounding` runs *before* `pdf_analysis` and reads the raw detector items,
-not the Generated KRT. It reconciles against everything the detectors found, including candidates
-the LM consolidation later drops.
+**Ordering note.** `krt_grounding` and `pdf_analysis` run **in parallel**. Neither reads the
+other: grounding reconciles against the raw detector items rather than the Generated KRT, so it
+sees everything the detectors found — including candidates the LM consolidation later drops — and
+consolidation builds its pool from `CONTRIBUTOR_SOURCES`, the five detectors, with grounding not
+among them.
+
+They were serialised until the dependency was traced. The edge existed for two reasons, neither of
+them data: `suggestion_generation` reads the grounding outcomes and reached the graph only through
+`pdf_analysis`, and `pdf_analysis` inherited the `krt_curated` gate through that edge. Both are now
+declared where they belong, so the two heavy steps overlap instead of queueing.
 
 ### 2.1e Automatic transformations applied by the pipeline
 
@@ -591,6 +606,35 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Key files:** `services/datasets/datasets.service.js`, `services/datasets/langextract-client.service.js`,
   `python/datasets/extract-signals.py`, `config/datasets-detection-api.js`.
 
+### Seeded runs must account for the rows they were given
+
+The three seeded prompts each open by promising one output row per author seed —
+materials: *"Emit one output row for every author-provided material. Never drop one."*;
+protocols: *"Never drop, split, or merge-away an author protocol."*; datasets: *"Emit one
+canonical record for every entry in `author_provided_datasets`."*
+
+Nothing checked whether they did. `seedCount` was logged and recorded in `meta`, never
+compared against the output — so a seeded run that came back with far fewer rows than it was
+given completed successfully, `counts.total` read whatever it managed, and the module page
+reported it like any other result. At zero it read exactly like a manuscript with no materials
+in it, and a curator had no way to tell those apart.
+
+`seedCoverageShortfall` (`services/detection/seed-coverage.js`) now compares the two. Below
+**half** its seeds, a run is marked `meta.degraded`, which `demo-fallback.done()` turns into a
+`partial` outcome with `failReason: '<detector>_seeded'` — the same path every other
+degradation travels, so it surfaces as an issue the user can Retry or Continue past. The
+results are kept: a run that returned most of its seeds plus real discoveries is still worth
+having, and the threshold is deliberately lenient because merging two author rows describing
+one reagent is legitimate.
+
+A seed list longer than **120** is also split across calls (`batchSeeds`), keeping every seed.
+That ceiling sits above every list observed to work and below the one that did not, so no
+working manuscript changes behaviour. It is a mitigation and not the fix — the worst observed
+failure returned nothing from 42 seeds, well inside a single batch — which is why the guard
+above exists regardless.
+
+Neither applies to a **blind** run: it is given no seeds, so it promises nothing about counts.
+
 ### 3.5 `materials_detection` — Lab materials *(cue-driven)*
 
 - **Purpose:** detect antibodies, cell lines, reagents, chemicals, strains and other lab materials from the manuscript alone.
@@ -736,6 +780,46 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
   those false gaps and is **deliberately deferred**. Collapsing the cell into one boolean answered a question nobody asked ("is ANY of
   this in the paper?") and hid the half a curator can act on. An **empty** cell yields no verdicts at all — "nothing
   to check" is not "checked and not found".
+- **What "the manuscript says" is allowed to mean.** A conflict may only cite the paper for what the paper prints.
+  It did not: `compareWithCandidates` compared the author's cell against `candidate[field]` and labelled the result
+  `manuscriptValue` — and for an `identifier-scan` candidate that field carries the whole **curated enrichment
+  entry**, every identifier and homepage URL the list holds for the one RRID the scanner found in the text. All of
+  it was quoted at the curator as what the manuscript says. On the reported submission the comparison raised four
+  conflicts:
+
+  | row | author | quoted as "manuscript" | in the paper? |
+  |---|---|---|---|
+  | Time Series analyzer | `https://imagej.net/ij/pl…` | `RRID:SCR_014269 ; http://ric.uthscsa.edu/…` | **no** |
+  | Analysis Scripts | `https://doi.org/10.5281/…` | `RRID:SCR_000325 ; http://www.wavemetrics…` | **no** |
+  | IGOR Pro v6.3.7.2 | `https://www.wavemetrics…` | `RRID:SCR_000325 ; http://www.wavemetrics…` | **no** |
+  | Sprague-Dawley rats | `strain code: 400, …` | `strain code: 001, RRID: RGD_734476` | **yes** |
+
+  Three of the four were the bug — a check wrong more often than right, and wrong in the direction of telling
+  people to break good data. The fourth was a real error the author needed to see.
+- **The fix is one restriction, not a new algorithm.** `manuscriptClaim` filters each candidate value down to the
+  parts the manuscript actually contains, and only what survives may contradict the author. On that submission it
+  leaves **exactly the one real conflict**. The comparison logic itself was never wrong — `valuesConflict` already
+  documented the strain-code case — only its input was contaminated.
+  - The lookup is `findNormalisedOccurrences`, the same routine that decides presence, **not** a string compare.
+    The conversion escapes identifiers (`SCR\_014269`), respaces them and moves hyphens; a separate normalisation
+    silently disagreed with `index.flat` and read *every* value as missing, which passes everything and looks
+    exactly like working code.
+  - **With no manuscript, no conflicts.** The predicate is a required argument, and omitting it asserts nothing
+    rather than falling back to the candidate comparison — that fallback is the bug, and a permissive default
+    would quietly restore it.
+- **Filling and contradicting need different warrants**, and conflating them is what produced the bug. The filter
+  applies to the **comparison only**. A tool's homepage from the enrichment list is a *good* suggestion for an
+  empty cell; it is only unsafe as evidence about the paper. (Fills are still filtered separately, for a different
+  reason: a fill the paper does not support writes into the author's table something no source asserts. `source`
+  is exempt — a repository or supplier is inferred from where a thing lives, not asserted by the text.)
+- **Two verdicts per identifier**, carried on `presence.identifiers` and answering a different question from the
+  conflicts — *does the paper corroborate this?* rather than *does the paper contradict it?*
+  - `found` — the paper prints it. Verified.
+  - `absent` — it does not. **Not an error**, and never shown as one: a KRT may carry more than the manuscript
+    prints and most good tables do, since a tool's homepage is rarely in the methods. Travels as
+    `unverifiedIdentifiers` and is rendered as a quiet note with **no correction attached** — nothing has been
+    established as wrong. An **empty** cell yields no verdicts at all: "nothing to check" is not "checked and not
+    found".
 - **The second look** takes the rows nothing matched and asks the LM to find each one in the manuscript, returning
   an exact quote. **Every returned quote is re-verified against the markdown here**, so a confident-sounding
   hallucination changes nothing: an unverifiable quote leaves the row `not_detected`.

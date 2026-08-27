@@ -346,7 +346,7 @@ longer a second copy of any results table inside a modal. The pages share:
 | `SubmissionFileLinks.vue` | The PDF and KRT links in the top-right of every module page. |
 | `DetectionsTable.vue` | The five detectors' output: one row per detection, evidence quoted with its section, enrichment-filled cells marked. |
 | `GeneratedKrtTable.vue` + `generated-krt.js` | The consolidated KRT. The row model flattens each merged item into its contributors and marks group boundaries so a merge reads as one block. |
-| `GroundingTable.vue` | Per-author-row verdicts: confirmed / incomplete / not detected, with what matched and where. |
+| `GroundingTable.vue` | Per-author-row verdicts: confirmed / incomplete / partial / not detected, with what matched and where. Identifiers the paper does not print, and nothing contradicts, are noted quietly rather than flagged. |
 | `SuggestionsTable.vue` + `suggestion-decisions.js` | The full decision log, author row against proposed row. |
 | `DasSuggestionsTable.vue` + `das-suggestions.js` | The Availability Statement check, rule by rule — including the rules that PASSED, so a clean statement is distinguishable from an unchecked one. Rules needing action expand to the explanation and, where the rulebook has one, the wording to paste. |
 | `AuthorsTable.vue` | ORCID extraction, with the ladder that found each id (GROBID, OpenAlex, ORCID API). |

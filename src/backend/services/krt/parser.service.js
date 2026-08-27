@@ -45,6 +45,57 @@ async function parseFile(buffer, mimeType, fileName) {
 }
 
 /**
+ * An ExcelJS cell value, as text.
+ *
+ * ExcelJS returns an OBJECT for anything richer than a bare string, and the
+ * shapes NEST — which is what broke this. A hyperlink is
+ * `{ text, hyperlink }`, and a hyperlink whose label carries formatting is
+ * `{ text: { richText: [...] }, hyperlink }`. Reading `.text` once got the
+ * inner object, and `String()` of that is the literal `[object Object]`.
+ *
+ * Observed on TV1-000430-007: two identifier cells stored as `[object Object]`
+ * in `krt_data`, so the damage was not cosmetic — the corrupted string is what
+ * every later step reads. It seeds the detection prompts, it is what grounding
+ * searches the manuscript for, and it is what a curator is shown. A row whose
+ * identifier is `[object Object]` can never be found in any paper.
+ *
+ * Recursive on purpose: the shapes compose, and a reader that handles one level
+ * is a reader that works until someone adds a link to a bold word.
+ *
+ * @param {*} value - `cell.value` from ExcelJS
+ * @returns {string}
+ */
+function cellText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // Before the object branches: a Date IS an object, and has none of the keys
+  // below, so it would otherwise fall through to String() and stringify as a
+  // locale-dependent date.
+  if (value instanceof Date) return value.toISOString();
+
+  if (Array.isArray(value)) return value.map(cellText).join('');
+
+  if (typeof value === 'object') {
+    // Rich text: an array of runs, each with its own formatting. Only the text
+    // matters here.
+    if (Array.isArray(value.richText)) return value.richText.map((r) => cellText(r?.text)).join('');
+    // Hyperlink. `text` may itself be rich text, which is the nesting that
+    // caused the bug — so recurse rather than read.
+    if ('text' in value) return cellText(value.text);
+    // Formula: the cached result, which may be a number, a string, or an error.
+    if ('result' in value) return cellText(value.result);
+    // An error cell (#REF!, #N/A). The code is more use than an empty string:
+    // it tells a curator the sheet itself is broken, not the import.
+    if ('error' in value) return String(value.error);
+    // A shared-formula stub with no cached result has nothing to offer.
+    if ('sharedFormula' in value || 'formula' in value) return '';
+  }
+
+  return '';
+}
+
+/**
  * Parse CSV file.
  *
  * Two-step strategy:
@@ -172,7 +223,10 @@ async function parseExcel(buffer) {
     const headerRow = worksheet.getRow(1);
     const headers = [];
     headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-      headers[colNumber - 1] = normalizeColumnName(String(cell.value ?? '').trim());
+      // Through cellText like every other cell: a header can be a hyperlink or
+      // carry formatting too, and a header that reads `[object Object]` matches
+      // no known column, so the whole sheet is rejected as missing its columns.
+      headers[colNumber - 1] = normalizeColumnName(cellText(cell.value).trim());
     });
 
     const data = [];
@@ -182,16 +236,7 @@ async function parseExcel(buffer) {
       headers.forEach((key, idx) => {
         if (!key) return;
         const cell = row.getCell(idx + 1);
-        // Normalize cell value to string (matching xlsx's `raw: false` behavior).
-        // Hyperlinks come through as { text, hyperlink } — pick `text`.
-        let value = cell.value;
-        if (value && typeof value === 'object') {
-          if ('text' in value) value = value.text;
-          else if ('result' in value) value = value.result; // formula result
-          else if (value instanceof Date) value = value.toISOString();
-          else value = String(value);
-        }
-        obj[key] = value == null ? '' : String(value);
+        obj[key] = cellText(cell.value);
       });
       data.push(obj);
     });

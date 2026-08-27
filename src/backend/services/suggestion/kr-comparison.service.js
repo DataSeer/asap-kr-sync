@@ -618,10 +618,15 @@ async function generateSuggestions(submissionId, round, jobLogger = null) {
     identifier: outcome.identifier || '',
     source: outcome.source || '',
     newReuse: outcome.newReuse || '',
-    // Conflicts drive the "Incoherence" verdict, so they travel in every
-    // pipeline — a disagreement between the author's row and the manuscript is
-    // worth surfacing even when candidate MATCHING is not.
+    // Conflicts drive the "Possible mismatch" verdict, so they travel in every
+    // pipeline — a difference between the author's row and the manuscript is
+    // worth surfacing even when candidate MATCHING is not. Since the check was
+    // rewritten they are derived from the manuscript text alone, so they carry
+    // nothing a seeded pool could have contaminated.
     conflicts: outcome.conflicts || [],
+    // Identifiers the paper simply does not print. Not an error, and shown as a
+    // note — but it has to reach the client to be shown at all.
+    unverifiedIdentifiers: outcome.unverifiedIdentifiers || [],
     ...(policy.surfaceValues ? {
       outcome: outcome.outcome,
       matchedBy: outcome.matchedBy || null,
