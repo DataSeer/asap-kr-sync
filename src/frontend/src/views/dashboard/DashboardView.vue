@@ -332,11 +332,6 @@ function getUserName(userId) {
 }
 
 
-function handleViewSubmission(submission) {
-  const route = router.resolve({ name: 'submission-detail', params: { id: submission.id } })
-  window.open(route.href, '_blank', 'noopener,noreferrer')
-}
-
 async function handleHideSubmission(submission) {
   try {
     await submissionStore.hideSubmission(submission.id)
@@ -705,7 +700,6 @@ const activeFilterCount = computed(() => {
           :key="submission.id"
           :submission="submission"
           :is-hidden="selectedVisibility === 'hidden'"
-          @click="handleViewSubmission(submission)"
           @hide="handleHideSubmission"
           @unhide="handleUnhideSubmission"
           @delete="handleDeleteSubmission"
@@ -858,13 +852,14 @@ const activeFilterCount = computed(() => {
                   />
                 </td>
                 <td class="px-4 py-3">
-                  <button
+                  <!-- A link, not a button — see the note on the other table. -->
+                  <RouterLink
+                    :to="{ name: 'submission-detail', params: { id: sub.id } }"
                     class="text-sm font-medium text-primary-700 hover:text-primary-900 hover:underline text-left max-w-xs truncate block"
                     v-tooltip="sub.title"
-                    @click="handleViewSubmission(sub)"
                   >
                     {{ sub.title }}
-                  </button>
+                  </RouterLink>
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-600 font-mono">
                   {{ sub.manuscriptId || '—' }}
