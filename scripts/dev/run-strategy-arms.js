@@ -40,6 +40,7 @@
  *   node scripts/dev/run-strategy-arms.js --limit 1              # one manuscript, both arms
  *   node scripts/dev/run-strategy-arms.js --ablate 0.5
  *   node scripts/dev/run-strategy-arms.js --arms blind-v1
+ *   node scripts/dev/run-strategy-arms.js --only MD1_000525_005,CS1-000301-020
  *
  * Unpublished manuscripts — output stays under tmp/, which is gitignored.
  */
@@ -267,6 +268,10 @@ async function main() {
   const ablateFraction = Number(arg('--ablate', 0));
   const staggerMs = Number(arg('--stagger', 3)) * 1000;
   const armIds = (arg('--arms', Object.keys(PIPELINES).join(','))).split(',');
+  // Substring match on the manuscript id. --limit takes the corpus in size
+  // order, which is the largest first; choosing WHICH manuscripts run is what
+  // separates "does the strategy differ" from "does the prompt get too long".
+  const only = arg('--only', null);
 
   const { corpus } = JSON.parse(fs.readFileSync(CORPUS_FILE, 'utf-8'));
   const markdownBySha = new Map(
@@ -275,11 +280,17 @@ async function main() {
 
   // Two different reasons a manuscript is not in the queue, reported apart:
   // missing markdown is a gap in the corpus, --limit is a choice.
-  const withMarkdown = corpus.filter((c) => markdownBySha.has(c.pdfSha));
-  const missing = corpus.length - withMarkdown.length;
+  const selected = only
+    ? corpus.filter((c) => only.split(',').some((id) => c.manuscriptId.includes(id)))
+    : corpus;
+  const withMarkdown = selected.filter((c) => markdownBySha.has(c.pdfSha));
+  // Against `selected`, not `corpus` — otherwise every manuscript --only filtered
+  // out is reported as missing markdown, which is a different problem entirely.
+  const missing = selected.length - withMarkdown.length;
   const queue = withMarkdown.slice(0, Number.isFinite(limit) ? limit : withMarkdown.length);
 
   console.log(`corpus     ${corpus.length} manuscripts`
+    + (only ? `, ${selected.length} matching --only` : '')
     + (missing ? `, ${missing} skipped for want of markdown` : '')
     + (queue.length < withMarkdown.length ? `, ${queue.length} selected by --limit` : ''));
   console.log(`arms       ${armIds.join(', ')}`);
