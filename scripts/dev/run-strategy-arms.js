@@ -255,6 +255,27 @@ async function runArm({ entry, pipeline, markdown, fullRows, ablation, staggerMs
     return { rows: rows.length, found: hit, pct: rows.length ? Math.round((hit / rows.length) * 100) : null };
   };
 
+  /**
+   * The same score, split by which detector was responsible for the row.
+   *
+   * A single number over the whole table hides the answer to the question
+   * actually being asked — is one strategy better for DATASETS, or for
+   * MATERIALS? The totals can sit two points apart while one detector is
+   * twenty points ahead and another twenty behind, and averaging them away
+   * would report "no difference" for a corpus full of differences.
+   *
+   * Rows are attributed by the author's own resource type, normalised the way
+   * the app does, so the split is the same one the seeded prompts use when they
+   * decide which rows to seed which detector with.
+   */
+  const scoreByFamily = (rows) => {
+    const out = {};
+    for (const [detector, family] of Object.entries(FAMILY_FOR)) {
+      out[detector] = score(rows.filter((r) => familyOf(r.resourceType) === family));
+    }
+    return out;
+  };
+
   return {
     pipeline: pipeline.id,
     inputs,
@@ -273,6 +294,12 @@ async function runArm({ entry, pipeline, markdown, fullRows, ablation, staggerMs
       all: score(fullRows),
       kept: score(ablation.kept),
       removed: ablation.removed.length ? score(ablation.removed) : null
+    },
+    // Per detector, so a strategy that wins on one family and loses on another
+    // is visible instead of averaged into a draw.
+    recallByDetector: {
+      all: scoreByFamily(fullRows),
+      removed: ablation.removed.length ? scoreByFamily(ablation.removed) : null
     }
   };
 }
@@ -357,9 +384,13 @@ async function main() {
         fs.writeFileSync(path.join(OUT_DIR, `${tag}.json`), JSON.stringify(record, null, 2));
 
         const r = run.recall;
+        const byDet = DETECTORS
+          .map((d) => `${d.slice(0, 4)} ${run.recallByDetector?.all?.[d]?.pct ?? '-'}%`)
+          .join(' ');
         console.log(`  ok   ${label}  detected ${run.detectedTotal}`
-          + `  recall all ${r.all.pct}%`
-          + (r.removed ? `  removed ${r.removed.pct}%` : ''));
+          + `  all ${r.all.pct}%`
+          + (r.removed ? `  removed ${r.removed.pct}%` : '')
+          + `  [${byDet}]`);
       } catch (err) {
         console.log(`  FAIL ${label}  ${String(err.message).slice(0, 80)}`);
       }
@@ -382,6 +413,11 @@ async function main() {
       + `kept ${agg((r) => r.recall.kept).padEnd(18)}`
       + `removed ${agg((r) => r.recall.removed)}`);
     console.log(`  ${''.padEnd(10)} detected ${mine.reduce((n, r) => n + r.detectedTotal, 0)} items`);
+    for (const detector of DETECTORS) {
+      const line = (pick) => agg((r) => pick(r)?.[detector]);
+      console.log(`  ${''.padEnd(10)}   ${detector.padEnd(10)} all ${line((r) => r.recallByDetector?.all).padEnd(18)}`
+        + `removed ${line((r) => r.recallByDetector?.removed)}`);
+    }
   }
   console.log(`\n${Math.round((Date.now() - started) / 60000)} min · per-run JSON in ${path.relative(ROOT, OUT_DIR)}`);
   console.log('Unpublished manuscripts — keep this under tmp/, never commit it.');
