@@ -116,3 +116,35 @@ test('the scan is looking at real code, not passing on an empty read', () => {
     assert.ok(bodyOf(source, fn), `${fn} missing from ${file}`);
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// And the harness that calls them
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('the strategy harness passes the seeds it computes', () => {
+  // The entry points were fixed to ACCEPT seeds and the caller was not updated
+  // to SEND them, so `run-strategy-arms.js` computed a seed list per detector,
+  // logged its length in the dry-run, and then called each detector with
+  // `{ prompt }` alone. The seeded arm ran a prompt that says "re-ground and
+  // lightly enrich the rows you were given" with no rows — a malformed
+  // instruction, not the seeded strategy — and every number it produced had to
+  // be discarded.
+  //
+  // Exactly the mistake this file already guards one layer down, which is why it
+  // is worth guarding here too: fixing a signature does not fix its callers.
+  const harness = path.join(__dirname, '../../../../scripts/dev/run-strategy-arms.js');
+  if (!fs.existsSync(harness)) return;   // the harness is a dev script; absence is fine
+
+  const source = fs.readFileSync(harness, 'utf8');
+  const body = source.slice(source.indexOf('async function detect('));
+  const detectFn = body.slice(0, body.indexOf('\n}'));
+
+  for (const call of ['detectDatasets', 'detectMaterials', 'detectProtocols']) {
+    const at = detectFn.indexOf(call);
+    assert.ok(at !== -1, `${call} not called by the harness`);
+    // The options object passed to this call, up to its closing brace.
+    const opts = detectFn.slice(at, detectFn.indexOf('}', at));
+    assert.match(opts, /seeds/,
+      `${call} is called without seeds — the seeded arm would run on an empty list`);
+  }
+});

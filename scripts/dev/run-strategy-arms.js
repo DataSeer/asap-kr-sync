@@ -64,6 +64,7 @@ const { buildAuthorSeeds } = require(path.join(ROOT, 'src/backend/services/krt/a
 const { PIPELINES } = require(path.join(ROOT, 'src/backend/config/pipelines'));
 const { getStrategy } = require(path.join(ROOT, 'src/backend/services/detection/registry'));
 const { buildEvidenceIndex, attachEvidence } = require(path.join(ROOT, 'src/backend/services/pdf-analysis/evidence.service'));
+const { SEED_TITLES } = require(path.join(ROOT, 'src/backend/services/detection/prompt-assembly'));
 const { presenceForRows } = require(path.join(ROOT, 'src/backend/services/krt-grounding/krt-grounding.service'));
 
 const datasetsService = require(path.join(ROOT, 'src/backend/services/datasets/datasets.service'));
@@ -166,18 +167,36 @@ function inputFor(pipeline, detector, authorRows) {
   };
 }
 
+/**
+ * Run one detector for one arm.
+ *
+ * `seeds` and `seedTitle` are passed, not just `prompt`. Sending the prompt
+ * alone gives the SEEDED arm a prompt that says "re-ground and lightly enrich
+ * the rows you were given" with no rows — a malformed instruction, not the
+ * seeded strategy. Every number from this harness before the seeds were wired
+ * measured that, and had to be thrown away.
+ *
+ * The same mistake, one layer down, is what `benchmark-entries-forward-seeds.
+ * test.js` exists to prevent: the entry points were fixed to accept seeds and
+ * this caller was not updated to send them.
+ */
 async function detect(detector, markdown, input) {
+  const seeds = input.seeds || [];
+  const seedTitle = seeds.length && input.seedTitle ? SEED_TITLES[input.seedTitle] : null;
+
   if (detector === 'datasets') {
+    // Datasets carries seeds in the payload rather than an appended block, so
+    // it takes no seedTitle — see the note on its strategy.
     const r = await datasetsService.detectDatasets(markdown, {
-      prompt: input.prompt, signalsPrompt: input.signalsPrompt
+      prompt: input.prompt, signalsPrompt: input.signalsPrompt, seeds
     });
     return datasetsService.buildKrtItemsDatasets(r.resources);
   }
   if (detector === 'materials') {
-    const r = await materialsService.detectMaterials(markdown, { prompt: input.prompt });
+    const r = await materialsService.detectMaterials(markdown, { prompt: input.prompt, seeds, seedTitle });
     return materialsService.buildKrtItemsMaterials(r.resources);
   }
-  const r = await protocolsService.detectProtocols(markdown, { prompt: input.prompt });
+  const r = await protocolsService.detectProtocols(markdown, { prompt: input.prompt, seeds, seedTitle });
   return protocolsService.buildKrtItemsProtocols(r.resources);
 }
 
