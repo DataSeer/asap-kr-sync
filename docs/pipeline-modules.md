@@ -33,7 +33,17 @@ extraction finishes; see §3.11 and [submission-workflow.md](./submission-workfl
 | `suggestion_generation` | AI Suggestions (author KRT vs Generated KRT) | **LM (Gemini)** — LM-only, no fallback | `pdf_analysis` | the persisted suggestions list |
 | `das_suggestions` | DAS vs the ASAP rulebook (per-rule verdict) | **LM (Gemini)** — LM-only, **legacy-rules fallback** | `das_extraction` *(gated to the Availability step)* | the `/availability` suggestions list, and its own module page |
 
-Pipeline shape (the orchestrator's dependency graph; see [pipeline-jobs.md](./pipeline-jobs.md#pipeline)). `das_suggestions` is omitted from the diagram below for readability — it hangs off `das_extraction` and is gated to the Availability step (see §3.11). On the app's own pipeline page it is drawn in the **Suggest** stage rather than beside its dependency, via the step's `displayStage`: it depends on something early but runs last, and a reader following the page top to bottom should find it where it actually runs.
+Pipeline shape (the orchestrator's dependency graph; see [pipeline-jobs.md](./pipeline-jobs.md#pipeline)).
+Solid arrows carry DATA. The one dotted arrow is an ordering edge that carries none:
+`pdf_analysis` waits for `krt_grounding` but never reads it — its candidate pool is
+`CONTRIBUTOR_SOURCES`, the five detectors, and grounding is not among them. It even
+re-implements its own "is this author row already represented" check rather than reuse
+the grounding matcher, deliberately: grounding's `partial_name` tier is precisely the
+case where we do not know two items are the same, and trusting it would cost an author
+row its guaranteed place in the Generated KRT.
+`das_extraction` feeds no arrow into `pdf_analysis` at all — that dependency was removed
+when the Availability step became a gated branch, and what it actually feeds is
+`das_suggestions`. `das_suggestions` is omitted from the diagram below for readability — it hangs off `das_extraction` and is gated to the Availability step (see §3.11). On the app's own pipeline page it is drawn in the **Suggest** stage rather than beside its dependency, via the step's `displayStage`: it depends on something early but runs last, and a reader following the page top to bottom should find it where it actually runs.
 
 ```mermaid
 flowchart LR
@@ -58,11 +68,10 @@ flowchart LR
     KRTV -.-> KG
     SW --> PA["pdf_analysis<br/>(rule-merge → LM consolidate)"]
     MAT --> PA
-    DAS --> PA
     DS --> PA
     PR --> PA
     ID --> PA
-    KG --> PA
+    KG -.->|"ordering only"| PA
     KG --> GR(["grounding outcomes"])
     PA --> SG["suggestion_generation<br/>(LM — AI Suggestions)"]
     GR --> SG
