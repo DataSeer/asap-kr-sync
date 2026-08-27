@@ -340,7 +340,9 @@ test('flags a real discrepancy the author and the manuscript disagree on', () =>
       identifier: 'strain code: 001, RRID: RGD_734476',
       source: 'Charles River Laboratories',
       newReuse: 'new'
-    })]
+    })],
+    // The paper prints this. Only what it prints may contradict the author.
+    (v) => ['strain code: 001', 'RRID: RGD_734476'].includes(v)
   );
   assert.equal(outcomes[0].outcome, 'incomplete');
   assert.equal(outcomes[0].conflicts.length, 1);
@@ -351,7 +353,8 @@ test('flags a real discrepancy the author and the manuscript disagree on', () =>
 test('a conflict never proposes a change — the author value stands', () => {
   const { outcomes } = matchAuthorRows(
     [authorRow({ identifier: 'Cat #: 657012', source: 'Millipore', newReuse: 'reuse' })],
-    [candidate({ identifier: 'Cat #: 999999', source: 'Millipore', newReuse: 'reuse' })]
+    [candidate({ identifier: 'Cat #: 999999', source: 'Millipore', newReuse: 'reuse' })],
+    () => true
   );
   assert.equal(outcomes[0].conflicts.length, 1);
   assert.deepEqual(outcomes[0].missingFields, [], 'nothing is proposed for an EDIT');
@@ -427,11 +430,54 @@ test('a complete, agreeing row is still confirmed', () => {
 test('a differing identifier IS an incoherence', () => {
   const { conflicts } = compareWithCandidates(
     authorRow({ identifier: 'RRID:SCR_111111' }),
-    [{ candidate: candidate({ identifier: 'RRID:SCR_999999' }) }]
+    [{ candidate: candidate({ identifier: 'RRID:SCR_999999' }) }],
+    () => true
   );
 
   assert.equal(conflicts.length, 1);
   assert.equal(conflicts[0].field, 'identifier');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Only the manuscript may contradict the author
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a candidate value the manuscript does not print raises nothing', () => {
+  // The reported bug. An identifier-scan candidate carries the whole enrichment
+  // entry, so this URL is something the curated list knows — not something the
+  // paper said. Quoting it as `manuscriptValue` told authors their correct rows
+  // disagreed with a source that never mentioned them.
+  const { conflicts } = compareWithCandidates(
+    authorRow({ identifier: 'RRID:SCR_014269' }),
+    [{ candidate: candidate({ identifier: 'RRID:SCR_014269 ; http://ric.uthscsa.edu/mango/' }) }],
+    (v) => v === 'RRID:SCR_014269'
+  );
+
+  assert.deepEqual(conflicts, [], 'the only value the paper prints agrees with the author');
+});
+
+test('the parts a manuscript DOES print still contradict', () => {
+  // The other half: filtering must not neuter the check. The paper prints a
+  // different strain code, and that is exactly what the curator needs.
+  const { conflicts } = compareWithCandidates(
+    authorRow({ identifier: 'strain code: 400, RRID: RGD_734476' }),
+    [{ candidate: candidate({ identifier: 'strain code: 001, RRID: RGD_734476' }) }],
+    (v) => ['strain code: 001', 'RRID: RGD_734476'].includes(v)
+  );
+
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].manuscriptValue, /strain code: 001/);
+});
+
+test('with no manuscript to check against, nothing is asserted', () => {
+  // Omitting the predicate must not fall back to comparing candidate values —
+  // that fallback IS the bug, and a silent default would restore it.
+  const { conflicts } = compareWithCandidates(
+    authorRow({ identifier: 'RRID:SCR_111111' }),
+    [{ candidate: candidate({ identifier: 'RRID:SCR_999999' }) }]
+  );
+
+  assert.deepEqual(conflicts, []);
 });
 
 test('a differing SOURCE is not', () => {

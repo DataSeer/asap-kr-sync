@@ -356,8 +356,31 @@ async function groundSubmission(submission, jobLogger) {
   // any detector found, and independent of what the prompts were seeded with.
   const presence = await checkPresence(submissionId, round, authorRows, jobLogger);
 
+  /**
+   * Is this value one the MANUSCRIPT actually prints?
+   *
+   * Handed to the matcher so a conflict can only ever cite the paper for what
+   * the paper says. An `identifier-scan` candidate carries the whole enrichment
+   * entry — every identifier and homepage URL the curated list holds for the one
+   * RRID it found in the text — and quoting that as `manuscriptValue` told
+   * authors their correct rows contradicted a source that never mentioned them.
+   *
+   * Uses the index's own lookup rather than a hand-rolled string compare. The
+   * conversion escapes identifiers (`SCR\_014269`), respaces them and moves
+   * hyphens, and `findNormalisedOccurrences` is the routine that already folds
+   * all of that away — the same one that decides presence. A separate
+   * normalisation here silently disagreed with it: it kept the dots and hyphens
+   * that `index.flat` strips, so every value read as missing and the check
+   * quietly passed everything.
+   */
+  const inManuscript = (value) => (
+    presence.index ? findNormalisedOccurrences(presence.index, String(value), 1).length > 0 : false
+  );
+
   // ── Step 3: deterministic matching against the candidate pool
-  const matched = matchAuthorRows(authorRows, candidates);
+  // Without a manuscript there is no predicate, and the matcher then asserts no
+  // conflicts at all — rather than falling back to comparing candidate values.
+  const matched = matchAuthorRows(authorRows, candidates, presence.index ? inManuscript : undefined);
   jobLogger?.log('deterministic_match', 'Matched author rows against candidates', matched.stats);
 
   // Both readings travel on the outcome. `presence` says whether the resource
@@ -366,37 +389,18 @@ async function groundSubmission(submission, jobLogger) {
     outcome.presence = presence.byRowId.get(outcome.krtRowId) || null;
 
     /**
-     * A conflict may only cite the manuscript for what the manuscript says.
+     * Per-identifier verdicts, separate from the conflicts above.
      *
-     * The matcher raised one by comparing the author's cell against a
-     * CANDIDATE's field and labelling the result `manuscriptValue`. For an
-     * identifier-scan candidate that field comes from the curated enrichment
-     * list, so curators were shown "the manuscript says" followed by values the
-     * paper never contained — and told their correct rows disagreed with it.
-     *
-     * Re-derived here from the text itself. Everything the matcher proposed is
-     * discarded; what survives is what the manuscript supports.
+     * The conflicts say "the paper prints something different here". These say,
+     * for each identifier the author wrote, whether the paper prints it at all.
+     * An identifier the paper never mentions, with nothing contradicting it, is
+     * NOT an error — a KRT may carry more than the manuscript does, and most
+     * good tables do — so it travels separately and is shown as a quiet note.
      */
     if (presence.index && outcome.presence) {
-      const verified = verifyRow({
-        identifiers: outcome.presence.identifiers || [],
-        index: presence.index,
-        mentions: outcome.presence.mentions || []
-      });
+      const verified = verifyRow({ identifiers: outcome.presence.identifiers || [] });
 
       outcome.identifierVerdicts = verified.identifiers;
-      // Only a value of the same kind, actually in the text, beside this
-      // resource. Anything else is not evidence the author is wrong.
-      outcome.conflicts = verified.mismatches.map((m) => ({
-        field: 'identifier',
-        authorValue: m.value,
-        manuscriptValue: m.competing,
-        kind: m.kind,
-        source: 'manuscript'
-      }));
-      // Present in the KRT, absent from the paper, nothing contradicting it.
-      // NOT an error — a KRT may carry more than the manuscript prints — so it
-      // travels separately from `conflicts` and is shown as a note.
       outcome.unverifiedIdentifiers = verified.unverified.map((u) => u.value);
 
       /**
@@ -412,15 +416,10 @@ async function groundSubmission(submission, jobLogger) {
        * lives rather than asserted by the text, so requiring it to appear
        * verbatim would reject every legitimate fill.
        */
-      const flat = presence.index.flat || '';
-      const inText = (value) => {
-        const needle = String(value).replace(/[\s\\]/g, '').toLowerCase();
-        return needle.length > 2 && flat.includes(needle);
-      };
       for (const [field, value] of Object.entries(outcome.foundValues || {})) {
         if (field === 'source') continue;
         const parts = String(value).split(';').map((v) => v.trim()).filter(Boolean);
-        const supported = parts.filter(inText);
+        const supported = parts.filter(inManuscript);
         if (supported.length) outcome.foundValues[field] = supported.join(' ; ');
         else {
           delete outcome.foundValues[field];
@@ -428,9 +427,8 @@ async function groundSubmission(submission, jobLogger) {
         }
       }
     } else {
-      // No manuscript to check against: assert nothing rather than fall back to
-      // the candidate comparison this replaced.
-      outcome.conflicts = [];
+      // No manuscript to check against: assert nothing. The matcher was given no
+      // predicate and so raised no conflicts either.
       outcome.identifierVerdicts = [];
       outcome.unverifiedIdentifiers = [];
     }

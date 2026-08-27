@@ -149,7 +149,7 @@ const COMPARABLE_FIELDS = ['identifier'];
  * @param {object[]} candidates - KrtEntry[] from the merged candidate pool
  * @returns {{ outcomes: object[], unmatchedCandidateRefs: number[], stats: object }}
  */
-function matchAuthorRows(authorRows, candidates) {
+function matchAuthorRows(authorRows, candidates, inManuscript) {
   const rows = Array.isArray(authorRows) ? authorRows : [];
   const pool = (Array.isArray(candidates) ? candidates : []).map((candidate, ref) => {
     const typeKey = normalizeResourceTypeKey(candidate?.resourceType || '');
@@ -160,7 +160,7 @@ function matchAuthorRows(authorRows, candidates) {
   const outcomes = [];
 
   for (const row of rows) {
-    const outcome = matchOneRow(row, pool);
+    const outcome = matchOneRow(row, pool, inManuscript);
     outcome.matchedRefs.forEach((ref) => claimedRefs.add(ref));
     outcomes.push(outcome);
   }
@@ -182,7 +182,7 @@ function matchAuthorRows(authorRows, candidates) {
  * @param {object[]} pool - pre-indexed candidates
  * @returns {object} outcome
  */
-function matchOneRow(row, pool) {
+function matchOneRow(row, pool, inManuscript) {
   const rowIdentifier = String(row?.identifier || '').trim();
   const rowTypeKey = normalizeResourceTypeKey(row?.resourceType || '');
   const rowName = row?.resourceName || '';
@@ -246,7 +246,7 @@ function matchOneRow(row, pool) {
   const fillEntries = matched
     .filter((m) => m.how !== 'partial_name')
     .map((m) => pool.find((e) => e.ref === m.ref));
-  const { missingFields, foundValues, conflicts } = compareWithCandidates(row, fillEntries);
+  const { missingFields, foundValues, conflicts } = compareWithCandidates(row, fillEntries, inManuscript);
 
   let outcome;
   if (best.how === 'partial_name') {
@@ -387,6 +387,61 @@ function candidateNames(candidate, typeKey) {
 }
 
 /**
+ * What the MANUSCRIPT says for a field — never what a curated list knows.
+ *
+ * ── The bug this exists to close ─────────────────────────────────────────────
+ *
+ * The comparison used to take `supplier.candidate[field]` whole and label it
+ * `manuscriptValue`. For an `identifier-scan` candidate that field is filled
+ * from the enrichment list: the scanner finds one RRID in the text, looks it
+ * up, and attaches every identifier and homepage URL the list holds. All of it
+ * was then quoted at the curator as what the paper says.
+ *
+ * Measured on the reported submission, the comparison raised four conflicts:
+ *
+ *     Time Series analyzer  vs  RRID:SCR_014269 ; http://ric.uthscsa.edu/...
+ *     Analysis Scripts      vs  RRID:SCR_000325 ; http://www.wavemetrics...
+ *     IGOR Pro v6.3.7.2     vs  RRID:SCR_000325 ; http://www.wavemetrics...
+ *     Sprague-Dawley rats   vs  strain code: 001, RRID: RGD_734476
+ *
+ * Three of the four cited URLs the manuscript never contained; the fourth was a
+ * real disagreement the author needed to see. Restricting each candidate value
+ * to the parts the text actually prints leaves exactly that one.
+ *
+ * ── Why only the comparison is filtered ──────────────────────────────────────
+ *
+ * The fill half above is deliberately left alone. A tool's homepage from the
+ * enrichment list is a GOOD suggestion for an empty cell — it is only unsafe as
+ * evidence about the paper. Filling and contradicting need different warrants,
+ * and conflating them is what produced the bug.
+ *
+ * @param {object[]} entries      matched pool entries
+ * @param {string} field
+ * @param {function} inManuscript value => is it in the manuscript text?
+ * @returns {{value: string, origin: string|null}|null}
+ */
+function manuscriptClaim(entries, field, inManuscript) {
+  // No predicate means no manuscript to check against — so nothing may be
+  // asserted about one. Deliberately not a permissive default: that default is
+  // the old behaviour, and the old behaviour is the bug.
+  if (typeof inManuscript !== 'function') return null;
+
+  const supported = entries
+    .map((entry) => {
+      const parts = String(entry?.candidate?.[field] || '')
+        .split(/[;,]/).map((v) => v.trim()).filter(Boolean)
+        .filter((v) => inManuscript(v));
+      return parts.length
+        ? { value: parts.join(', '), origin: entry.candidate.origin || null, confidence: entry.candidate.confidence || 0 }
+        : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.confidence - a.confidence);
+
+  return supported[0] || null;
+}
+
+/**
  * Compare an author row against what the manuscript supplies.
  *
  * Two different findings come out of this, and only one of them is an edit:
@@ -411,7 +466,7 @@ function candidateNames(candidate, typeKey) {
  * @param {object[]} entries - matched pool entries
  * @returns {{ missingFields: string[], foundValues: object, conflicts: object[] }}
  */
-function compareWithCandidates(row, entries) {
+function compareWithCandidates(row, entries, inManuscript) {
   const missingFields = [];
   const foundValues = {};
   const conflicts = [];
@@ -434,8 +489,14 @@ function compareWithCandidates(row, entries) {
     }
 
     // Only fields we can genuinely compare may contradict the author.
-    if (COMPARABLE_FIELDS.includes(field) && valuesConflict(field, authorValue, foundValue)) {
-      conflicts.push({ field, authorValue, manuscriptValue: foundValue, source: supplier.candidate.origin || null });
+    if (!COMPARABLE_FIELDS.includes(field)) continue;
+
+    // And only what the MANUSCRIPT actually prints may do the contradicting.
+    const claim = manuscriptClaim(entries, field, inManuscript);
+    if (!claim) continue;
+
+    if (valuesConflict(field, authorValue, claim.value)) {
+      conflicts.push({ field, authorValue, manuscriptValue: claim.value, source: claim.origin });
     }
   }
 

@@ -98,7 +98,7 @@ function foundVerdict(o) {
   if (conflicts > 0) {
     return {
       label: 'Possible mismatch', cls: 'grounding-warn',
-      title: `The manuscript names ${conflicts === 1 ? 'a different value' : `${conflicts} different values`} of the same kind beside this resource. Your row is unchanged — compare them under More information and decide which is right.`
+      title: `The manuscript gives ${conflicts === 1 ? 'a different value' : `${conflicts} different values`} for this row — and only values the paper actually prints are compared. Your row is unchanged: compare them under More information and decide which is right.`
     }
   }
 

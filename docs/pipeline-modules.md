@@ -780,6 +780,46 @@ Neither applies to a **blind** run: it is given no seeds, so it promises nothing
   those false gaps and is **deliberately deferred**. Collapsing the cell into one boolean answered a question nobody asked ("is ANY of
   this in the paper?") and hid the half a curator can act on. An **empty** cell yields no verdicts at all — "nothing
   to check" is not "checked and not found".
+- **What "the manuscript says" is allowed to mean.** A conflict may only cite the paper for what the paper prints.
+  It did not: `compareWithCandidates` compared the author's cell against `candidate[field]` and labelled the result
+  `manuscriptValue` — and for an `identifier-scan` candidate that field carries the whole **curated enrichment
+  entry**, every identifier and homepage URL the list holds for the one RRID the scanner found in the text. All of
+  it was quoted at the curator as what the manuscript says. On the reported submission the comparison raised four
+  conflicts:
+
+  | row | author | quoted as "manuscript" | in the paper? |
+  |---|---|---|---|
+  | Time Series analyzer | `https://imagej.net/ij/pl…` | `RRID:SCR_014269 ; http://ric.uthscsa.edu/…` | **no** |
+  | Analysis Scripts | `https://doi.org/10.5281/…` | `RRID:SCR_000325 ; http://www.wavemetrics…` | **no** |
+  | IGOR Pro v6.3.7.2 | `https://www.wavemetrics…` | `RRID:SCR_000325 ; http://www.wavemetrics…` | **no** |
+  | Sprague-Dawley rats | `strain code: 400, …` | `strain code: 001, RRID: RGD_734476` | **yes** |
+
+  Three of the four were the bug — a check wrong more often than right, and wrong in the direction of telling
+  people to break good data. The fourth was a real error the author needed to see.
+- **The fix is one restriction, not a new algorithm.** `manuscriptClaim` filters each candidate value down to the
+  parts the manuscript actually contains, and only what survives may contradict the author. On that submission it
+  leaves **exactly the one real conflict**. The comparison logic itself was never wrong — `valuesConflict` already
+  documented the strain-code case — only its input was contaminated.
+  - The lookup is `findNormalisedOccurrences`, the same routine that decides presence, **not** a string compare.
+    The conversion escapes identifiers (`SCR\_014269`), respaces them and moves hyphens; a separate normalisation
+    silently disagreed with `index.flat` and read *every* value as missing, which passes everything and looks
+    exactly like working code.
+  - **With no manuscript, no conflicts.** The predicate is a required argument, and omitting it asserts nothing
+    rather than falling back to the candidate comparison — that fallback is the bug, and a permissive default
+    would quietly restore it.
+- **Filling and contradicting need different warrants**, and conflating them is what produced the bug. The filter
+  applies to the **comparison only**. A tool's homepage from the enrichment list is a *good* suggestion for an
+  empty cell; it is only unsafe as evidence about the paper. (Fills are still filtered separately, for a different
+  reason: a fill the paper does not support writes into the author's table something no source asserts. `source`
+  is exempt — a repository or supplier is inferred from where a thing lives, not asserted by the text.)
+- **Two verdicts per identifier**, carried on `presence.identifiers` and answering a different question from the
+  conflicts — *does the paper corroborate this?* rather than *does the paper contradict it?*
+  - `found` — the paper prints it. Verified.
+  - `absent` — it does not. **Not an error**, and never shown as one: a KRT may carry more than the manuscript
+    prints and most good tables do, since a tool's homepage is rarely in the methods. Travels as
+    `unverifiedIdentifiers` and is rendered as a quiet note with **no correction attached** — nothing has been
+    established as wrong. An **empty** cell yields no verdicts at all: "nothing to check" is not "checked and not
+    found".
 - **The second look** takes the rows nothing matched and asks the LM to find each one in the manuscript, returning
   an exact quote. **Every returned quote is re-verified against the markdown here**, so a confident-sounding
   hallucination changes nothing: an unverifiable quote leaves the row `not_detected`.
