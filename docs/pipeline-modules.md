@@ -64,7 +64,8 @@ flowchart LR
     MDC --> MAT["materials_detection<br/>(Gemini — cue-driven)"]
     MDC --> PR["protocols_detection<br/>(Gemini)"]
     MDC --> ID["identifier_detection<br/>(local)"]
-    SW --> KG["krt_grounding<br/>(match + LM second look)"]
+    MDC --> KG["krt_grounding<br/>(match + LM second look)"]
+    SW --> KG
     DS --> KG
     MAT --> KG
     PR --> KG
@@ -296,6 +297,10 @@ Every stage, in order, with what it adds and where it can lose something.
                                   ▼
                         persisted per job: result.data.items
                                   │
+                 the next TWO both read these items,
+                 neither reads the other, and they
+                 run AT THE SAME TIME
+                                  │
       ┌───────────────────────────┴────────────────────────────┐
       │  krt_grounding            (gated on krt_curated)       │
       │  author KRT × candidate pool                           │
@@ -307,9 +312,12 @@ Every stage, in order, with what it adds and where it can lose something.
       │                     partial / not_detected             │
       │   → conflicts where the paper disagrees with the row   │
       └───────────────────────────┬────────────────────────────┘
-                                  ▼
+                 outcomes go straight to suggestions,
+                 NOT through pdf_analysis
+                                  │
       ┌────────────────────────────────────────────────────────┐
       │  pdf_analysis — builds the GENERATED KRT               │
+      │                 (gated on krt_curated)                 │
       │                                                        │
       │   a. mergeDetections   cross-detector merge; drops     │
       │                        `unsupported`; detectedBy[]     │
@@ -347,9 +355,16 @@ separate stages before it was recognised as a class. `evidence-pipeline.test.js`
 whole chain and asserts evidence survives each hop — necessary because the symptom (a suggestion
 with no context in the UI) always surfaces far from the stage that caused it.
 
-**Ordering note.** `krt_grounding` runs *before* `pdf_analysis` and reads the raw detector items,
-not the Generated KRT. It reconciles against everything the detectors found, including candidates
-the LM consolidation later drops.
+**Ordering note.** `krt_grounding` and `pdf_analysis` run **in parallel**. Neither reads the
+other: grounding reconciles against the raw detector items rather than the Generated KRT, so it
+sees everything the detectors found — including candidates the LM consolidation later drops — and
+consolidation builds its pool from `CONTRIBUTOR_SOURCES`, the five detectors, with grounding not
+among them.
+
+They were serialised until the dependency was traced. The edge existed for two reasons, neither of
+them data: `suggestion_generation` reads the grounding outcomes and reached the graph only through
+`pdf_analysis`, and `pdf_analysis` inherited the `krt_curated` gate through that edge. Both are now
+declared where they belong, so the two heavy steps overlap instead of queueing.
 
 ### 2.1e Automatic transformations applied by the pipeline
 
@@ -590,6 +605,35 @@ external-API call specifics live in [external-apis.md](./external-apis.md).
 - **Demo:** `getDemoDatasetMentions(manuscriptId)`.
 - **Key files:** `services/datasets/datasets.service.js`, `services/datasets/langextract-client.service.js`,
   `python/datasets/extract-signals.py`, `config/datasets-detection-api.js`.
+
+### Seeded runs must account for the rows they were given
+
+The three seeded prompts each open by promising one output row per author seed —
+materials: *"Emit one output row for every author-provided material. Never drop one."*;
+protocols: *"Never drop, split, or merge-away an author protocol."*; datasets: *"Emit one
+canonical record for every entry in `author_provided_datasets`."*
+
+Nothing checked whether they did. `seedCount` was logged and recorded in `meta`, never
+compared against the output — so a seeded run that came back with far fewer rows than it was
+given completed successfully, `counts.total` read whatever it managed, and the module page
+reported it like any other result. At zero it read exactly like a manuscript with no materials
+in it, and a curator had no way to tell those apart.
+
+`seedCoverageShortfall` (`services/detection/seed-coverage.js`) now compares the two. Below
+**half** its seeds, a run is marked `meta.degraded`, which `demo-fallback.done()` turns into a
+`partial` outcome with `failReason: '<detector>_seeded'` — the same path every other
+degradation travels, so it surfaces as an issue the user can Retry or Continue past. The
+results are kept: a run that returned most of its seeds plus real discoveries is still worth
+having, and the threshold is deliberately lenient because merging two author rows describing
+one reagent is legitimate.
+
+A seed list longer than **120** is also split across calls (`batchSeeds`), keeping every seed.
+That ceiling sits above every list observed to work and below the one that did not, so no
+working manuscript changes behaviour. It is a mitigation and not the fix — the worst observed
+failure returned nothing from 42 seeds, well inside a single batch — which is why the guard
+above exists regardless.
+
+Neither applies to a **blind** run: it is given no seeds, so it promises nothing about counts.
 
 ### 3.5 `materials_detection` — Lab materials *(cue-driven)*
 

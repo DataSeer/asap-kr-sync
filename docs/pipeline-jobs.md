@@ -107,7 +107,8 @@ graph TD
     MD --> MAT[Materials Detection]
     MD --> PROT[Protocols Detection]
 
-    SW --> KG[KRT Grounding]
+    MD --> KG[KRT Grounding]
+    SW --> KG
     DS --> KG
     MAT --> KG
     PROT --> KG
@@ -120,17 +121,20 @@ graph TD
     KRTV -.->|gate: krt_curated| PROT
     KRTV -.->|gate: krt_curated| ID
     KRTV -.->|gate: krt_curated| KG
+    KRTV -.->|gate: krt_curated| PA
 
     SW --> PA[PDF Analysis]
     DS --> PA
     MAT --> PA
     PROT --> PA
     ID --> PA
-    KG --> PA
 
     PA --> SG[Suggestion Generation]
+    KG --> SG
 
     DAS --> ASC[Availability Check]
+    AVR{{gate: availability_ready}}
+    AVR -.-> ASC
     CONF{{Statement confirmed?}}
     CONF -.->|no| PI{{pending_input}}
     CONF -.->|yes| ASC
@@ -1120,7 +1124,21 @@ Data passed to workers when a job starts:
 
 ## Result Summaries
 
-Each job stores a structured result blob on completion. `status`, `service`, `data` and `files` are present on every job; `counts`, `timing` and `tokens` are present only where they mean something — `tokens` only where a model was called (so `identifier_detection` and `markdown_convert` have none), and `counts`/`timing` are absent on the two modules noted in the table. The table below lists the **distinguishing** keys per job type.
+Each job stores a structured result blob on completion. `status`, `service`, `data` (with a
+`data.meta`), `counts`, `timing` and `files` are present on **every** module — verified against a
+completed run rather than asserted. The one key that varies is `tokens`, present only where a model
+was actually called, so `identifier_detection` (a local scan), `markdown_convert` (Modal/Docling)
+and `orcid_extraction` (GROBID → OpenAlex) carry none.
+
+That uniformity is load-bearing. Everything that reads a result — the Technical detail panel, the
+pipeline cards, the jobs API — walks every job type through the same accessors, so a module missing
+one of the shared keys is not untidy, it is the one module whose panel renders empty while the rest
+look fine. It has happened twice: the DAS check stored its meta beside `data` for a commit, and
+`markdown_convert` had no `data.meta` at all because its worker hand-picked three fields out of a
+meta its service had been producing the whole time. Pinned now by
+`services/queue/result-envelope.test.js`, which reads every `markComplete` call.
+
+The table below lists the **distinguishing** keys per job type.
 
 ### The shape is a contract, not a convention
 
@@ -1148,10 +1166,10 @@ other module looked fine. Nothing threw, nothing logged, and the tests passed. T
 
 | Job Type | Distinguishing keys |
 |----------|---------------------|
-| DAS Extraction | `status.detected` (boolean); `data.das` (the extracted text); `files['das-extractor-response' \| 'demo-das']`. **No `counts`, no `timing`.** It feeds `das_suggestions` — it does not gate PDF Analysis, which lists no DAS dependency and never reads `status.detected` |
+| DAS Extraction | `status.detected` (boolean); `data.das` (the extracted text); `counts: {statements, characters}`; `files['das-extractor-response' \| 'demo-das']`. It feeds `das_suggestions` — it does not gate PDF Analysis, which lists no DAS dependency and never reads `status.detected` |
 | Software Detection | `counts: {total, unique, enriched}`; `data: {items, meta}`; `files['softcite-response' \| 'demo-software']` |
-| ORCID Extraction | `counts: {authors, orcids}`; `data: {doi, items}`; `files['grobid-header', 'openalex-response']`. `data.items` IS populated, but the rest of the app reads the authors from `submission.authors` |
-| Markdown Convert | `data: {fileId, provider, markdownLength}`; `timing.totalMs`. **No `counts`, and no `data.meta`** — the only module without one. The markdown text itself is uploaded to S3 as a File row of type `markdown` |
+| ORCID Extraction | `counts: {authors, orcids}`; `timing.totalMs`; `data: {doi, items}`; `files['grobid-header', 'openalex-response']`. `data.items` IS populated, but the rest of the app reads the authors from `submission.authors` |
+| Markdown Convert | `data: {fileId, provider, markdownLength, meta}` — `meta` carries the service's own record (`convertMs`, `rawMarkdownLength`, `filterStats`); `counts: {characters}`, where zero is precisely the "completed cleanly, produced nothing" case the `produced` gate exists for; `timing.totalMs`. The markdown text itself is uploaded to S3 as a File row of type `markdown` |
 | Datasets Detection | `counts: {total, unique, highRelevance}`; `timing: {totalMs, apiMs, signalMs, enrichMs}`; `data: {items, meta}`; `files['langextract-signals', 'gemini-consolidation']` |
 | Materials Detection | `counts: {total, unique, highRelevance}`; `data: {items, meta}`; `files['gemini-response']` |
 | Protocols Detection | `counts: {total, unique, highRelevance}`; `data: {items, meta}`; `files` includes the raw Gemini response and the extracted JSON |
