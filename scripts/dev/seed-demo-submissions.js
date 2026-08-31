@@ -31,6 +31,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '../..');
 const API_BASE = process.env.API_BASE || 'http://localhost:3030';
@@ -83,6 +84,32 @@ const PLAN = [
     shows: 'paused pipeline · Retry / Continue without it'
   },
   {
+    key: 'partial',
+    manuscript: 'JS2-020551-021-org-G-1',
+    title: 'DEMO — a degraded step: Softcite failed, the LM pass carried it',
+    notes: 'Walkthrough: a partial outcome — what still ran, and what did not.',
+    pipelineId: null,
+    breakStep: {
+      jobType: 'software_detection',
+      hosts: ['snapshot.dataseer.ai'],
+      expect: 'partial'
+    },
+    shows: 'partial outcome · Softcite failed, LM carried the step'
+  },
+  {
+    key: 'retry',
+    manuscript: 'JH1-000478-028-org-G-1',
+    title: 'DEMO — a failed detection step, and the choice it gives you',
+    notes: 'Walkthrough: Retry the step, or Continue without it.',
+    pipelineId: null,
+    breakStep: {
+      jobType: 'materials_detection',
+      hosts: ['generativelanguage.googleapis.com'],
+      expect: 'fail'
+    },
+    shows: 'failed detection step · Retry / Continue without it'
+  },
+  {
     key: 'blind',
     manuscript: 'ML1-000592-006-org-G-1',
     title: 'DEMO — created with the KRT-blind detection arm',
@@ -107,12 +134,29 @@ const arg = (name) => {
  * cookie — so a script that kept only the cookies sails through login and gets a
  * 403 on its first real request. Which is exactly what happened.
  */
-async function login() {
+async function login(attempt = 1) {
   const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: EMAIL, password: PASSWORD })
   });
+
+  // 409 is a unique-constraint collision, not a bad password: two logins close
+  // together race to write the same session row. This script renews its token
+  // during long waits, so two renewals seconds apart are normal — and a
+  // transient 409 read as "Login failed — is the instance running?", which sent
+  // the last run looking at the wrong thing entirely.
+  if (res.status === 409 && attempt < 4) {
+    await sleep(1500 * attempt);
+    return login(attempt + 1);
+  }
+  // 429 is the auth limiter: 10 attempts per 15 minutes per IP. Retrying inside
+  // that window cannot succeed, so say what it is rather than blaming the
+  // instance — and note that renewing on a TIMER is what exhausts it. Renewals
+  // here are reactive, on an actual 401, which costs one or two per run.
+  if (res.status === 429) {
+    throw new Error('Login rate-limited (429) — 10 attempts per 15 min per IP. Wait for the window to clear.');
+  }
   if (!res.ok) throw new Error(`Login failed (${res.status}) — is the instance running, and seeded?`);
 
   const setCookies = res.headers.getSetCookie?.() || [];
@@ -126,6 +170,24 @@ async function login() {
   if (!csrf) throw new Error('Login issued no CSRF cookie — every write would 403');
 
   return { Cookie: cookies, 'X-CSRF-Token': csrf };
+}
+
+/**
+ * Renew the session in place.
+ *
+ * The token outlives a short script and not a long one. Seeding waits on real
+ * pipelines — one manuscript's conversion took 28 minutes to fail — and the
+ * session expired mid-run: the next submission's create returned 401, the run
+ * before it had already had its re-run refused as "Invalid token", and both
+ * cases were reported as ordinary refusals rather than as an expired login.
+ *
+ * Mutating the SAME object matters. Every caller passes `auth` by reference and
+ * reads it at fetch time, so replacing its contents updates every holder;
+ * returning a new object would leave the long-lived ones on the dead token.
+ */
+async function refresh(auth) {
+  Object.assign(auth, await login());
+  return auth;
 }
 
 function demoFiles(manuscriptId) {
@@ -183,10 +245,18 @@ async function advancePastKrt(auth, submissionId) {
   if (!res.ok) throw new Error(`advance failed (${res.status})`);
 }
 
-async function jobs(auth, submissionId) {
+async function jobs(auth, submissionId, renewed = false) {
   const res = await fetch(`${API_BASE}/api/submissions/${submissionId}/jobs`, {
     headers: auth
   });
+  // The token expires during long waits — one manuscript's conversion took 28
+  // minutes. Renew when the server says so, once, rather than on a timer: a
+  // timer spends logins whether or not any were needed, and the auth limiter
+  // allows ten per quarter hour.
+  if (res.status === 401 && !renewed) {
+    await refresh(auth);
+    return jobs(auth, submissionId, true);
+  }
   if (!res.ok) return [];
   return (await res.json()).jobs || [];
 }
@@ -234,21 +304,115 @@ async function waitForPipeline(auth, submissionId, { minutes = 14 } = {}) {
  * its dependants with it, which is the honest behaviour: a re-run detector
  * invalidates the consolidation built on top of it.
  */
-async function rerun(auth, submissionId, jobType) {
+async function rerun(auth, submissionId, jobType, renewed = false) {
   const res = await fetch(`${API_BASE}/api/submissions/${submissionId}/processes/restart`, {
     method: 'POST',
     headers: { ...auth, 'Content-Type': 'application/json' },
     body: JSON.stringify({ jobTypes: [jobType] })
   });
+  if (res.status === 401 && !renewed) {
+    await refresh(auth);
+    return rerun(auth, submissionId, jobType, true);
+  }
   if (res.ok) return { ok: true };
   const body = await res.json().catch(() => ({}));
   return { ok: false, why: body.error || `HTTP ${res.status}` };
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Breaking a step on purpose
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Make one external service unreachable, so a step fails for a REAL reason.
+ *
+ * The alternative — writing `failed` onto a job row — produces a demo that
+ * falls apart the moment anyone presses the button it exists to show: the logs
+ * describe a run that never happened, and Retry re-runs a step that was never
+ * broken. Blocking the host means the failure, the error message, the paused
+ * dependants and the retry are all genuine.
+ *
+ * `/etc/hosts` rather than the env, for two reasons. The env lives in `.env`,
+ * which this script has no business rewriting, and changing it needs a restart;
+ * a hosts entry takes effect on the next DNS lookup and is gone the moment it
+ * is removed. The entries are marked so the undo can find exactly its own work.
+ *
+ * NOTE: `sed -i` cannot do this. `/etc/hosts` is a bind mount, so the rename
+ * sed does behind the scenes fails with EBUSY and the file is left blocked.
+ */
+const HOSTS_MARK = '# asap-demo-seed';
+
+function blockHosts(hosts) {
+  // One append per host. Joining them with a newline inside a single quoted
+  // argument does NOT work: the escape survives into the shell as the two
+  // characters backslash-n, and the second host lands on the first one's line.
+  const cmd = hosts
+    .map((h) => `printf '%s\\n' ${JSON.stringify(`127.0.0.1 ${h} ${HOSTS_MARK}`)} >> /etc/hosts`)
+    .join(' && ');
+  execFileSync('docker', ['compose', 'exec', '-T', 'app', 'sh', '-c', cmd], { cwd: ROOT, stdio: 'pipe' });
+}
+
+function unblockHosts() {
+  // Rewrite in place — see the note above about EBUSY.
+  execFileSync('docker', ['compose', 'exec', '-T', 'app', 'sh', '-c',
+    `grep -v '${HOSTS_MARK}' /etc/hosts > /tmp/h.$$ && cat /tmp/h.$$ > /etc/hosts && rm -f /tmp/h.$$`],
+  { cwd: ROOT, stdio: 'pipe' });
+}
+
+/** What is still blocked, if anything — so a crash cannot leave the box broken. */
+function blockedHosts() {
+  const out = execFileSync('docker', ['compose', 'exec', '-T', 'app', 'sh', '-c',
+    `grep '${HOSTS_MARK}' /etc/hosts || true`], { cwd: ROOT, stdio: 'pipe' }).toString();
+  return out.split('\n').filter(Boolean);
+}
+
+/**
+ * Re-run one step with its service unreachable, then put the service back.
+ *
+ * Restarting a single step is what gives a clean demo: the rest of the pipeline
+ * keeps its good results, and exactly one module shows the state being
+ * demonstrated. Blocking for the whole original run would have failed every
+ * step that shares the service.
+ *
+ * The service is restored before anyone sees the page, so Retry SUCCEEDS — the
+ * point of the demo is the choice the interface offers, not a dead end.
+ */
+async function breakStep(auth, submissionId, spec) {
+  blockHosts(spec.hosts);
+  try {
+    const started = await rerun(auth, submissionId, spec.jobType);
+    if (!started.ok) return { ok: false, why: started.why };
+    await waitForPipeline(auth, submissionId, { minutes: 10 });
+  } finally {
+    unblockHosts();
+  }
+  process.stdout.write('\r');
+
+  const list = await jobs(auth, submissionId);
+  const target = list.find((j) => j.jobType === spec.jobType);
+  return {
+    ok: true,
+    status: target?.status,
+    outcome: target?.result?.service?.outcome?.state,
+    failReason: target?.result?.service?.outcome?.failReason
+  };
+}
+
 async function main() {
   const dryRun = process.argv.includes('--dry-run');
   const only = arg('--only');
-  const queue = PLAN.filter((p) => !only || p.key === only);
+  const attach = arg('--attach');
+  // Comma-separated, because the cases worth seeding together are rarely one.
+  const wanted = only ? only.split(',').map((k) => k.trim()).filter(Boolean) : null;
+  const queue = PLAN.filter((p) => !wanted || wanted.includes(p.key));
+  const unknown = (wanted || []).filter((k) => !PLAN.some((p) => p.key === k));
+  if (unknown.length) throw new Error(`unknown --only key(s): ${unknown.join(', ')}`);
+  // Attaching applies ONE entry's break to ONE existing submission; with a
+  // wider queue it would silently point every case at the same submission.
+  if (attach && queue.length !== 1) {
+    throw new Error('--attach needs exactly one --only key');
+  }
 
   console.log(`instance   ${API_BASE}`);
   console.log(`user       ${EMAIL}`);
@@ -273,12 +437,20 @@ async function main() {
     }
 
     console.log(`\n  ${entry.key} — ${entry.manuscript}`);
-    const submission = await createSubmission(auth, entry, files);
+
+    // --attach re-uses a submission a previous run created but could not finish
+    // breaking, rather than leaving a healthy duplicate behind.
+    const submission = attach
+      ? { id: attach }
+      : await createSubmission(auth, entry, files);
+    if (attach) console.log(`      attached to ${attach} (not created)`);
     console.log(`      created ${submission.id}${entry.pipelineId ? ` (${entry.pipelineId})` : ''}`);
 
-    await uploadPdf(auth, submission.id, files.pdf);
-    await advancePastKrt(auth, submission.id);
-    console.log('      pipeline started');
+    if (!attach) {
+      await uploadPdf(auth, submission.id, files.pdf);
+      await advancePastKrt(auth, submission.id);
+      console.log('      pipeline started');
+    }
 
     const finished = await waitForPipeline(auth, submission.id);
     const complete = finished.filter((j) => j.status === 'complete').length;
@@ -318,6 +490,27 @@ async function main() {
         const target = runs.find((j) => j.jobType === entry.rerunStep);
         console.log(`      ${entry.rerunStep} is now on run ${target?.runCount ?? '?'}`);
       }
+    }
+
+    if (entry.breakStep) {
+      const { jobType, hosts, expect } = entry.breakStep;
+      console.log(`      breaking ${jobType} — ${hosts.join(', ')} unreachable`);
+      const broke = await breakStep(auth, submission.id, entry.breakStep);
+
+      if (!broke.ok) {
+        console.log(`      re-run REFUSED: ${broke.why} — this case will not demo.`);
+      } else {
+        const got = broke.outcome || broke.status;
+        console.log(`      ${jobType} is now ${broke.status}`
+          + (broke.outcome ? ` / outcome ${broke.outcome}` : '')
+          + (broke.failReason ? ` (${broke.failReason})` : ''));
+        // Say so rather than let a case that did not break read as one that did.
+        const wanted = expect === 'partial' ? 'partial' : 'fail';
+        if (got !== wanted) {
+          console.log(`      NOTE: expected ${wanted}, got ${got} — check this page before demoing it.`);
+        }
+      }
+      console.log(`      services restored${blockedHosts().length ? ' — WARNING: /etc/hosts still has entries' : ''}`);
     }
 
     made.push({ ...entry, id: submission.id });
