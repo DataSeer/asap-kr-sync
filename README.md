@@ -66,7 +66,7 @@ See [Getting Started](./docs/getting-started.md) for full setup instructions.
 | [Database](./docs/database.md) | Schema, tables, columns, migrations |
 | [API Reference](./docs/api-reference.md) | All REST API endpoints organized by resource |
 | [Submission Workflow](./docs/submission-workflow.md) | Detailed 5-step workflow, user actions, conditions, all paths |
-| [KRT Validation Rules](./docs/krt-validation-rules.md) | What triggers an error / warning / silent pass on each KRT column, per-type identifier acceptance, and how errors gate "Continue" |
+| [KRT Validation Rules](./docs/krt-validation-rules.md) | What triggers an error / warning / silent pass on each KRT column; which identifier formats the app recognizes and which each resource type accepts (with a verified matrix); how errors gate "Continue" |
 | [KRT Editor](./docs/krt-editor.md) | Every feature of the table component — editing, quick actions, validation feedback, suggestion review, bulk operations, change visualisation, and what it deliberately does *not* do |
 | [Authentication](./docs/authentication.md) | JWT flow, Auth0 integration, roles, middleware, rate limiting |
 | [Background Jobs](./docs/pipeline-jobs.md) | Job queue, pipeline, workers, statuses, polling |

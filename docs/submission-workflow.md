@@ -148,7 +148,7 @@ flowchart TD
 
 Only RESOURCE TYPE errors hard-block Continue. Any other remaining errors (Resource Name, Source, Identifier,
 New/Reuse) are non-blocking: the user confirms via an acknowledge-and-continue modal and proceeds; they are handled
-downstream. Warnings never block. See [KRT Validation Rules](./krt-validation-rules.md#how-errors-gate-the-workflow).
+downstream. Warnings never block. See [KRT Validation Rules](./krt-validation-rules.md#1-how-validation-works).
 
 **Blocked reasons:**
 - "Upload or create a KRT before continuing" — no KRT exists
@@ -361,7 +361,7 @@ flowchart TD
 - "Fix N resource type error(s) in the KRT before continuing"
 
 As on Step 1, only RESOURCE TYPE errors hard-block; other KRT errors are non-blocking via the acknowledge-and-continue
-modal, and warnings never block. See [KRT Validation Rules](./krt-validation-rules.md#how-errors-gate-the-workflow).
+modal, and warnings never block. See [KRT Validation Rules](./krt-validation-rules.md#1-how-validation-works).
 
 **On Continue:** Updates status to `step_review`, navigates to ReviewView.
 
