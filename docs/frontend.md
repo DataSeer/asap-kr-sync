@@ -31,7 +31,7 @@ src/frontend/src/
 │       └── module-tables.css  The `.mtable` / `.mt-row-*` block row layout
 ├── components/
 │   ├── common/         Generic UI (NotificationContainer)
-│   ├── krt/            KRT editor (KRTEditor, KRTCellEditModal)
+│   ├── krt/            KRT editor (KRTEditor, KRTCellEditModal, ValidationRulesLink)
 │   ├── layout/         App shell (AppLayout, AppHeader, AppSidebar)
 │   ├── modules/        Module results pages: tables, viewers, shared row models
 │   └── submission/     Submission workflow components
@@ -299,6 +299,9 @@ A handful of admin views (notably `UsersView.vue`) call the `api` instance direc
   - **Bulk operations** — select-all-visible, then Approve selected (confirm modal at ≥5), Approve with Resource Type…, Reject selected, Edit column…, Merge…, Delete selected.
   - **Jump-to navigation** — the error / warning / suggestion counters scroll to the first occurrence.
 - **KRTCellEditModal** — modal for editing cells with longer content
+- **ValidationRulesLink** — "Validation rules ↗" link to `docs/krt-validation-rules.md` on GitHub, for the
+  branch this deployment runs (same `/config/source` lookup as `ModuleExplainer`). Shown in the editor's
+  summary bar and, with a section anchor, under identifier-format warnings in the cell modal.
 
 > `KRTEditor` serves **Steps 1 and 2** only. Step 3 (`ReviewView`) renders its own review-only diff
 > table. Full feature reference: [KRT Editor](./krt-editor.md).

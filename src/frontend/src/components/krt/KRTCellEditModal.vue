@@ -8,6 +8,7 @@
  * @component
  */
 import { ref, computed, nextTick, watch } from 'vue'
+import ValidationRulesLink from './ValidationRulesLink.vue'
 
 const props = defineProps({
   /** Whether the modal is visible */
@@ -80,6 +81,13 @@ const isCatalogIdentifiedType = computed(() => {
 // the app recognizes so the user can decide to keep the value as-is.
 const hasUnrecognizedIdentifier = computed(() =>
   props.issues.some(i => i.type === 'invalid_format' && i.severity === 'warning')
+)
+// Any advisory remark on the identifier's *format* ("not recognized", "not
+// typical for this type", "accession not persistent"): the per-type rules
+// behind it are documented, so point there rather than restating them here.
+const IDENTIFIER_FORMAT_ISSUE_TYPES = ['invalid_format', 'kind_not_accepted_for_type', 'accession_not_persistent']
+const hasIdentifierFormatIssue = computed(() =>
+  props.issues.some(i => IDENTIFIER_FORMAT_ISSUE_TYPES.includes(i.type))
 )
 const showIdHelp = ref(false)
 // Identifier formats the app recognizes (kept in sync with the backend
@@ -282,6 +290,12 @@ function confirmReject() {
             <!-- Warnings are advisory: reassure the user they can move on. -->
             <p v-if="!issues.some(i => i.severity === 'error')" class="modal-issues-note">
               Optional — you can leave this as-is and continue.
+              <template v-if="hasIdentifierFormatIssue">
+                <ValidationRulesLink
+                  anchor="4-which-identifiers-each-resource-type-accepts"
+                  label="Which identifiers are accepted for each resource type?"
+                />
+              </template>
             </p>
             <!-- Recognized-identifier reference (revealed by the (?) above) -->
             <div v-if="hasUnrecognizedIdentifier && showIdHelp" class="id-help-panel">
@@ -296,6 +310,12 @@ function confirmReject() {
               </ul>
               <p class="id-help-escape">
                 No identifier to provide? Use <strong>No identifier exists</strong> or <strong>Identifier pending</strong>.
+              </p>
+              <p class="id-help-escape">
+                <ValidationRulesLink
+                  anchor="3-identifier-kinds-the-app-recognizes"
+                  label="Full list of recognized formats, with examples"
+                />
               </p>
             </div>
           </div>
