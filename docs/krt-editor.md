@@ -192,6 +192,7 @@ for the full list of what the pipeline does silently.
 |---|---|
 | The editor itself | `src/frontend/src/components/krt/KRTEditor.vue` |
 | Cell edit modal | `src/frontend/src/components/krt/KRTCellEditModal.vue` |
+| "Validation rules ↗" link (summary bar, cell modal) | `src/frontend/src/components/krt/ValidationRulesLink.vue` |
 | Step 1 host + Quick Fixes panel | `src/frontend/src/views/submissions/KRTView.vue` |
 | Step 2 host (suggestions) | `src/frontend/src/views/submissions/PDFView.vue` |
 | Step 3 change view (own table, **not** `KRTEditor`) | `src/frontend/src/views/submissions/ReviewView.vue` |

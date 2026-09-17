@@ -9,6 +9,7 @@ import krtService from '@/services/krt.service'
 import suggestionService from '@/services/suggestion.service'
 import EvidenceContext from '@/components/common/EvidenceContext.vue'
 import KRTCellEditModal from './KRTCellEditModal.vue'
+import ValidationRulesLink from './ValidationRulesLink.vue'
 
 const props = defineProps({
   submissionId: {
@@ -1688,6 +1689,8 @@ defineExpose({
           <span class="stat-label">suggestions</span>
         </div>
         <span v-if="displaySummary.tabLabel" class="tab-label-badge">({{ displaySummary.tabLabel }})</span>
+        <!-- What the counts mean: the full rules live in the repo doc, one click away. -->
+        <ValidationRulesLink class="stats-rules-link" />
       </div>
       <div class="flex items-center space-x-2">
         <!-- Download KRT -->
@@ -3080,6 +3083,10 @@ defineExpose({
   font-weight: 500;
   color: #374151;
   margin-left: 0.25rem;
+}
+
+.stats-rules-link {
+  margin-left: 0.5rem;
 }
 
 .tab {
