@@ -61,6 +61,16 @@ const groups = computed(() => {
     .sort((a, b) => b.items.length - a.items.length)
 })
 
+/**
+ * Which detector made each correction — worth a column on the Generated KRT
+ * page, where they come from five modules, and pure repetition on a single
+ * detector's own page, where every row would say the same word.
+ */
+const showOrigin = computed(() => {
+  const origins = new Set(props.actions.map(a => a.jobType || a.origin || ''))
+  return origins.size > 1
+})
+
 const droppedCount = computed(() => props.actions.filter(a => a.outcome === 'dropped').length)
 const retypedCount = computed(() => props.actions.filter(a => a.outcome === 'retyped').length)
 
@@ -102,7 +112,7 @@ const summary = computed(() => {
             <span v-if="a.outcome === 'retyped'" class="curation-change">{{ a.from }} → {{ a.to }}</span>
             <span v-else-if="a.from" class="curation-change">was {{ a.from }}</span>
             <span v-if="a.identifier" class="curation-id" v-tooltip="a.identifier">{{ a.identifier }}</span>
-            <span v-if="a.jobType || a.origin" class="curation-origin">{{ a.jobType || a.origin }}</span>
+            <span v-if="showOrigin && (a.jobType || a.origin)" class="curation-origin">{{ a.jobType || a.origin }}</span>
           </li>
         </ul>
       </div>
