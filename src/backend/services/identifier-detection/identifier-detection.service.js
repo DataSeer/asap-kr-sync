@@ -388,7 +388,8 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     drop: false,
     label: 'identifier-scan'
   });
-  const items = dedupeKrtItems(groundedItems, 'identifier-scan');
+  const curationLog = [];
+  const items = dedupeKrtItems(groundedItems, 'identifier-scan', { curationLog });
 
   // Stats by relevance + category for the worker's job-summary panel.
   // Read from detectorMeta (canonical shape).
@@ -404,6 +405,12 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
   return {
     items,
     meta: {
+      // What candidate curation changed before dedup (retypes and drops we are
+      // certain of — see pdf-analysis/curate-candidates.service.js). Recorded so a
+      // run can say what it corrected rather than silently differing from the
+      // detector's raw output.
+      curated: curationLog.length,
+      curationLog,
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount: byRelevance.HIGH,

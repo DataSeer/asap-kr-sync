@@ -195,11 +195,18 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
 
   // ── Step 3: dedupe — this is where a tool found by both engines collapses
   //    into one row carrying both provenances.
-  const items = dedupeKrtItems(krtItems, 'software');
+  const curationLog = [];
+  const items = dedupeKrtItems(krtItems, 'software', { curationLog });
 
   return {
     items,
     meta: {
+      // What candidate curation changed before dedup (retypes and drops we are
+      // certain of — see pdf-analysis/curate-candidates.service.js). Recorded so a
+      // run can say what it corrected rather than silently differing from the
+      // detector's raw output.
+      curated: curationLog.length,
+      curationLog,
       rawMentionCount: rawMentions.length,
       uniqueCount: items.length,
       // Counted from the items' own provenance, not as a subtraction: the old

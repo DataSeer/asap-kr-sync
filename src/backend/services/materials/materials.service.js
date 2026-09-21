@@ -281,7 +281,8 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   await jobLogger?.saveRawResponse('evidence-grounding', { stats: evidenceStats, items: groundedItems });
 
   // ── Step 4: dedupe
-  const items = dedupeKrtItems(groundedItems, 'materials-gemini');
+  const curationLog = [];
+  const items = dedupeKrtItems(groundedItems, 'materials-gemini', { curationLog });
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 
@@ -303,6 +304,12 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
   return {
     items,
     meta: {
+      // What candidate curation changed before dedup (retypes and drops we are
+      // certain of — see pdf-analysis/curate-candidates.service.js). Recorded so a
+      // run can say what it corrected rather than silently differing from the
+      // detector's raw output.
+      curated: curationLog.length,
+      curationLog,
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount,
