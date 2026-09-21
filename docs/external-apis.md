@@ -303,8 +303,6 @@ Detects dataset mentions using a two-pass architecture: signal extraction via Py
 > pipeline and on the submission: `seeded/materials-detection.txt` when the author's KRT has materials to seed
 > with, `blind/materials-detection.txt` otherwise. It runs on **every** submission,
 > including ones with no author materials; the author's table enters one step later, at `krt_grounding`.
-> *(Until 2026-08 the prompt was seeded with the author's material rows and skipped entirely when there were
-> none, which made the KRT-less mode blind by construction.)*
 
 Detects lab material/reagent mentions in manuscript PDFs using Google Gemini. Follows the same pattern as datasets detection.
 
@@ -348,7 +346,7 @@ Detects protocol mentions in manuscript PDFs using Google Gemini. Follows the sa
 - `canonical_name`, `protocol_type` (EXPERIMENTAL, COMPUTATIONAL, etc.), `protocol_role` (NEW/REUSE)
 - `source`, `doi`, `url`, `krt_relevance`
 
-**Seeding:** the prompt's "Section 0" — the author's protocol rows as authoritative base records — is what `blind-v1` removes; under the default `seeded-v1` those rows are still passed as seeds. Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
+**Seeding:** the prompt's "Section 0" carries the author's protocol rows as authoritative base records. Recent prompt fixes: don't pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs and citations; exclude analyses; and improve new/reuse classification.
 
 **Prompt file:** `src/backend/data/prompts/protocols-detection.txt`
 

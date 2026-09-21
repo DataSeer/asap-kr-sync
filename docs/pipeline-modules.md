@@ -110,11 +110,10 @@ While a step is gated the jobs API reports `waitingReason` — `'krt_validation'
 processes panel turns that into a banner where the progress bar would be, rather than leaving the user to read
 "waiting" and wonder what stalled.
 
-> **Two pipelines, one engine.** `seeded-v1` (the default, every user) seeds `datasets`/`materials`/`protocols`
-> with the author's rows; `blind-v1` (admin-only, not enabled for anyone yet) shows the detectors nothing and
-> reconciles afterwards in `krt_grounding`. The measured trade-off is real in both directions: seeding suppresses
-> discovery by about 24%, while the blind arm confirms fewer author rows. Which prompts a run used is recorded on
-> the run itself — see §2.1f.
+> **Two pipelines, one engine.** `seeded-v1` is the pipeline the app runs: the `datasets`/`materials`/`protocols`
+> prompts carry the author's rows as seeds. `blind-v1` is an internal experiment, admin-only and enabled for
+> nobody, in which the detectors are shown no table. Which prompts a run used is recorded on the run itself —
+> see §2.1f.
 
 ---
 
@@ -681,7 +680,6 @@ working manuscript changes behaviour. It is a mitigation and not the fix — the
 failure returned nothing from 42 seeds, well inside a single batch — which is why the guard
 above exists regardless.
 
-Neither applies to a **blind** run: it is given no seeds, so it promises nothing about counts.
 
 ### 3.5 `materials_detection` — Lab materials *(cue-driven)*
 
@@ -704,9 +702,8 @@ Neither applies to a **blind** run: it is given no seeds, so it promises nothing
 - **Purpose:** detect experimental protocol mentions.
 - **Engine:** **Google Gemini** over the Markdown, with a **post-filter** that reclassifies purely computational
   / in-silico "protocols" as software (`isInSilicoProtocol`) — encoding an ASAP domain rule in code. Parses
-  defensively (fenced-code stripping, markdown-escape repair). The prompt's former "Section 0" — the author's own
-  protocol rows, injected as authoritative base records — is what `blind-v1` removes; under the default
-  `seeded-v1` the author's protocol rows are still passed as seeds (see §1). Recent prompt fixes: don't
+  defensively (fenced-code stripping, markdown-escape repair). The prompt's "Section 0" injects the author's own
+  protocol rows as authoritative base records (see §1). Recent prompt fixes: don't
   pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations;
   exclude analyses; and improve new/reuse classification.
 - **Depends on:** `markdown_convert`, **gated on `krt_curated`** (see §1). **Output:** `KrtEntry[]` (Protocol).
@@ -716,9 +713,7 @@ Neither applies to a **blind** run: it is given no seeds, so it promises nothing
 - **Demo:** `getDemoProtocolMentions(manuscriptId)`.
 - **Key files:** `services/protocols/protocols.service.js`, `config/protocols-detection-api.js`.
 
-> **`services/krt/author-krt-seeds.service.js` is production code, on the detection path.** An earlier revision of
-> this note claimed the opposite — that nothing called it any more and it survived only as eval scaffolding. That
-> was true for exactly as long as `blind-v1` was the only pipeline. Under the default `seeded-v1` it is loaded by
+> **`services/krt/author-krt-seeds.service.js` is production code, on the detection path.** It is loaded by
 > three strategies (`datasets/strategies/seeded.js`, `materials/strategies/seeded.js`,
 > `protocols/strategies/seeded.js`) plus `datasets.service.js`, and their prompts carry the author's rows.
 >
