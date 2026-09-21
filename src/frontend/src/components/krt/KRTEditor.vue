@@ -716,6 +716,23 @@ function startEdit(row, column, rowIndex) {
   showEditModal.value = true
 }
 
+/**
+ * The message for a failed cell write. The server's own error when it sent
+ * one ("Too many requests…", "Invalid token", a validation refusal), the
+ * generic line otherwise — a bare "Failed to update cell" hid which of those
+ * had happened.
+ * @param {Error} err
+ * @returns {string}
+ */
+function cellUpdateFailure(err) {
+  const detail = err?.response?.data?.error || err?.response?.data?.message
+  const status = err?.response?.status
+  if (detail) return `Failed to update cell: ${detail}`
+  if (status === 429) return 'Failed to update cell: too many requests — wait a moment and try again'
+  if (status === 401) return 'Failed to update cell: your session expired — please sign in again'
+  return 'Failed to update cell'
+}
+
 async function saveModalEdit() {
   if (!modalCell.value) return
 
@@ -724,7 +741,9 @@ async function saveModalEdit() {
     notificationStore.success('Cell updated')
     closeEditModal()
   } catch (error) {
-    notificationStore.error('Failed to update cell')
+    // Say what the server said: a rate limit or an expired session reads very
+    // differently from a validation refusal (ASAP could not tell, 2026-09).
+    notificationStore.error(cellUpdateFailure(error))
   }
 }
 
@@ -734,7 +753,9 @@ async function setQuickNoIdentifier(rowId, field) {
     await krtStore.updateCell(props.submissionId, rowId, field, 'No identifier exists')
     notificationStore.success('Set to "No identifier exists"')
   } catch (error) {
-    notificationStore.error('Failed to update cell')
+    // Say what the server said: a rate limit or an expired session reads very
+    // differently from a validation refusal (ASAP could not tell, 2026-09).
+    notificationStore.error(cellUpdateFailure(error))
   }
 }
 
@@ -744,7 +765,9 @@ async function setQuickIdentifierPending(rowId, field) {
     await krtStore.updateCell(props.submissionId, rowId, field, 'Identifier pending')
     notificationStore.success('Set to "Identifier pending"')
   } catch (error) {
-    notificationStore.error('Failed to update cell')
+    // Say what the server said: a rate limit or an expired session reads very
+    // differently from a validation refusal (ASAP could not tell, 2026-09).
+    notificationStore.error(cellUpdateFailure(error))
   }
 }
 
@@ -755,7 +778,9 @@ async function setQuickSourceNone(rowId, field) {
     await krtStore.updateCell(props.submissionId, rowId, field, 'None')
     notificationStore.success('Source set to "None"')
   } catch (error) {
-    notificationStore.error('Failed to update cell')
+    // Say what the server said: a rate limit or an expired session reads very
+    // differently from a validation refusal (ASAP could not tell, 2026-09).
+    notificationStore.error(cellUpdateFailure(error))
   }
 }
 
