@@ -15,7 +15,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { curateCandidates, curateOne, isLabMadeSolution } = require('./curate-candidates.service');
+const { curateCandidates, curateOne, isLabMadeSolution, DEFAULT_CURATION_POLICY } = require('./curate-candidates.service');
 const { dedupeKrtItems } = require('./dedupe-krt-items.service');
 
 /** A software candidate, so each case can change exactly one thing. */
@@ -254,4 +254,32 @@ test('dedupeKrtItems curates before merging, and reports what it did', () => {
 
 test('dedupeKrtItems still answers an empty list after curation removes everything', () => {
   assert.deepEqual(dedupeKrtItems([sw({ resourceName: 'protocols.io', identifier: 'https://www.protocols.io' })], 'test'), []);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Policy — a rule ASAP disagrees with can be turned off per pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a rule turned off in the pipeline policy does not fire', () => {
+  const input = [
+    sw({ resourceName: 'Custom FIJI macro', identifier: '10.17504/protocols.io.5jyl8xjzdv2w/v1' }),
+    sw({ resourceName: 'protocols.io', identifier: 'https://www.protocols.io' }),
+    sw({ resourceName: 'DNeasy Blood and Tissue kit', identifier: '', source: 'Qiagen' })
+  ];
+  const off = curateCandidates(input, 'software-lm', { protocolVenue: false, platforms: false });
+  assert.deepEqual(types(off.items), ['Software/code', 'Software/code', 'Critical commercial assay']);
+  assert.deepEqual(off.curationLog.map(a => a.rule), ['kit-is-not-software']);
+});
+
+test('an absent or partial policy still runs every other rule', () => {
+  const input = [sw({ resourceName: 'protocols.io', identifier: 'https://www.protocols.io' })];
+  for (const policy of [undefined, null, {}, 'nonsense', { kits: false }]) {
+    assert.deepEqual(curateCandidates(input, '', policy).items, [], `policy ${JSON.stringify(policy)}`);
+  }
+});
+
+test('the default policy is every rule', () => {
+  assert.deepEqual(DEFAULT_CURATION_POLICY, {
+    protocolVenue: true, platforms: true, kits: true, instruments: true, labSolutions: true
+  });
 });

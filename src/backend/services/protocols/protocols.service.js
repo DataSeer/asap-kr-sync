@@ -32,6 +32,7 @@ const { GoogleGenAI } = require('@google/genai');
 // set (the pure pipeline tests don't need the DB at all).
 const s3Service = require('../storage/s3.service');
 const protocolsConfig = require('../../config/protocols-detection-api');
+const { getPipeline } = require('../../config/pipelines');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
@@ -258,7 +259,7 @@ async function detectProtocolsForSubmission(submission, jobLogger) {
 
   // ── Step 4: dedupe
   const curationLog = [];
-  const items = dedupeKrtItems(groundedItems, 'protocols-gemini', { curationLog });
+  const items = dedupeKrtItems(groundedItems, 'protocols-gemini', { curationLog, curationPolicy: getPipeline(submission.pipelineId).curation });
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 

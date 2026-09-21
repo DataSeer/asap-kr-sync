@@ -30,6 +30,7 @@
 // the matching comment in protocols.service.js for the rationale.
 const s3Service = require('../storage/s3.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
+const { getPipeline } = require('../../config/pipelines');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const knownIdentifierIndex = require('./known-identifier-index.service');
@@ -389,7 +390,7 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     label: 'identifier-scan'
   });
   const curationLog = [];
-  const items = dedupeKrtItems(groundedItems, 'identifier-scan', { curationLog });
+  const items = dedupeKrtItems(groundedItems, 'identifier-scan', { curationLog, curationPolicy: getPipeline(submission.pipelineId).curation });
 
   // Stats by relevance + category for the worker's job-summary panel.
   // Read from detectorMeta (canonical shape).

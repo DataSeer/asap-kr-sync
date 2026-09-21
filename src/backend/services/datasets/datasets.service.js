@@ -27,6 +27,7 @@ const { GoogleGenAI } = require('@google/genai');
 const s3Service = require('../storage/s3.service');
 const langextractClient = require('./langextract-client.service');
 const datasetsConfig = require('../../config/datasets-detection-api');
+const { getPipeline } = require('../../config/pipelines');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
@@ -301,7 +302,7 @@ async function detectDatasetsForSubmission(submission, jobLogger) {
 
   // ── Step 4: dedupe
   const curationLog = [];
-  const items = dedupeKrtItems(groundedItems, 'datasets-gemini', { curationLog });
+  const items = dedupeKrtItems(groundedItems, 'datasets-gemini', { curationLog, curationPolicy: getPipeline(submission.pipelineId).curation });
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
   jobLogger?.log('consolidate_done', 'Consolidation complete', {

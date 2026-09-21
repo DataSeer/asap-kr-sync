@@ -40,6 +40,7 @@ const softciteClient = require('./softcite-client.service');
 const { dedupeKrtItems } = require('../pdf-analysis/dedupe-krt-items.service');
 const inputFreeze = require('../queue/input-freeze.service');
 const softciteConfig = require('../../config/softcite-api');
+const { getPipeline } = require('../../config/pipelines');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
@@ -196,7 +197,7 @@ async function detectSoftwareForSubmission(submission, jobLogger) {
   // ── Step 3: dedupe — this is where a tool found by both engines collapses
   //    into one row carrying both provenances.
   const curationLog = [];
-  const items = dedupeKrtItems(krtItems, 'software', { curationLog });
+  const items = dedupeKrtItems(krtItems, 'software', { curationLog, curationPolicy: getPipeline(submission.pipelineId).curation });
 
   return {
     items,

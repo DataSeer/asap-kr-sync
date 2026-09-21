@@ -114,6 +114,27 @@ const GENERIC_SOLUTION_NAMES = new Set([
 /** Types whose rows the solution rule may consider. */
 const SOLUTION_TYPES = new Set(['chemical, peptide, or recombinant protein', 'other', '']);
 
+/**
+ * Which rules run. Every rule is on by default; a pipeline turns one off in
+ * `config/pipelines.js` under `curation`, so a rule ASAP disagrees with can be
+ * disabled without a deploy and the eval harness can measure with and without
+ * it. An unknown pipeline, or one predating the key, gets all of them — the
+ * behaviour before the policy existed.
+ */
+const DEFAULT_CURATION_POLICY = Object.freeze({
+  protocolVenue: true,
+  platforms: true,
+  kits: true,
+  instruments: true,
+  labSolutions: true
+});
+
+/** Fill the gaps in a caller's policy with the defaults. */
+function resolvePolicy(policy) {
+  if (!policy || typeof policy !== 'object') return DEFAULT_CURATION_POLICY;
+  return { ...DEFAULT_CURATION_POLICY, ...policy };
+}
+
 const clean = (value) => String(value ?? '').trim();
 const lower = (value) => clean(value).toLowerCase();
 
@@ -142,9 +163,11 @@ function isLabMadeSolution(name) {
  * Apply the certain corrections to one item.
  *
  * @param {object} item - KrtEntry
+ * @param {object} [policy] - which rules run (see DEFAULT_CURATION_POLICY)
  * @returns {{ item: object|null, action: object|null }} `item: null` = drop
  */
-function curateOne(item) {
+function curateOne(item, policy) {
+  const rules = resolvePolicy(policy);
   const type = canonicalResourceType(item.resourceType);
   const typeKey = lower(type);
   const name = clean(item.resourceName);
@@ -156,7 +179,7 @@ function curateOne(item) {
   //    authors of both test manuscripts filed their FIJI-macro and
   //    CellProfiler-pipeline records as Protocol rows themselves, and listed
   //    the tools separately with their RRIDs.
-  if (identifier && typeKey !== 'protocol') {
+  if (rules.protocolVenue && identifier && typeKey !== 'protocol') {
     const inferred = inferSourceFromIdentifier(identifier);
     if (isProtocolVenueSource(inferred)) {
       return {
@@ -167,7 +190,7 @@ function curateOne(item) {
   }
 
   // 2. The platform itself is not a resource the study used.
-  if (PLATFORM_NAMES.has(lower(name)) && isBarePlatformIdentifier(identifier)) {
+  if (rules.platforms && PLATFORM_NAMES.has(lower(name)) && isBarePlatformIdentifier(identifier)) {
     return {
       item: null,
       action: { rule: 'platform-not-a-resource', outcome: 'dropped', from: type, resourceName: name, identifier, detail: 'the hosting platform, with no record identifier' }
@@ -178,13 +201,13 @@ function curateOne(item) {
   //    Software/code row: a detector that already typed these correctly needs
   //    no help, and "kit" in another type's name is that detector's business.
   if (typeKey === 'software/code') {
-    if (KIT_RE.test(name)) {
+    if (rules.kits && KIT_RE.test(name)) {
       return {
         item: { ...item, resourceType: 'Critical commercial assay' },
         action: { rule: 'kit-is-not-software', outcome: 'retyped', from: type, to: 'Critical commercial assay', resourceName: name, identifier }
       };
     }
-    if (INSTRUMENT_RE.test(name)) {
+    if (rules.instruments && INSTRUMENT_RE.test(name)) {
       return {
         item: { ...item, resourceType: 'Other' },
         action: { rule: 'instrument-is-not-software', outcome: 'retyped', from: type, to: 'Other', resourceName: name, identifier, detail: 'instrument or its bundled acquisition software' }
@@ -194,7 +217,7 @@ function curateOne(item) {
 
   // 4. Bench-made solutions with nothing to order them by. Kept when a
   //    supplier or a catalog number is present — that is a purchased reagent.
-  if (SOLUTION_TYPES.has(typeKey) && !identifier && !source && isLabMadeSolution(name)) {
+  if (rules.labSolutions && SOLUTION_TYPES.has(typeKey) && !identifier && !source && isLabMadeSolution(name)) {
     return {
       item: null,
       action: { rule: 'lab-made-solution', outcome: 'dropped', from: type, resourceName: name, detail: 'no source and no identifier — cannot pass KRT validation' }
@@ -211,16 +234,18 @@ function curateOne(item) {
  *
  * @param {object[]} items - KrtEntry[]
  * @param {string} [origin] - detector label, recorded on each log entry
+ * @param {object} [policy] - which rules run (see DEFAULT_CURATION_POLICY)
  * @returns {{ items: object[], curationLog: object[] }}
  */
-function curateCandidates(items = [], origin = '') {
+function curateCandidates(items = [], origin = '', policy) {
   if (!Array.isArray(items) || items.length === 0) return { items: [], curationLog: [] };
 
+  const rules = resolvePolicy(policy);
   const kept = [];
   const curationLog = [];
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
-    const { item: curated, action } = curateOne(item);
+    const { item: curated, action } = curateOne(item, rules);
     if (action) curationLog.push(origin ? { ...action, origin } : action);
     if (curated) kept.push(curated);
   }
@@ -229,6 +254,7 @@ function curateCandidates(items = [], origin = '') {
 
 module.exports = {
   curateCandidates,
+  DEFAULT_CURATION_POLICY,
   // Exposed for tests and for callers that want one item's verdict.
   curateOne,
   isLabMadeSolution,

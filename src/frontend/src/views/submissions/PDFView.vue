@@ -15,12 +15,12 @@ import suggestionService from '@/services/suggestion.service'
 import jobService from '@/services/job.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import EvidenceContext from '@/components/common/EvidenceContext.vue'
+import CurationPanel from '@/components/modules/CurationPanel.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import PipelinePanel from '@/components/submission/PipelinePanel.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
 import { krtFileBaseName } from '@/utils/submission'
-import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isFutureStepJob } from '@/composables'
 
@@ -29,11 +29,7 @@ const router = useRouter()
 const submissionStore = useSubmissionStore()
 const krtStore = useKRTStore()
 const notificationStore = useNotificationStore()
-const authStore = useAuthStore()
 const resourceTypesStore = useResourceTypesStore()
-
-// Used to gate the developer "re-validate" button on the KRT editor.
-const isAdmin = computed(() => authStore.effectiveRole === 'admin')
 
 const krtEditorRef = ref(null)
 const submissionHeaderRef = ref(null)
@@ -102,6 +98,15 @@ provide('jumpToSuggestions', scrollToSuggestions)
 
 // Derive analyzing state from job poller
 const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))
+
+// Corrections the app made to the detectors' candidates before they became
+// suggestions — retyped rows and removed ones. Surfaced here because this is
+// where the question is asked: a resource the manuscript plainly mentions can
+// be missing from the list below, and the reason should not require opening a
+// module page. PDF Analysis gathers every detector's log into its own.
+const curationActions = computed(
+  () => pdfAnalysisJob.value?.result?.data?.meta?.curationLog || []
+)
 
 // True while PDF analysis hasn't finished. Includes 'waiting' because
 // pdf_analysis often sits in that state while it queues on upstream
@@ -1337,6 +1342,13 @@ function scrollToFindingRow(finding) {
           </div>
         </div>
 
+        <!-- Why something the manuscript mentions may not be proposed below. -->
+        <CurationPanel
+          :actions="curationActions"
+          heading="Some candidates were corrected before you saw them"
+          class="mb-3"
+        />
+
         <!-- Filter tabs -->
         <div class="suggestion-tabs mb-3">
           <button
@@ -1675,7 +1687,6 @@ function scrollToFindingRow(finding) {
           ref="krtEditorRef"
           v-model="activeSuggestionTab"
           :submission-id="route.params.id"
-          :show-revalidate="isAdmin"
           :krt-file-url="krtFile?.s3Url"
           :download-name="krtFileBaseName(submission)"
           :active-suggestion-id="currentSuggestion?.id || null"

@@ -32,6 +32,7 @@ const { GoogleGenAI } = require('@google/genai');
 // the matching comment in protocols.service.js for the rationale.
 const s3Service = require('../storage/s3.service');
 const materialsConfig = require('../../config/materials-detection-api');
+const { getPipeline } = require('../../config/pipelines');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
 const { NotFoundError, ExternalServiceError } = require('../../utils/errors');
 const demoDataService = require('../demo-data.service');
@@ -282,7 +283,7 @@ async function detectMaterialsForSubmission(submission, jobLogger) {
 
   // ── Step 4: dedupe
   const curationLog = [];
-  const items = dedupeKrtItems(groundedItems, 'materials-gemini', { curationLog });
+  const items = dedupeKrtItems(groundedItems, 'materials-gemini', { curationLog, curationPolicy: getPipeline(submission.pipelineId).curation });
 
   const highRelevanceCount = items.filter(i => i.detectorMeta?.relevance === 'HIGH').length;
 

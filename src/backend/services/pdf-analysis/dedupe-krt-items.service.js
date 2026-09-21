@@ -44,13 +44,16 @@ const { curateCandidates } = require('./curate-candidates.service');
  * @param {object[]} [options.curationLog] - sink: every curation action is
  *   pushed here, so a caller can report what it changed. Keeps this function
  *   pure (no logging I/O of its own).
+ * @param {object} [options.curationPolicy] - which curation rules run, from
+ *   the submission's pipeline (`config/pipelines.js` → `curation`). Omitted =
+ *   every rule, which is what a caller without a submission should get.
  * @returns {object[]} KrtEntry[] with `mergedFrom` populated
  */
 
-function dedupeKrtItems(items, sourceLabel = 'detector', { curationLog } = {}) {
+function dedupeKrtItems(items, sourceLabel = 'detector', { curationLog, curationPolicy } = {}) {
   if (!Array.isArray(items) || items.length === 0) return [];
 
-  const curated = curateCandidates(items, sourceLabel);
+  const curated = curateCandidates(items, sourceLabel, curationPolicy);
   if (Array.isArray(curationLog)) curationLog.push(...curated.curationLog);
   if (curated.items.length === 0) return [];
 

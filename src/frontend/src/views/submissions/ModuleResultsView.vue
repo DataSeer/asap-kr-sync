@@ -30,6 +30,7 @@ import DasSuggestionsTable from '@/components/modules/DasSuggestionsTable.vue'
 import MarkdownViewer from '@/components/modules/MarkdownViewer.vue'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
+import CurationPanel from '@/components/modules/CurationPanel.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
 import { labelFor, hasModulePage } from '@/components/modules/module-meta'
@@ -586,6 +587,12 @@ const visibleDecisionRows = computed(() => {
 const isKrt = computed(() => jobType.value === 'pdf_analysis')
 const krtItems = computed(() => (isKrt.value ? job.value?.result?.data?.items || [] : []))
 const krtDropped = computed(() => job.value?.result?.data?.meta?.dropped || [])
+
+// What curation corrected. On a detector page these are this detector's own
+// corrections; on the Generated KRT page, every detector's, gathered by PDF
+// Analysis — so the full account of what did not reach the KRT as proposed
+// sits beside the candidates consolidation dropped.
+const curationActions = computed(() => job.value?.result?.data?.meta?.curationLog || [])
 const krtRows = computed(() => buildKrtRows(krtItems.value))
 
 /** Resource type of each group, taken from its first row. */
@@ -923,6 +930,13 @@ const tabConflicts = computed(() => {
         <GroundingTable v-if="jobType === 'krt_grounding'" :outcomes="visible" :policy="policy" :search="search" />
         <DetectionsTable v-else :items="visible" :search="search" :job-type="jobType" />
       </div>
+      <!-- Why a resource this module found is absent below, or reads as a
+           different type than the detector proposed. -->
+      <CurationPanel
+        :actions="curationActions"
+        heading="Corrected before merging"
+        class="mrv-curation"
+      />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
         :jobs="jobs || {}" :files="runDocuments"
@@ -996,6 +1010,13 @@ const tabConflicts = computed(() => {
         :items="krtItems"
         :dropped="krtDropped"
         :search="search"
+      />
+      <!-- The other half of "what did not make it in": corrections applied to
+           the detectors' candidates before they were ever merged. -->
+      <CurationPanel
+        :actions="curationActions"
+        heading="Corrected before merging, across all detectors"
+        class="mrv-curation"
       />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
@@ -1271,6 +1292,10 @@ const tabConflicts = computed(() => {
   padding-top: 0;
   padding-bottom: 0;
 }
+.mrv-curation {
+  margin-top: 1rem;
+}
+
 .mrv-table-frame {
   max-height: min(60vh, 40rem);
   overflow: auto;
