@@ -2692,7 +2692,12 @@ defineExpose({
       <div v-if="showRejectModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="cancelRejectModal">
         <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
           <h3 class="text-sm font-semibold text-gray-900 mb-2">Reject Suggestion</h3>
-          <p class="text-sm text-gray-500 mb-3">Why are you rejecting this suggestion? (optional)</p>
+          <!-- Wording set by ASAP (feedback 2026-09). -->
+          <p class="text-sm text-gray-500 mb-3">
+            Briefly state why you are rejecting this suggestion (optional). The text you enter is saved as part
+            of a KRT Assist session report. You can choose to share this report with ASAP Open Science Staff
+            to expedite their review.
+          </p>
           <textarea
             v-model="rejectReasonText"
             class="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"

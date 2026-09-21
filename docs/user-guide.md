@@ -13,7 +13,7 @@ KR-Sync is a web application designed to help you manage Key Resource Tables (KR
 3. [Step 1: Upload Your KRT](#step-1-krt-management)
 4. [Step 2: PDF Analysis](#step-2-pdf-analysis)
 5. [Step 3: Review Changes (view-only)](#step-3-final-review)
-6. [Step 4: Edit the Availability Statement](#step-4-edit-the-availability-statement)
+6. [Step 4: Availability Statement](#step-4-availability-statement)
 7. [Step 5: Generate Report](#step-5-report-generation)
 8. [Managing Your Submissions](#managing-your-submissions)
 9. [User Roles](#user-roles)
@@ -373,9 +373,10 @@ Once you've completed your review:
 
 ---
 
-## Step 4: Edit the Availability Statement
+## Step 4: Availability Statement
 
-This step focuses on the Data Availability Statement (DAS) that will be included in your manuscript.
+This step focuses on the Data Availability Statement (DAS) that will be included in your manuscript. (The app
+calls the extraction module "Statement Extraction" and its checks "Statement Suggestions".)
 
 ### What You See
 
@@ -385,9 +386,9 @@ This step focuses on the Data Availability Statement (DAS) that will be included
 
 ### What to Do
 
-1. Click **Edit** on the DAS card to refine the statement, then **Save**
-2. Work through each applicable recommendation — outside of this app, update your manuscript's DAS so each one is addressed (or consciously decline a recommendation that doesn't apply)
-3. Click **Continue** to proceed to report generation
+1. Confirm the Availability Statement — it is auto-extracted from the PDF; if it is incorrect, click **Edit**, insert the correct statement and **Save**
+2. Address the recommendations — update your Availability Statement until the app returns no errors or warnings, or until you believe it to be satisfactory, then add the updated statement to your manuscript (outside of this app)
+3. Click **Continue** to generate an updated KRT and KRT Assist Report to download
 
 The DAS lives on the submission record, so any future Excel report you generate uses the latest version.
 

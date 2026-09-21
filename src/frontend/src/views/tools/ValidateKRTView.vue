@@ -116,9 +116,11 @@ async function handleDrop(event) {
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 class="text-xl font-semibold text-gray-900">Validate a Key Resources Table</h1>
+          <!-- Wording set by ASAP (feedback 2026-09). -->
           <p class="mt-1 text-sm text-gray-600 max-w-2xl">
-            Upload a KRT to check its formatting, fix any errors or warnings inline, and download the
-            corrected file. Nothing is saved — this is a private sanity check that never creates a submission.
+            You may use this page to ensure your KRT is formatted according to ASAP KRT standards. This page
+            does not require a manuscript PDF. <strong>Nothing is saved.</strong> However, you can download your
+            updated KRT.
           </p>
         </div>
         <input

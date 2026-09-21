@@ -125,7 +125,7 @@ const currentStep = computed(() => statusToStep(props.submission?.status))
 const isComplete = computed(() => props.submission?.status === 'completed')
 
 // Step labels for navigation
-const stepLabels = ['Key Resources Table', 'Manuscript', 'Approve', 'Edit', 'Report']
+const stepLabels = ['Key Resources Table', 'Manuscript', 'Approve', 'Statement', 'Report']
 
 // Truncate title if longer than 100 characters
 const truncatedTitle = computed(() => {
@@ -412,6 +412,7 @@ async function downloadCurrentKRT(round) {
           :class="{ 'help-highlight-flash': helpHighlight }"
           class="help-panel-scroll-target"
           @close="showHelp = false"
+          @continue="canGoNext ? emit('go-next') : handleDisabledNextClick()"
         />
       </Transition>
     </div><!-- /.submission-header-rest -->

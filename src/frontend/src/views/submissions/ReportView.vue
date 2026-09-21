@@ -35,6 +35,12 @@ const helpItems = computed(() => [
     title: '[Optional] Validate updated manuscript',
     children: ['Click "Process updated manuscript" to run KRT Assist on your updated manuscript'],
     done: false
+  },
+  {
+    // Wording set by ASAP (feedback 2026-09); the hub name is a link.
+    title: 'Next steps: When ready, submit your updated KRT and manuscript PDF (with the updated Availability Statement) for an open science compliance review on the ASAP CRN Hub',
+    link: { text: 'ASAP CRN Hub', href: 'https://hub.asap.science/' },
+    done: false
   }
 ])
 

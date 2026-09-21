@@ -141,7 +141,7 @@ export const MODULE_EXPLAINERS = {
   },
 
   das_extraction: {
-    title: 'DAS Extraction',
+    title: 'Statement Extraction',
     doc: '32-das_extraction--data-availability-statement',
     summary: 'Locates the Data Availability Statement — the paragraph where the authors say where '
       + 'their data and code can be found — and extracts it verbatim.',
@@ -420,7 +420,7 @@ export const MODULE_EXPLAINERS = {
   },
 
   das_suggestions: {
-    title: 'DAS Suggestions',
+    title: 'Statement Suggestions',
     doc: '311-das_suggestions--availability-statement-check-das-suggestions',
     summary: 'Checks your Data/Code Availability Statement against the ASAP rulebook, using what '
       + 'your Key Resources Table says. It proposes wording; it never edits your statement.',

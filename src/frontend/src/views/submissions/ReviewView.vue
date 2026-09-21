@@ -27,7 +27,11 @@ const krtRows = computed(() => krtStore.rows)
 const helpItems = computed(() => [
   {
     title: 'Review the updated KRT',
-    children: ['Edits, additions, and deletions are highlighted in the table below'],
+    // Wording set by ASAP (feedback 2026-09).
+    children: [
+      'The table below shows all additions, edits, and deletions to your KRT',
+      'To further edit the KRT, select "Go back" in the top right corner'
+    ],
     done: false
   },
   {
@@ -858,7 +862,7 @@ function getCellClass(row, columnKey) {
           <thead>
             <tr>
               <th class="col-row-num">#</th>
-              <th v-if="showDetails && hasChanges" class="col-status">Status</th>
+              <th v-if="showDetails && hasChanges" class="col-status">Row Status</th>
               <th
                 v-for="col in columns"
                 :key="col.key"

@@ -444,14 +444,18 @@ that source, so a reviewer can isolate (for example) only the AI-driven changes.
 
 ---
 
-## Step 4: Edit Data/Code Availability Statement
+## Step 4: Availability Statement
 
-**View:** `AvailabilityView`
+**View:** `AvailabilityView` (page title "Step 4: Availability Statement", stepper label "Statement")
 **Status:** `step_as`
 
-**Instructions shown to the user:**
-1. Review recommendations — outside of this app, edit your manuscript to address each recommendation. Confirm that each recommendation has been addressed or rejected.
-2. Click "Continue" to generate a KRT Assist report
+**Instructions shown to the user** (wording set by ASAP, 2026-09):
+1. Confirm Availability Statement — the Availability Statement is auto-extracted from the PDF. If it is incorrect, insert the correct Availability Statement.
+2. Address recommendations — update your Availability Statement until the app returns no errors or warnings, or until you believe it to be satisfactory; add this updated Availability Statement to your manuscript (take this action outside of this app).
+3. Click "Continue" to generate an updated KRT and KRT Assist Report to download.
+
+In every step's instruction panel the word **"Continue"** is itself a button that does what the green
+Continue button in the header does (and shows the same blocked-reason tooltip when it is disabled).
 
 ### Data Availability Statement Editor
 

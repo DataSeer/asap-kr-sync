@@ -233,7 +233,7 @@ const canRestartJobs = computed(() => authStore.canRestartJobs)
 // MATERIALS_DETECTION_ENABLED=false in the env).
 const ALL_JOB_TYPES = [
   // Row 1
-  { type: 'das_extraction', label: 'DAS Extraction' },
+  { type: 'das_extraction', label: 'Statement Extraction' },
   { type: 'software_detection', label: 'Software Detection' },
   { type: 'markdown_convert', label: 'Markdown Convert' },
   { type: 'orcid_extraction', label: 'ORCID Extraction' },
@@ -675,9 +675,9 @@ function getResultSummary(job) {
 function getDataSummary(job, r) {
   switch (job.type) {
     case 'das_extraction': {
-      if (!r.status?.detected) return 'DAS not found'
+      if (!r.status?.detected) return 'Statement not found'
       const len = r.data?.das?.length || 0
-      return `DAS extracted (${len} chars)`
+      return `Statement extracted (${len} chars)`
     }
     case 'pdf_analysis': {
       // The worker stores the merged resource count under `counts.resources`
@@ -942,7 +942,7 @@ async function downloadRawResponse(jobType, responseName) {
                difference from the pipeline page reads as a scope rather than a
                missing step. -->
           <span
-            v-tooltip="'These are the ' + jobSummary.total + ' steps that read the manuscript and your Key Resources Table, which you handle on steps 1 and 2. The pipeline has one more — the Availability Statement check — and it runs on step 4, once you confirm your statement.'"
+            v-tooltip="'These are the ' + jobSummary.total + ' steps that read the manuscript and your Key Resources Table, which you handle on steps 1 and 2. The pipeline has one more — the Availability Statement check — and it runs on step 4, once you confirm your statement. While they run you can keep editing the table, but they read the version frozen when the round started: your edits reach the analysis on the next run.'"
             class="job-summary-badge job-status-complete"
           >
             {{ jobSummary.done }}/{{ jobSummary.total }} done
@@ -956,8 +956,10 @@ async function downloadRawResponse(jobType, responseName) {
           :style="{ width: `${etaProgress * 100}%` }"
         ></div>
       </div>
+      <!-- Wording set by ASAP (feedback 2026-09). The frozen-version caveat that
+           used to sit here lives in the steps tooltip above. -->
       <p v-if="anyInFlight && !paused" class="job-status-eta-hint">
-        You can keep editing the Key Resources Table, but these steps read the version frozen when the round started — your edits reach the analysis on the next run, not this one.
+        An AI-powered analysis is currently running. When it’s complete, you will receive suggested edits for your KRT.
       </p>
       <div class="job-status-eta-footer">
         <button type="button" class="job-status-eta-toggle" @click="toggleCollapsed">

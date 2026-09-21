@@ -1176,16 +1176,15 @@ function scrollToFindingRow(finding) {
     <div v-if="showAckModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
         <div class="px-6 py-4 border-b border-gray-200">
-          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved issues?</h3>
+          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved errors?</h3>
         </div>
         <div class="px-6 py-4">
+          <!-- Wording set by ASAP (feedback 2026-09); only the count is dynamic. -->
           <p class="text-sm text-gray-600">
-            The Key Resources Table still has
-            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>
-            (resource types are all valid). You can proceed, but these issues will remain flagged.
-          </p>
-          <p class="mt-2 text-xs text-gray-500">
-            We recommend fixing them, but you may continue if you know they are acceptable.
+            The Key Resources Table contains
+            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>.
+            We recommend you address these errors. Alternatively, you can proceed to the next step and the
+            errors will remain flagged.
           </p>
         </div>
         <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end space-x-3 rounded-b-lg">
@@ -1710,7 +1709,12 @@ function scrollToFindingRow(finding) {
       <div v-if="showRejectModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="cancelReject">
         <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
           <h3 class="text-sm font-semibold text-gray-900 mb-2">Reject Suggestion</h3>
-          <p class="text-sm text-gray-500 mb-3">Why are you rejecting this suggestion? (optional)</p>
+          <!-- Wording set by ASAP (feedback 2026-09). -->
+          <p class="text-sm text-gray-500 mb-3">
+            Briefly state why you are rejecting this suggestion (optional). The text you enter is saved as part
+            of a KRT Assist session report. You can choose to share this report with ASAP Open Science Staff
+            to expedite their review.
+          </p>
           <textarea
             v-model="rejectionReason"
             class="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
