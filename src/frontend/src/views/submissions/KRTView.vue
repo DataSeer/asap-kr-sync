@@ -432,7 +432,7 @@ async function handleValidate() {
       const parts = []
       if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`)
       if (warnings > 0) parts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`)
-      notificationStore.error(`Found ${parts.join(' and ')}. Fix errors before proceeding.`)
+      notificationStore.warning(`Found ${parts.join(' and ')} — see the table.`)
     }
   } catch (error) {
     notificationStore.error('Validation failed')

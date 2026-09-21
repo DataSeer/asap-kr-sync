@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import authService from '@/services/auth.service'
+import { useNotificationStore } from '@/stores/notification.store'
 
 export const useAuthStore = defineStore('auth', () => {
   // ── State ────────────────────────────────────────────────────────
@@ -213,6 +214,9 @@ export const useAuthStore = defineStore('auth', () => {
   function clearAuth() {
     user.value = null
     viewAsRole.value = null
+    // Toasts belong to the session that raised them: a stale "Found 15
+    // errors" must not greet the next login (or sit on the login page).
+    useNotificationStore().clear()
   }
 
   // Check if user can access a submission (uses effectiveRole for UI

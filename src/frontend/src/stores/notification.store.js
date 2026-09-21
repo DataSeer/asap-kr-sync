@@ -6,6 +6,18 @@ export const useNotificationStore = defineStore('notification', () => {
   const notifications = ref([])
   let nextId = 1
 
+  // How many toasts may stack. They sit over the bottom-right corner, where
+  // the Continue / Download buttons live: an unbounded pile of stale errors
+  // hid exactly the buttons users were trying to reach (ASAP feedback,
+  // 2026-09). Oldest goes first when the cap is hit.
+  const MAX_VISIBLE = 3
+
+  // Errors used to be sticky (duration 0) and outlived even a logout. They
+  // now fade like the others, only slower — long enough to read, not long
+  // enough to become furniture. Pass duration 0 explicitly for the rare
+  // failure that must stay until dismissed.
+  const ERROR_DURATION = 8000
+
   // Actions
   function show(message, type = 'info', duration = 5000) {
     const id = nextId++
@@ -17,6 +29,9 @@ export const useNotificationStore = defineStore('notification', () => {
     }
 
     notifications.value.push(notification)
+    while (notifications.value.length > MAX_VISIBLE) {
+      notifications.value.shift()
+    }
 
     if (duration > 0) {
       setTimeout(() => {
@@ -31,7 +46,7 @@ export const useNotificationStore = defineStore('notification', () => {
     return show(message, 'success', duration)
   }
 
-  function error(message, duration = 0) {
+  function error(message, duration = ERROR_DURATION) {
     return show(message, 'error', duration)
   }
 

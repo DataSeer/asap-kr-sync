@@ -84,7 +84,7 @@ async function handleRevalidate() {
     } else if (totalErrors === 0) {
       notificationStore.success(`Valid with ${totalWarnings} warning${totalWarnings > 1 ? 's' : ''}.`)
     } else {
-      notificationStore.error(`Found ${totalErrors} error${totalErrors > 1 ? 's' : ''} to fix.`)
+      notificationStore.warning(`Found ${totalErrors} error${totalErrors > 1 ? 's' : ''} — see the table.`)
     }
   } catch (error) {
     notificationStore.error('Validation failed')
