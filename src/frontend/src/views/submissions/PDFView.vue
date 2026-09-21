@@ -1430,6 +1430,14 @@ function scrollToFindingRow(finding) {
                cellState(): add_row → editable input; edit target → old
                strikethrough stacked above an editable input; edit context →
                KRT row's current value (read-only); delete → strikethrough. -->
+          <!-- Say which block is which. A PM read the manuscript quote below
+               as the proposed edit (ASAP feedback, 2026-09): the row is the
+               change, the quote is only where it comes from. -->
+          <p class="suggestion-block-heading">
+            {{ currentSuggestion.type === 'add_row' ? 'Suggested new row for your KRT'
+              : currentSuggestion.type === 'delete_row' ? 'Suggested removal from your KRT'
+              : 'Suggested change to your KRT — the highlighted cell is what would change' }}
+          </p>
           <div class="suggestion-row-scroll">
             <div class="suggestion-row" :class="{ 'suggestion-row-delete': currentSuggestion.type === 'delete_row' }">
               <!-- RESOURCE TYPE -->
@@ -1566,11 +1574,11 @@ function scrollToFindingRow(finding) {
                still renders, via the fallback below. -->
           <div v-if="currentSuggestion.evidence || currentSuggestion.description || currentSuggestion.detail" class="suggestion-evidence">
             <template v-if="currentSuggestion.evidence && typeof currentSuggestion.evidence === 'object'">
-              <span class="suggestion-evidence-label">Found in manuscript:</span>
+              <span class="suggestion-evidence-label">Where this comes from — quoted from your manuscript, not a change:</span>
               <EvidenceContext :evidence="currentSuggestion.evidence" />
             </template>
             <p v-else-if="currentSuggestion.evidence" class="suggestion-evidence-line">
-              <span class="suggestion-evidence-label">Found in manuscript:</span>
+              <span class="suggestion-evidence-label">Where this comes from — quoted from your manuscript, not a change:</span>
               <span class="italic">"{{ currentSuggestion.evidence }}"</span>
             </p>
             <p v-else-if="currentSuggestion.detail" class="suggestion-evidence-line italic">"{{ currentSuggestion.detail }}"</p>
@@ -2078,18 +2086,29 @@ function scrollToFindingRow(finding) {
   padding: 0.5rem 0.75rem;
   background: #fff;
   border: 1px solid #e5e7eb;
+  /* A quotation bar: reads as "cited", not "proposed". */
+  border-left: 3px solid #9ca3af;
   border-radius: 0.375rem;
   font-size: 0.75rem;
   color: #4b5563;
+}
+.suggestion-block-heading {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #6b7280;
 }
 .suggestion-evidence-line {
   margin: 0;
   color: #374151;
 }
 .suggestion-evidence-label {
+  display: block;
   font-weight: 600;
   color: #6b7280;
-  margin-right: 0.25rem;
+  margin-bottom: 0.25rem;
 }
 .suggestion-evidence-desc {
   margin: 0.25rem 0 0;
