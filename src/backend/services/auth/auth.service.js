@@ -27,6 +27,15 @@ const logger = require('../../utils/logger');
 // over response time.
 const DUMMY_PASSWORD_HASH = '$2b$12$' + 'X'.repeat(53);
 
+// A rotated-out refresh token presented again within this many ms of its
+// rotation is treated as the benign race it almost always is — two tabs of
+// one browser both answering a 401 with the same cookie — and merely
+// rejected. Beyond it, a replay is the compromise signal reuse detection
+// exists for, and the whole chain is wiped. Kept short: a stolen token
+// replayed inside the window still gets nothing, it just does not sign the
+// legitimate user out of everything (ASAP, 2026-09).
+const ROTATION_RACE_WINDOW_MS = 15 * 1000;
+
 /**
  * @param {string} token
  * @returns {string} hex sha256
@@ -205,6 +214,17 @@ async function refreshTokens(rawToken, ctx = {}) {
         reason: record.revokedReason
       });
       throw new AuthenticationError('Refresh token revoked, please log in again');
+    }
+
+    // A replay seconds after the rotation is a second tab losing a race, not
+    // an attacker: reject this request, keep the chain (the other tab already
+    // holds the successor, and the browser's cookie with it).
+    if (record.revokedReason === 'rotation'
+      && Date.now() - new Date(record.revokedAt).getTime() < ROTATION_RACE_WINDOW_MS) {
+      logger.info('Refresh rejected: token rotated moments ago (concurrent refresh)', {
+        userId: record.userId
+      });
+      throw new AuthenticationError('Refresh token already rotated');
     }
 
     await RefreshToken.update(

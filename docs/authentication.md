@@ -10,7 +10,7 @@ Since Phase 6 the local JWT pair is delivered via **HttpOnly cookies**, never vi
 
 | Cookie | Lifetime | Flags | Purpose |
 |-------|----------|-------|---------|
-| `asap_kr_session` | `JWT_EXPIRES_IN` (default `15m`) | `HttpOnly; Secure*; SameSite=Strict; Path=/api` | Access JWT. Read server-side on every authenticated request. |
+| `asap_kr_session` | `JWT_EXPIRES_IN` (default `1d`) | `HttpOnly; Secure*; SameSite=Strict; Path=/api` | Access JWT. Read server-side on every authenticated request. |
 | `asap_kr_refresh` | `JWT_REFRESH_EXPIRES_IN` (default `7d`) | `HttpOnly; Secure*; SameSite=Strict; Path=/api/auth/refresh` | Refresh JWT. Only travels to the refresh endpoint. |
 | `asap_kr_csrf` | matches the session cookie | `Secure*; SameSite=Strict; Path=/` (not HttpOnly — JS reads it) | CSRF double-submit token. SPA echoes it back in `X-CSRF-Token` on every state-changing request. |
 
@@ -45,7 +45,7 @@ Refresh tokens are also persisted in the `refresh_tokens` table (sha256 hash, ex
 
 | reason | written when | a later replay is |
 |---|---|---|
-| `rotation` | the token was rotated out by a normal refresh | **the compromise signal** — wipes the chain, forces a full re-login |
+| `rotation` | the token was rotated out by a normal refresh | **the compromise signal** — wipes the chain, forces a full re-login. **Exception:** a replay within 15 s of the rotation (`ROTATION_RACE_WINDOW_MS`) is the two-tabs-of-one-browser race, not theft: that request is rejected and nothing is wiped — the other tab already holds the successor, and so does the browser's cookie jar. |
 | `logout` | the user logged out (which revokes their whole chain) | benign — a stale tab on another device |
 | `reuse_detected` | the chain was already wiped by a previous replay | benign — the wipe already happened |
 | `account_deleted` | the account was anonymised | benign — there is no longer an account to compromise |

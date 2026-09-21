@@ -9,13 +9,15 @@ const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET environment variable is required');
 }
-// Short access token lifetime: silent refresh every ~15 min keeps freshness
-// (role/permission changes propagate within one window) and limits the
-// blast radius of a stolen access token. Refresh window of 7 days keeps
-// active users signed in across the work week without re-login, while
-// idle accounts re-authenticate weekly. Rotation invalidates stolen
-// refresh tokens.
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '15m';
+// Access token lifetime: one day. It was 15 minutes — silent refresh kept
+// that invisible in theory, but in practice the refresh path is where a
+// session dies (two tabs replaying one rotated token, a blip at Auth0), and
+// every death cost the user the action they had just taken (ASAP, 2026-09).
+// A day means at most one refresh per working day. The trade-off, accepted
+// by ASAP: a role change or an Auth0 block now propagates within a day
+// rather than ~15 min. Refresh window of 7 days keeps active users signed
+// in across the work week; rotation invalidates stolen refresh tokens.
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1d';
 const JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
 
 /**

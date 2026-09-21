@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { useAuthStore } from '@/stores/auth.store'
 import router from '@/router'
+import { refreshSession, isDefinitiveRefusal, reconnecting } from '@/services/session-reconnect'
 
 // ── Cookie-based auth (Phase 6) ────────────────────────────────────
 //
@@ -32,9 +33,30 @@ const api = axios.create({
   }
 })
 
-// Single in-flight refresh promise so two parallel 401s issue ONE
-// /auth/refresh call and both retry against the same new session.
-let refreshPromise = null
+// A request that never reached the server (network drop, API restart) is
+// retried a few times before it fails. Uploads are excluded: a multipart
+// body is not safely replayable. Backoff stays short — this covers a blip,
+// not an outage.
+const NETWORK_RETRY_DELAYS_MS = [1000, 3000, 8000]
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function isNetworkFailure(error) {
+  return !error.response && (error.code === 'ERR_NETWORK' || error.code === 'ECONNABORTED' || error.message === 'Network Error')
+}
+
+function isMultipartBody(data) {
+  // Duck-typed on purpose: the FormData a component builds and the one this
+  // module's global names can be different constructors (test runtimes,
+  // iframes), and a multipart body must never be replayed blind.
+  return !!data && typeof data === 'object'
+    && typeof data.append === 'function' && typeof data.getAll === 'function'
+}
+
+function isReplayable(config) {
+  if (!config) return false
+  if (isMultipartBody(config.data)) return false
+  return !String(config.url || '').includes('/auth/')
+}
 
 // Request interceptor — inject CSRF token on state-changing requests.
 // (Auth itself rides on the cookies, no header needed.)
@@ -52,7 +74,16 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
-// Response interceptor — handle 401s by attempting a single refresh.
+// Response interceptor — keep the session alive across a 401 and a blip.
+//
+// A 401 on an ordinary request means the access token expired: refresh the
+// session (one refresh for every request that hit it, across tabs — see
+// session-reconnect.js) and replay the request. Only a definitive refusal
+// of the refresh itself sends the user to the login page; a refresh that
+// failed for a transient reason leaves them where they are, still signed
+// in as far as the app knows, and the next action tries again (ASAP,
+// 2026-09: "manage the disconnect silently, apply the changes once the app
+// has reconnected").
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -71,24 +102,21 @@ api.interceptors.response.use(
     ) {
       originalRequest._retry = true
 
-      const authStore = useAuthStore()
       try {
-        // De-dupe parallel refresh attempts: only the first 401 actually
-        // hits /auth/refresh; the rest await the same promise.
-        if (!refreshPromise) {
-          refreshPromise = authStore.refreshAccessToken()
-            .finally(() => { refreshPromise = null })
-        }
-        await refreshPromise
-
+        await refreshSession()
         // Cookies are already updated on the response — just retry. No
         // header rewriting needed (auth travels on the cookie now).
         return api(originalRequest)
       } catch (refreshError) {
-        // Refresh failed — drop user state and bounce to login, keeping the
+        if (!isDefinitiveRefusal(refreshError)) {
+          // Transient: the session may well be fine. Fail this request
+          // without touching auth state; the next action retries.
+          return Promise.reject(refreshError)
+        }
+        // Refused — drop user state and bounce to login, keeping the
         // current location so login can return the user where they were
         // (mirrors the router guard's redirect handling).
-        authStore.clearAuth()
+        useAuthStore().clearAuth()
         router.push({
           name: 'login',
           query: { redirect: router.currentRoute.value.fullPath }
@@ -97,8 +125,33 @@ api.interceptors.response.use(
       }
     }
 
+    // Never reached the server: retry with backoff while the shell says
+    // "Reconnecting…". A write the server did process but whose response
+    // was lost is replayed too — the batch cell update is idempotent and
+    // the suggestion endpoints refuse a double accept, so the cost is a
+    // refused retry, not a duplicate.
+    if (isNetworkFailure(error) && isReplayable(originalRequest)) {
+      const attempt = originalRequest._networkRetries || 0
+      if (attempt < NETWORK_RETRY_DELAYS_MS.length) {
+        originalRequest._networkRetries = attempt + 1
+        reconnecting.value = true
+        await sleep(NETWORK_RETRY_DELAYS_MS[attempt])
+        try {
+          const response = await api(originalRequest)
+          reconnecting.value = false
+          return response
+        } catch (retryError) {
+          if (!isNetworkFailure(retryError)) reconnecting.value = false
+          return Promise.reject(retryError)
+        }
+      }
+      reconnecting.value = false
+    }
+
     return Promise.reject(error)
   }
 )
 
 export default api
+// For tests: the replay predicate, without driving a request through axios.
+export { isReplayable }
