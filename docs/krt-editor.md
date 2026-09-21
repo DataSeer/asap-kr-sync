@@ -138,12 +138,19 @@ Select suggestions or rows via checkboxes (including **select all visible**), th
 
 **A separate table component**, not `KRTEditor`. Review-only — no editing, no search, no bulk actions:
 
-- **Green rows** — newly added · **Blue rows** — updated cells · **Red rows** — deleted
-- **Source tags** on each change — `AI` (accepted AI suggestion), `Val` (validation), `User` (manual edit)
-- **"Show changes" toggle** — ON shows the colour-coded diff, OFF shows the final data only
-- **Clickable legend** — click the `AI` / `Val` / `User` legend entries to **hide or show changes from
-  that source**, so you can isolate e.g. only what the AI changed
+- **One colour system, the row's status** — **green** rows added · **blue** rows updated · **red** rows
+  deleted. Within an updated row the edited cells carry a dotted underline and a `?` marker (click for
+  history); they get no second colour of their own.
+- **"Row Status" column** — the status badge plus an uncoloured **source tag**: `AI` (accepted AI
+  suggestion), `Auto-fix` (a change the validator applied on its own, e.g. an identifier moved out of
+  Additional Information), `User` (manual edit)
+- **"Show changes" toggle** — ON shows the diff, OFF shows the final data only
+- **Clickable legend** — click the `AI` / `Auto-fix` / `User` legend entries to **hide or show changes
+  from that source**, so you can isolate e.g. only what the AI changed
 - **Filter tabs** — by resource type, as elsewhere
+- **Row order** — the same as in the editor on Steps 1 and 2 (`compareRowsByResourceType` in the
+  resource-types store: tab group, then configured type order, ties in submission order), in both the
+  changes view and the final view; deleted rows follow the live rows of their type
 - **Change history** — click any changed cell for the original value (struck through), the final
   value, and the full history with source badge, user and timestamp
 - **Change statistics card** — cells updated / rows added / rows removed, split by origin

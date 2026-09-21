@@ -329,12 +329,7 @@ function getContributingSources(suggestion) {
 // and V8's Array.prototype.sort is stable since Node 12, so equal-keyed rows
 // keep their original relative position automatically.
 function defaultSort(a, b) {
-  const groupA = resourceTypesStore.getGroupSortOrder(a['RESOURCE TYPE'])
-  const groupB = resourceTypesStore.getGroupSortOrder(b['RESOURCE TYPE'])
-  if (groupA !== groupB) return groupA - groupB
-  const typeA = resourceTypesStore.getTypeSortOrder(a['RESOURCE TYPE'])
-  const typeB = resourceTypesStore.getTypeSortOrder(b['RESOURCE TYPE'])
-  return typeA - typeB
+  return resourceTypesStore.compareRowsByResourceType(a, b)
 }
 
 // Filtered + ordered rows. Separation of concerns (#16): the TABS filter by
