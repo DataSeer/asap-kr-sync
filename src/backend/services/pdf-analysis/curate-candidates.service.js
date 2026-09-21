@@ -111,6 +111,50 @@ const GENERIC_SOLUTION_NAMES = new Set([
   'elution', 'storage', 'reaction', 'binding'
 ]);
 
+/**
+ * Protocol venues whose identifiers are protocol-EXCLUSIVE: a DOI or URL there
+ * can only be a deposited protocol. The rest of `PROTOCOL_VENUE_SOURCES` are
+ * JOURNALS, and a journal DOI is a citation — it can perfectly well be the
+ * paper describing a piece of software. Measured on the demo corpus: CellPhoneDB
+ * cites `10.1038/s41596-020-0292-x`, its own Nature Protocols paper, and
+ * retyping it to Protocol on that basis was wrong. For a journal venue the row
+ * must also NAME a protocol (or the venue itself) before it is retyped.
+ */
+const PROTOCOL_PLATFORM_VENUES = new Set(['protocols.io', 'Protocol Exchange']);
+
+/** A row that calls itself a protocol. */
+const PROTOCOL_NAME_RE = /\b(protocol|procedure|methods?|workflow|pipeline|sop)\b/i;
+
+/**
+ * Rows named after the venue rather than after a resource — what a detector
+ * produces when it has a protocol DOI and no better name ("Journal of
+ * Visualized Experiments", "STAR Protocols"). Long forms included because
+ * `inferSourceFromIdentifier` answers with the canonical short name (`JoVE`),
+ * which does not match what the model wrote.
+ */
+const PROTOCOL_VENUE_NAMES = new Set([
+  'protocols.io', 'protocols io', 'protocol exchange',
+  'jove', 'journal of visualized experiments',
+  'star protocols', 'bio-protocol', 'bio protocol', 'methodsx',
+  'current protocols', 'cold spring harbor protocols', 'csh protocols',
+  'nature protocols'
+]);
+
+/**
+ * An identifier that names the resource ITSELF, so a protocol link sitting
+ * beside it is context rather than identity. `RRID:SCR_007358 ; …
+ * cellprofiler.org … ; … protocols.io/…` is CellProfiler — software with a
+ * published pipeline — not a protocol.
+ */
+const SELF_IDENTITY_RE = /\bRRID:\s*[A-Za-z]+_|\bSCR_\d/i;
+
+/**
+ * Types the protocol-venue retype may touch. A Dataset row carrying a
+ * protocols.io link comes from the datasets detector, which knows more about
+ * whether it is a dataset than this rule does; lab-material types likewise.
+ */
+const PROTOCOL_RETYPE_TYPES = new Set(['software/code', 'other', '']);
+
 /** Types whose rows the solution rule may consider. */
 const SOLUTION_TYPES = new Set(['chemical, peptide, or recombinant protein', 'other', '']);
 
@@ -179,9 +223,15 @@ function curateOne(item, policy) {
   //    authors of both test manuscripts filed their FIJI-macro and
   //    CellProfiler-pipeline records as Protocol rows themselves, and listed
   //    the tools separately with their RRIDs.
-  if (rules.protocolVenue && identifier && typeKey !== 'protocol') {
+  if (rules.protocolVenue && identifier
+    && PROTOCOL_RETYPE_TYPES.has(typeKey)
+    && !SELF_IDENTITY_RE.test(identifier)) {
     const inferred = inferSourceFromIdentifier(identifier);
-    if (isProtocolVenueSource(inferred)) {
+    const exclusive = PROTOCOL_PLATFORM_VENUES.has(inferred);
+    const namesAProtocol = PROTOCOL_NAME_RE.test(name)
+      || PROTOCOL_VENUE_NAMES.has(lower(name))
+      || lower(name) === lower(inferred);
+    if (isProtocolVenueSource(inferred) && (exclusive || namesAProtocol)) {
       return {
         item: { ...item, resourceType: 'Protocol' },
         action: { rule: 'protocol-venue-identifier', outcome: 'retyped', from: type, to: 'Protocol', resourceName: name, identifier, detail: `identifier resolves to ${inferred}` }

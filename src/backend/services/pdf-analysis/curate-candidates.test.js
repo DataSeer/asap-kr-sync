@@ -283,3 +283,67 @@ test('the default policy is every rule', () => {
     protocolVenue: true, platforms: true, kits: true, instruments: true, labSolutions: true
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Where the protocol-venue rule must NOT fire — all three found by measuring
+// the rule against six demo manuscripts before it shipped
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('software keeps its type when the row carries its own RRID', () => {
+  // CellProfiler with a published pipeline on protocols.io (RE2-020529-009).
+  // The RRID identifies the software; the protocol link is context.
+  const { items, curationLog } = only([
+    sw({
+      resourceName: 'CellProfiler Image Analysis Software',
+      identifier: 'RRID:SCR_007358 ; https://cellprofiler.org/published-pipelines ; https://dx.doi.org/10.17504/protocols.io.3byl4bpo8vo5/v1',
+      source: 'CellProfiler'
+    })
+  ]);
+  assert.deepEqual(types(items), ['Software/code']);
+  assert.equal(curationLog.length, 0);
+});
+
+test('a tool whose paper is in a protocols journal keeps its type', () => {
+  // CellPhoneDB cites its own Nature Protocols paper (DH1-000529-005). A
+  // journal DOI is a citation — it can name software as easily as a protocol.
+  const { items, curationLog } = only([
+    sw({ resourceName: 'CellPhoneDB', identifier: 'https://doi.org/10.1038/s41596-020-0292-x', source: '' })
+  ]);
+  assert.deepEqual(types(items), ['Software/code']);
+  assert.equal(curationLog.length, 0);
+});
+
+test('a journal-venue DOI still retypes a row that names a protocol', () => {
+  const { items } = only([
+    sw({ resourceName: 'Journal of Visualized Experiments', identifier: 'DOI: 10.3791/57280' }),
+    sw({ resourceName: 'Immunostaining procedure', identifier: 'DOI: 10.1016/j.xpro.2021.100372' })
+  ]);
+  assert.deepEqual(types(items), ['Protocol', 'Protocol'])
+});
+
+test('a Dataset row is left to the datasets detector', () => {
+  // DH1-000529-005: a reference-mapping dataset whose only link is a
+  // protocols.io DOI. The detector that produced it knows more than this rule.
+  const { items, curationLog } = only([
+    { resourceType: 'Dataset', resourceName: 'PBMC/CSF single-cell RNAseq CD4+ T cell reference mapping',
+      identifier: '10.17504/protocols.io.q26g7mqj1gwz/v1', source: 'protocols.io', newReuse: 'reuse' }
+  ]);
+  assert.deepEqual(types(items), ['Dataset']);
+  assert.equal(curationLog.length, 0);
+});
+
+test('lab materials are never retyped by the protocol rule either', () => {
+  const { curationLog } = only([
+    { resourceType: 'Antibody', resourceName: 'anti-TagFP', identifier: '10.17504/protocols.io.abc', source: '', newReuse: 'reuse' }
+  ]);
+  assert.equal(curationLog.length, 0);
+});
+
+test('the plain protocols.io cases still fire', () => {
+  const { items } = only([
+    sw({ resourceName: 'protocols.io', identifier: 'dx.doi.org/10.17504/protocols.io.5qpvo36xx' }),
+    sw({ resourceName: 'Custom MEF generation, maintenance, and treatment protocol', identifier: 'dx.doi.org/10.17504/protocols.io.bxmypk7w' }),
+    { resourceType: 'Other', resourceName: 'Odyssey imaging workflow', identifier: '10.17504/protocols.io.xyz', source: '', newReuse: 'reuse' }
+  ]);
+  assert.deepEqual(types(items), ['Protocol', 'Protocol', 'Protocol']);
+});
