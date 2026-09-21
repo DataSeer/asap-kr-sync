@@ -26,6 +26,7 @@ const {
   validateIdentifierValues,
   validateNewReuse,
   normalizeResourceType,
+  canonicalizeResourceType,
   DEFAULT_RESOURCE_TYPES
 } = require('./validator.service');
 
@@ -285,4 +286,29 @@ test('no rule ever reports the same problem twice on one row', () => {
 test('the identifier rules do not fire on the phrases that opt out of them', () => {
   const found = validateRowValues(good({ source: 'protocols.io', resourceType: 'Protocol', identifier: 'No identifier exists' }));
   assert.equal(types(found).filter((t) => t.startsWith('invalid') || t.includes('protocols')).length, 0);
+});
+
+test('"Other" never gets a remark about its identifier format', () => {
+  // The catch-all type: tools, instruments, anything without a registry. Its
+  // identifiers are varied by nature, so a "not typical" flag there is noise
+  // (ASAP, 2026-09). The required / N/A rules still apply.
+  for (const identifier of ['EMDB: 55203', 'GSE12345', 'internal-ref-42', 'P04637', '144-55-8']) {
+    assert.deepEqual(
+      validateIdentifierValues({ identifier, resourceType: 'Other' }), [],
+      `${identifier} must pass silently for Other`
+    );
+  }
+  assert.equal(errors(validateIdentifierValues({ identifier: '', resourceType: 'Other' }))[0].errorType, 'required');
+  assert.equal(errors(validateIdentifierValues({ identifier: 'N/A', resourceType: 'Other' }))[0].errorType, 'na_not_allowed');
+  // The synonym spelling resolves to Other too.
+  assert.deepEqual(validateIdentifierValues({ identifier: 'GSE12345', resourceType: 'Tools' }), []);
+});
+
+test('canonicalizeResourceType fixes case only', () => {
+  assert.equal(canonicalizeResourceType('other'), 'Other');
+  assert.equal(canonicalizeResourceType('  DATASET '), 'Dataset');
+  assert.equal(canonicalizeResourceType('Plasmid'), null);
+  assert.equal(canonicalizeResourceType(''), null);
+  assert.equal(canonicalizeResourceType(undefined), null);
+  assert.equal(canonicalizeResourceType('custom', ['Custom']), 'Custom');
 });

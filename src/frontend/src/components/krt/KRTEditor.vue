@@ -20,10 +20,6 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
-  showRevalidate: {
-    type: Boolean,
-    default: false
-  },
   krtFileUrl: {
     type: String,
     default: ''
@@ -65,7 +61,6 @@ const emit = defineEmits([
   'suggestion-accepted',
   'suggestion-rejected',
   'scroll-to-suggestions',
-  'revalidate',
   'update:modelValue',
   'select-suggestion'
 ])
@@ -1724,20 +1719,8 @@ defineExpose({
             </button>
           </div>
         </div>
-        <!-- Re-validate -->
-        <button
-          v-if="showRevalidate && !readonly"
-          :disabled="loading"
-          class="btn-secondary text-sm inline-flex items-center"
-          v-tooltip="'Re-validate KRT'"
-          @click="emit('revalidate')"
-        >
-          <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          <span v-if="loading">Validating...</span>
-          <span v-else>Re-validate</span>
-        </button>
+        <!-- No "Re-validate" button: validation runs after every edit, so the
+             button did nothing visible (ASAP feedback, 2026-09). -->
         <!-- Add Row -->
         <button
           v-if="!readonly"

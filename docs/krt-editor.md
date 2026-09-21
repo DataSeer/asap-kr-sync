@@ -59,8 +59,8 @@ and 2**. It is the *same component* on both, with different capabilities switche
 
 ## 3. Validation feedback
 
-Validation runs automatically after upload and after every edit; a manual **Re-validate KRT** button
-is also available.
+Validation runs automatically after upload and after every edit, so there is no manual "Re-validate"
+button (it was removed in September 2026 — it did nothing the automatic run had not already done).
 
 - **Cell-level** — the offending cell is highlighted; hovering shows the message and its suggestion.
 - **Row-level** — rows carry an issue icon summarising which columns have errors vs warnings.

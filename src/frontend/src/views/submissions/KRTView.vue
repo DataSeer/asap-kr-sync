@@ -418,26 +418,6 @@ async function handlePdfUpload(event) {
   }
 }
 
-async function handleValidate() {
-  try {
-    await krtStore.validate(route.params.id)
-    const errors = summary.value.totalErrors
-    const warnings = summary.value.totalWarnings
-
-    if (errors === 0 && warnings === 0) {
-      notificationStore.success('Key Resources Table is valid! You can proceed to Step 2.')
-    } else if (errors === 0 && warnings > 0) {
-      notificationStore.success(`Key Resources Table is valid with ${warnings} warning${warnings > 1 ? 's' : ''}. You can proceed to Step 2.`)
-    } else {
-      const parts = []
-      if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`)
-      if (warnings > 0) parts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`)
-      notificationStore.warning(`Found ${parts.join(' and ')} — see the table.`)
-    }
-  } catch (error) {
-    notificationStore.error('Validation failed')
-  }
-}
 
 async function handleNext() {
   try {
@@ -943,11 +923,9 @@ function scrollToFirstWarning() {
       <KRTEditor
         ref="krtEditorRef"
         :submission-id="route.params.id"
-        :show-revalidate="true"
         :show-suggestions="false"
         :krt-file-url="krtFile?.s3Url"
         :download-name="submission?.title || submission?.manuscriptId || ''"
-        @revalidate="handleValidate"
       />
     </div>
   </div>

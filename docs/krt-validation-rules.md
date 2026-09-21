@@ -51,7 +51,9 @@ flowchart TD
     D1 -- something recognized,<br/>but not accepted for this type --> W1([Warning: found in Additional Information])
     D1 -- no, row is Optional --> OK1
     D1 -- no --> E2([Error: Identifier is required])
-    D -- no --> F[Detect every identifier kind<br/>present in the cell — §3]
+    D -- no --> O{Resource type is Other?}
+    O -- yes --> OK2([Silent])
+    O -- no --> F[Detect every identifier kind<br/>present in the cell — §3]
     F --> G{At least one detected kind<br/>accepted for this RESOURCE TYPE? — §4}
     G -- yes --> OK2([Silent])
     G -- nothing detected --> H{Chemical row and<br/>compact single-token code?}
@@ -82,7 +84,7 @@ set is the 14 types in [§4](#4-which-identifiers-each-resource-type-accepts)).
 | Empty / whitespace | **Error** — "Resource type is required" |
 | N/A value | **Error** — "…(N/A is not allowed)" |
 | Exact canonical type | Silent |
-| Wrong casing (`antibody`) | **Error**, one-click fixable → "Use 'Antibody'" |
+| Wrong casing (`antibody`, `OTHER`) | Silently rewritten to the canonical spelling on import (see [§8](#8-import-time-normalizations)); if one still reaches validation, **Error** with a one-click fix |
 | Recognized synonym or plural (`Chemicals`, `Plasmid`, `Tools`…) — see [§7](#recognized-synonyms) | **Error**, one-click fixable |
 | Anything else | **Error** — "Did you mean…?" (closest match, ≤3 edits) or the list of valid types |
 
@@ -120,6 +122,7 @@ Summarized by the flow in [§1](#1-how-validation-works). In table form:
 | Empty, Additional Information contains something recognized but not accepted for this type | **Warning** — "…found in Additional Information" |
 | Empty, row is Optional | Silent |
 | Empty, otherwise | **Error** — "Identifier is required" |
+| Non-empty, row is **Other** | Silent — Other never gets a format remark (its identifiers are varied by nature) |
 | Non-empty, at least one recognized kind accepted for this type | Silent |
 | Non-empty, nothing recognized, Chemical row with a compact single-token code | Silent |
 | Non-empty, nothing recognized | **Warning** — "Identifier not recognized by the app" |
@@ -202,21 +205,22 @@ is why they pass on lab-material rows and warn on Dataset / Software / Protocol 
 | **Dataset** | **EMDB, PDB, EMPIAR, GenBank, UniProt, BioStudies accession** | RRID, SCR code, Cellosaurus, Addgene, PMID, CAS number, catalog number, oligonucleotide sequence |
 | **Software/code** | **RRID, SCR code** | Cellosaurus, Addgene, EMDB, PDB, EMPIAR, GenBank, UniProt, PMID, CAS number, catalog number, oligonucleotide sequence, BioStudies accession |
 | **Protocol** | **PMID** | RRID, SCR code, Cellosaurus, Addgene, EMDB, PDB, EMPIAR, GenBank, UniProt, CAS number, catalog number, oligonucleotide sequence, BioStudies accession |
-| **Other** (tools, instruments, "resource") | **RRID, SCR code, catalog number** | Cellosaurus, Addgene, EMDB, PDB, EMPIAR, GenBank, UniProt, PMID, CAS number, oligonucleotide sequence, BioStudies accession |
+| **Other** (tools, instruments, "resource") | **anything** — no format remark is ever raised for Other (only empty / N/A are flagged) | — |
 
 ¹ In practice several of these rarely warn on their own: a GenBank- or UniProt-shaped value also matches the
 catalog-number shape, `Addgene: 12345` contains a catalog-number-shaped `12345`, and `Cellosaurus: CVCL_…`
 contains an RRID-shaped `CVCL_…` — so they pass wherever catalog numbers / RRIDs are accepted. The verified
 outcomes are in [§6](#6-verified-acceptance-matrix).
 
-Bare repository accessions (`GSE…`, `PXD…`, …) warn for **every** type, Dataset included: the app asks for
-the DOI or landing-page URL of the record.
+Bare repository accessions (`GSE…`, `PXD…`, …) warn for **every** type except Other, Dataset included: the app
+asks for the DOI or landing-page URL of the record.
 
 The same information, kind by kind:
 
 | Kind | Accepted for |
 |---|---|
 | DOI, URL | **all** types |
+| *(any value)* | Other — the type is exempt from format remarks |
 | RRID | Antibody, Bacterial strain, Viral vector, Chemical, Critical commercial assay, Cell line, Organism/strain, Recombinant DNA, Software/code, Other |
 | Catalog number | Antibody, Bacterial strain, Viral vector, Biological sample, Chemical, Critical commercial assay, Cell line, Organism/strain, Recombinant DNA, Other |
 | SCR code | Software/code, Other |
@@ -238,19 +242,22 @@ without changing anything else.
 
 ## 5. Worked example: Dataset vs Other
 
+Since September 2026 **Other is exempt from every format remark**: any non-empty identifier passes, so the
+right-hand column only ever flags an empty or N/A cell.
+
 | Value in IDENTIFIER | **Dataset** | **Other** |
 |---|---|---|
 | `10.5281/zenodo.1234567` · any `https://…` | ✓ | ✓ |
-| `EMDB: 55203` · `PDB: 9SHG` · `EMPIAR-13145` | ✓ | ⚠ not typical |
-| `S-BSST1234` | ✓ | ⚠ not typical (`10.6019/S-BSST1234` ✓) |
-| `AB123456` (GenBank) · `P04637` (UniProt) | ✓ | ✓ — only because they also look like catalog numbers |
+| `EMDB: 55203` · `PDB: 9SHG` · `EMPIAR-13145` | ✓ | ✓ |
+| `S-BSST1234` | ✓ | ✓ |
+| `AB123456` (GenBank) · `P04637` (UniProt) | ✓ | ✓ |
 | `RRID:SCR_002285` · `SCR_002285` | ⚠ not typical | ✓ |
 | `RRID:AB_2617428` | ⚠ not typical | ✓ |
 | `sc-32233` · `12345` (catalog number) | ⚠ not typical | ✓ |
-| `GSE12345` · `PXD012345` (bare accession) | ⚠ share the DOI/URL | ⚠ share the DOI/URL |
+| `GSE12345` · `PXD012345` (bare accession) | ⚠ share the DOI/URL | ✓ |
 | `GSE12345 (https://www.ncbi.nlm.nih.gov/geo/…)` | ✓ (URL) | ✓ (URL) |
-| `EMD-55203` | ⚠ (seen as a catalog number) | ✓ (seen as a catalog number) |
-| `in-house`, prose | ⚠ not recognized | ⚠ not recognized |
+| `EMD-55203` | ⚠ (seen as a catalog number) | ✓ |
+| `in-house`, prose | ⚠ not recognized | ✓ |
 | `No identifier exists` · `Identifier pending` | ✓ | ✓ |
 | empty · `N/A` | ✗ error | ✗ error |
 
@@ -274,32 +281,32 @@ DOI/URL · `✗` error. "Detected" is what the extractor found in the cell.
 | `RRID:IMSR_JAX:000664` | rrid | ✓ | ✓ | ✓ | ⚠T | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ✓ | ⚠T | ✓ |
 | `RRID:SCR_002285` | rrid, scr | ✓ | ✓ | ✓ | ⚠T | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ✓ | ⚠T | ✓ |
 | `SCR_016499` | scr | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ✓ |
-| `144-55-8` | cas | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T |
+| `144-55-8` | cas | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ |
 | `Cellosaurus: CVCL_F1H5` | rrid, cellosaurus | ✓ | ✓ | ✓ | ⚠T | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ✓ | ⚠T | ✓ |
 | `CVCL_F1H5` | rrid | ✓ | ✓ | ✓ | ⚠T | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ✓ | ⚠T | ✓ |
 | `Addgene: 12345` | addgene, catalogNumber | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ✓ |
 | `12345` | catalogNumber | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ✓ |
-| `EMDB: 55203` | emdb | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T |
+| `EMDB: 55203` | emdb | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ✓ |
 | `EMD-55203` | catalogNumber | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ✓ |
-| `PDB: 9SHG` | pdb | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T |
-| `9SHG` | — | ⚠U | ⚠U | ⚠U | ⚠U | ✓ | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U |
-| `EMPIAR-13145` | empiar | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T |
+| `PDB: 9SHG` | pdb | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ✓ |
+| `9SHG` | — | ⚠U | ⚠U | ⚠U | ⚠U | ✓ | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ✓ |
+| `EMPIAR-13145` | empiar | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ✓ |
 | `AB123456` | catalogNumber, genbank | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ⚠T | ✓ |
-| `NM_001301.3` | — | ⚠U | ⚠U | ⚠U | ⚠U | ✓ | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U |
+| `NM_001301.3` | — | ⚠U | ⚠U | ⚠U | ⚠U | ✓ | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ✓ |
 | `P04637` | catalogNumber, genbank, uniprot | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ⚠T | ✓ |
 | `PMID: 12345678` | catalogNumber, pmid | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ⚠T | ✓ | ✓ |
 | `12345678` | catalogNumber | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ✓ |
 | `sc-32233` | catalogNumber | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ✓ |
 | `HY-102007` | catalogNumber | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ✓ |
-| `ab290` | — | ⚠U | ⚠U | ⚠U | ⚠U | ✓ | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U |
-| `Cat# ab290` | — | ⚠U | ⚠U | ⚠U | ⚠U | ✓ | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U |
-| `ACGTACGTAA` | oligoSequence | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T |
-| `S-BSST1234` | biostudiesAccession | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T |
+| `ab290` | — | ⚠U | ⚠U | ⚠U | ⚠U | ✓ | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ✓ |
+| `Cat# ab290` | — | ⚠U | ⚠U | ⚠U | ⚠U | ✓ | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ✓ |
+| `ACGTACGTAA` | oligoSequence | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ⚠T | ✓ |
+| `S-BSST1234` | biostudiesAccession | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ⚠T | ✓ | ⚠T | ⚠T | ✓ |
 | `10.6019/S-BSST1234` | doi | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `GSE12345` | accession | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A |
-| `PXD012345` | accession | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A |
+| `GSE12345` | accession | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ✓ |
+| `PXD012345` | accession | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ⚠A | ✓ |
 | `GSE12345 (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE12345)` | accession, url | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `in-house plasmid` | — | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U |
+| `in-house plasmid` | — | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ⚠U | ✓ |
 | `No identifier exists` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `Identifier pending` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `No RRID available` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -315,7 +322,7 @@ DOI/URL · `✗` error. "Detected" is what the extractor found in the cell.
 | **Chemical, peptide, or recombinant protein** | Any compact single-token code passes the identifier check (vendor codes like `ab290` do not fit the ≥4-digit catalog rule). Consequence: a Chemical row only gets a "not recognized" remark for a multi-word value or one longer than 40 characters. |
 | **Software/code** | SOURCE may be empty when the row already carries a real identifier. `Software` / `Code` are rewritten to `Software/code` on import; a blank NEW/REUSE defaults to `reuse` on import. The `No RRID available` escape phrase exists mainly for these rows (an RRID is the expected identifier for software), though it is accepted on any row. |
 | **Protocol** | PMID is the only extra accepted kind. If SOURCE mentions `protocols.io`, the identifier *must* be a DOI or URL (error otherwise) — this rule applies to any row whose Source is protocols.io, whatever its type. |
-| **Other** | The catch-all for tools and instruments: `Tool(s)`, `Instrument(s)`, `Resource(s)` are offered as one-click fixes to `Other`. Identified like lab materials (RRID, SCR, catalog number). |
+| **Other** | The catch-all for tools and instruments: `Tool(s)`, `Instrument(s)`, `Resource(s)` are offered as one-click fixes to `Other`. **No identifier-format remark is raised for Other rows** — only empty / N/A are flagged. |
 | **Any row flagged Optional** | An empty or N/A identifier is silent. |
 
 ### Recognized synonyms
@@ -344,6 +351,7 @@ Some author inputs are silently corrected when the file is parsed, before any va
 | Behaviour |
 |---|
 | "Header" rows (a resource-type name with no other data) are dropped |
+| A case-only variant of a canonical type (`other`, `DATASET`) → the canonical spelling; synonyms and plurals are *not* rewritten (they stay one-click fixes) |
 | `Software` / `Code` → canonical `Software/code` |
 | Software rows with a blank NEW/REUSE default to `reuse` |
 | `n` / `r` / `reused` in NEW/REUSE → `new` / `reuse` |

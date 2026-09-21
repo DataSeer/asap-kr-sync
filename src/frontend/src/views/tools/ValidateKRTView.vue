@@ -75,21 +75,6 @@ async function handleFileUpload(event) {
   event.target.value = ''
 }
 
-async function handleRevalidate() {
-  try {
-    await localStore.validate()
-    const { totalErrors, totalWarnings } = localStore.summary
-    if (totalErrors === 0 && totalWarnings === 0) {
-      notificationStore.success('Key Resources Table is valid — no issues found.')
-    } else if (totalErrors === 0) {
-      notificationStore.success(`Valid with ${totalWarnings} warning${totalWarnings > 1 ? 's' : ''}.`)
-    } else {
-      notificationStore.warning(`Found ${totalErrors} error${totalErrors > 1 ? 's' : ''} — see the table.`)
-    }
-  } catch (error) {
-    notificationStore.error('Validation failed')
-  }
-}
 
 // Drag-and-drop
 function handleDragEnter(event) {
@@ -191,9 +176,7 @@ async function handleDrop(event) {
       <h3 class="text-sm font-medium text-gray-700 mb-3">Key Resources Table</h3>
       <KRTEditor
         submission-id="local"
-        :show-revalidate="true"
         :show-suggestions="false"
-        @revalidate="handleRevalidate"
       />
     </div>
   </div>

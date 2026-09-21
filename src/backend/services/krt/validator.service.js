@@ -110,6 +110,67 @@ function looksLikeChemicalCatalog(value) {
   return /^[A-Za-z0-9][A-Za-z0-9._#/-]*$/.test(v);
 }
 
+/** True when the (possibly-synonym) resource type resolves to Other. */
+function isOtherType(resourceType) {
+  return resourceType === TYPE_OTHER || normalizeResourceType(resourceType) === TYPE_OTHER;
+}
+
+/**
+ * The advisory remark on a NON-EMPTY identifier's format, or null when there is
+ * none. One function for both validation paths (DB row and plain values) so the
+ * per-type rules cannot drift between the editor and the Validate-a-KRT page.
+ *
+ * "Other" gets no format remark at all (ASAP, 2026-09): it is the catch-all
+ * for tools, instruments and anything without a registry, so its identifiers
+ * are varied by nature and a "not typical" flag there is noise, not signal.
+ * The required / N/A errors still apply to it.
+ *
+ * @param {string} identifierValue
+ * @param {object} extracted - identifierExtractor.extractAll(identifierValue)
+ * @param {string} resourceType
+ * @returns {object|null} error object without rowId
+ */
+function identifierFormatIssue(identifierValue, extracted, resourceType) {
+  if (isOtherType(resourceType)) return null;
+
+  const detectedKinds = getDetectedKinds(extracted);
+  const allowedKinds = detectedKinds.filter(k => isKindAllowedFor(k, resourceType));
+
+  if (detectedKinds.length === 0) {
+    // Chemicals accept compact vendor catalog codes that the generic rules
+    // don't recognize (letters-only, letters+few-digits, CAS-style).
+    if (isChemicalType(resourceType) && looksLikeChemicalCatalog(identifierValue)) return null;
+    return {
+      columnName: 'IDENTIFIER',
+      errorType: 'invalid_format',
+      errorMessage: 'Identifier not recognized by the app',
+      severity: VALIDATION_SEVERITY.WARNING,
+      suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"'
+    };
+  }
+  if (allowedKinds.length > 0) return null; // at least one detected kind is allowed — silent pass
+
+  // Kind detected, but not on the allowed list for this resource type.
+  // Repository accessions (PXD, GSE, …) get their own advisory message: they
+  // aren't persistent identifiers on their own, so we ask the author to share
+  // the DOI or URL of the record instead of just flagging.
+  const detectedLabel = detectedKinds.map(k => IDENTIFIER_KIND_LABELS[k] || k).join(', ');
+  const isAccession = detectedKinds.includes('accession');
+  return {
+    columnName: 'IDENTIFIER',
+    errorType: isAccession ? 'accession_not_persistent' : 'kind_not_accepted_for_type',
+    errorMessage: isAccession
+      ? 'Repository accession is not accepted as an identifier on its own'
+      : (resourceType
+        ? `${detectedLabel} is not a typical identifier for "${resourceType}"`
+        : `${detectedLabel} detected, but RESOURCE TYPE is missing`),
+    severity: VALIDATION_SEVERITY.WARNING,
+    suggestion: isAccession
+      ? 'Share the DOI or URL of the repository record (e.g. the dataset landing page) instead of the bare accession'
+      : 'Use a DOI, RRID, URL, or other identifier accepted for this resource type'
+  };
+}
+
 /**
  * Pick the single identifier value to surface as a Quick Fix suggestion
  * when ADDITIONAL INFORMATION contains a recognized identifier but the
@@ -344,6 +405,24 @@ function normalizeResourceType(value) {
   };
 
   return mappings[normalized] || null;
+}
+
+/**
+ * The canonical spelling of a resource type the author wrote with different
+ * casing or surrounding whitespace ("other" → "Other", " dataset " → "Dataset"),
+ * or null when the value is not a case-only variant of a known type. Synonyms
+ * and plurals are NOT folded here — those stay one-click fixes so the curator
+ * confirms them. Case, though, is never a meaningful difference, and flagging
+ * it read as pedantic (ASAP, 2026-09).
+ *
+ * @param {string} value
+ * @param {string[]} [resourceTypes] - allowed types (defaults to DEFAULT_RESOURCE_TYPES)
+ * @returns {string|null}
+ */
+function canonicalizeResourceType(value, resourceTypes = DEFAULT_RESOURCE_TYPES) {
+  const v = (value || '').trim().toLowerCase();
+  if (!v) return null;
+  return resourceTypes.find(t => t.toLowerCase() === v) || null;
 }
 
 /**
@@ -651,47 +730,9 @@ async function validateIdentifier(row, submissionId) {
       });
     }
   } else {
-    // Identifier present — check which kinds were detected and whether any
-    // of them is allowed for the row's resource type.
-    const detectedKinds = getDetectedKinds(identifierExtracted);
-    const allowedKinds = detectedKinds.filter(k => isKindAllowedFor(k, resourceType));
-
-    if (detectedKinds.length === 0) {
-      // Chemicals accept compact vendor catalog codes that the generic rules
-      // don't recognize (letters-only, letters+few-digits, CAS-style).
-      if (!(isChemicalType(resourceType) && looksLikeChemicalCatalog(identifierValue))) {
-        errors.push({
-          rowId: row.id,
-          columnName: 'IDENTIFIER',
-          errorType: 'invalid_format',
-          errorMessage: 'Identifier not recognized by the app',
-          severity: VALIDATION_SEVERITY.WARNING,
-          suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"'
-        });
-      }
-    } else if (allowedKinds.length === 0) {
-      // Kind detected, but not on the allowed list for this resource type.
-      const detectedLabel = detectedKinds.map(k => IDENTIFIER_KIND_LABELS[k] || k).join(', ');
-      const isAccession = detectedKinds.includes('accession');
-      errors.push({
-        rowId: row.id,
-        columnName: 'IDENTIFIER',
-        // Repository accessions (PXD, GSE, …) get their own advisory message:
-        // they aren't persistent identifiers on their own, so we ask the author
-        // to share the DOI or URL of the record instead of just flagging.
-        errorType: isAccession ? 'accession_not_persistent' : 'kind_not_accepted_for_type',
-        errorMessage: isAccession
-          ? 'Repository accession is not accepted as an identifier on its own'
-          : (resourceType
-            ? `${detectedLabel} is not a typical identifier for "${resourceType}"`
-            : `${detectedLabel} detected, but RESOURCE TYPE is missing`),
-        severity: VALIDATION_SEVERITY.WARNING,
-        suggestion: isAccession
-          ? 'Share the DOI or URL of the repository record (e.g. the dataset landing page) instead of the bare accession'
-          : 'Use a DOI, RRID, URL, or other identifier accepted for this resource type'
-      });
-    }
-    // else: at least one detected kind is allowed — silent pass.
+    // Identifier present — advisory remark on its format, if any.
+    const issue = identifierFormatIssue(identifierValue, identifierExtracted, resourceType);
+    if (issue) errors.push({ rowId: row.id, ...issue });
   }
 
   // Merge & persist parsedIdentifiers (prefer IDENTIFIER column, fall back to
@@ -834,17 +875,8 @@ function validateIdentifierValues({ identifier = '', additionalInformation = '',
       errors.push({ columnName: 'IDENTIFIER', errorType: 'required', errorMessage: 'Identifier is required', severity: VALIDATION_SEVERITY.ERROR, suggestion: 'Provide a DOI, RRID, URL, catalog number, "No identifier exists" or "Identifier pending"' });
     }
   } else {
-    const detectedKinds = getDetectedKinds(identifierExtracted);
-    const allowedKinds = detectedKinds.filter(k => isKindAllowedFor(k, resourceType));
-    if (detectedKinds.length === 0) {
-      if (!(isChemicalType(resourceType) && looksLikeChemicalCatalog(idVal))) {
-        errors.push({ columnName: 'IDENTIFIER', errorType: 'invalid_format', errorMessage: 'Identifier not recognized by the app', severity: VALIDATION_SEVERITY.WARNING, suggestion: 'Include a DOI (10.xxxx/...), RRID (RRID:...), SCR code, URL, "No identifier exists" or "Identifier pending"' });
-      }
-    } else if (allowedKinds.length === 0) {
-      const detectedLabel = detectedKinds.map(k => IDENTIFIER_KIND_LABELS[k] || k).join(', ');
-      const isAccession = detectedKinds.includes('accession');
-      errors.push({ columnName: 'IDENTIFIER', errorType: isAccession ? 'accession_not_persistent' : 'kind_not_accepted_for_type', errorMessage: isAccession ? 'Repository accession is not accepted as an identifier on its own' : (resourceType ? `${detectedLabel} is not a typical identifier for "${resourceType}"` : `${detectedLabel} detected, but RESOURCE TYPE is missing`), severity: VALIDATION_SEVERITY.WARNING, suggestion: isAccession ? 'Share the DOI or URL of the repository record (e.g. the dataset landing page) instead of the bare accession' : 'Use a DOI, RRID, URL, or other identifier accepted for this resource type' });
-    }
+    const issue = identifierFormatIssue(idVal, identifierExtracted, resourceType);
+    if (issue) errors.push(issue);
   }
   return errors;
 }
@@ -961,6 +993,7 @@ module.exports = {
   validateRow,
   validateResourceType,
   normalizeResourceType,
+  canonicalizeResourceType,
   validateResourceName,
   validateSource,
   validateIdentifier,

@@ -9,7 +9,7 @@ const { ValidationError } = require('../../utils/errors');
 const { KRT_COLUMNS } = require('../../config/constants');
 const { normalizeColumnName } = require('../../utils/helpers');
 const identifierExtractor = require('./identifier-extractor');
-const { normalizeResourceType, DEFAULT_RESOURCE_TYPES } = require('./validator.service');
+const { normalizeResourceType, canonicalizeResourceType, DEFAULT_RESOURCE_TYPES } = require('./validator.service');
 const logger = require('../../utils/logger');
 
 // Lowercased canonical resource-type labels, used to recognize author "header"
@@ -412,6 +412,13 @@ function preprocessRow(row) {
       row['NEW/REUSE'] = 'reuse';
     }
   }
+
+  // Case-only variants of a canonical type ("other", "DATASET") are rewritten
+  // silently on import: the meaning is unambiguous and flagging them read as
+  // pedantic (ASAP, 2026-09). Synonyms and plurals are left for the curator to
+  // confirm via the one-click fix.
+  const canonical = canonicalizeResourceType(row['RESOURCE TYPE']);
+  if (canonical) row['RESOURCE TYPE'] = canonical;
 
   // Auto-convert the Software/code family to the canonical spelling. Authors
   // almost always write "Software" or "Code"; rewriting these on import spares a

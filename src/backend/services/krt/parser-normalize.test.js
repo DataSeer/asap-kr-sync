@@ -170,3 +170,23 @@ test('an empty file is invalid and reports every column as missing', () => {
   assert.equal(result.valid, false);
   assert.ok(result.missingColumns.length > 0);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resource type casing — "other" means Other, and saying so is not the
+// curator's job (ASAP, 2026-09)
+// ─────────────────────────────────────────────────────────────────────────────
+test('a case-only variant of a canonical type is rewritten on import', () => {
+  const rows = normalizeRows([
+    full({ 'RESOURCE TYPE': 'other' }),
+    full({ 'RESOURCE TYPE': 'DATASET' }),
+    full({ 'RESOURCE TYPE': ' experimental model: cell line ' })
+  ]);
+  assert.deepEqual(rows.map(r => r['RESOURCE TYPE']), [
+    'Other', 'Dataset', 'Experimental model: Cell line'
+  ]);
+});
+
+test('a synonym is left for the curator to confirm, not rewritten', () => {
+  const [row] = normalizeRows([full({ 'RESOURCE TYPE': 'Plasmids' })]);
+  assert.equal(row['RESOURCE TYPE'], 'Plasmids');
+});
