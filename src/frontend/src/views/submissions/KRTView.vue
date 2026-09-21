@@ -11,6 +11,7 @@ import KRTEditor from '@/components/krt/KRTEditor.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
+import { krtFileBaseName } from '@/utils/submission'
 import { useJobPoller } from '@/composables'
 
 const route = useRoute()
@@ -925,7 +926,7 @@ function scrollToFirstWarning() {
         :submission-id="route.params.id"
         :show-suggestions="false"
         :krt-file-url="krtFile?.s3Url"
-        :download-name="submission?.title || submission?.manuscriptId || ''"
+        :download-name="krtFileBaseName(submission)"
       />
     </div>
   </div>

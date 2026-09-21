@@ -764,8 +764,8 @@ async function setQuickSourceNone(rowId, field) {
   }
 }
 
-// Build a safe download base name (#19): prefer the provided Title, fall back
-// to the submission id. Strips characters that don't belong in a file name.
+// Download base name: the host view passes one built by krtFileBaseName
+// (manuscript id first); this only guards against a missing or unsafe value.
 function downloadBaseName() {
   const raw = (props.downloadName || '').trim()
   if (raw) {

@@ -5,6 +5,8 @@ import { useSubmissionStore } from '@/stores/submission.store'
 import { useNotificationStore } from '@/stores/notification.store'
 import { setSubmissionTitle } from '@/router'
 import reportService from '@/services/report.service'
+import krtService from '@/services/krt.service'
+import { krtFileBaseName } from '@/utils/submission'
 import pdfService from '@/services/pdf.service'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import LoadError from '@/components/common/LoadError.vue'
@@ -173,6 +175,29 @@ async function handleNewRound(data) {
   }
 }
 
+// The updated KRT is the other deliverable of this step, and it was only
+// reachable through a small chip in the header — "it's unclear how to
+// download the KRT at the end of the process" (ASAP feedback, 2026-09).
+const downloadingKrt = ref(null)
+async function handleDownloadKrt(format) {
+  downloadingKrt.value = format
+  try {
+    const blob = await krtService.download(route.params.id, format)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${krtFileBaseName(submission.value)}.${format}`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    notificationStore.error('Failed to download the KRT')
+  } finally {
+    downloadingKrt.value = null
+  }
+}
+
 async function handleDownload(report) {
   try {
     const result = await reportService.download(route.params.id, report.id)
@@ -227,6 +252,37 @@ async function handleDownload(report) {
         <div>
           <h2 class="text-lg font-medium text-green-800">Submission Complete!</h2>
           <p class="text-green-600">Your KRT has been validated and is ready for report generation.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- The updated KRT, front and centre -->
+    <div v-if="!loadError" class="card">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-medium">Download KRT</h2>
+          <p class="text-sm text-gray-600 mt-1">
+            Your updated Key Resources Table, with every change you approved.
+          </p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            class="btn-primary text-sm inline-flex items-center"
+            :disabled="downloadingKrt !== null"
+            @click="handleDownloadKrt('xlsx')"
+          >
+            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            {{ downloadingKrt === 'xlsx' ? 'Downloading…' : 'Download KRT (Excel)' }}
+          </button>
+          <button
+            class="btn-secondary text-sm inline-flex items-center"
+            :disabled="downloadingKrt !== null"
+            @click="handleDownloadKrt('csv')"
+          >
+            {{ downloadingKrt === 'csv' ? 'Downloading…' : 'CSV' }}
+          </button>
         </div>
       </div>
     </div>

@@ -16,7 +16,7 @@ import fileService from '@/services/file.service'
 import krtService from '@/services/krt.service'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useSubmissionStore } from '@/stores/submission.store'
-import { statusToStep } from '@/utils/submission'
+import { statusToStep, krtFileBaseName } from '@/utils/submission'
 
 // Optional injection — provided by KRTView (step 2) and PDFView (step 3), the
 // two views that poll jobs. Other views render the header without it and the
@@ -209,8 +209,7 @@ async function downloadCurrentKRT(round) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    const suffix = round ? `_v${round}` : ''
-    a.download = `krt_${props.submission.id}${suffix}.csv`
+    a.download = `${krtFileBaseName(props.submission, { round })}.csv`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)

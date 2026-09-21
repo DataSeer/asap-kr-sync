@@ -19,6 +19,7 @@ import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import PipelinePanel from '@/components/submission/PipelinePanel.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
+import { krtFileBaseName } from '@/utils/submission'
 import { useAuthStore } from '@/stores/auth.store'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isFutureStepJob } from '@/composables'
@@ -1668,7 +1669,7 @@ function scrollToFindingRow(finding) {
           :submission-id="route.params.id"
           :show-revalidate="isAdmin"
           :krt-file-url="krtFile?.s3Url"
-          :download-name="submission?.title || submission?.manuscriptId || ''"
+          :download-name="krtFileBaseName(submission)"
           :active-suggestion-id="currentSuggestion?.id || null"
           @revalidate="handleValidate"
           @suggestion-accepted="handleSuggestionAccepted"

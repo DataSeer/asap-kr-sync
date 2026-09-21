@@ -598,8 +598,14 @@ async function download(req, res, next) {
     const round = req.query.round ? parseInt(req.query.round, 10) : req.submission.currentRound;
     const result = await krtService.generateDownload(req.params.id, format, round);
 
+    // Name the file after the manuscript id when there is one (the report is
+    // filed under it; `krt_<uuid>` next to it was a puzzle — ASAP, 2026-09).
+    // Mirrors krtFileBaseName in the SPA, which sets the same name client-side.
+    const manuscript = String(req.submission?.manuscriptId || '').trim().replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 100);
+    const filename = manuscript ? `KRT_${manuscript}.${format}` : result.filename;
+
     res.setHeader('Content-Type', result.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(result.buffer);
   } catch (error) {
     next(error);

@@ -150,7 +150,8 @@ Select suggestions or rows via checkboxes (including **select all visible**), th
 
 ## 6. Export
 
-**Download KRT** — a toolbar dropdown exporting the current table as **CSV** or **XLSX**.
+**Download KRT** — a toolbar dropdown exporting the current table as **CSV** or **XLSX**, named
+`KRT_<manuscript id>` (title, then submission id, as fallbacks).
 
 ## 6b. Regenerating suggestions
 

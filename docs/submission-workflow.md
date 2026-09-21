@@ -518,8 +518,15 @@ terminal state (or the fallback rules are used), Continue is enabled.
 **Instructions shown to the user:**
 1. Download report — to expedite ASAP compliance review, reports can be attached to compliance submissions
 2. [Optional] Validate updated manuscript — click "Process updated manuscript" to run KRT Assist on your updated manuscript
+3. Next steps: when ready, submit your updated KRT and manuscript PDF (with the updated Availability Statement) for an open science compliance review on the [ASAP CRN Hub](https://hub.asap.science/)
 
 ### User Actions
+
+**Download the updated KRT:** a "Download KRT" card (Excel primary, CSV secondary) sits above the report
+options. The file is named `KRT_<manuscript id>.<ext>` — the same id the report is filed under — falling
+back to the title, then `krt_<submission id>`; the header's KRT chip and the editor's Download dropdown use
+the same name (`krtFileBaseName` in `src/frontend/src/utils/submission.js`, mirrored server-side in the
+`Content-Disposition` header).
 
 **Generate a report:**
 - Click **Download as XLSX** to generate an Excel report
