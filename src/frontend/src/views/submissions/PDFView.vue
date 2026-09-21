@@ -95,6 +95,9 @@ const jobs = computed(() => bgProcessesRef.value?.jobs || {})
 // and referencing the computed above its declaration is a TDZ throw that takes
 // the whole page down.
 provide('submissionJobs', jobs)
+// Lets the grounding card's "N rows differ from the manuscript" badge bring
+// the user to the suggestions where those conflicts are resolved.
+provide('jumpToSuggestions', scrollToSuggestions)
 
 // Derive analyzing state from job poller
 const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))
