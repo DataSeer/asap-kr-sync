@@ -167,12 +167,16 @@ async function handleUpdateProfile() {
 
           <div>
             <label class="label">New Password</label>
+            <!-- Bounds mirror the server's rule (utils/validators.js `password`):
+                 8-128 characters. They were 6 and unbounded, so the browser let
+                 through two passwords the API then refused. -->
             <input
               v-model="newPassword"
               type="password"
               class="input"
               autocomplete="new-password"
-              minlength="6"
+              minlength="8"
+              maxlength="128"
             />
           </div>
 
@@ -183,6 +187,8 @@ async function handleUpdateProfile() {
               type="password"
               class="input"
               autocomplete="new-password"
+              minlength="8"
+              maxlength="128"
             />
           </div>
         </div>
