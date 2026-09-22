@@ -74,6 +74,43 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
+/**
+ * Put the reason back into a validation error's message.
+ *
+ * A 400 from the API names the offending field in `details` — `{ field:
+ * 'password', message: '"password" length must be at least 8 characters long' }`
+ * — while `data.error` is only **"Validation failed"**. Over a hundred call
+ * sites read `data.error` and drop `details` on the floor, so an admin
+ * creating a user was told "Validation failed" and nothing else, with no way
+ * to learn which field was wrong (reported 2026-09-22).
+ *
+ * Folding the detail in here fixes every one of those call sites at once. The
+ * leading `"field"` Joi repeats is stripped, because the field name is already
+ * printed in front of it. `details` is left untouched for the handful of
+ * components that render it themselves.
+ *
+ * @param {object} error - an axios error
+ */
+function describeValidationError(error) {
+  const data = error?.response?.data
+  if (!data || data._described || typeof data.error !== 'string') return
+  if (!Array.isArray(data.details) || data.details.length === 0) return
+
+  const parts = data.details.map((detail) => {
+    const field = String(detail?.field || '').trim()
+    const message = String(detail?.message || '')
+      .replace(/^"[^"]*"\s*/, '')   // Joi repeats the field name in quotes
+      .trim()
+    if (!message) return field || ''
+    return field ? `${field}: ${message}` : message
+  }).filter(Boolean)
+
+  if (!parts.length) return
+  data.error = `${data.error} — ${parts.join('; ')}`
+  // Marked so a retried request cannot append the same detail twice.
+  data._described = true
+}
+
 // Response interceptor — keep the session alive across a 401 and a blip.
 //
 // A 401 on an ordinary request means the access token expired: refresh the
@@ -87,6 +124,7 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
+    describeValidationError(error)
     const originalRequest = error.config
 
     // Skip retry for explicit auth endpoints to avoid loops:
@@ -153,5 +191,6 @@ api.interceptors.response.use(
 )
 
 export default api
-// For tests: the replay predicate, without driving a request through axios.
-export { isReplayable }
+// For tests: the replay predicate and the validation-message helper, without
+// driving a request through axios.
+export { isReplayable, describeValidationError }

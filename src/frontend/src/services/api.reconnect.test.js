@@ -12,7 +12,7 @@ vi.mock('@/router', () => ({ default: { push: routerPush, currentRoute: { value:
 vi.mock('@/services/auth.service', () => ({ default: { refreshToken: vi.fn() } }))
 
 import authService from '@/services/auth.service'
-import api, { isReplayable } from './api'
+import api, { isReplayable, describeValidationError } from './api'
 import { reconnecting, _resetForTests } from './session-reconnect'
 import { useAuthStore } from '@/stores/auth.store'
 
@@ -89,5 +89,66 @@ describe('api client session handling', () => {
     expect(isReplayable({ url: '/submissions/x/krt/upload', data: new FormData() })).toBe(false)
     expect(isReplayable({ url: '/auth/refresh', data: {} })).toBe(false)
     expect(isReplayable({ url: '/submissions/x/krt/batch', data: { updates: [] } })).toBe(true)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Validation errors must say WHAT was wrong
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('describeValidationError', () => {
+  /** Exactly what the API returned when an admin tried to create a user. */
+  const apiError = (details) => ({
+    response: { status: 400, data: { error: 'Validation failed', code: 'VALIDATION_ERROR', details } }
+  })
+
+  it('names the field and the reason, without Joi repeating the field in quotes', () => {
+    const e = apiError([{ field: 'password', message: '"password" length must be at least 8 characters long' }])
+    describeValidationError(e)
+    expect(e.response.data.error).toBe('Validation failed — password: length must be at least 8 characters long')
+  })
+
+  it('keeps a message that was already written for a human', () => {
+    const e = apiError([{ field: 'password', message: 'Password must contain at least one letter and one number' }])
+    describeValidationError(e)
+    expect(e.response.data.error)
+      .toBe('Validation failed — password: Password must contain at least one letter and one number')
+  })
+
+  it('joins several fields', () => {
+    const e = apiError([
+      { field: 'name', message: '"name" length must be at least 2 characters long' },
+      { field: 'role', message: '"role" must be one of [author, asap_pm, ds_annotator, admin]' }
+    ])
+    describeValidationError(e)
+    expect(e.response.data.error).toBe(
+      'Validation failed — name: length must be at least 2 characters long; '
+      + 'role: must be one of [author, asap_pm, ds_annotator, admin]'
+    )
+  })
+
+  it('leaves the details array alone for components that render it themselves', () => {
+    const details = [{ field: 'email', message: 'must be a valid email' }]
+    const e = apiError(details)
+    describeValidationError(e)
+    expect(e.response.data.details).toEqual(details)
+  })
+
+  it('never appends twice, however often it is called', () => {
+    const e = apiError([{ field: 'email', message: 'must be a valid email' }])
+    describeValidationError(e)
+    const once = e.response.data.error
+    describeValidationError(e)
+    expect(e.response.data.error).toBe(once)
+  })
+
+  it('leaves errors that carry no details untouched', () => {
+    for (const data of [{ error: 'Email already registered' }, { error: 'Nope', details: [] }, null]) {
+      const e = { response: { status: 409, data } }
+      describeValidationError(e)
+      expect(e.response.data?.error).toBe(data?.error)
+    }
+    expect(() => describeValidationError(undefined)).not.toThrow()
+    expect(() => describeValidationError({})).not.toThrow()
   })
 })
