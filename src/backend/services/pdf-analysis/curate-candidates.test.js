@@ -318,7 +318,7 @@ test('a journal-venue DOI still retypes a row that names a protocol', () => {
     sw({ resourceName: 'Journal of Visualized Experiments', identifier: 'DOI: 10.3791/57280' }),
     sw({ resourceName: 'Immunostaining procedure', identifier: 'DOI: 10.1016/j.xpro.2021.100372' })
   ]);
-  assert.deepEqual(types(items), ['Protocol', 'Protocol'])
+  assert.deepEqual(types(items), ['Protocol', 'Protocol']);
 });
 
 test('a Dataset row is left to the datasets detector', () => {
