@@ -511,10 +511,31 @@ function toggleSourceVisibility(source) {
   hiddenSources.value = newSet
 }
 
+/**
+ * Show only what changed.
+ *
+ * This step exists to review changes, and on a 100-row KRT the handful that
+ * were added, edited or deleted are a few lines scattered through a table the
+ * reviewer has to scroll past in full. Off by default: the unchanged rows are
+ * the context that makes a change legible, and hiding them is a choice.
+ */
+const changedOnly = ref(false)
+
+/** Was this row added, edited or deleted in this round? */
+function isRowChanged(row) {
+  return !!row.isDeleted || isRowAdded(row) || isRowUpdated(row)
+}
+
+const changedRowCount = computed(() => combinedRows.value.filter(isRowChanged).length)
+
 // Filter combinedRows by hiding toggled-off sources
 const filteredCombinedRows = computed(() => {
-  if (hiddenSources.value.size === 0) return combinedRows.value
-  return combinedRows.value.filter(row => {
+  let rows = combinedRows.value
+  // Only meaningful alongside the change detail — with it off, every row reads
+  // the same and an empty table would be all the user got.
+  if (changedOnly.value && showDetails.value) rows = rows.filter(isRowChanged)
+  if (hiddenSources.value.size === 0) return rows
+  return rows.filter(row => {
     const tag = getRowSourceTag(row)
     if (!tag) return true // Unchanged rows are always shown
     return !hiddenSources.value.has(tag.label)
@@ -824,6 +845,12 @@ function getCellClass(row, columnKey) {
               @click="toggleSourceVisibility('User')"
             >User</span>
           </div>
+          <!-- Review just the changes, without scrolling past the rest. -->
+          <label v-if="hasChanges && showDetails" class="changed-only">
+            <input v-model="changedOnly" type="checkbox" />
+            <span>Only changed rows</span>
+            <span class="changed-only-count">{{ changedRowCount }}</span>
+          </label>
           <!-- Toggle -->
           <label v-if="hasChanges" class="toggle-switch">
             <span class="toggle-label">Show changes</span>
@@ -917,7 +944,7 @@ function getCellClass(row, columnKey) {
       </div>
 
       <p v-if="filteredCombinedRows.length === 0" class="text-center text-gray-500 py-8">
-        {{ hiddenSources.size > 0 ? 'All rows hidden by active filters' : 'No data available' }}
+        {{ hiddenSources.size > 0 || changedOnly ? 'All rows hidden by active filters' : 'No data available' }}
       </p>
     </div>
 
@@ -1061,6 +1088,41 @@ function getCellClass(row, columnKey) {
 .table-scroll-limited {
   max-height: 420px;
   overflow-y: auto;
+}
+
+/* The column names stay put while the rows scroll under them: this table runs
+   to a hundred rows, and "which column is this?" is asked exactly when the
+   header has gone. `border-collapse: collapse` drops a sticky cell's own
+   border, so the rule under the header is drawn with an inset shadow. */
+.krt-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f9fafb;
+  box-shadow: inset 0 -1px 0 #e5e7eb;
+}
+
+.changed-only {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+}
+
+.changed-only input {
+  cursor: pointer;
+}
+
+.changed-only-count {
+  padding: 0.0625rem 0.375rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #1e40af;
+  background: #dbeafe;
+  border-radius: 9999px;
 }
 
 /* Toggle switch */
