@@ -447,24 +447,105 @@ test('a differing identifier IS an incoherence', () => {
 // a sibling's identifier lands in this row's pool. Observed on RE2-020529-009:
 // nine conflicts, every one a row the paper prints verbatim.
 
+/**
+ * The manuscript's antibody table, one line per clone — the shape that
+ * produced the false conflicts on RE2-020529-009.
+ */
+const CHCHD2_TABLE = [
+  '| chchd2 antibody | Proteintech 66302-1-ig | AB_2881685 |',
+  '| chchd2 antibody | Prestige antibodies hPA027407 | AB_10959659 |',
+  '| chchd2 antibody | Proteintech 19424-1-AP | AB_10638907 |'
+];
+
+/** Printed anywhere in the document. */
+const printedIn = (lines) => (value) => lines.join('\n').includes(String(value).trim());
+
+/** Printed on the same LINE as this row's own source — the real test. */
+const printedWithRowIn = (lines) => (value, row) => lines.some(
+  (line) => line.includes(String(value).trim())
+    && String(row?.source || '').trim() !== ''
+    && line.includes(String(row.source).trim())
+);
+
 test('a row the paper prints verbatim is not contradicted by its sibling', () => {
   const { conflicts } = compareWithCandidates(
-    authorRow({ identifier: 'AB_2881685' }),
+    authorRow({ identifier: 'AB_2881685', source: 'Proteintech 66302-1-ig' }),
+    // A sibling clone's candidate, in this row's pool because the names match.
     [{ candidate: candidate({ identifier: 'HPA027407, AB_10959659' }) }],
-    // The paper prints all three CHCHD2 clones, this row's included.
-    (value) => ['AB_2881685', 'HPA027407', 'AB_10959659'].some((v) => String(value).includes(v))
+    printedIn(CHCHD2_TABLE),
+    printedWithRowIn(CHCHD2_TABLE)
   );
 
-  assert.deepEqual(conflicts, [], 'the paper agrees with this row; the other values belong to another one');
+  assert.deepEqual(conflicts, [], 'the paper prints this row verbatim, on its own line');
+});
+
+// ── swapped identifiers must NOT be swallowed ───────────────────────────────
+// The reason corroboration is scoped to the row and not to the document: when
+// two rows have each other's identifiers, BOTH values are in the text, and a
+// document-wide check would call both rows corroborated and report nothing.
+
+test('an identifier that belongs to another row is still a conflict', () => {
+  // The author swapped two identifiers. The paper describes both resources
+  // correctly, so BOTH values are in the document — which is the trap: a
+  // document-wide "is it printed?" calls the row corroborated and says nothing.
+  const paper = [
+    '| chchd2 antibody | Proteintech 66302-1-ig | AB_2881685 |',
+    '| chchd2 antibody | Proteintech 19424-1-AP | AB_10638907 |'
+  ];
+  // This row is the FIRST clone, carrying the SECOND clone's RRID.
+  const swapped = authorRow({
+    resourceName: 'chchd2 antibody', source: 'Proteintech 66302-1-ig', identifier: 'AB_10638907'
+  });
+
+  assert.equal(printedIn(paper)('AB_10638907'), true, 'the wrong value IS in the document');
+  assert.equal(printedWithRowIn(paper)('AB_10638907', swapped), false, "but not on this row's line");
+
+  const { conflicts } = compareWithCandidates(
+    swapped,
+    [{ candidate: candidate({ resourceName: 'chchd2 antibody', identifier: 'AB_2881685' }) }],
+    printedIn(paper),
+    printedWithRowIn(paper)
+  );
+
+  assert.equal(conflicts.length, 1, 'that RRID sits beside the other clone, not beside this source');
+  assert.equal(conflicts[0].field, 'identifier');
+  assert.equal(conflicts[0].manuscriptValue, 'AB_2881685');
+});
+
+test('a wrong identifier the paper never prints is a conflict too', () => {
+  const paper = ['We used the AtP5A1 antibody (Proteintech 66037-1-ig, AB_11044196) here.'];
+  const { conflicts } = compareWithCandidates(
+    authorRow({ resourceName: 'AtP5A1 antibody', source: 'Proteintech 66037-1-ig', identifier: 'AB_99999999' }),
+    [{ candidate: candidate({ resourceName: 'AtP5A1 antibody', identifier: 'AB_11044196' }) }],
+    printedIn(paper),
+    printedWithRowIn(paper)
+  );
+
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].manuscriptValue, 'AB_11044196');
+});
+
+test('a row with nothing to anchor on is never corroborated', () => {
+  // No source, so the paper cannot be said to print the value AS THIS ROW's.
+  const { conflicts } = compareWithCandidates(
+    authorRow({ identifier: 'AB_2881685', source: '' }),
+    [{ candidate: candidate({ identifier: 'AB_10959659' }) }],
+    printedIn(CHCHD2_TABLE),
+    printedWithRowIn(CHCHD2_TABLE)
+  );
+
+  assert.equal(conflicts.length, 1, 'reporting too much beats silently dropping a swap');
 });
 
 test('...but a row the paper contradicts still is', () => {
   // The RRID matches and the strain code does not: the disagreement the module
-  // exists to surface survives, because EVERY part must be printed.
+  // exists to surface survives, because EVERY part must be printed with the row.
+  const paper = ['| Sprague-Dawley rats | Charles River | strain code: 001, RRID: RGD_734476 |'];
   const { conflicts } = compareWithCandidates(
-    authorRow({ identifier: 'strain code: 400, RRID: RGD_734476' }),
+    authorRow({ identifier: 'strain code: 400, RRID: RGD_734476', source: 'Charles River' }),
     [{ candidate: candidate({ identifier: 'strain code: 001, RRID: RGD_734476' }) }],
-    (value) => String(value).includes('RGD_734476') || String(value).includes('001')
+    printedIn(paper),
+    printedWithRowIn(paper)
   );
 
   assert.equal(conflicts.length, 1);
@@ -475,6 +556,7 @@ test('with no manuscript predicate nothing is corroborated, and nothing conflict
   const { conflicts } = compareWithCandidates(
     authorRow({ identifier: 'AB_2881685' }),
     [{ candidate: candidate({ identifier: 'AB_10959659' }) }],
+    undefined,
     undefined
   );
 

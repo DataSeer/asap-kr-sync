@@ -147,9 +147,15 @@ const COMPARABLE_FIELDS = ['identifier'];
  *
  * @param {object[]} authorRows - KRTData rows ({ id, resourceType, resourceName, identifier, source, newReuse, additionalInformation })
  * @param {object[]} candidates - KrtEntry[] from the merged candidate pool
+ * @param {function} [inManuscript] - value => does the paper print it at all?
+ *   Absent means there is no manuscript, and then nothing may be asserted
+ *   about one: no conflicts are raised.
+ * @param {function} [printedWithRow] - (value, row) => does the paper print it
+ *   AS THIS ROW's (same line/sentence as something identifying the row)?
+ *   Absent means no value is ever corroborated, which only ever reports MORE.
  * @returns {{ outcomes: object[], unmatchedCandidateRefs: number[], stats: object }}
  */
-function matchAuthorRows(authorRows, candidates, inManuscript) {
+function matchAuthorRows(authorRows, candidates, inManuscript, printedWithRow) {
   const rows = Array.isArray(authorRows) ? authorRows : [];
   const pool = (Array.isArray(candidates) ? candidates : []).map((candidate, ref) => {
     const typeKey = normalizeResourceTypeKey(candidate?.resourceType || '');
@@ -160,7 +166,7 @@ function matchAuthorRows(authorRows, candidates, inManuscript) {
   const outcomes = [];
 
   for (const row of rows) {
-    const outcome = matchOneRow(row, pool, inManuscript);
+    const outcome = matchOneRow(row, pool, inManuscript, printedWithRow);
     outcome.matchedRefs.forEach((ref) => claimedRefs.add(ref));
     outcomes.push(outcome);
   }
@@ -182,7 +188,7 @@ function matchAuthorRows(authorRows, candidates, inManuscript) {
  * @param {object[]} pool - pre-indexed candidates
  * @returns {object} outcome
  */
-function matchOneRow(row, pool, inManuscript) {
+function matchOneRow(row, pool, inManuscript, printedWithRow) {
   const rowIdentifier = String(row?.identifier || '').trim();
   const rowTypeKey = normalizeResourceTypeKey(row?.resourceType || '');
   const rowName = row?.resourceName || '';
@@ -246,7 +252,7 @@ function matchOneRow(row, pool, inManuscript) {
   const fillEntries = matched
     .filter((m) => m.how !== 'partial_name')
     .map((m) => pool.find((e) => e.ref === m.ref));
-  const { missingFields, foundValues, conflicts } = compareWithCandidates(row, fillEntries, inManuscript);
+  const { missingFields, foundValues, conflicts } = compareWithCandidates(row, fillEntries, inManuscript, printedWithRow);
 
   let outcome;
   if (best.how === 'partial_name') {
@@ -421,30 +427,42 @@ function candidateNames(candidate, typeKey) {
  * @returns {{value: string, origin: string|null}|null}
  */
 /**
- * Does the manuscript print the author's OWN value for this field?
+ * Does the manuscript print the author's own value **as this row's**?
  *
  * Several author rows routinely share one resource name — three "CHCHD2
- * antibody" rows, one per clone, each with its own catalogue number and RRID —
- * and the candidate pool is matched by NAME. So a candidate carrying the
- * SECOND row's identifier is in the first row's pool, and a naive comparison
- * reports the first row as contradicted by a value that belongs to its sibling.
- * Observed on RE2-020529-009: nine such conflicts, every one of them a row the
- * paper prints verbatim (`presence.via === 'identifier'`).
+ * antibody" rows, one per clone — and the candidate pool is matched by NAME, so
+ * a candidate carrying the SECOND row's identifier lands in the first row's
+ * pool and contradicts a row the paper prints verbatim. That was nine false
+ * conflicts on RE2-020529-009.
  *
- * When the paper prints everything the author wrote, the paper agrees with the
- * row, and whatever else it prints under the same name belongs to a different
- * one. EVERY part must be found, not merely one: the row whose RRID matches but
- * whose strain code reads 400 against the paper's 001 is exactly the
- * disagreement this module exists to surface.
+ * The fix is NOT "is this value in the document somewhere". That would hide the
+ * error worth catching most: two rows whose identifiers are swapped. Both
+ * identifiers are in the text, so a document-wide check calls both rows
+ * corroborated and says nothing —
  *
+ *     KRT:  resource A | source_A | id_B      <- swapped
+ *           resource B | source_B | id_A      <- swapped
+ *     PDF:  "… the resource B (id: id_B) …"
+ *
+ * — whereas `id_B` is printed beside *resource B*, not beside `source_A`. So
+ * corroboration is scoped: the value must appear in the same line or sentence
+ * as something that identifies THIS row, which is what `printedWithRow`
+ * decides (see krt-grounding.service.js). A row with nothing to anchor on is
+ * never corroborated, so its conflicts still surface.
+ *
+ * EVERY comma/semicolon-separated part must be found that way: the row whose
+ * RRID matches but whose strain code reads 400 against the paper's 001 is
+ * exactly the disagreement this module exists to surface.
+ *
+ * @param {object} row
  * @param {string} authorValue
- * @param {function} inManuscript
+ * @param {function} printedWithRow (value, row) => boolean
  * @returns {boolean}
  */
-function authorValueIsPrinted(authorValue, inManuscript) {
-  if (typeof inManuscript !== 'function') return false;
+function authorValueIsPrinted(row, authorValue, printedWithRow) {
+  if (typeof printedWithRow !== 'function') return false;
   const parts = String(authorValue || '').split(/[;,]/).map((v) => v.trim()).filter(Boolean);
-  return parts.length > 0 && parts.every((part) => inManuscript(part));
+  return parts.length > 0 && parts.every((part) => printedWithRow(part, row));
 }
 
 function manuscriptClaim(entries, field, inManuscript) {
@@ -493,7 +511,7 @@ function manuscriptClaim(entries, field, inManuscript) {
  * @param {object[]} entries - matched pool entries
  * @returns {{ missingFields: string[], foundValues: object, conflicts: object[] }}
  */
-function compareWithCandidates(row, entries, inManuscript) {
+function compareWithCandidates(row, entries, inManuscript, printedWithRow) {
   const missingFields = [];
   const foundValues = {};
   const conflicts = [];
@@ -518,9 +536,10 @@ function compareWithCandidates(row, entries, inManuscript) {
     // Only fields we can genuinely compare may contradict the author.
     if (!COMPARABLE_FIELDS.includes(field)) continue;
 
-    // A row the paper prints verbatim is corroborated, not contradicted —
-    // whatever else the paper says under the same name belongs to a sibling row.
-    if (authorValueIsPrinted(authorValue, inManuscript)) continue;
+    // A row the paper prints AS THIS ROW's is corroborated, not contradicted —
+    // whatever else it says under the same name belongs to a sibling row. Scoped
+    // deliberately: a document-wide check would swallow swapped identifiers.
+    if (authorValueIsPrinted(row, authorValue, printedWithRow)) continue;
 
     // And only what the MANUSCRIPT actually prints may do the contradicting.
     const claim = manuscriptClaim(entries, field, inManuscript);

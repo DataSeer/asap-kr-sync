@@ -47,7 +47,8 @@ const { matchAuthorRows } = require('./match-author-rows.service');
 const { verifyRow } = require('./verify-against-manuscript');
 const { getPipeline } = require('../../config/pipelines');
 const { buildEvidenceIndex, locateQuote, collectMentions, extractContext,
-  findAllOccurrences, findNormalisedOccurrences, identifierParts } = require('../pdf-analysis/evidence.service');
+  findAllOccurrences, findNormalisedOccurrences, identifierParts,
+  normalizeQuote } = require('../pdf-analysis/evidence.service');
 const { sanitizeJsonEscapes, extractJsonBlock, salvageTruncatedObjects } = require('../../utils/gemini-json');
 const { generateContentWithRetry } = require('../../utils/gemini');
 const logger = require('../../utils/logger');
@@ -377,10 +378,48 @@ async function groundSubmission(submission, jobLogger) {
     presence.index ? findNormalisedOccurrences(presence.index, String(value), 1).length > 0 : false
   );
 
+  /**
+   * Does the manuscript print this value AS THIS ROW's?
+   *
+   * The document-wide question — "is this value in the paper at all?" — is the
+   * wrong one for corroboration, and dangerously so. When two rows carry each
+   * other's identifiers, BOTH are in the text, and a document-wide check calls
+   * both rows corroborated and reports nothing. The swap, a copy-paste error
+   * worth catching, disappears.
+   *
+   * So the value must appear in the same LINE (or a short span, for prose that
+   * is not line-broken) as something that identifies this row — its SOURCE,
+   * which is what actually distinguishes rows sharing a name. The manuscript's
+   * antibody table is one line per clone,
+   *
+   *     | chchd2 antibody | Proteintech 66302-1-ig | AB_2881685 |
+   *     | chchd2 antibody | Prestige antibodies hPA027407 | AB_10959659 |
+   *
+   * so this corroborates each clone against its own line and refuses to
+   * corroborate a row holding its neighbour's RRID.
+   *
+   * A row with no SOURCE has nothing to anchor on and is never corroborated:
+   * that direction only ever reports more, which is the safe way to be wrong.
+   */
+  const printedWithRow = (value, row) => {
+    if (!presence.index) return false;
+    const anchor = String(row?.source || '').trim();
+    if (!anchor) return false;
+    const hits = findNormalisedOccurrences(presence.index, String(value), MAX_LOCALITY_HITS);
+    if (!hits.length) return false;
+    const anchorNeedle = flatten(anchor);
+    if (!anchorNeedle) return false;
+    return hits.some((hit) => flatten(spanAround(presence.index.text, hit.offset)).includes(anchorNeedle));
+  };
+
   // ── Step 3: deterministic matching against the candidate pool
   // Without a manuscript there is no predicate, and the matcher then asserts no
   // conflicts at all — rather than falling back to comparing candidate values.
-  const matched = matchAuthorRows(authorRows, candidates, presence.index ? inManuscript : undefined);
+  const matched = matchAuthorRows(
+    authorRows, candidates,
+    presence.index ? inManuscript : undefined,
+    presence.index ? printedWithRow : undefined
+  );
   jobLogger?.log('deterministic_match', 'Matched author rows against candidates', matched.stats);
 
   // Both readings travel on the outcome. `presence` says whether the resource
@@ -718,6 +757,33 @@ function usableHits(hits) {
  * @param {number} round
  * @returns {Promise<string|null>}
  */
+/** How many occurrences of one value to test for locality before giving up. */
+const MAX_LOCALITY_HITS = 12;
+
+/**
+ * The line an offset sits on, capped so a document without line breaks still
+ * yields a bounded span rather than the whole text. A markdown table row is a
+ * line, and so is a sentence in converted prose, which is exactly the scope at
+ * which "the paper says THIS about THIS resource" is true.
+ */
+const LOCALITY_CAP = 220;
+function spanAround(text, offset) {
+  if (typeof text !== 'string' || !text.length) return '';
+  const lo = Math.max(0, offset - LOCALITY_CAP);
+  const hi = Math.min(text.length, offset + LOCALITY_CAP);
+  const before = text.lastIndexOf('\n', offset);
+  const after = text.indexOf('\n', offset);
+  return text.slice(
+    before === -1 ? lo : Math.max(lo, before + 1),
+    after === -1 ? hi : Math.min(hi, after)
+  );
+}
+
+/** The same folding `findNormalisedOccurrences` uses, so both agree. */
+function flatten(value) {
+  return normalizeQuote(String(value || '')).replace(/[\s.\-_]/g, '');
+}
+
 async function loadMarkdown(submissionId, round) {
   const { File } = require('../../models');
   // The document this ROUND is reading, not whatever is newest right now.
