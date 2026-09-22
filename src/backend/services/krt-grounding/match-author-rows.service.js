@@ -420,6 +420,33 @@ function candidateNames(candidate, typeKey) {
  * @param {function} inManuscript value => is it in the manuscript text?
  * @returns {{value: string, origin: string|null}|null}
  */
+/**
+ * Does the manuscript print the author's OWN value for this field?
+ *
+ * Several author rows routinely share one resource name — three "CHCHD2
+ * antibody" rows, one per clone, each with its own catalogue number and RRID —
+ * and the candidate pool is matched by NAME. So a candidate carrying the
+ * SECOND row's identifier is in the first row's pool, and a naive comparison
+ * reports the first row as contradicted by a value that belongs to its sibling.
+ * Observed on RE2-020529-009: nine such conflicts, every one of them a row the
+ * paper prints verbatim (`presence.via === 'identifier'`).
+ *
+ * When the paper prints everything the author wrote, the paper agrees with the
+ * row, and whatever else it prints under the same name belongs to a different
+ * one. EVERY part must be found, not merely one: the row whose RRID matches but
+ * whose strain code reads 400 against the paper's 001 is exactly the
+ * disagreement this module exists to surface.
+ *
+ * @param {string} authorValue
+ * @param {function} inManuscript
+ * @returns {boolean}
+ */
+function authorValueIsPrinted(authorValue, inManuscript) {
+  if (typeof inManuscript !== 'function') return false;
+  const parts = String(authorValue || '').split(/[;,]/).map((v) => v.trim()).filter(Boolean);
+  return parts.length > 0 && parts.every((part) => inManuscript(part));
+}
+
 function manuscriptClaim(entries, field, inManuscript) {
   // No predicate means no manuscript to check against — so nothing may be
   // asserted about one. Deliberately not a permissive default: that default is
@@ -490,6 +517,10 @@ function compareWithCandidates(row, entries, inManuscript) {
 
     // Only fields we can genuinely compare may contradict the author.
     if (!COMPARABLE_FIELDS.includes(field)) continue;
+
+    // A row the paper prints verbatim is corroborated, not contradicted —
+    // whatever else the paper says under the same name belongs to a sibling row.
+    if (authorValueIsPrinted(authorValue, inManuscript)) continue;
 
     // And only what the MANUSCRIPT actually prints may do the contradicting.
     const claim = manuscriptClaim(entries, field, inManuscript);

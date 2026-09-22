@@ -351,10 +351,13 @@ test('flags a real discrepancy the author and the manuscript disagree on', () =>
 });
 
 test('a conflict never proposes a change — the author value stands', () => {
+  // The predicate is what the PAPER prints: the candidate's catalogue number,
+  // not the author's. `() => true` would describe a manuscript printing both,
+  // and a paper that prints the author's own value corroborates the row.
   const { outcomes } = matchAuthorRows(
     [authorRow({ identifier: 'Cat #: 657012', source: 'Millipore', newReuse: 'reuse' })],
     [candidate({ identifier: 'Cat #: 999999', source: 'Millipore', newReuse: 'reuse' })],
-    () => true
+    (value) => String(value).includes('999999')
   );
   assert.equal(outcomes[0].conflicts.length, 1);
   assert.deepEqual(outcomes[0].missingFields, [], 'nothing is proposed for an EDIT');
@@ -431,11 +434,51 @@ test('a differing identifier IS an incoherence', () => {
   const { conflicts } = compareWithCandidates(
     authorRow({ identifier: 'RRID:SCR_111111' }),
     [{ candidate: candidate({ identifier: 'RRID:SCR_999999' }) }],
-    () => true
+    (value) => String(value).includes('SCR_999999')
   );
 
   assert.equal(conflicts.length, 1);
   assert.equal(conflicts[0].field, 'identifier');
+});
+
+// ── rows that share a name ──────────────────────────────────────────────────
+// Several author rows routinely carry ONE resource name — three "CHCHD2
+// antibody" rows, one per clone — and the candidate pool is matched by name, so
+// a sibling's identifier lands in this row's pool. Observed on RE2-020529-009:
+// nine conflicts, every one a row the paper prints verbatim.
+
+test('a row the paper prints verbatim is not contradicted by its sibling', () => {
+  const { conflicts } = compareWithCandidates(
+    authorRow({ identifier: 'AB_2881685' }),
+    [{ candidate: candidate({ identifier: 'HPA027407, AB_10959659' }) }],
+    // The paper prints all three CHCHD2 clones, this row's included.
+    (value) => ['AB_2881685', 'HPA027407', 'AB_10959659'].some((v) => String(value).includes(v))
+  );
+
+  assert.deepEqual(conflicts, [], 'the paper agrees with this row; the other values belong to another one');
+});
+
+test('...but a row the paper contradicts still is', () => {
+  // The RRID matches and the strain code does not: the disagreement the module
+  // exists to surface survives, because EVERY part must be printed.
+  const { conflicts } = compareWithCandidates(
+    authorRow({ identifier: 'strain code: 400, RRID: RGD_734476' }),
+    [{ candidate: candidate({ identifier: 'strain code: 001, RRID: RGD_734476' }) }],
+    (value) => String(value).includes('RGD_734476') || String(value).includes('001')
+  );
+
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].field, 'identifier');
+});
+
+test('with no manuscript predicate nothing is corroborated, and nothing conflicts', () => {
+  const { conflicts } = compareWithCandidates(
+    authorRow({ identifier: 'AB_2881685' }),
+    [{ candidate: candidate({ identifier: 'AB_10959659' }) }],
+    undefined
+  );
+
+  assert.deepEqual(conflicts, []);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
