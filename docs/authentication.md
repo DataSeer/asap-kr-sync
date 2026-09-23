@@ -45,7 +45,7 @@ Refresh tokens are also persisted in the `refresh_tokens` table (sha256 hash, ex
 
 | reason | written when | a later replay is |
 |---|---|---|
-| `rotation` | the token was rotated out by a normal refresh | **the compromise signal** — wipes the chain, forces a full re-login |
+| `rotation` | the token was rotated out by a normal refresh | **the compromise signal** — wipes the chain, forces a full re-login. **Exception:** a replay within 15 s of the rotation (`ROTATION_RACE_WINDOW_MS`) is the two-tabs-of-one-browser race, not theft: that request is rejected and nothing is wiped — the other tab already holds the successor, and so does the browser's cookie jar. |
 | `logout` | the user logged out (which revokes their whole chain) | benign — a stale tab on another device |
 | `reuse_detected` | the chain was already wiped by a previous replay | benign — the wipe already happened |
 | `account_deleted` | the account was anonymised | benign — there is no longer an account to compromise |
@@ -73,12 +73,34 @@ Pinned by `controllers/password-change-revokes.test.js`.
 
 ### Automatic Token Refresh
 
-The frontend Axios interceptor (`src/frontend/src/services/api.js`) handles 401 responses by:
+The Axios interceptor (`src/frontend/src/services/api.js`) answers a 401 by refreshing
+and replaying. The refresh itself is owned by `src/frontend/src/services/session-reconnect.js`:
 
-1. Checking if the request was already retried (`_retry` flag)
-2. De-duping concurrent failures behind a single in-flight `POST /api/auth/refresh` call — no body, the refresh cookie travels automatically
-3. Retrying the original request (cookies travel automatically; no header rewriting)
-4. On refresh failure: calling `authStore.clearAuth()` and redirecting to `/login`
+1. Skip requests already retried (`_retry`), and `/auth/logout` and `/auth/refresh` themselves.
+2. One refresh per browser, not per tab: a Web Lock serialises the tabs, and a tab that
+   waited checks whether another already refreshed (the CSRF cookie is JS-readable and
+   rotates with every mint, so a *new value* means "done, just retry").
+3. Replay the original request, and every other request that hit the same 401.
+4. A **transient** failure (network, 5xx, 429) is retried with backoff for ~30 s while the
+   `ReconnectingBanner` says "Reconnecting…". The user stays signed in.
+5. Only a **definitive refusal** clears auth and redirects to `/login` — a 401/403 from the
+   refresh endpoint, except `REFRESH_ROTATION_RACE` (see below), which is retried instead.
+
+A refresh token replayed within 15 s of its rotation is the benign two-tab race, not theft:
+the server rejects that one request with code `REFRESH_ROTATION_RACE` and keeps the chain
+(`ROTATION_RACE_WINDOW_MS` in `auth.service.js`). Beyond the window a replay is still treated
+as compromise and wipes every live token for the user.
+
+### Signing Out
+
+`POST /api/auth/logout` revokes **every** still-live refresh token for the user, not just the
+one presented — signing out anywhere signs out everywhere — and clears the three cookies.
+
+The other tabs of the same browser are therefore already dead, but would keep rendering a
+signed-in page until their next API call. `src/frontend/src/services/session-broadcast.js`
+closes that gap with a single same-origin `BroadcastChannel` message carrying no tokens and
+no user data, only the fact that a logout happened; `App.vue` listens and clears auth state.
+Browsers without `BroadcastChannel` fall back to signing out on the next request.
 
 ## Auth0 Integration
 
@@ -284,5 +306,7 @@ Admins can simulate other roles using `authStore.setViewAsRole(role)`. This chan
 | `src/backend/controllers/auth.controller.js` | Auth request handlers |
 | `src/frontend/src/stores/auth.store.js` | Frontend auth state management |
 | `src/frontend/src/services/api.js` | Axios instance with token interceptors |
+| `src/frontend/src/services/session-reconnect.js` | One refresh per browser, backoff on transient failures |
+| `src/frontend/src/services/session-broadcast.js` | Cross-tab logout notification |
 | `src/frontend/src/router/index.js` | Route guards |
 | `conf/rate-limits.json` | Rate limit configuration |

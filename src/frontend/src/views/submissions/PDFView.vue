@@ -15,11 +15,12 @@ import suggestionService from '@/services/suggestion.service'
 import jobService from '@/services/job.service'
 import KRTEditor from '@/components/krt/KRTEditor.vue'
 import EvidenceContext from '@/components/common/EvidenceContext.vue'
+import CurationPanel from '@/components/modules/CurationPanel.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import PipelinePanel from '@/components/submission/PipelinePanel.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
-import { useAuthStore } from '@/stores/auth.store'
+import { krtFileBaseName } from '@/utils/submission'
 import { useResourceTypesStore } from '@/stores/resourceTypes.store'
 import { isFutureStepJob } from '@/composables'
 
@@ -28,11 +29,7 @@ const router = useRouter()
 const submissionStore = useSubmissionStore()
 const krtStore = useKRTStore()
 const notificationStore = useNotificationStore()
-const authStore = useAuthStore()
 const resourceTypesStore = useResourceTypesStore()
-
-// Used to gate the developer "re-validate" button on the KRT editor.
-const isAdmin = computed(() => authStore.effectiveRole === 'admin')
 
 const krtEditorRef = ref(null)
 const submissionHeaderRef = ref(null)
@@ -95,9 +92,21 @@ const jobs = computed(() => bgProcessesRef.value?.jobs || {})
 // and referencing the computed above its declaration is a TDZ throw that takes
 // the whole page down.
 provide('submissionJobs', jobs)
+// Lets the grounding card's "N rows differ from the manuscript" badge bring
+// the user to the suggestions where those conflicts are resolved.
+provide('jumpToSuggestions', scrollToSuggestions)
 
 // Derive analyzing state from job poller
 const pdfAnalysisJob = computed(() => getJob('pdf_analysis'))
+
+// Corrections the app made to the detectors' candidates before they became
+// suggestions — retyped rows and removed ones. Surfaced here because this is
+// where the question is asked: a resource the manuscript plainly mentions can
+// be missing from the list below, and the reason should not require opening a
+// module page. PDF Analysis gathers every detector's log into its own.
+const curationActions = computed(
+  () => pdfAnalysisJob.value?.result?.data?.meta?.curationLog || []
+)
 
 // True while PDF analysis hasn't finished. Includes 'waiting' because
 // pdf_analysis often sits in that state while it queues on upstream
@@ -787,7 +796,7 @@ async function handleValidate() {
       const parts = []
       if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`)
       if (warnings > 0) parts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`)
-      notificationStore.error(`Found ${parts.join(' and ')}. Fix errors before proceeding.`)
+      notificationStore.warning(`Found ${parts.join(' and ')} — see the table.`)
     }
   } catch (error) {
     notificationStore.error('Validation failed')
@@ -1173,16 +1182,15 @@ function scrollToFindingRow(finding) {
     <div v-if="showAckModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
         <div class="px-6 py-4 border-b border-gray-200">
-          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved issues?</h3>
+          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved errors?</h3>
         </div>
         <div class="px-6 py-4">
+          <!-- Wording set by ASAP (feedback 2026-09); only the count is dynamic. -->
           <p class="text-sm text-gray-600">
-            The Key Resources Table still has
-            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>
-            (resource types are all valid). You can proceed, but these issues will remain flagged.
-          </p>
-          <p class="mt-2 text-xs text-gray-500">
-            We recommend fixing them, but you may continue if you know they are acceptable.
+            The Key Resources Table contains
+            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>.
+            We recommend you address these errors. Alternatively, you can proceed to the next step and the
+            errors will remain flagged.
           </p>
         </div>
         <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end space-x-3 rounded-b-lg">
@@ -1334,6 +1342,13 @@ function scrollToFindingRow(finding) {
           </div>
         </div>
 
+        <!-- Why something the manuscript mentions may not be proposed below. -->
+        <CurationPanel
+          :actions="curationActions"
+          heading="Some candidates were corrected before you saw them"
+          class="mb-3"
+        />
+
         <!-- Filter tabs -->
         <div class="suggestion-tabs mb-3">
           <button
@@ -1427,6 +1442,14 @@ function scrollToFindingRow(finding) {
                cellState(): add_row → editable input; edit target → old
                strikethrough stacked above an editable input; edit context →
                KRT row's current value (read-only); delete → strikethrough. -->
+          <!-- Say which block is which. A PM read the manuscript quote below
+               as the proposed edit (ASAP feedback, 2026-09): the row is the
+               change, the quote is only where it comes from. -->
+          <p class="suggestion-block-heading">
+            {{ currentSuggestion.type === 'add_row' ? 'Suggested new row for your KRT'
+              : currentSuggestion.type === 'delete_row' ? 'Suggested removal from your KRT'
+              : 'Suggested change to your KRT — the highlighted cell is what would change' }}
+          </p>
           <div class="suggestion-row-scroll">
             <div class="suggestion-row" :class="{ 'suggestion-row-delete': currentSuggestion.type === 'delete_row' }">
               <!-- RESOURCE TYPE -->
@@ -1563,11 +1586,11 @@ function scrollToFindingRow(finding) {
                still renders, via the fallback below. -->
           <div v-if="currentSuggestion.evidence || currentSuggestion.description || currentSuggestion.detail" class="suggestion-evidence">
             <template v-if="currentSuggestion.evidence && typeof currentSuggestion.evidence === 'object'">
-              <span class="suggestion-evidence-label">Found in manuscript:</span>
+              <span class="suggestion-evidence-label">Where this comes from — quoted from your manuscript, not a change:</span>
               <EvidenceContext :evidence="currentSuggestion.evidence" />
             </template>
             <p v-else-if="currentSuggestion.evidence" class="suggestion-evidence-line">
-              <span class="suggestion-evidence-label">Found in manuscript:</span>
+              <span class="suggestion-evidence-label">Where this comes from — quoted from your manuscript, not a change:</span>
               <span class="italic">"{{ currentSuggestion.evidence }}"</span>
             </p>
             <p v-else-if="currentSuggestion.detail" class="suggestion-evidence-line italic">"{{ currentSuggestion.detail }}"</p>
@@ -1664,9 +1687,8 @@ function scrollToFindingRow(finding) {
           ref="krtEditorRef"
           v-model="activeSuggestionTab"
           :submission-id="route.params.id"
-          :show-revalidate="isAdmin"
           :krt-file-url="krtFile?.s3Url"
-          :download-name="submission?.title || submission?.manuscriptId || ''"
+          :download-name="krtFileBaseName(submission)"
           :active-suggestion-id="currentSuggestion?.id || null"
           @revalidate="handleValidate"
           @suggestion-accepted="handleSuggestionAccepted"
@@ -1707,7 +1729,12 @@ function scrollToFindingRow(finding) {
       <div v-if="showRejectModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="cancelReject">
         <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
           <h3 class="text-sm font-semibold text-gray-900 mb-2">Reject Suggestion</h3>
-          <p class="text-sm text-gray-500 mb-3">Why are you rejecting this suggestion? (optional)</p>
+          <!-- Wording set by ASAP (feedback 2026-09). -->
+          <p class="text-sm text-gray-500 mb-3">
+            Briefly state why you are rejecting this suggestion (optional). The text you enter is saved as part
+            of a KRT Assist session report. You can choose to share this report with ASAP Open Science Staff
+            to expedite their review.
+          </p>
           <textarea
             v-model="rejectionReason"
             class="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
@@ -2070,18 +2097,29 @@ function scrollToFindingRow(finding) {
   padding: 0.5rem 0.75rem;
   background: #fff;
   border: 1px solid #e5e7eb;
+  /* A quotation bar: reads as "cited", not "proposed". */
+  border-left: 3px solid #9ca3af;
   border-radius: 0.375rem;
   font-size: 0.75rem;
   color: #4b5563;
+}
+.suggestion-block-heading {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #6b7280;
 }
 .suggestion-evidence-line {
   margin: 0;
   color: #374151;
 }
 .suggestion-evidence-label {
+  display: block;
   font-weight: 600;
   color: #6b7280;
-  margin-right: 0.25rem;
+  margin-bottom: 0.25rem;
 }
 .suggestion-evidence-desc {
   margin: 0.25rem 0 0;

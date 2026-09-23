@@ -110,11 +110,10 @@ While a step is gated the jobs API reports `waitingReason` — `'krt_validation'
 processes panel turns that into a banner where the progress bar would be, rather than leaving the user to read
 "waiting" and wonder what stalled.
 
-> **Two pipelines, one engine.** `seeded-v1` (the default, every user) seeds `datasets`/`materials`/`protocols`
-> with the author's rows; `blind-v1` (admin-only, not enabled for anyone yet) shows the detectors nothing and
-> reconciles afterwards in `krt_grounding`. The measured trade-off is real in both directions: seeding suppresses
-> discovery by about 24%, while the blind arm confirms fewer author rows. Which prompts a run used is recorded on
-> the run itself — see §2.1f.
+> **Two pipelines, one engine.** `seeded-v1` is the pipeline the app runs: the `datasets`/`materials`/`protocols`
+> prompts carry the author's rows as seeds. `blind-v1` is an internal experiment, admin-only and enabled for
+> nobody, in which the detectors are shown no table. Which prompts a run used is recorded on the run itself —
+> see §2.1f.
 
 ---
 
@@ -130,10 +129,58 @@ through three stages:
 1. **`detect(input)`** — call the engine (external API, LLM, or local scan) → raw output.
 2. **`buildKrtItems(raw)`** — map raw output to `KrtEntry[]` (canonical shape, not yet deduped).
 3. **`attachEvidence(items, index)`** — ground every claim against the manuscript (see §2.1b).
-4. **`dedupeKrtItems(items)`** — collapse duplicates within this detector (reuses the same merge engine as PDF Analysis).
+4. **`dedupeKrtItems(items)`** — **curate**, then collapse duplicates within this detector (reuses the same merge engine as PDF Analysis).
 
 > **No enrichment step.** Detectors no longer fill blanks from the curated enrichment lists — only the
 > **Identifier Detection** module (§3.7) consults the enrichment lists (as its data source, see §2.4).
+
+#### 2.1a′ Candidate curation — the corrections we are certain of
+
+`dedupeKrtItems` first runs every item through **`curateCandidates`**
+(`services/pdf-analysis/curate-candidates.service.js`). It has to happen *before* any merging:
+`shouldMerge` refuses to merge rows that disagree on the resource type, so a protocol typed as software
+survives as a **second row** beside the protocol row for the same DOI — and the author is asked to add
+their own protocol to their KRT as a piece of code (ASAP feedback, 2026-09).
+
+It lives inside `dedupeKrtItems` rather than in each detector because that is the one call every detector
+already makes: a detector added later cannot skip curation without noticing.
+
+| Rule | Condition | Action |
+|---|---|---|
+| `protocol-venue-identifier` | the identifier resolves to a protocol-publishing venue (`PROTOCOL_VENUE_SOURCES`: protocols.io, JoVE, STAR/Bio-protocol, Nature Protocols, …) and the row is not already a Protocol | retype to **Protocol** |
+| `platform-not-a-resource` | the NAME is a hosting platform (protocols.io, GitHub, Zenodo, Dryad, OSF, …) and the identifier is that platform's home page rather than a record | **drop** |
+| `kit-is-not-software` | a **Software/code** row whose name ends in *kit* / *assay kit* / *reagent pack* | retype to **Critical commercial assay** |
+| `instrument-is-not-software` | a **Software/code** row naming an instrument (imaging system, scanner, microscope, spectrometer, concentrator, …) or its bundled acquisition software | retype to **Other** |
+| `lab-made-solution` | a Chemical/Other row with **no source and no identifier** whose name is a generic solution (`PBS`, `TBST`, `lysis buffer`, `milk`) or a recipe over one (`4% PFA in PBS`) | **drop** — it cannot pass KRT validation anyway (SOURCE is required) |
+
+Only corrections that are true by the *shape* of the data: a rule that would have to weigh evidence belongs
+in the prompt or in the LM consolidation. A buffer **with** a supplier or a catalog number is a purchased
+reagent and is kept; a platform row **with** a record identifier is kept (and retyped by rule 1 when that
+record is a protocol).
+
+Each rule is a flag under **`curation`** in `config/pipelines.js`, so one ASAP disagrees with can be turned
+off per pipeline without a deploy, and the eval harness can measure a run with and without it. An absent or
+partial policy runs every rule.
+
+Every action is recorded on the run: `result.data.meta.curated` (a count) and `result.data.meta.curationLog`
+(`{ rule, outcome, from, to, resourceName, identifier, detail, origin }` per action). **PDF Analysis gathers
+every detector's log** into its own `meta.curationLog` (each entry tagged with its `jobType`) and counts it in
+`meta.curatedCount`, so the whole account of what did not reach the Generated KRT sits in one place beside
+the consolidation's `dropped`.
+
+**Where a user sees it** (`components/modules/CurationPanel.vue`, collapsed by default — it explains an
+absence, so it must not compete with the results):
+
+| Surface | Shows | Answers |
+|---|---|---|
+| Step 2, under the suggestions | every detector's corrections, from the PDF Analysis log | "why isn't X proposed?" — asked here |
+| A detector's module page | that detector's own corrections | "is this detector misbehaving?" — keeps attribution |
+| The Generated KRT page | all of them, beside the consolidation's dropped list | one complete account of what was filtered |
+
+A dedicated *module* was considered and rejected: it would have split the answer to "why isn't X here?"
+across two pages, lost the per-detector attribution that identifies which detector erred, missed the LM
+consolidation (a rule set can be applied at several points; a pipeline step runs at one), and added a queue
+job with gates and stall modes for a pure function that cannot fail.
 
 A `KrtEntry` carries: `resourceType`, `resourceName`, `identifier`, `source`, `newReuse` (`new|reuse|''`),
 `origin` (detector label), `confidence` (0–1), `additionalInformation`, and a `detectorMeta` object for
@@ -633,7 +680,6 @@ working manuscript changes behaviour. It is a mitigation and not the fix — the
 failure returned nothing from 42 seeds, well inside a single batch — which is why the guard
 above exists regardless.
 
-Neither applies to a **blind** run: it is given no seeds, so it promises nothing about counts.
 
 ### 3.5 `materials_detection` — Lab materials *(cue-driven)*
 
@@ -656,9 +702,8 @@ Neither applies to a **blind** run: it is given no seeds, so it promises nothing
 - **Purpose:** detect experimental protocol mentions.
 - **Engine:** **Google Gemini** over the Markdown, with a **post-filter** that reclassifies purely computational
   / in-silico "protocols" as software (`isInSilicoProtocol`) — encoding an ASAP domain rule in code. Parses
-  defensively (fenced-code stripping, markdown-escape repair). The prompt's former "Section 0" — the author's own
-  protocol rows, injected as authoritative base records — is what `blind-v1` removes; under the default
-  `seeded-v1` the author's protocol rows are still passed as seeds (see §1). Recent prompt fixes: don't
+  defensively (fenced-code stripping, markdown-escape repair). The prompt's "Section 0" injects the author's own
+  protocol rows as authoritative base records (see §1). Recent prompt fixes: don't
   pull a reagent vendor as Source or a catalog#/RRID as Identifier; capture protocols.io DOIs/URLs + citations;
   exclude analyses; and improve new/reuse classification.
 - **Depends on:** `markdown_convert`, **gated on `krt_curated`** (see §1). **Output:** `KrtEntry[]` (Protocol).
@@ -668,9 +713,7 @@ Neither applies to a **blind** run: it is given no seeds, so it promises nothing
 - **Demo:** `getDemoProtocolMentions(manuscriptId)`.
 - **Key files:** `services/protocols/protocols.service.js`, `config/protocols-detection-api.js`.
 
-> **`services/krt/author-krt-seeds.service.js` is production code, on the detection path.** An earlier revision of
-> this note claimed the opposite — that nothing called it any more and it survived only as eval scaffolding. That
-> was true for exactly as long as `blind-v1` was the only pipeline. Under the default `seeded-v1` it is loaded by
+> **`services/krt/author-krt-seeds.service.js` is production code, on the detection path.** It is loaded by
 > three strategies (`datasets/strategies/seeded.js`, `materials/strategies/seeded.js`,
 > `protocols/strategies/seeded.js`) plus `datasets.service.js`, and their prompts carry the author's rows.
 >

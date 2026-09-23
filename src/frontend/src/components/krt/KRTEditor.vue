@@ -20,10 +20,6 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
-  showRevalidate: {
-    type: Boolean,
-    default: false
-  },
   krtFileUrl: {
     type: String,
     default: ''
@@ -65,7 +61,6 @@ const emit = defineEmits([
   'suggestion-accepted',
   'suggestion-rejected',
   'scroll-to-suggestions',
-  'revalidate',
   'update:modelValue',
   'select-suggestion'
 ])
@@ -334,12 +329,7 @@ function getContributingSources(suggestion) {
 // and V8's Array.prototype.sort is stable since Node 12, so equal-keyed rows
 // keep their original relative position automatically.
 function defaultSort(a, b) {
-  const groupA = resourceTypesStore.getGroupSortOrder(a['RESOURCE TYPE'])
-  const groupB = resourceTypesStore.getGroupSortOrder(b['RESOURCE TYPE'])
-  if (groupA !== groupB) return groupA - groupB
-  const typeA = resourceTypesStore.getTypeSortOrder(a['RESOURCE TYPE'])
-  const typeB = resourceTypesStore.getTypeSortOrder(b['RESOURCE TYPE'])
-  return typeA - typeB
+  return resourceTypesStore.compareRowsByResourceType(a, b)
 }
 
 // Filtered + ordered rows. Separation of concerns (#16): the TABS filter by
@@ -726,6 +716,23 @@ function startEdit(row, column, rowIndex) {
   showEditModal.value = true
 }
 
+/**
+ * The message for a failed cell write. The server's own error when it sent
+ * one ("Too many requests…", "Invalid token", a validation refusal), the
+ * generic line otherwise — a bare "Failed to update cell" hid which of those
+ * had happened.
+ * @param {Error} err
+ * @returns {string}
+ */
+function cellUpdateFailure(err) {
+  const detail = err?.response?.data?.error || err?.response?.data?.message
+  const status = err?.response?.status
+  if (detail) return `Failed to update cell: ${detail}`
+  if (status === 429) return 'Failed to update cell: too many requests — wait a moment and try again'
+  if (status === 401) return 'Failed to update cell: your session expired — please sign in again'
+  return 'Failed to update cell'
+}
+
 async function saveModalEdit() {
   if (!modalCell.value) return
 
@@ -734,7 +741,9 @@ async function saveModalEdit() {
     notificationStore.success('Cell updated')
     closeEditModal()
   } catch (error) {
-    notificationStore.error('Failed to update cell')
+    // Say what the server said: a rate limit or an expired session reads very
+    // differently from a validation refusal (ASAP could not tell, 2026-09).
+    notificationStore.error(cellUpdateFailure(error))
   }
 }
 
@@ -744,7 +753,9 @@ async function setQuickNoIdentifier(rowId, field) {
     await krtStore.updateCell(props.submissionId, rowId, field, 'No identifier exists')
     notificationStore.success('Set to "No identifier exists"')
   } catch (error) {
-    notificationStore.error('Failed to update cell')
+    // Say what the server said: a rate limit or an expired session reads very
+    // differently from a validation refusal (ASAP could not tell, 2026-09).
+    notificationStore.error(cellUpdateFailure(error))
   }
 }
 
@@ -754,7 +765,9 @@ async function setQuickIdentifierPending(rowId, field) {
     await krtStore.updateCell(props.submissionId, rowId, field, 'Identifier pending')
     notificationStore.success('Set to "Identifier pending"')
   } catch (error) {
-    notificationStore.error('Failed to update cell')
+    // Say what the server said: a rate limit or an expired session reads very
+    // differently from a validation refusal (ASAP could not tell, 2026-09).
+    notificationStore.error(cellUpdateFailure(error))
   }
 }
 
@@ -765,12 +778,14 @@ async function setQuickSourceNone(rowId, field) {
     await krtStore.updateCell(props.submissionId, rowId, field, 'None')
     notificationStore.success('Source set to "None"')
   } catch (error) {
-    notificationStore.error('Failed to update cell')
+    // Say what the server said: a rate limit or an expired session reads very
+    // differently from a validation refusal (ASAP could not tell, 2026-09).
+    notificationStore.error(cellUpdateFailure(error))
   }
 }
 
-// Build a safe download base name (#19): prefer the provided Title, fall back
-// to the submission id. Strips characters that don't belong in a file name.
+// Download base name: the host view passes one built by krtFileBaseName
+// (manuscript id first); this only guards against a missing or unsafe value.
 function downloadBaseName() {
   const raw = (props.downloadName || '').trim()
   if (raw) {
@@ -1724,20 +1739,8 @@ defineExpose({
             </button>
           </div>
         </div>
-        <!-- Re-validate -->
-        <button
-          v-if="showRevalidate && !readonly"
-          :disabled="loading"
-          class="btn-secondary text-sm inline-flex items-center"
-          v-tooltip="'Re-validate KRT'"
-          @click="emit('revalidate')"
-        >
-          <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          <span v-if="loading">Validating...</span>
-          <span v-else>Re-validate</span>
-        </button>
+        <!-- No "Re-validate" button: validation runs after every edit, so the
+             button did nothing visible (ASAP feedback, 2026-09). -->
         <!-- Add Row -->
         <button
           v-if="!readonly"
@@ -2692,7 +2695,12 @@ defineExpose({
       <div v-if="showRejectModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="cancelRejectModal">
         <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
           <h3 class="text-sm font-semibold text-gray-900 mb-2">Reject Suggestion</h3>
-          <p class="text-sm text-gray-500 mb-3">Why are you rejecting this suggestion? (optional)</p>
+          <!-- Wording set by ASAP (feedback 2026-09). -->
+          <p class="text-sm text-gray-500 mb-3">
+            Briefly state why you are rejecting this suggestion (optional). The text you enter is saved as part
+            of a KRT Assist session report. You can choose to share this report with ASAP Open Science Staff
+            to expedite their review.
+          </p>
           <textarea
             v-model="rejectReasonText"
             class="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"

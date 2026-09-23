@@ -25,6 +25,32 @@ const PIPELINES = Object.freeze({
       protocols: 'protocols.seeded',
       datasets: 'datasets.seeded'
     },
+    /**
+     * Which candidate-curation rules run before anything is merged
+     * (`services/pdf-analysis/curate-candidates.service.js`). Each one is a
+     * correction that is certain from the SHAPE of a candidate — a
+     * protocols.io DOI is a protocol, an assay kit is not software — and each
+     * is listed here so a rule ASAP disagrees with can be turned off without a
+     * deploy, and so the eval harness can measure a run with and without it.
+     * Omitting the key runs every rule.
+     */
+    curation: {
+      // A protocol-venue identifier (protocols.io, JoVE, Nature Protocols…)
+      // retypes its row to Protocol. Without it the row cannot merge with the
+      // protocol detectors' row for the same DOI, and the author is asked to
+      // add their own protocol to the KRT as a piece of code.
+      protocolVenue: true,
+      // A row naming a hosting platform (protocols.io, GitHub, Zenodo…) whose
+      // identifier is that platform's home page rather than a record.
+      platforms: true,
+      // "… kit" on a Software/code row → Critical commercial assay.
+      kits: true,
+      // An instrument, or the software bundled with it → Other.
+      instruments: true,
+      // A buffer or solution mixed at the bench with no supplier and no
+      // catalog number: nothing to cite, and it cannot pass validation.
+      labSolutions: true
+    },
     merge: {
       // Candidates whose quote AND resource are both absent from the manuscript
       // are dropped. `embellished` is kept: the quote is not verbatim but the
@@ -81,6 +107,32 @@ const PIPELINES = Object.freeze({
       materials: 'materials.blind',
       protocols: 'protocols.blind',
       datasets: 'datasets.blind'
+    },
+    /**
+     * Which candidate-curation rules run before anything is merged
+     * (`services/pdf-analysis/curate-candidates.service.js`). Each one is a
+     * correction that is certain from the SHAPE of a candidate — a
+     * protocols.io DOI is a protocol, an assay kit is not software — and each
+     * is listed here so a rule ASAP disagrees with can be turned off without a
+     * deploy, and so the eval harness can measure a run with and without it.
+     * Omitting the key runs every rule.
+     */
+    curation: {
+      // A protocol-venue identifier (protocols.io, JoVE, Nature Protocols…)
+      // retypes its row to Protocol. Without it the row cannot merge with the
+      // protocol detectors' row for the same DOI, and the author is asked to
+      // add their own protocol to the KRT as a piece of code.
+      protocolVenue: true,
+      // A row naming a hosting platform (protocols.io, GitHub, Zenodo…) whose
+      // identifier is that platform's home page rather than a record.
+      platforms: true,
+      // "… kit" on a Software/code row → Critical commercial assay.
+      kits: true,
+      // An instrument, or the software bundled with it → Other.
+      instruments: true,
+      // A buffer or solution mixed at the bench with no supplier and no
+      // catalog number: nothing to cite, and it cannot pass validation.
+      labSolutions: true
     },
     merge: { dropUnsupported: true },
     reconcile: { carryAuthorRows: 'all' },

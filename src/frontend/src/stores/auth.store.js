@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import authService from '@/services/auth.service'
+import { announceLogout } from '@/services/session-broadcast'
+import { useNotificationStore } from '@/stores/notification.store'
 
 export const useAuthStore = defineStore('auth', () => {
   // ── State ────────────────────────────────────────────────────────
@@ -166,6 +168,10 @@ export const useAuthStore = defineStore('auth', () => {
     }
 
     clearAuth()
+    // The server revoked every refresh token for this user, so the other tabs
+    // are already dead — tell them now instead of letting them find out on
+    // their next request.
+    announceLogout()
 
     // Auth0-linked users: redirect to Auth0 /v2/logout to terminate the
     // upstream session. Auth0 will redirect back to ${FRONTEND_URL}/login.
@@ -213,6 +219,9 @@ export const useAuthStore = defineStore('auth', () => {
   function clearAuth() {
     user.value = null
     viewAsRole.value = null
+    // Toasts belong to the session that raised them: a stale "Found 15
+    // errors" must not greet the next login (or sit on the login page).
+    useNotificationStore().clear()
   }
 
   // Check if user can access a submission (uses effectiveRole for UI

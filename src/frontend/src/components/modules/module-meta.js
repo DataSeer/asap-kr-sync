@@ -11,7 +11,8 @@
 export const MODULE_META = {
   markdown_convert: { label: 'Markdown Convert', purpose: 'Turns the manuscript PDF into text everything else reads.' },
   orcid_extraction: { label: 'ORCID Extraction', purpose: 'Finds the authors and their ORCID identifiers.' },
-  das_extraction: { label: 'DAS Extraction', purpose: 'Locates the Data Availability Statement.' },
+  // "Statement", not "DAS": users do not know the acronym (ASAP feedback, 2026-09).
+  das_extraction: { label: 'Statement Extraction', purpose: 'Locates the Data Availability Statement.' },
   software_detection: { label: 'Software Detection', purpose: 'Finds software and code, by name recognition and an LM pass.' },
   datasets_detection: { label: 'Datasets Detection', purpose: 'Finds datasets and the repositories they live in.' },
   materials_detection: { label: 'Materials Detection', purpose: 'Finds lab materials — antibodies, plasmids, cell lines, organisms.' },
@@ -24,7 +25,7 @@ export const MODULE_META = {
   // pipeline step like any other. The panel on the KRT and PDF steps does not
   // show it — its list is its own, and those steps are not where this runs.
   das_suggestions: {
-    label: 'DAS Suggestions',
+    label: 'Statement Suggestions',
     purpose: 'Checks your Availability Statement against the ASAP rulebook, using your KRT.'
   }
 }

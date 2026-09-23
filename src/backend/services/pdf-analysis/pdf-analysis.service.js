@@ -145,9 +145,17 @@ async function buildGeneratedKrt(submission, jobLogger) {
   const startTime = Date.now();
 
   const contributions = [];
+  // What each detector's own curation corrected, gathered here so the whole
+  // picture of "what did not make it into the Generated KRT" lives in ONE
+  // place — beside the candidates consolidation dropped — instead of the user
+  // having to open five module pages to find it.
+  const curationLog = [];
   for (const { source, jobType } of CONTRIBUTOR_SOURCES) {
     const job = await SubmissionJob.getLatest(submissionId, jobType, round);
     const items = job?.result?.data?.items || [];
+    for (const action of job?.result?.data?.meta?.curationLog || []) {
+      curationLog.push({ ...action, jobType });
+    }
     if (items.length > 0) {
       contributions.push({ source, items });
     }
@@ -233,6 +241,11 @@ async function buildGeneratedKrt(submission, jobLogger) {
       candidateCount: candidates.length,
       droppedCount: dropped.length,
       dropped,
+      // Every correction the detectors' curation made upstream (retypes and
+      // drops), so this page can show the full account of what did not reach
+      // the Generated KRT as the detector first proposed it.
+      curatedCount: curationLog.length,
+      curationLog,
       usedLM,
       // Consolidation falls back to a deterministic merge when the model is
       // unavailable; naming a prompt on that run would be a lie.

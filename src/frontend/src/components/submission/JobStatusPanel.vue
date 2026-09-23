@@ -74,6 +74,11 @@ const statusUnreadable = computed(() =>
  */
 const injectedIssues = inject('pipelineIssues', ref([]))
 const submissionIdForDecision = inject('submissionIdForDecision', ref(null))
+
+// Where a grounding conflict is acted on. Step 2 provides a scroll to its
+// suggestions section; elsewhere (pipeline page, run history) there is nothing
+// to jump to and the badge stays a plain label.
+const jumpToSuggestions = inject('jumpToSuggestions', null)
 const { busy: decisionBusy, act: decide } = useIssueDecision(submissionIdForDecision)
 
 /** Undecided issues, by step. */
@@ -228,7 +233,7 @@ const canRestartJobs = computed(() => authStore.canRestartJobs)
 // MATERIALS_DETECTION_ENABLED=false in the env).
 const ALL_JOB_TYPES = [
   // Row 1
-  { type: 'das_extraction', label: 'DAS Extraction' },
+  { type: 'das_extraction', label: 'Statement Extraction' },
   { type: 'software_detection', label: 'Software Detection' },
   { type: 'markdown_convert', label: 'Markdown Convert' },
   { type: 'orcid_extraction', label: 'ORCID Extraction' },
@@ -670,9 +675,9 @@ function getResultSummary(job) {
 function getDataSummary(job, r) {
   switch (job.type) {
     case 'das_extraction': {
-      if (!r.status?.detected) return 'DAS not found'
+      if (!r.status?.detected) return 'Statement not found'
       const len = r.data?.das?.length || 0
-      return `DAS extracted (${len} chars)`
+      return `Statement extracted (${len} chars)`
     }
     case 'pdf_analysis': {
       // The worker stores the merged resource count under `counts.resources`
@@ -937,7 +942,7 @@ async function downloadRawResponse(jobType, responseName) {
                difference from the pipeline page reads as a scope rather than a
                missing step. -->
           <span
-            v-tooltip="'These are the ' + jobSummary.total + ' steps that read the manuscript and your Key Resources Table, which you handle on steps 1 and 2. The pipeline has one more — the Availability Statement check — and it runs on step 4, once you confirm your statement.'"
+            v-tooltip="'These are the ' + jobSummary.total + ' steps that read the manuscript and your Key Resources Table, which you handle on steps 1 and 2. The pipeline has one more — the Availability Statement check — and it runs on step 4, once you confirm your statement. While they run you can keep editing the table, but they read the version frozen when the round started: your edits reach the analysis on the next run.'"
             class="job-summary-badge job-status-complete"
           >
             {{ jobSummary.done }}/{{ jobSummary.total }} done
@@ -951,8 +956,10 @@ async function downloadRawResponse(jobType, responseName) {
           :style="{ width: `${etaProgress * 100}%` }"
         ></div>
       </div>
+      <!-- Wording set by ASAP (feedback 2026-09). The frozen-version caveat that
+           used to sit here lives in the steps tooltip above. -->
       <p v-if="anyInFlight && !paused" class="job-status-eta-hint">
-        You can keep editing the Key Resources Table, but these steps read the version frozen when the round started — your edits reach the analysis on the next run, not this one.
+        An AI-powered analysis is currently running. When it’s complete, you will receive suggested edits for your KRT.
       </p>
       <div class="job-status-eta-footer">
         <button type="button" class="job-status-eta-toggle" @click="toggleCollapsed">
@@ -1092,14 +1099,21 @@ async function downloadRawResponse(jobType, responseName) {
           >run {{ job.runNumber }}</span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
 
-          <!-- A KRT/manuscript disagreement is a defect, not a statistic, so it
-               gets its own badge in the error colour rather than a clause at
-               the end of a grey summary line. -->
-          <span
+          <!-- A KRT/manuscript disagreement gets its own badge rather than a
+               clause at the end of a grey summary line. Gold, not red: it is
+               something to review, not a failure (ASAP feedback, 2026-09 —
+               "I'm not sure what I'm supposed to do about these 6 conflicts").
+               Each conflict is already an edit suggestion below, so on Step 2
+               the badge is a button that takes the user there. -->
+          <component
+            :is="jumpToSuggestions ? 'button' : 'span'"
             v-if="conflictCount(job) > 0"
+            :type="jumpToSuggestions ? 'button' : undefined"
             class="job-summary-badge job-conflict-badge"
-            v-tooltip="conflictCount(job) + ' KRT row(s) hold a value the manuscript contradicts. One of the two is wrong — open the module to see which values differ.'"
-          >{{ conflictCount(job) }} conflict{{ conflictCount(job) === 1 ? '' : 's' }}</span>
+            :class="{ 'job-conflict-badge-link': jumpToSuggestions }"
+            v-tooltip="conflictCount(job) + ' KRT row(s) hold a value the manuscript prints differently. Each one is an edit suggestion' + (jumpToSuggestions ? ' — click to review them.' : ' on Step 2 — accept or reject it there.')"
+            @click.prevent.stop="jumpToSuggestions && jumpToSuggestions()"
+          >{{ conflictCount(job) }} row{{ conflictCount(job) === 1 ? '' : 's' }} differ{{ conflictCount(job) === 1 ? 's' : '' }} from the manuscript</component>
         </div>
 
         <!-- The decision, on the step it is about. The buttons stop the click
@@ -1628,9 +1642,18 @@ async function downloadRawResponse(jobType, responseName) {
 
 .job-status-item-link { text-decoration: none; color: inherit; display: block; }
 .job-conflict-badge {
-  background: #fef2f2;
-  color: #b91c1c;
-  border: 1px solid #fecaca;
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+.job-conflict-badge-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font: inherit;
+}
+.job-conflict-badge-link:hover {
+  background: #fef3c7;
 }
 /* Outcome verdict: located, but only by a partial name match. Blue reads as
    "found, low confidence" rather than the grey of a degraded quote. */

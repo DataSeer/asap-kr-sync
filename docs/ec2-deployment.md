@@ -167,8 +167,10 @@ DATABASE_POOL_MAX=20
 
 # JWT — generate with: node scripts/generate-jwt-secret.js
 JWT_SECRET=REPLACE_WITH_A_STRONG_RANDOM_SECRET
-JWT_EXPIRES_IN=7d
-JWT_REFRESH_EXPIRES_IN=30d
+# Leave these unset to use the code defaults (15m / 7d). An access token
+# longer than 15m delays propagation of a role change or an Auth0 block.
+JWT_EXPIRES_IN=15m
+JWT_REFRESH_EXPIRES_IN=7d
 
 # Auth0 (ASAP Hub identity provider)
 AUTH0_DOMAIN=your-tenant.us.auth0.com

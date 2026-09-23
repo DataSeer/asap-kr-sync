@@ -256,7 +256,11 @@ function confirmReject() {
             <!-- Rejection reason input: replaces the Accept/Reject row while the
                  user is composing a reason. Cancel restores the original row. -->
             <div v-else class="reject-reason">
-              <p class="reject-reason-label">Why are you rejecting this? (optional)</p>
+              <!-- Wording set by ASAP (feedback 2026-09), shortened to fit the inline form. -->
+              <p class="reject-reason-label">
+                Briefly state why you are rejecting this suggestion (optional). Your reason is saved in the
+                KRT Assist session report, which you can share with ASAP Open Science Staff.
+              </p>
               <textarea
                 ref="rejectReasonRef"
                 v-model="rejectReasonText"

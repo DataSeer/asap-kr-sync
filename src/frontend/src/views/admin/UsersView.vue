@@ -348,7 +348,14 @@ async function handleCreateUser() {
             -->
             <div v-if="isAdmin && !editingUser?.isAuth0User">
               <label class="label">New Password</label>
-              <input v-model="editForm.password" type="password" class="input" placeholder="Leave blank to keep current" />
+              <input
+                v-model="editForm.password"
+                type="password"
+                class="input"
+                placeholder="Leave blank to keep current"
+                minlength="8"
+                maxlength="128"
+              />
             </div>
             <p v-else-if="editingUser?.isAuth0User" class="text-xs text-gray-500">
               This is an ASAP Hub (Auth0) account — its password is managed by the identity provider.
@@ -388,7 +395,7 @@ async function handleCreateUser() {
 
             <div>
               <label class="label">Password</label>
-              <input v-model="createForm.password" type="password" class="input" required minlength="8" />
+              <input v-model="createForm.password" type="password" class="input" required minlength="8" maxlength="128" />
             </div>
 
             <div>

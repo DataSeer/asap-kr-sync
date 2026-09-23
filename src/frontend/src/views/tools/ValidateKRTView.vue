@@ -75,21 +75,6 @@ async function handleFileUpload(event) {
   event.target.value = ''
 }
 
-async function handleRevalidate() {
-  try {
-    await localStore.validate()
-    const { totalErrors, totalWarnings } = localStore.summary
-    if (totalErrors === 0 && totalWarnings === 0) {
-      notificationStore.success('Key Resources Table is valid — no issues found.')
-    } else if (totalErrors === 0) {
-      notificationStore.success(`Valid with ${totalWarnings} warning${totalWarnings > 1 ? 's' : ''}.`)
-    } else {
-      notificationStore.error(`Found ${totalErrors} error${totalErrors > 1 ? 's' : ''} to fix.`)
-    }
-  } catch (error) {
-    notificationStore.error('Validation failed')
-  }
-}
 
 // Drag-and-drop
 function handleDragEnter(event) {
@@ -116,9 +101,11 @@ async function handleDrop(event) {
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 class="text-xl font-semibold text-gray-900">Validate a Key Resources Table</h1>
+          <!-- Wording set by ASAP (feedback 2026-09). -->
           <p class="mt-1 text-sm text-gray-600 max-w-2xl">
-            Upload a KRT to check its formatting, fix any errors or warnings inline, and download the
-            corrected file. Nothing is saved — this is a private sanity check that never creates a submission.
+            You may use this page to ensure your KRT is formatted according to ASAP KRT standards. This page
+            does not require a manuscript PDF. <strong>Nothing is saved.</strong> However, you can download your
+            updated KRT.
           </p>
         </div>
         <input
@@ -189,9 +176,7 @@ async function handleDrop(event) {
       <h3 class="text-sm font-medium text-gray-700 mb-3">Key Resources Table</h3>
       <KRTEditor
         submission-id="local"
-        :show-revalidate="true"
         :show-suggestions="false"
-        @revalidate="handleRevalidate"
       />
     </div>
   </div>

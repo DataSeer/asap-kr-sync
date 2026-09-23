@@ -70,6 +70,24 @@ export const useResourceTypesStore = defineStore('resourceTypes', () => {
     return idx === -1 ? Number.MAX_SAFE_INTEGER : idx
   }
 
+  /**
+   * THE row order of the app: by tab group (datasets, software, protocols,
+   * lab materials), then by resource type in its configured order, ties kept
+   * in the rows' existing order (Array.prototype.sort is stable). One
+   * comparator so every step shows the table in the same order — Step 3 had
+   * its own and the same KRT read differently there (ASAP feedback, 2026-09).
+   *
+   * @param {object} a - row keyed by the uppercase KRT columns
+   * @param {object} b
+   * @returns {number}
+   */
+  function compareRowsByResourceType(a, b) {
+    const groupA = getGroupSortOrder(a['RESOURCE TYPE'])
+    const groupB = getGroupSortOrder(b['RESOURCE TYPE'])
+    if (groupA !== groupB) return groupA - groupB
+    return getTypeSortOrder(a['RESOURCE TYPE']) - getTypeSortOrder(b['RESOURCE TYPE'])
+  }
+
   // Actions
   async function fetchResourceTypes(params = {}) {
     loading.value = true
@@ -191,6 +209,7 @@ export const useResourceTypesStore = defineStore('resourceTypes', () => {
     getTabGroup,
     getGroupSortOrder,
     getTypeSortOrder,
+    compareRowsByResourceType,
     // Actions
     fetchResourceTypes,
     fetchResourceTypeNames,

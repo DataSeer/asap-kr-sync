@@ -278,26 +278,25 @@ async function regenerateDasSuggestions() {
 }
 
 // Step help items
+// Wording set by ASAP (feedback 2026-09).
 const helpItems = computed(() => [
   {
-    title: 'Check your Availability Statement is the right one',
+    title: 'Confirm Availability Statement',
     children: [
-      'We read it out of your manuscript automatically — it can pick the wrong passage, or miss it',
-      'Edit it here if it is wrong, then confirm it',
-      'No recommendations appear until you do: they would be about the wrong statement'
+      'The Availability Statement is auto-extracted from the PDF. If it is incorrect, insert the correct Availability Statement'
     ],
     done: dasConfirmed.value
   },
   {
-    title: 'Review recommendations',
+    title: 'Address recommendations',
     children: [
-      'Outside of this app, edit your manuscript to address each recommendation',
-      'Confirm that each recommendation has been addressed or rejected'
+      'Update your Availability Statement until the app returns no errors or warnings, or until you believe it to be satisfactory',
+      'Add this updated Availability Statement to your manuscript (take this action outside of this app)'
     ],
     done: false
   },
   {
-    title: 'Click "Continue" to generate a Key Resources Table Assist report',
+    title: 'Click "Continue" to generate an updated KRT and KRT Assist Report to download',
     done: false
   }
 ])
@@ -355,7 +354,7 @@ onUnmounted(stopPolling)
 
 watch(submission, (sub) => {
   if (sub) {
-    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 4: Edit manuscript')
+    setSubmissionTitle(sub.title || sub.manuscriptId, 'Step 4: Availability Statement')
   }
 }, { immediate: true })
 
@@ -606,7 +605,7 @@ async function handleBack() {
     <SubmissionHeader
       :submission="submission"
       :latest-files="latestFiles"
-      step-title="Step 4: Edit manuscript"
+      step-title="Step 4: Availability Statement"
       step-description="Review your Data/Code Availability Statement"
       :help-items="helpItems"
       :show-navigation="true"

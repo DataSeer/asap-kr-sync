@@ -201,7 +201,10 @@ Manages KRT table data, cell editing, validation, and AI suggestions.
 
 ### Notification Store (`notification.store.js`)
 
-Toast notification system with auto-dismiss.
+Toast notification system with auto-dismiss: success / warning / info fade after 5 s, errors after 8 s
+(pass `duration: 0` for one that must be dismissed by hand). At most 3 toasts stack (oldest dropped) so
+they never cover the bottom-right action buttons, and `authStore.clearAuth()` empties the stack so nothing
+outlives a logout.
 
 **Actions:** `success()`, `error()`, `warning()`, `info()`, `remove()`, `clear()`
 

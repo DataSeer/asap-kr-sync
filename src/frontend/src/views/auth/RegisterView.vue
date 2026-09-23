@@ -103,6 +103,8 @@ async function handleSubmit() {
               type="password"
               required
               class="input"
+              minlength="8"
+              maxlength="128"
               placeholder="Create a password"
             />
           </div>
@@ -116,6 +118,8 @@ async function handleSubmit() {
               type="password"
               required
               class="input"
+              minlength="8"
+              maxlength="128"
               placeholder="Confirm your password"
             />
           </div>

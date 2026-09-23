@@ -16,7 +16,7 @@ import fileService from '@/services/file.service'
 import krtService from '@/services/krt.service'
 import { useNotificationStore } from '@/stores/notification.store'
 import { useSubmissionStore } from '@/stores/submission.store'
-import { statusToStep } from '@/utils/submission'
+import { statusToStep, krtFileBaseName } from '@/utils/submission'
 
 // Optional injection — provided by KRTView (step 2) and PDFView (step 3), the
 // two views that poll jobs. Other views render the header without it and the
@@ -125,7 +125,7 @@ const currentStep = computed(() => statusToStep(props.submission?.status))
 const isComplete = computed(() => props.submission?.status === 'completed')
 
 // Step labels for navigation
-const stepLabels = ['Key Resources Table', 'Manuscript', 'Approve', 'Edit', 'Report']
+const stepLabels = ['Key Resources Table', 'Manuscript', 'Approve', 'Statement', 'Report']
 
 // Truncate title if longer than 100 characters
 const truncatedTitle = computed(() => {
@@ -209,8 +209,7 @@ async function downloadCurrentKRT(round) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    const suffix = round ? `_v${round}` : ''
-    a.download = `krt_${props.submission.id}${suffix}.csv`
+    a.download = `${krtFileBaseName(props.submission, { round })}.csv`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -412,6 +411,7 @@ async function downloadCurrentKRT(round) {
           :class="{ 'help-highlight-flash': helpHighlight }"
           class="help-panel-scroll-target"
           @close="showHelp = false"
+          @continue="canGoNext ? emit('go-next') : handleDisabledNextClick()"
         />
       </Transition>
     </div><!-- /.submission-header-rest -->

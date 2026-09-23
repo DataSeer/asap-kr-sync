@@ -14,7 +14,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useAuthStore } from './auth.store'
 
-vi.mock('@/services/auth.service', () => ({ default: {} }))
+vi.mock('@/services/auth.service', () => ({ default: { logout: vi.fn() } }))
+vi.mock('@/services/session-broadcast', () => ({ announceLogout: vi.fn() }))
+
+import authService from '@/services/auth.service'
+import { announceLogout } from '@/services/session-broadcast'
 
 const CAPABILITIES = [
   'isAdmin', 'isStaff',
@@ -218,5 +222,32 @@ describe('the Auth0 flag', () => {
 
     store.user = user('author', { auth0Sub: 'auth0|123' })
     expect(store.isAuth0User).toBe(false)
+  })
+})
+
+describe('logout', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    authService.logout.mockResolvedValue({})
+  })
+
+  it('tells the other tabs of this browser', async () => {
+    const store = useAuthStore()
+    store.user = { id: 'u1', role: 'author' }
+    await store.logout()
+    expect(store.user).toBeNull()
+    expect(announceLogout).toHaveBeenCalledTimes(1)
+  })
+
+  it('still clears and announces when the server call fails', async () => {
+    // The cookies may already be gone; the other tabs must not be left behind
+    // because the network chose that moment to drop.
+    authService.logout.mockRejectedValue(new Error('offline'))
+    const store = useAuthStore()
+    store.user = { id: 'u1', role: 'author' }
+    await store.logout()
+    expect(store.user).toBeNull()
+    expect(announceLogout).toHaveBeenCalledTimes(1)
   })
 })

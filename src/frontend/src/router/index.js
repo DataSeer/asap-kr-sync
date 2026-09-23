@@ -92,7 +92,7 @@ const routes = [
         path: 'submissions/:id/availability',
         name: 'submission-availability',
         component: AvailabilityView,
-        meta: { title: 'Step 4: Edit manuscript', isSubmissionPage: true }
+        meta: { title: 'Step 4: Availability Statement', isSubmissionPage: true }
       },
       {
         // The pipeline as a graph: every step, what it waits for, what it

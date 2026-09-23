@@ -30,6 +30,7 @@ import DasSuggestionsTable from '@/components/modules/DasSuggestionsTable.vue'
 import MarkdownViewer from '@/components/modules/MarkdownViewer.vue'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import ModuleTechnical from '@/components/modules/ModuleTechnical.vue'
+import CurationPanel from '@/components/modules/CurationPanel.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import { explainerFor } from '@/components/modules/module-explainers'
 import { labelFor, hasModulePage } from '@/components/modules/module-meta'
@@ -586,6 +587,12 @@ const visibleDecisionRows = computed(() => {
 const isKrt = computed(() => jobType.value === 'pdf_analysis')
 const krtItems = computed(() => (isKrt.value ? job.value?.result?.data?.items || [] : []))
 const krtDropped = computed(() => job.value?.result?.data?.meta?.dropped || [])
+
+// What curation corrected. On a detector page these are this detector's own
+// corrections; on the Generated KRT page, every detector's, gathered by PDF
+// Analysis — so the full account of what did not reach the KRT as proposed
+// sits beside the candidates consolidation dropped.
+const curationActions = computed(() => job.value?.result?.data?.meta?.curationLog || [])
 const krtRows = computed(() => buildKrtRows(krtItems.value))
 
 /** Resource type of each group, taken from its first row. */
@@ -670,9 +677,19 @@ const matches = (o, q) => !q || [o.resourceType, o.resourceName, o.source, o.ide
 /** Whichever list this module produced — the toolbar treats both the same. */
 const rows = computed(() => (isDetection.value ? detections.value : outcomes.value))
 
+/**
+ * Grounding only: show just the rows the manuscript contradicts.
+ *
+ * A run reports one outcome per author row — a hundred of them on a real KRT —
+ * and the conflicts are the few a curator has to act on. Finding them meant
+ * scrolling the whole table hunting for a badge.
+ */
+const conflictsOnly = ref(false)
+
 const visible = computed(() => {
   const q = search.value.trim().toLowerCase()
   return rows.value.filter((o) => {
+    if (conflictsOnly.value && !(o.conflicts?.length > 0)) return false
     if (tab.value !== 'all'
         && resourceTypesStore.getTabGroup(o.resourceType || '') !== tab.value) return false
     return matches(o, q)
@@ -913,6 +930,22 @@ const tabConflicts = computed(() => {
             <span class="mrv-tab-count">{{ tabCounts[t.key] || 0 }}</span>
             <span v-if="tabConflicts[t.key] > 0" class="mrv-tab-conflicts">⚠ {{ tabConflicts[t.key] }}</span>
           </button>
+          <!-- Inside the tab row, not beside it: this is another way to narrow
+               the same table, and a separate strip pushed the search onto its
+               own line and the table below the fold. -->
+          <button
+            v-if="jobType === 'krt_grounding' && tabConflicts.all > 0"
+            type="button"
+            class="mrv-tab mrv-tab-conflicts-only"
+            :class="{ 'mrv-tab-active': conflictsOnly }"
+            v-tooltip="conflictsOnly
+              ? 'Click to show every row again'
+              : 'Show only the rows the manuscript contradicts'"
+            @click="conflictsOnly = !conflictsOnly"
+          >
+            ⚠ Conflicts
+            <span class="mrv-tab-count">{{ tabConflicts.all }}</span>
+          </button>
         </div>
         <SearchInput v-model="search" placeholder="Search rows…" class="mrv-search" />
       </div>
@@ -923,6 +956,13 @@ const tabConflicts = computed(() => {
         <GroundingTable v-if="jobType === 'krt_grounding'" :outcomes="visible" :policy="policy" :search="search" />
         <DetectionsTable v-else :items="visible" :search="search" :job-type="jobType" />
       </div>
+      <!-- Why a resource this module found is absent below, or reads as a
+           different type than the detector proposed. -->
+      <CurationPanel
+        :actions="curationActions"
+        heading="Corrected before merging"
+        class="mrv-curation"
+      />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
         :jobs="jobs || {}" :files="runDocuments"
@@ -996,6 +1036,13 @@ const tabConflicts = computed(() => {
         :items="krtItems"
         :dropped="krtDropped"
         :search="search"
+      />
+      <!-- The other half of "what did not make it in": corrections applied to
+           the detectors' candidates before they were ever merged. -->
+      <CurationPanel
+        :actions="curationActions"
+        heading="Corrected before merging, across all detectors"
+        class="mrv-curation"
       />
       <ModuleTechnical
         :job="job" :submission-id="submissionId" :job-type="jobType"
@@ -1262,7 +1309,10 @@ const tabConflicts = computed(() => {
   display: flex; align-items: center; gap: 0.75rem;
   flex-wrap: wrap; margin-bottom: 0.6rem;
 }
-.mrv-toolbar .mrv-tabs { margin-bottom: 0; flex: 1 1 auto; }
+/* `min-width: 0` so the tab strip wraps WITHIN itself when it runs long
+   (grounding adds a conflicts filter to it) instead of refusing to shrink
+   and pushing the search box onto a line of its own. */
+.mrv-toolbar .mrv-tabs { margin-bottom: 0; flex: 1 1 auto; min-width: 0; }
 /* Right-aligned, and the same height as a tab so the row reads as one strip. */
 .mrv-search { margin-left: auto; flex: 0 1 22rem; min-width: 12rem; }
 .mrv-search :deep(input) {
@@ -1271,6 +1321,10 @@ const tabConflicts = computed(() => {
   padding-top: 0;
   padding-bottom: 0;
 }
+.mrv-curation {
+  margin-top: 1rem;
+}
+
 .mrv-table-frame {
   max-height: min(60vh, 40rem);
   overflow: auto;
@@ -1318,6 +1372,12 @@ const tabConflicts = computed(() => {
 .mrv-chip-remove { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 .mrv-chip-skip { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
 .mrv-chip-unreviewed { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+.mrv-tab-conflicts-only { margin-left: 0.35rem; }
+.mrv-tab-conflicts-only.mrv-tab-active {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #92400e;
+}
 .mrv-note { font-size: 0.85rem; color: #374151; line-height: 1.5; margin: 0 0 1rem; max-width: 46rem; }
 .mrv-verbatim {
   margin: 0 0 1rem; padding: 0.9rem 1rem;

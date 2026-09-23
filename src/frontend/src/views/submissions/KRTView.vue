@@ -11,6 +11,7 @@ import KRTEditor from '@/components/krt/KRTEditor.vue'
 import SubmissionHeader from '@/components/submission/SubmissionHeader.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import { describeLoadError } from '@/utils/load-error'
+import { krtFileBaseName } from '@/utils/submission'
 import { useJobPoller } from '@/composables'
 
 const route = useRoute()
@@ -418,26 +419,6 @@ async function handlePdfUpload(event) {
   }
 }
 
-async function handleValidate() {
-  try {
-    await krtStore.validate(route.params.id)
-    const errors = summary.value.totalErrors
-    const warnings = summary.value.totalWarnings
-
-    if (errors === 0 && warnings === 0) {
-      notificationStore.success('Key Resources Table is valid! You can proceed to Step 2.')
-    } else if (errors === 0 && warnings > 0) {
-      notificationStore.success(`Key Resources Table is valid with ${warnings} warning${warnings > 1 ? 's' : ''}. You can proceed to Step 2.`)
-    } else {
-      const parts = []
-      if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`)
-      if (warnings > 0) parts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`)
-      notificationStore.error(`Found ${parts.join(' and ')}. Fix errors before proceeding.`)
-    }
-  } catch (error) {
-    notificationStore.error('Validation failed')
-  }
-}
 
 async function handleNext() {
   try {
@@ -843,16 +824,15 @@ function scrollToFirstWarning() {
     <div v-if="showAckModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
         <div class="px-6 py-4 border-b border-gray-200">
-          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved issues?</h3>
+          <h3 class="text-lg font-medium text-gray-900">Continue with unresolved errors?</h3>
         </div>
         <div class="px-6 py-4">
+          <!-- Wording set by ASAP (feedback 2026-09); only the count is dynamic. -->
           <p class="text-sm text-gray-600">
-            This Key Resources Table still has
-            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>
-            (resource types are all valid). You can proceed, but these issues will remain flagged.
-          </p>
-          <p class="mt-2 text-xs text-gray-500">
-            We recommend fixing them, but you may continue if you know they are acceptable.
+            The Key Resources Table contains
+            <span class="font-medium text-red-700">{{ otherErrorCount }} unresolved error{{ otherErrorCount > 1 ? 's' : '' }}</span>.
+            We recommend you address these errors. Alternatively, you can proceed to the next step and the
+            errors will remain flagged.
           </p>
         </div>
         <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end space-x-3 rounded-b-lg">
@@ -944,11 +924,9 @@ function scrollToFirstWarning() {
       <KRTEditor
         ref="krtEditorRef"
         :submission-id="route.params.id"
-        :show-revalidate="true"
         :show-suggestions="false"
         :krt-file-url="krtFile?.s3Url"
-        :download-name="submission?.title || submission?.manuscriptId || ''"
-        @revalidate="handleValidate"
+        :download-name="krtFileBaseName(submission)"
       />
     </div>
   </div>

@@ -10,14 +10,36 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  /** Array of help items: [{ title: string, description: string, done: boolean }] */
+  /**
+   * Array of help items: [{ title, description?, children?, done, link? }].
+   * `link: { text, href }` renders `text` inside the title as an external
+   * link (e.g. the ASAP CRN Hub on the last step).
+   */
   items: {
     type: Array,
     required: true
   }
 })
 
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'continue'])
+
+/**
+ * Split a title around the word "Continue" (in quotes or not) so that word can
+ * be rendered as a button doing what the green Continue button does. ASAP
+ * feedback (2026-09): users read 'Click "Continue"' and looked for something
+ * to click right there. Returns [before, after] or null when absent.
+ */
+function splitContinue(title) {
+  const m = /^(.*?)(["“]?Continue["”]?)(.*)$/.exec(title || '')
+  return m ? [m[1], m[3]] : null
+}
+
+/** Split a title around `link.text`, so the link can be inlined. */
+function splitLink(item) {
+  if (!item.link?.text || !item.title?.includes(item.link.text)) return null
+  const at = item.title.indexOf(item.link.text)
+  return [item.title.slice(0, at), item.title.slice(at + item.link.text.length)]
+}
 
 /** Compute effective done state: a step is only done if itself AND all previous steps are done */
 const effectiveItems = computed(() => {
@@ -52,7 +74,25 @@ const effectiveItems = computed(() => {
             <span v-else class="help-bullet"></span>
           </span>
           <div class="help-content">
-            <span class="help-title" :class="{ 'help-title-done': item.done }">{{ item.title }}</span>
+            <span class="help-title" :class="{ 'help-title-done': item.done }">
+              <template v-if="splitContinue(item.title)">
+                {{ splitContinue(item.title)[0] }}<button
+                  type="button"
+                  class="help-continue-btn"
+                  v-tooltip="'Same as the green Continue button in the top right corner'"
+                  @click="emit('continue')"
+                >Continue</button>{{ splitContinue(item.title)[1] }}
+              </template>
+              <template v-else-if="splitLink(item)">
+                {{ splitLink(item)[0] }}<a
+                  :href="item.link.href"
+                  target="_blank"
+                  rel="noopener"
+                  class="help-link"
+                >{{ item.link.text }} ↗</a>{{ splitLink(item)[1] }}
+              </template>
+              <template v-else>{{ item.title }}</template>
+            </span>
             <span v-if="item.description" class="help-description">{{ item.description }}</span>
             <ul v-if="item.children && item.children.length" class="help-children">
               <li v-for="(child, ci) in item.children" :key="ci" class="help-child">
@@ -165,6 +205,30 @@ const effectiveItems = computed(() => {
 .help-title-done {
   color: #6b7280;
   text-decoration: line-through;
+}
+
+/* The word "Continue" as the action it names — styled like the header button
+   in miniature so the two read as the same thing. */
+.help-continue-btn {
+  display: inline-block;
+  padding: 0 0.45rem;
+  margin: 0 0.1rem;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #86efac;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+.help-continue-btn:hover {
+  background: #bbf7d0;
+}
+.help-link {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .help-description {

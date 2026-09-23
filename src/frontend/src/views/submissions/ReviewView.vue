@@ -27,7 +27,11 @@ const krtRows = computed(() => krtStore.rows)
 const helpItems = computed(() => [
   {
     title: 'Review the updated KRT',
-    children: ['Edits, additions, and deletions are highlighted in the table below'],
+    // Wording set by ASAP (feedback 2026-09).
+    children: [
+      'The table below shows all additions, edits, and deletions to your KRT',
+      'To further edit the KRT, select "Go back" in the top right corner'
+    ],
     done: false
   },
   {
@@ -151,21 +155,15 @@ const addedRows = computed(() => {
   return map
 })
 
-// Resource type group order for sorting (matches KRTEditor)
-function getResourceGroupForSort(resourceType) {
-  const rt = (resourceType || '').toLowerCase()
-  if (rt.includes('dataset')) return 0
-  if (rt.includes('software') || rt.includes('code')) return 1
-  if (rt.includes('protocol')) return 2
-  return 3
-}
-
-// Combined rows: current rows + deleted rows (interleaved in original order)
+// Combined rows: current rows + deleted rows, in the editor's order. Both
+// tables (with and without changes) sort the same way as Steps 1 and 2 —
+// the "Final KRT Data" view used to show raw insertion order and the
+// changes view an alphabetical one of its own (ASAP feedback, 2026-09).
 const allCombinedRows = computed(() => {
   const currentRows = krtRows.value.map(row => ({ ...row, isDeleted: false }))
 
   if (!showDetails.value) {
-    return currentRows
+    return [...currentRows].sort(resourceTypesStore.compareRowsByResourceType)
   }
 
   // Format deleted rows with same column structure
@@ -183,18 +181,9 @@ const allCombinedRows = computed(() => {
     deletedSource: deleted.source
   }))
 
-  // Combine and sort by resource type group, then by name
-  const combined = [...currentRows, ...deletedRowsFormatted]
-  combined.sort((a, b) => {
-    const groupA = getResourceGroupForSort(a['RESOURCE TYPE'])
-    const groupB = getResourceGroupForSort(b['RESOURCE TYPE'])
-    if (groupA !== groupB) return groupA - groupB
-    const nameA = (a['RESOURCE NAME'] || '').toLowerCase()
-    const nameB = (b['RESOURCE NAME'] || '').toLowerCase()
-    return nameA.localeCompare(nameB)
-  })
-
-  return combined
+  // Deleted rows follow the live rows of their type (stable sort keeps
+  // the array order for equal keys).
+  return [...currentRows, ...deletedRowsFormatted].sort(resourceTypesStore.compareRowsByResourceType)
 })
 
 // Check if a row matches a tab (uses DB resource type categories)
@@ -470,7 +459,7 @@ function isRowUpdated(row) {
 // Get source tag info for a deleted row
 function getDeletedSourceTag(row) {
   if (row.deletedSource === 'ai_suggestion') return { label: 'AI', class: 'source-tag-ai' }
-  if (row.deletedSource === 'krt_validation') return { label: 'Val', class: 'source-tag-validation' }
+  if (row.deletedSource === 'krt_validation') return { label: 'Auto-fix', class: 'source-tag-validation' }
   return { label: 'User', class: 'source-tag-manual' }
 }
 
@@ -478,7 +467,7 @@ function getDeletedSourceTag(row) {
 function getAddedSourceTag(row) {
   const info = getAddedRowInfo(row)
   if (info?.fromAI) return { label: 'AI', class: 'source-tag-ai' }
-  if (info?.fromValidation) return { label: 'Val', class: 'source-tag-validation' }
+  if (info?.fromValidation) return { label: 'Auto-fix', class: 'source-tag-validation' }
   return { label: 'User', class: 'source-tag-manual' }
 }
 
@@ -497,7 +486,7 @@ function getUpdatedSourceTag(row) {
     }
   }
   if (latestChange?.source === 'ai_suggestion') return { label: 'AI', class: 'source-tag-ai' }
-  if (latestChange?.source === 'krt_validation') return { label: 'Val', class: 'source-tag-validation' }
+  if (latestChange?.source === 'krt_validation') return { label: 'Auto-fix', class: 'source-tag-validation' }
   return { label: 'User', class: 'source-tag-manual' }
 }
 
@@ -522,10 +511,31 @@ function toggleSourceVisibility(source) {
   hiddenSources.value = newSet
 }
 
+/**
+ * Show only what changed.
+ *
+ * This step exists to review changes, and on a 100-row KRT the handful that
+ * were added, edited or deleted are a few lines scattered through a table the
+ * reviewer has to scroll past in full. Off by default: the unchanged rows are
+ * the context that makes a change legible, and hiding them is a choice.
+ */
+const changedOnly = ref(false)
+
+/** Was this row added, edited or deleted in this round? */
+function isRowChanged(row) {
+  return !!row.isDeleted || isRowAdded(row) || isRowUpdated(row)
+}
+
+const changedRowCount = computed(() => combinedRows.value.filter(isRowChanged).length)
+
 // Filter combinedRows by hiding toggled-off sources
 const filteredCombinedRows = computed(() => {
-  if (hiddenSources.value.size === 0) return combinedRows.value
-  return combinedRows.value.filter(row => {
+  let rows = combinedRows.value
+  // Only meaningful alongside the change detail — with it off, every row reads
+  // the same and an empty table would be all the user got.
+  if (changedOnly.value && showDetails.value) rows = rows.filter(isRowChanged)
+  if (hiddenSources.value.size === 0) return rows
+  return rows.filter(row => {
     const tag = getRowSourceTag(row)
     if (!tag) return true // Unchanged rows are always shown
     return !hiddenSources.value.has(tag.label)
@@ -810,26 +820,37 @@ function getCellClass(row, columnKey) {
               <span class="inline-block w-3 h-3 bg-red-100 border border-red-400 rounded"></span>
               Deleted
             </span>
+            <span class="flex items-center gap-1">
+              <span class="history-icon history-icon-legend">?</span>
+              Edited cell
+            </span>
             <span class="legend-divider">|</span>
+            <span class="legend-caption">Changed by:</span>
             <span
               class="source-tag source-tag-ai source-tag-clickable"
               :class="{ 'source-tag-hidden': hiddenSources.has('AI') }"
-              v-tooltip="'Click to show/hide AI changes'"
+              v-tooltip="'Changes accepted from AI suggestions. Click to show/hide.'"
               @click="toggleSourceVisibility('AI')"
             >AI</span>
             <span
               class="source-tag source-tag-validation source-tag-clickable"
-              :class="{ 'source-tag-hidden': hiddenSources.has('Val') }"
-              v-tooltip="'Click to show/hide Validation changes'"
-              @click="toggleSourceVisibility('Val')"
-            >Val</span>
+              :class="{ 'source-tag-hidden': hiddenSources.has('Auto-fix') }"
+              v-tooltip="'Changes the app applied on its own while validating — e.g. an identifier moved out of Additional Information. Click to show/hide.'"
+              @click="toggleSourceVisibility('Auto-fix')"
+            >Auto-fix</span>
             <span
               class="source-tag source-tag-manual source-tag-clickable"
               :class="{ 'source-tag-hidden': hiddenSources.has('User') }"
-              v-tooltip="'Click to show/hide User changes'"
+              v-tooltip="'Changes made by hand in the editor. Click to show/hide.'"
               @click="toggleSourceVisibility('User')"
             >User</span>
           </div>
+          <!-- Review just the changes, without scrolling past the rest. -->
+          <label v-if="hasChanges && showDetails" class="changed-only">
+            <input v-model="changedOnly" type="checkbox" />
+            <span>Only changed rows</span>
+            <span class="changed-only-count">{{ changedRowCount }}</span>
+          </label>
           <!-- Toggle -->
           <label v-if="hasChanges" class="toggle-switch">
             <span class="toggle-label">Show changes</span>
@@ -858,7 +879,7 @@ function getCellClass(row, columnKey) {
           <thead>
             <tr>
               <th class="col-row-num">#</th>
-              <th v-if="showDetails && hasChanges" class="col-status">Status</th>
+              <th v-if="showDetails && hasChanges" class="col-status">Row Status</th>
               <th
                 v-for="col in columns"
                 :key="col.key"
@@ -923,7 +944,7 @@ function getCellClass(row, columnKey) {
       </div>
 
       <p v-if="filteredCombinedRows.length === 0" class="text-center text-gray-500 py-8">
-        {{ hiddenSources.size > 0 ? 'All rows hidden by active filters' : 'No data available' }}
+        {{ hiddenSources.size > 0 || changedOnly ? 'All rows hidden by active filters' : 'No data available' }}
       </p>
     </div>
 
@@ -1067,6 +1088,41 @@ function getCellClass(row, columnKey) {
 .table-scroll-limited {
   max-height: 420px;
   overflow-y: auto;
+}
+
+/* The column names stay put while the rows scroll under them: this table runs
+   to a hundred rows, and "which column is this?" is asked exactly when the
+   header has gone. `border-collapse: collapse` drops a sticky cell's own
+   border, so the rule under the header is drawn with an inset shadow. */
+.krt-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f9fafb;
+  box-shadow: inset 0 -1px 0 #e5e7eb;
+}
+
+.changed-only {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+}
+
+.changed-only input {
+  cursor: pointer;
+}
+
+.changed-only-count {
+  padding: 0.0625rem 0.375rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #1e40af;
+  background: #dbeafe;
+  border-radius: 9999px;
 }
 
 /* Toggle switch */
@@ -1272,19 +1328,20 @@ function getCellClass(row, columnKey) {
   text-transform: uppercase;
 }
 
-.source-tag-ai {
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-.source-tag-validation {
-  background: #ede9fe;
-  color: #5b21b6;
-}
-
+.source-tag-ai,
+.source-tag-validation,
 .source-tag-manual {
-  background: #fef3c7;
-  color: #92400e;
+  /* One colour system on this table: the ROW colour is the row's status.
+     The source of a change is information, not a second palette — the
+     AI tag used to share its blue with the "edited cell" fill and read as
+     a third status (ASAP feedback, 2026-09). */
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+}
+
+.legend-caption {
+  color: #6b7280;
 }
 
 .source-tag-clickable {
@@ -1357,7 +1414,11 @@ function getCellClass(row, columnKey) {
 
 /* Cell highlighting (uniform blue for any change) */
 .cell-changed {
-  background: #dbeafe !important;
+  /* The row already carries the status colour; the (?) marker says which
+     cells changed. A second fill here was the "two colour systems" ASAP
+     found confusing. A dotted underline keeps the cell findable. */
+  text-decoration: underline dotted #6b7280;
+  text-underline-offset: 3px;
 }
 
 /* Cell with history - clickable */
@@ -1391,6 +1452,10 @@ function getCellClass(row, columnKey) {
   border-radius: 50%;
   flex-shrink: 0;
   margin-top: 0.125rem;
+}
+.history-icon-legend {
+  margin-top: 0;
+  border: 1px solid #d1d5db;
 }
 
 /* Modal styles */

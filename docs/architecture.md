@@ -185,8 +185,7 @@ PDF upload triggers parallel pipeline steps via pg-boss. The pipeline separates
 two jobs that used to be fused:
 
 - **Discovery** — five detectors answer *what resources does this manuscript
-  describe?* Under the default `seeded-v1` pipeline they are seeded with the
-  author's rows; under `blind-v1` they never see the table.
+  describe?* They are seeded with the author's rows.
 - **Grounding** — `krt_grounding` then answers *for each row the author wrote,
   is it in the PDF, and does their row carry everything the PDF says about it?*
 

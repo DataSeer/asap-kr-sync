@@ -27,6 +27,18 @@ const logger = require('../../utils/logger');
 // over response time.
 const DUMMY_PASSWORD_HASH = '$2b$12$' + 'X'.repeat(53);
 
+// A rotated-out refresh token presented again within this many ms of its
+// rotation is treated as the benign race it almost always is — two tabs of
+// one browser both answering a 401 with the same cookie — and merely
+// rejected. Beyond it, a replay is the compromise signal reuse detection
+// exists for, and the whole chain is wiped. Kept short: a stolen token
+// replayed inside the window still gets nothing, it just does not sign the
+// legitimate user out of everything (ASAP, 2026-09).
+const ROTATION_RACE_WINDOW_MS = 15 * 1000;
+// Error code for that benign rejection, so the client can tell it apart
+// from a real refusal. Exported: the frontend asserts on the same string.
+const REFRESH_ROTATION_RACE_CODE = 'REFRESH_ROTATION_RACE';
+
 /**
  * @param {string} token
  * @returns {string} hex sha256
@@ -207,6 +219,23 @@ async function refreshTokens(rawToken, ctx = {}) {
       throw new AuthenticationError('Refresh token revoked, please log in again');
     }
 
+    // A replay seconds after the rotation is a second tab losing a race, not
+    // an attacker: reject this request, keep the chain (the other tab already
+    // holds the successor, and the browser's cookie with it).
+    if (record.revokedReason === 'rotation'
+      && Date.now() - new Date(record.revokedAt).getTime() < ROTATION_RACE_WINDOW_MS) {
+      logger.info('Refresh rejected: token rotated moments ago (concurrent refresh)', {
+        userId: record.userId
+      });
+      // Distinct code: this 401 is the ONE refusal that must not sign the user
+      // out. The winning tab already installed the successor cookie in this
+      // same browser, so the session is alive — the client retries instead of
+      // bouncing to the login page (session-reconnect.isDefinitiveRefusal).
+      const raceError = new AuthenticationError('Refresh token already rotated');
+      raceError.code = REFRESH_ROTATION_RACE_CODE;
+      throw raceError;
+    }
+
     await RefreshToken.update(
       { revokedAt: new Date(), revokedReason: 'reuse_detected' },
       { where: { userId: record.userId, revokedAt: null } }
@@ -341,5 +370,6 @@ module.exports = {
   revokeRefreshToken,
   revokeAllForUser,
   issueSession,
-  hashToken
+  hashToken,
+  REFRESH_ROTATION_RACE_CODE
 };

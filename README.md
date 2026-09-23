@@ -110,11 +110,10 @@ PDF Upload
                                detected, otherwise waits for user input)
 ```
 
-**Two detection pipelines**, chosen per submission. `seeded-v1` is the default:
-the datasets, materials and protocols prompts carry the author's rows as seeds.
-`blind-v1` is admin-only and gives the detectors nothing but the manuscript —
-it exists so detection can be measured without the author's table leaking into
-the answer.
+**Detection is seeded from the author's table**: the datasets, materials and
+protocols prompts carry the author's rows (`seeded-v1`, the pipeline every
+submission runs). A second pipeline, `blind-v1`, is an internal experiment —
+admin-only and enabled for nobody.
 
 **Every detector waits for the table to be validated** (`krt_curated`, i.e.
 submission status past `step_krt`), because under the default pipeline the

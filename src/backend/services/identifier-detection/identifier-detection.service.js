@@ -30,6 +30,7 @@
 // the matching comment in protocols.service.js for the rationale.
 const s3Service = require('../storage/s3.service');
 const { FILE_TYPES, JOB_TYPES } = require('../../config/constants');
+const { getPipeline } = require('../../config/pipelines');
 const { NotFoundError } = require('../../utils/errors');
 const { runWithDemoFallback } = require('../demo-fallback.service');
 const knownIdentifierIndex = require('./known-identifier-index.service');
@@ -388,7 +389,8 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
     drop: false,
     label: 'identifier-scan'
   });
-  const items = dedupeKrtItems(groundedItems, 'identifier-scan');
+  const curationLog = [];
+  const items = dedupeKrtItems(groundedItems, 'identifier-scan', { curationLog, curationPolicy: getPipeline(submission.pipelineId).curation });
 
   // Stats by relevance + category for the worker's job-summary panel.
   // Read from detectorMeta (canonical shape).
@@ -404,6 +406,12 @@ async function detectIdentifiersForSubmission(submission, jobLogger) {
   return {
     items,
     meta: {
+      // What candidate curation changed before dedup (retypes and drops we are
+      // certain of — see pdf-analysis/curate-candidates.service.js). Recorded so a
+      // run can say what it corrected rather than silently differing from the
+      // detector's raw output.
+      curated: curationLog.length,
+      curationLog,
       totalCount: items.length,
       uniqueCount: items.length,
       highRelevanceCount: byRelevance.HIGH,
