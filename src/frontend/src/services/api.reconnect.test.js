@@ -63,6 +63,30 @@ describe('api client session handling', () => {
     expect(routerPush).toHaveBeenCalledWith({ name: 'login', query: { redirect: '/submissions/x/pdf' } })
   })
 
+  it('signs this tab out when another tab logged out', async () => {
+    // Logout revokes every refresh token for the user server-side and clears
+    // the cookies browser-wide, so the sibling tab's next request 401s and its
+    // refresh is refused. It must land on the login page, not sit there
+    // looking signed in. Regression guard: the cross-tab "someone already
+    // refreshed" shortcut must not swallow a cleared CSRF cookie.
+    document.cookie = 'asap_kr_csrf=live; path=/'
+    authService.refreshToken.mockRejectedValue({ response: { status: 401 } })
+    // The logout lands while this tab is queued on the refresh lock — the
+    // narrowest version of the race, and the only one the shortcut could eat.
+    const locks = {
+      request: async (_name, fn) => {
+        document.cookie = 'asap_kr_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
+        return fn()
+      }
+    }
+    Object.defineProperty(navigator, 'locks', { value: locks, configurable: true })
+    script([401])
+    await expect(api.get('/submissions')).rejects.toBeTruthy()
+    expect(authService.refreshToken).toHaveBeenCalledTimes(1)
+    expect(useAuthStore().user).toBeNull()
+    expect(routerPush).toHaveBeenCalledWith({ name: 'login', query: { redirect: '/submissions/x/pdf' } })
+  })
+
   it('keeps the user signed in when the refresh failed for a transient reason', async () => {
     authService.refreshToken.mockRejectedValue({ code: 'ERR_NETWORK', message: 'Network Error' })
     script([401])

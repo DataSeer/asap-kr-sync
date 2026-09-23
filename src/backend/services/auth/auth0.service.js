@@ -322,8 +322,12 @@ async function getManagementToken() {
  * @returns {Promise<boolean>} true if the user is blocked at Auth0
  */
 async function isUserBlocked(sub) {
-  const token = await getManagementToken();
   try {
+    // Inside the try on purpose: minting the Management token talks to Auth0
+    // too, and a failure there must degrade the same way a failed user lookup
+    // does — let the refresh through — rather than escaping into the refresh
+    // path and 500-ing every request until Auth0 recovers.
+    const token = await getManagementToken();
     const response = await axios.get(
       `https://${AUTH0_DOMAIN}/api/v2/users/${encodeURIComponent(sub)}`,
       {

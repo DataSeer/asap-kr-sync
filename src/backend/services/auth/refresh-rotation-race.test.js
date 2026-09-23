@@ -40,6 +40,24 @@ test('a replay seconds after rotation is rejected without wiping the chain', asy
   assert.equal(wipes.length, 0, 'the other tab still holds a valid session — do not sign the user out');
 });
 
+test('the race rejection is tagged so the client does not sign the user out', async (t) => {
+  // The only 401 from /auth/refresh that must NOT reach the login page: the
+  // winning tab already installed the successor cookie in this same browser.
+  mockAll(t, rotatedRecord(2000));
+  await assert.rejects(
+    () => authService.refreshTokens('raw'),
+    (err) => err.code === authService.REFRESH_ROTATION_RACE_CODE && err.statusCode === 401
+  );
+});
+
+test('a genuine refusal carries no race tag', async (t) => {
+  mockAll(t, { ...rotatedRecord(1000), revokedReason: 'logout' });
+  await assert.rejects(
+    () => authService.refreshTokens('raw'),
+    (err) => err.code !== authService.REFRESH_ROTATION_RACE_CODE
+  );
+});
+
 test('a replay long after rotation is still treated as compromise', async (t) => {
   const wipes = mockAll(t, rotatedRecord(5 * 60 * 1000));
   await assert.rejects(() => authService.refreshTokens('raw'), /compromised/);
@@ -53,9 +71,9 @@ test('the window does not soften a logout replay', async (t) => {
   assert.equal(wipes.length, 0);
 });
 
-test('the access token lives a day by default', () => {
+test('the access token lives fifteen minutes by default', () => {
   // A developer's .env may override the lifetime (config/database.js loads it
   // through dotenv); the default is what matters here.
-  const expected = process.env.JWT_EXPIRES_IN || '1d';
+  const expected = process.env.JWT_EXPIRES_IN || '15m';
   assert.equal(jwtService.generateTokenPair({ id: 'u', email: 'e', role: 'author' }).expiresIn, expected);
 });

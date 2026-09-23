@@ -75,6 +75,22 @@ describe('refreshSession', () => {
     expect(authService.refreshToken).not.toHaveBeenCalled()
   })
 
+  it('still refreshes when the session was cleared while it waited for the lock', async () => {
+    // Another tab logged out: the CSRF cookie is gone, not rotated. That is
+    // not "someone already refreshed for us" — it must reach the server, be
+    // refused, and drive the sign-out. Skipping here would leave this tab
+    // rendering as signed in while every request 401s.
+    authService.refreshToken.mockRejectedValue(httpError(401))
+    setLocks({
+      request: async (_name, fn) => {
+        document.cookie = 'asap_kr_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
+        return fn()
+      }
+    })
+    await expect(refreshSession()).rejects.toEqual(httpError(401))
+    expect(authService.refreshToken).toHaveBeenCalledTimes(1)
+  })
+
   it('refreshes under the lock when nothing changed meanwhile', async () => {
     authService.refreshToken.mockResolvedValue({})
     setLocks({ request: async (_name, fn) => fn() })
@@ -90,5 +106,12 @@ describe('isDefinitiveRefusal', () => {
     expect(isDefinitiveRefusal(httpError(503))).toBe(false)
     expect(isDefinitiveRefusal(httpError(429))).toBe(false)
     expect(isDefinitiveRefusal(networkError())).toBe(false)
+  })
+
+  it('exempts the rotation race a 401 would otherwise make final', () => {
+    // The other tab won and its successor cookie is already in this browser:
+    // retrying works, so this must not reach the login page.
+    expect(isDefinitiveRefusal({ response: { status: 401, data: { code: 'REFRESH_ROTATION_RACE' } } })).toBe(false)
+    expect(isDefinitiveRefusal({ response: { status: 401, data: { code: 'AUTHENTICATION_ERROR' } } })).toBe(true)
   })
 })

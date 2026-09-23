@@ -48,8 +48,19 @@ function readCsrf() {
   return m ? m[1] : null
 }
 
-/** A refusal is final; anything else (no response, 5xx, 429) may pass. */
+/**
+ * A refusal is final; anything else (no response, 5xx, 429) may pass.
+ *
+ * One 401 is exempt: the server tags the benign rotation race, where another
+ * tab of this browser won the refresh and its successor cookie is already
+ * installed. Retrying then succeeds, so treating it as final would sign out a
+ * user whose session is perfectly alive. Only reachable when the browser has
+ * no Web Locks — with them the loser skips its own refresh entirely.
+ */
+export const ROTATION_RACE_CODE = 'REFRESH_ROTATION_RACE'
+
 export function isDefinitiveRefusal(err) {
+  if (err?.response?.data?.code === ROTATION_RACE_CODE) return false
   const status = err?.response?.status
   return status === 401 || status === 403
 }
@@ -100,8 +111,13 @@ export function refreshSession() {
   const csrfBefore = readCsrf()
   inFlight = withCrossTabLock(async () => {
     // Another tab may have refreshed while we waited for the lock; the CSRF
-    // cookie rotates with every mint, so a change means the work is done.
-    if (csrfBefore && readCsrf() !== csrfBefore) return
+    // cookie rotates with every mint, so a NEW value means the work is done.
+    // A cookie that is simply gone is the opposite case — another tab logged
+    // out — and must not be read as "already refreshed": we fall through, the
+    // server refuses, and that refusal is what signs this tab out. Skipping
+    // here would leave it rendering as signed in while every request 401s.
+    const csrfNow = readCsrf()
+    if (csrfBefore && csrfNow && csrfNow !== csrfBefore) return
     await refreshWithRetries()
   }).finally(() => { inFlight = null })
   return inFlight
