@@ -37,7 +37,7 @@ The application loads `.env` via dotenv at startup. Cascading load order is defi
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `JWT_SECRET` | Secret key for signing local JWT tokens | — | Yes |
-| `JWT_EXPIRES_IN` | Access-token lifetime. The SPA silent-refreshes on 401, so this is mostly how often the refresh path runs — and the refresh path is where sessions die (a two-tab race, an Auth0 blip). One day was chosen with ASAP in September 2026 so that happens at most once per working day; the accepted trade-off is that a role change or an Auth0 block propagates within a day rather than ~15 min. Shorten it to tighten that window. | `1d` (in code) | No |
+| `JWT_EXPIRES_IN` | Access-token lifetime. The SPA silent-refreshes on 401, so this is mostly how often the refresh path runs. It was raised to `1d` in September 2026 because that path was where sessions died (a two-tab race, an Auth0 blip); once those were fixed it went back to 15 minutes, so a role change, a disable or an Auth0 block takes effect within ~15 min instead of a day. Lengthen it only to reduce refresh traffic, knowing it widens that window. | `15m` (in code) | No |
 | `JWT_REFRESH_EXPIRES_IN` | Refresh-token lifetime — also the cookie max-age for `asap_kr_refresh`. | `7d` | No |
 
 Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=Strict` cookies, never in the response body or URL hash. The frontend never sees the raw tokens. See `docs/auth0-integration.md` for the cookie layout.
@@ -58,7 +58,7 @@ Since Phase 6 the local JWT pair is delivered via `HttpOnly; Secure; SameSite=St
 | `AUTH0_CLIENT_ID` | Auth0 application client ID | — | If `AUTH0_ENABLED=true` |
 | `AUTH0_CLIENT_SECRET` | Auth0 application client secret | — | If `AUTH0_ENABLED=true` |
 | `AUTH0_SECRET_ID` | AWS Secrets Manager secret ID. When set (production / staging EC2), the four `AUTH0_*` credentials above are loaded from Secrets Manager and override any `.env` values. | — | No |
-| `AUTH0_VERIFY_ON_REFRESH` | Re-check Auth0 user status (blocked/deleted) on every token refresh so disable actions propagate within one access-token cycle (`JWT_EXPIRES_IN`, a day by default). Adds 100-300 ms per refresh. | `true` | No |
+| `AUTH0_VERIFY_ON_REFRESH` | Re-check Auth0 user status (blocked/deleted) on every token refresh so disable actions propagate within one access-token cycle (`JWT_EXPIRES_IN`, 15 minutes by default). Adds 100-300 ms per refresh. | `true` | No |
 | `AUTH0_DEBUG_CLAIMS` | When `true`, logs verified Auth0 ID-token claim **names + values with PII masked** (email/name/sub/etc. redacted; custom/namespaced claims like a role claim shown in full). Use to discover which claim carries the role and its shape. Safe to enable temporarily in any env; keep off in normal operation. | `false` | No |
 
 ## AWS S3 Storage
