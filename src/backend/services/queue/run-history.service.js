@@ -329,9 +329,136 @@ async function closeRun(job) {
       }),
       counts: job.result?.counts ?? null,
       result: job.result ?? null,
-      logs: job.logs ?? null
+      logs: job.logs ?? null,
+      // Frozen out of the payload, because the payload is prunable and this
+      // has to outlive it. Includes anything a cancel threw away.
+      usage: stepUsage(job.result?.tokens ?? null, run.discarded)
+    }).then(async (saved) => {
+      // The run total is refreshed here rather than only when the whole
+      // pipeline ends: a module that finishes is a module that has spent, and
+      // the pipeline page should not be a step behind.
+      await recomputePipelineRunUsage(saved.pipelineRunId);
+      return saved;
     });
   });
+}
+
+/**
+ * One execution's usage: what the job measured, plus what a cancel threw away.
+ *
+ * A discarded response was paid for — that is the whole reason it is recorded —
+ * so it belongs in the figure, and the count of calls it represents belongs in
+ * `measuredCalls` beside it.
+ *
+ * @param {object|null} tokens - the job's own tally (utils/token-usage)
+ * @param {Array|null} discarded - StepExecution.discarded
+ * @returns {object|null} null when nothing spent anything
+ */
+function stepUsage(tokens, discarded) {
+  const parts = [tokens, ...(Array.isArray(discarded) ? discarded.map(d => d?.tokens) : [])]
+    .filter(Boolean);
+  if (parts.length === 0) return null;
+  return sumUsage(parts);
+}
+
+/**
+ * Add usage records together, keeping the per-model split intact.
+ *
+ * Models are summed separately all the way up: two runs of the same document on
+ * different models are two different prices, and a total that had merged them
+ * could not be priced at all afterwards.
+ *
+ * @param {Array<object>} records
+ * @returns {object}
+ */
+function sumUsage(records) {
+  const byModel = {};
+  let measuredCalls = 0;
+  const unmeasured = [];
+  const notCounted = [];
+
+  for (const rec of records) {
+    if (!rec) continue;
+    for (const [model, b] of Object.entries(rec.byModel || {})) {
+      const into = byModel[model] || (byModel[model] = {
+        promptTokens: 0, outputTokens: 0, thoughtTokens: 0, cachedTokens: 0, totalTokens: 0, calls: 0
+      });
+      into.promptTokens += b.promptTokens || 0;
+      into.outputTokens += b.outputTokens || 0;
+      into.thoughtTokens += b.thoughtTokens || 0;
+      into.cachedTokens += b.cachedTokens || 0;
+      into.totalTokens += b.totalTokens || 0;
+      into.calls += b.calls || 0;
+    }
+    measuredCalls += rec.measuredCalls || 0;
+    if (Array.isArray(rec.unmeasured)) unmeasured.push(...rec.unmeasured);
+    for (const src of (rec.notCounted || [])) {
+      if (!notCounted.includes(src)) notCounted.push(src);
+    }
+  }
+
+  const totals = { promptTokens: 0, outputTokens: 0, thoughtTokens: 0, cachedTokens: 0, totalTokens: 0, calls: 0 };
+  for (const b of Object.values(byModel)) {
+    for (const k of Object.keys(totals)) totals[k] += b[k];
+  }
+
+  return { byModel, ...totals, measuredCalls, unmeasured, notCounted };
+}
+
+/**
+ * Refresh a pipeline run's usage from its steps.
+ *
+ * RECOMPUTED, never incremented. Workers run several modules at once
+ * (`concurrency: 2` on most of them), so two steps finishing together would
+ * race an increment and one would be lost — leaving a figure that is wrong,
+ * plausible, and permanent, which is the worst of the three. Recomputing is
+ * idempotent: whoever loses the race writes the same total.
+ *
+ * The row is locked for the read-and-write so the two do not interleave. The
+ * whole thing is best-effort by way of `guarded`: a usage figure is worth less
+ * than the run it describes, and must never be the reason a pipeline fails.
+ *
+ * @param {string} pipelineRunId
+ * @returns {Promise<object|null>} the updated PipelineRun, or null
+ */
+async function recomputePipelineRunUsage(pipelineRunId) {
+  if (!pipelineRunId) return null;
+  return guarded('refreshing a run\'s usage', async () => {
+    const { PipelineRun, StepExecution, sequelize } = require('../../models');
+
+    return sequelize.transaction(async (transaction) => {
+      const run = await PipelineRun.findByPk(pipelineRunId, { transaction, lock: transaction.LOCK.UPDATE });
+      if (!run) return null;
+
+      const steps = await StepExecution.findAll({
+        where: { pipelineRunId },
+        attributes: ['usage'],
+        transaction
+      });
+
+      const records = steps.map(s => s.usage).filter(Boolean);
+      const usage = records.length ? sumUsage(records) : null;
+      return run.update({ usage }, { transaction });
+    });
+  });
+}
+
+/**
+ * Every run of a submission, re-summed from its steps.
+ *
+ * The repair path for the same computation: used by `npm run usage:refresh`
+ * when a figure is in doubt, and by anything that changes history after the
+ * fact. It is the SAME function underneath as the live path, so the two cannot
+ * drift into disagreeing about what a run spent.
+ *
+ * @param {string} submissionId
+ * @returns {Promise<{runs: number}>}
+ */
+async function recomputeSubmissionUsage(submissionId) {
+  const { PipelineRun } = require('../../models');
+  const runs = await PipelineRun.findAll({ where: { submissionId }, attributes: ['id'] });
+  for (const run of runs) await recomputePipelineRunUsage(run.id);
+  return { runs: runs.length };
 }
 
 /**
@@ -381,16 +508,26 @@ async function recordDiscarded(job, what = {}) {
     const tokenUsage = require('../../utils/token-usage');
     const previous = Array.isArray(run.discarded) ? run.discarded : [];
 
-    return run.update({
-      discarded: [...previous, {
-        at: new Date().toISOString(),
-        outcome: what.outcome || null,
-        error: what.error ? String(what.error).slice(0, 500) : null,
-        counts: what.counts || null,
-        // What the abandoned call cost. Absent when no model was involved.
-        tokens: tokenUsage.current()
-      }]
+    const discarded = [...previous, {
+      at: new Date().toISOString(),
+      outcome: what.outcome || null,
+      error: what.error ? String(what.error).slice(0, 500) : null,
+      counts: what.counts || null,
+      // What the abandoned call cost. Absent when no model was involved.
+      tokens: tokenUsage.current()
+    }];
+
+    // A discarded answer can arrive after the step was closed, so its tokens
+    // are folded in here rather than only in closeRun — otherwise the one case
+    // this record exists to make visible would be the one missing from the
+    // figure. `run.usage` already holds what closeRun froze, so this adds to it
+    // rather than recomputing from a job row that has since moved on.
+    const saved = await run.update({
+      discarded,
+      usage: sumUsage([run.usage, what.tokens ?? tokenUsage.current()].filter(Boolean)) || null
     });
+    await recomputePipelineRunUsage(saved.pipelineRunId);
+    return saved;
   });
 }
 
@@ -440,5 +577,9 @@ module.exports = {
   currentRun,
   touchRun,
   closeRun,
+  stepUsage,
+  sumUsage,
+  recomputePipelineRunUsage,
+  recomputeSubmissionUsage,
   TERMINAL
 };

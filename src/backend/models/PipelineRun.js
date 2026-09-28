@@ -143,6 +143,16 @@ module.exports = (sequelize) => {
       validate: { isIn: [['live', 'frozen']] }
     },
 
+    /**
+     * This run's token usage, summed over its steps — see
+     * run-history.recomputePipelineRunUsage.
+     *
+     * Derived, and always recomputed from the steps rather than incremented:
+     * steps finish concurrently, and a lost increment would be wrong, plausible
+     * and permanent. Recomputing is idempotent, so losing the race is harmless.
+     */
+    usage: { type: DataTypes.JSONB, allowNull: true },
+
     completedAt: { type: DataTypes.DATE, allowNull: true, field: 'completed_at' }
   }, {
     tableName: 'pipeline_runs',

@@ -17,6 +17,7 @@
     "db:reset": "node scripts/init-db.js --reset --seed",
     "db:reset:preserve-users": "node scripts/init-db.js --reset --seed --preserve-users",
     "migrate": "cd src/backend && npm run migrate",
+    "usage:refresh": "node scripts/refresh-usage.js",
     "migrate:undo": "cd src/backend && npm run migrate:undo",
     "seed": "cd src/backend && npm run seed",
     "pretest": "npm run lint:check",

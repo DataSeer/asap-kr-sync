@@ -175,6 +175,65 @@ def main():
     # Run langextract
     import langextract as lx
 
+    # ── Counting what this pass spends ──────────────────────────────────────
+    #
+    # langextract does not surface token usage anywhere: no module in the
+    # package references usage_metadata, and lx.extract() returns annotated
+    # documents with nothing about what they cost. So the extraction pass was
+    # invisible in a figure that claims to say what a run spent.
+    #
+    # The hook is the Google SDK's own Models.generate_content, not anything
+    # inside langextract. Both would work; this one is a documented public API
+    # that langextract must call, so it survives langextract's internals moving
+    # and breaks loudly rather than silently if the SDK ever changes.
+    #
+    # Best effort, always: if any part of this fails the extraction still runs
+    # and simply reports no usage. An accounting figure must never be the reason
+    # a document fails to process.
+    usage_totals = {
+        "promptTokenCount": 0,
+        "candidatesTokenCount": 0,
+        "thoughtsTokenCount": 0,
+        "cachedContentTokenCount": 0,
+        "totalTokenCount": 0,
+        "calls": 0,
+    }
+    usage_ok = False
+    try:
+        from google.genai.models import Models
+
+        _original_generate = Models.generate_content
+
+        def _counting_generate(self, *a, **kw):
+            response = _original_generate(self, *a, **kw)
+            try:
+                meta = getattr(response, "usage_metadata", None)
+                if meta is not None:
+                    for key in (
+                        "prompt_token_count",
+                        "candidates_token_count",
+                        "thoughts_token_count",
+                        "cached_content_token_count",
+                        "total_token_count",
+                    ):
+                        camel = {
+                            "prompt_token_count": "promptTokenCount",
+                            "candidates_token_count": "candidatesTokenCount",
+                            "thoughts_token_count": "thoughtsTokenCount",
+                            "cached_content_token_count": "cachedContentTokenCount",
+                            "total_token_count": "totalTokenCount",
+                        }[key]
+                        usage_totals[camel] += int(getattr(meta, key, 0) or 0)
+                    usage_totals["calls"] += 1
+            except Exception:  # noqa: BLE001 - never let counting break extraction
+                pass
+            return response
+
+        Models.generate_content = _counting_generate
+        usage_ok = True
+    except Exception as e:  # noqa: BLE001
+        print(f"Token usage capture unavailable: {e}", file=sys.stderr)
+
     print(
         f"Starting extraction (model={args.model}, workers={args.max_workers}, "
         f"batch_length={args.batch_length}, buffer={args.max_char_buffer}, passes={args.extraction_passes})",
@@ -248,8 +307,27 @@ def main():
         file=sys.stderr,
     )
 
-    # Output JSON to stdout
-    json.dump(extractions, sys.stdout, ensure_ascii=False)
+    # Put the SDK back the way we found it, so a long-lived process is not left
+    # with our wrapper in place.
+    if usage_ok:
+        try:
+            from google.genai.models import Models as _M
+            _M.generate_content = _original_generate
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Output JSON to stdout.
+    #
+    # An object rather than the bare array this used to print: the caller needs
+    # what the pass cost as well as what it found, and `usage: null` is how it
+    # learns the difference between "no model was called" and "we could not
+    # count". The Node client is the only reader and changes with it.
+    usage = usage_totals if (usage_ok and usage_totals["calls"] > 0) else None
+    json.dump(
+        {"extractions": extractions, "usage": usage, "model": args.model},
+        sys.stdout,
+        ensure_ascii=False,
+    )
     sys.stdout.write("\n")
 
 
