@@ -22,7 +22,7 @@ vi.mock('vue-router', async (importOriginal) => ({
   ...(await importOriginal()),
   useRoute: () => ({ params: { id: 'sub-1' } })
 }))
-vi.mock('@/services/job.service', () => ({ default: { getJobs: (...a) => getJobs(...a) } }))
+vi.mock('@/services/job.service', () => ({ default: { getPipelineRuns: () => Promise.resolve({ runs: [] }), getJobs: (...a) => getJobs(...a) } }))
 vi.mock('@/services/config.service', () => ({
   default: {
     getPipeline: vi.fn().mockResolvedValue({

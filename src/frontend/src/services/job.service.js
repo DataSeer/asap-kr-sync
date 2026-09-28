@@ -144,6 +144,21 @@ export default {
   },
 
   /**
+   * Every pipeline run of this submission's round, with what each spent.
+   *
+   * Distinct from `getRuns`, which is one STEP's history. This is the whole
+   * pipeline, and it is what the pipeline page adds up to say what a document
+   * has cost so far — across re-runs, not just the latest one.
+   *
+   * @returns {Promise<{round, runCount, runs: Array}>}
+   */
+  async getPipelineRuns(submissionId, round = null) {
+    const params = round ? { round } : {}
+    const response = await api.get(`/submissions/${submissionId}/runs`, { params })
+    return response.data
+  },
+
+  /**
    * Every run of one step, newest first — metadata only, no payloads.
    *
    * Gated to non-authors, like the rest of the job internals.
