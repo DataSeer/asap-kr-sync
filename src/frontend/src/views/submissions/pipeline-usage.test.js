@@ -89,19 +89,37 @@ describe('the document token estimate', () => {
     expect(text).toContain('tokens')
   })
 
-  it('names what it could not count, instead of hiding it behind "estimate"', async () => {
+  it('opens a dialog naming what it could not count', async () => {
+    // The gaps used to live in a tooltip, where they could be read and not
+    // copied. They belong in the dialog now, in selectable text.
     const wrapper = await mountWith([
       { usage: usage(1000, { notCounted: ['langextract'] }) },
       { usage: usage(500, { unmeasured: [{ reason: 'timeout', httpStatus: 408 }] }) }
     ])
 
-    // The explanation rides on the tooltip directive, which stashes it on the
-    // element as __tooltipText rather than rendering it inline.
-    const el = wrapper.find('.pv-state-usage').element
-    const shown = (el.__tooltipText || '') + ' ' + wrapper.find('.pv-state-usage').text()
+    await wrapper.find('.pv-state-usage').trigger('click')
+    await flushPromises()
 
-    expect(shown).toMatch(/langextract/)
-    expect(shown).toMatch(/could not be measured/)
+    const text = wrapper.text()
+    expect(text).toMatch(/langextract/)
+    expect(text).toMatch(/timed out/)
+    expect(text).toMatch(/may well have been charged/)
+  })
+
+  it('the estimate is a button, so it can be opened by keyboard too', async () => {
+    const wrapper = await mountWith([{ usage: usage(1000) }])
+
+    const el = wrapper.find('.pv-state-usage')
+    expect(el.element.tagName).toBe('BUTTON')
+    expect(el.attributes('type')).toBe('button')
+  })
+
+  it('the dialog stays shut until it is asked for', async () => {
+    const wrapper = await mountWith([{ usage: usage(1000) }])
+
+    expect(wrapper.find('.tu-dialog').exists()).toBe(false)
+    await wrapper.find('.pv-state-usage').trigger('click')
+    expect(wrapper.find('.tu-dialog').exists()).toBe(true)
   })
 
   it('survives a runs request that fails, because the pipeline matters more', async () => {
