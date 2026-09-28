@@ -17,10 +17,21 @@
  * Reads and rewrites `pipeline_runs.usage` only. It never touches step usage,
  * job rows, or anything a person entered.
  *
+ * With `--backfill` it also reconstructs step usage for executions that ran
+ * before the `usage` column existed. Those steps recorded their tally inside
+ * `result.tokens` in the old flat shape, and the model beside it in
+ * `result.data.meta.model`, so the figure is recoverable rather than lost — it
+ * just never reached the column the pipeline page reads.
+ *
+ * Backfill is opt-in, and deliberately: it writes rows describing runs that
+ * happened before anyone was counting, and that is a thing to do on purpose
+ * rather than as a side effect of asking for a refresh.
+ *
  * Usage:
  *   node scripts/refresh-usage.js --submission <id>
  *   node scripts/refresh-usage.js --all
  *   node scripts/refresh-usage.js --all --dry-run
+ *   node scripts/refresh-usage.js --all --backfill
  */
 
 'use strict';
@@ -32,11 +43,12 @@ const models = require('../src/backend/models');
 const runHistory = require('../src/backend/services/queue/run-history.service');
 
 function parseArgs(argv) {
-  const args = { submission: null, all: false, dryRun: false };
+  const args = { submission: null, all: false, dryRun: false, backfill: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--submission') args.submission = argv[++i];
     else if (argv[i] === '--all') args.all = true;
     else if (argv[i] === '--dry-run') args.dryRun = true;
+    else if (argv[i] === '--backfill') args.backfill = true;
   }
   return args;
 }
@@ -59,6 +71,87 @@ function canonical(value) {
     return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+/**
+ * Rebuild a step's usage from what the old tally recorded.
+ *
+ * The pre-column shape was flat — `{ promptTokens, outputTokens, totalTokens,
+ * calls }` — with the model recorded separately in `data.meta.model`. Both
+ * survive in `result`, so prompt, output, total, calls and the model come back
+ * exactly.
+ *
+ * Two fields cannot: `thoughtTokens` and `cachedTokens` were never read. They
+ * are set to NULL rather than 0, because 0 would assert that no thinking
+ * happened — and the old tally folded thinking INTO `outputTokens`, so we know
+ * for a fact that some of these runs did think. The total is right; only the
+ * breakdown is gone.
+ *
+ * `backfilled: true` marks the record so nothing downstream has to guess why a
+ * run has no thinking figure.
+ *
+ * @param {object} step - a StepExecution row
+ * @returns {object|null} a usage record, or null when there is nothing to rebuild
+ */
+function usageFromLegacy(step) {
+  const legacy = step.result?.tokens;
+  if (!legacy || !legacy.totalTokens) return null;
+
+  const model = step.result?.data?.meta?.model || 'unknown';
+  const bucket = {
+    promptTokens: legacy.promptTokens || 0,
+    outputTokens: legacy.outputTokens || 0,
+    thoughtTokens: null,
+    cachedTokens: null,
+    totalTokens: legacy.totalTokens || 0,
+    calls: legacy.calls || 0
+  };
+
+  return {
+    byModel: { [model]: bucket },
+    promptTokens: bucket.promptTokens,
+    outputTokens: bucket.outputTokens,
+    thoughtTokens: null,
+    cachedTokens: null,
+    totalTokens: bucket.totalTokens,
+    calls: bucket.calls,
+    measuredCalls: bucket.calls,
+    unmeasured: [],
+    notCounted: [],
+    backfilled: true
+  };
+}
+
+/**
+ * Fill in step usage for a run's executions that predate the column.
+ *
+ * Only ever writes where `usage` is null: a step that recorded its own usage is
+ * the authority on itself and is never overwritten by a reconstruction.
+ *
+ * Returns the rebuilt records as well as the count, so a dry run can show the
+ * total it WOULD produce instead of reading a column it has deliberately not
+ * written — which would otherwise report "3 steps would be rebuilt" and
+ * "nothing recorded" in the same line.
+ *
+ * @param {object} models
+ * @param {string} pipelineRunId
+ * @param {boolean} dryRun
+ * @returns {Promise<{filled: number, rebuilt: Array<object>}>}
+ */
+async function backfillSteps(models, pipelineRunId, dryRun) {
+  const steps = await models.StepExecution.findAll({
+    where: { pipelineRunId, usage: null },
+    attributes: ['id', 'jobType', 'usage', 'result']
+  });
+
+  const rebuilt = [];
+  for (const step of steps) {
+    const record = usageFromLegacy(step);
+    if (!record) continue;
+    rebuilt.push(record);
+    if (!dryRun) await step.update({ usage: record });
+  }
+  return { filled: rebuilt.length, rebuilt };
 }
 
 /** A compact one-line summary of a usage record. */
@@ -99,17 +192,25 @@ async function main() {
   for (const run of runs) {
     const before = canonical(run.usage ?? null);
 
+    let filled = 0;
+    let rebuilt = [];
+    if (args.backfill) {
+      ({ filled, rebuilt } = await backfillSteps(models, run.id, args.dryRun));
+    }
+
     if (args.dryRun) {
       // Same read, no write: sum the steps and say what WOULD be stored.
       const steps = await models.StepExecution.findAll({
         where: { pipelineRunId: run.id }, attributes: ['usage']
       });
-      const records = steps.map(s => s.usage).filter(Boolean);
+      // The stored ones plus anything the backfill would have added.
+      const records = [...steps.map(s => s.usage).filter(Boolean), ...rebuilt];
       const would = records.length ? runHistory.sumUsage(records) : null;
       const differs = canonical(would ?? null) !== before;
       if (differs) changed++;
       console.log(`${run.submissionId} r${run.round}/run${run.runNumber}`
-        + `${differs ? ' WOULD CHANGE' : ' unchanged'}: ${describe(would)}`);
+        + `${differs ? ' WOULD CHANGE' : ' unchanged'}: ${describe(would)}`
+        + `${filled ? ` (${filled} step(s) would be rebuilt from the old tally)` : ''}`);
       continue;
     }
 
@@ -117,7 +218,8 @@ async function main() {
     const after = canonical(updated?.usage ?? null);
     if (after !== before) changed++;
     console.log(`${run.submissionId} r${run.round}/run${run.runNumber}`
-      + `${after !== before ? ' updated' : ' unchanged'}: ${describe(updated?.usage)}`);
+      + `${after !== before ? ' updated' : ' unchanged'}: ${describe(updated?.usage)}`
+      + `${filled ? ` (${filled} step(s) rebuilt from the old tally)` : ''}`);
   }
 
   console.log(`\n${changed} of ${runs.length} run(s) ${args.dryRun ? 'would change' : 'changed'}.`);

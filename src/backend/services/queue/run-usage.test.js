@@ -86,6 +86,29 @@ test('a cancelled step with only a discarded answer still reports', () => {
   assert.equal(step.totalTokens, 77);
 });
 
+test('unknown plus known stays unknown, rather than summing as zero', () => {
+  // A reconstructed step has no thinking figure — the old tally folded thinking
+  // into output without recording it. Adding it as 0 would turn "nobody
+  // measured this" into "there was none", which is a different claim.
+  const sum = runHistory.sumUsage([
+    usage('gemini-2.5-flash', 100, 10),
+    { ...usage('gemini-2.5-flash', 200, 20), backfilled: true,
+      byModel: { 'gemini-2.5-flash': { promptTokens: 200, outputTokens: 20, thoughtTokens: null, cachedTokens: null, totalTokens: 220, calls: 1 } } }
+  ]);
+
+  assert.equal(sum.byModel['gemini-2.5-flash'].thoughtTokens, null);
+  assert.equal(sum.thoughtTokens, null);
+  assert.equal(sum.promptTokens, 300, 'the knowable fields still add up');
+  assert.equal(sum.backfilled, true, 'and the run says it was reconstructed');
+});
+
+test('a run with nothing reconstructed carries no backfilled flag', () => {
+  const sum = runHistory.sumUsage([usage('gemini-2.5-flash', 100, 10)]);
+
+  assert.equal(sum.backfilled, undefined);
+  assert.equal(sum.thoughtTokens, 0, 'measured zero is still zero');
+});
+
 test('the run total is recomputed from its steps, not accumulated', async (t) => {
   // The property that makes concurrency safe: the same call twice leaves the
   // same number. An increment would have doubled it.

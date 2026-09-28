@@ -374,21 +374,33 @@ function stepUsage(tokens, discarded) {
 function sumUsage(records) {
   const byModel = {};
   let measuredCalls = 0;
+  let backfilled = false;
   const unmeasured = [];
   const notCounted = [];
+  // Fields a reconstructed record cannot supply. Unknown plus known is still
+  // unknown — summing them as zero would turn "nobody measured the thinking"
+  // into "there was no thinking", which is a different and false claim.
+  const UNKNOWABLE = ['thoughtTokens', 'cachedTokens'];
+  const unknown = {};
 
   for (const rec of records) {
     if (!rec) continue;
+    if (rec.backfilled) backfilled = true;
     for (const [model, b] of Object.entries(rec.byModel || {})) {
       const into = byModel[model] || (byModel[model] = {
         promptTokens: 0, outputTokens: 0, thoughtTokens: 0, cachedTokens: 0, totalTokens: 0, calls: 0
       });
       into.promptTokens += b.promptTokens || 0;
       into.outputTokens += b.outputTokens || 0;
-      into.thoughtTokens += b.thoughtTokens || 0;
-      into.cachedTokens += b.cachedTokens || 0;
       into.totalTokens += b.totalTokens || 0;
       into.calls += b.calls || 0;
+      for (const field of UNKNOWABLE) {
+        if (b[field] === null || b[field] === undefined) {
+          (unknown[model] || (unknown[model] = new Set())).add(field);
+        } else {
+          into[field] += b[field];
+        }
+      }
     }
     measuredCalls += rec.measuredCalls || 0;
     if (Array.isArray(rec.unmeasured)) unmeasured.push(...rec.unmeasured);
@@ -397,12 +409,22 @@ function sumUsage(records) {
     }
   }
 
-  const totals = { promptTokens: 0, outputTokens: 0, thoughtTokens: 0, cachedTokens: 0, totalTokens: 0, calls: 0 };
-  for (const b of Object.values(byModel)) {
-    for (const k of Object.keys(totals)) totals[k] += b[k];
+  // Applied after the loop so one unknown contributor makes the whole field
+  // unknown, whatever order the records arrived in.
+  for (const [model, fields] of Object.entries(unknown)) {
+    for (const field of fields) byModel[model][field] = null;
   }
 
-  return { byModel, ...totals, measuredCalls, unmeasured, notCounted };
+  const totals = { promptTokens: 0, outputTokens: 0, thoughtTokens: 0, cachedTokens: 0, totalTokens: 0, calls: 0 };
+  for (const b of Object.values(byModel)) {
+    for (const k of Object.keys(totals)) {
+      if (totals[k] === null) continue;
+      if (b[k] === null) totals[k] = null;
+      else totals[k] += b[k];
+    }
+  }
+
+  return { byModel, ...totals, measuredCalls, unmeasured, notCounted, ...(backfilled ? { backfilled: true } : {}) };
 }
 
 /**
