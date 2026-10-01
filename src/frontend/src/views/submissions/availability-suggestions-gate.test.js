@@ -41,7 +41,7 @@ vi.mock('@/services/das-suggestions.service', () => ({
     regenerate: (...a) => regenerate(...a)
   }
 }))
-vi.mock('@/services/job.service', () => ({ default: { getJobs: vi.fn().mockResolvedValue({ jobs: [] }) } }))
+vi.mock('@/services/job.service', () => ({ default: { getPipelineRuns: () => Promise.resolve({ runs: [] }), getJobs: vi.fn().mockResolvedValue({ jobs: [] }) } }))
 
 import AvailabilityView from './AvailabilityView.vue'
 import { useSubmissionStore } from '@/stores/submission.store'

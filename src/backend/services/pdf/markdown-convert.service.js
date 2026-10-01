@@ -106,8 +106,16 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
     call: markdownConfig
   });
 
-  const rawMarkdown = await pdfMarkdownClient.convertToMarkdown(pdfBuffer, pdfFile.fileName);
+  const { markdown: rawMarkdown, conversion } = await pdfMarkdownClient.convertToMarkdown(
+    pdfBuffer, pdfFile.fileName
+  );
   const convertMs = Date.now() - convertStartTime;
+  // How many pages were converted. Modal prices per compute-second rather than
+  // per page, but page count is the one figure that makes two conversions
+  // comparable, and it is the number a person reaches for when a document
+  // looks unexpectedly expensive. Best effort: a PDF we cannot page-count is
+  // still a PDF we converted.
+  conversion.pageCount = await countPages(pdfBuffer);
   jobLogger?.log('convert_done', 'Conversion complete', { markdownLength: rawMarkdown.length, durationMs: convertMs });
 
   // Optional post-conversion filter: drop numeric data-matrix blocks from
@@ -133,9 +141,34 @@ async function convertMarkdownForSubmission(submission, jobLogger) {
       filterStats: filtered ? filterStats : null,
       convertMs,
       totalMs: Date.now() - startTime,
+      // What producing this markdown consumed: attempts, seconds, pages, bytes.
+      // No price — see pdf-markdown-client.
+      conversion,
       fileId: mdFile.id
     }
   };
+}
+
+/**
+ * How many pages a PDF has, or null if it will not say.
+ *
+ * `pdf-lib` rather than `pdf-parse`: it reads the page tree without extracting
+ * text, which is the whole document's worth of work we do not need. Failure is
+ * not an error — an unreadable page count must not fail a conversion that
+ * already succeeded.
+ *
+ * @param {Buffer} pdfBuffer
+ * @returns {Promise<number|null>}
+ */
+async function countPages(pdfBuffer) {
+  try {
+    const { PDFDocument } = require('pdf-lib');
+    const doc = await PDFDocument.load(pdfBuffer, { updateMetadata: false });
+    return doc.getPageCount();
+  } catch (error) {
+    logger.debug('Could not read the PDF page count', { error: error.message });
+    return null;
+  }
 }
 
 async function loadDemoMarkdown(submission, jobLogger) {
