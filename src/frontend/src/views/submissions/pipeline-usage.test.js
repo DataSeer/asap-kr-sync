@@ -66,7 +66,9 @@ describe('the document token estimate', () => {
 
     const chip = wrapper.find('.pv-state-usage')
     expect(chip.exists()).toBe(true)
-    expect(chip.text().replace(/\s/g, '')).toContain('1500')
+    // Digits only: the separator is the viewer's locale ("1,500" on CI, "1 500"
+    // on a French machine), and the number is what this asserts.
+    expect(chip.text().replace(/\D/g, '')).toContain('1500')
     expect(chip.text()).toContain('est.')
   })
 
