@@ -1099,6 +1099,23 @@ async function downloadRawResponse(jobType, responseName) {
           >run {{ job.runNumber }}</span>
           <span v-if="getResultSummary(job)" class="job-result-summary">{{ getResultSummary(job) }}</span>
 
+        </div>
+
+        <!-- The module's own message, on its own line.
+             
+             It used to sit at the end of the status row, where it competed for
+             width with the status badge, the run number and the result summary
+             — and on a narrow tile the longest thing on the line is the one
+             that gets squeezed, which was always this. A line of its own also
+             means the sentence can be a sentence rather than something short
+             enough to fit beside four other things.
+
+             Only KRT Grounding writes here today. It is deliberately a general
+             slot rather than a grounding-specific one: give each module a
+             message and every tile gains the same line, which is the point —
+             tiles of differing heights read as one of them being in an unusual
+             state when they are not. -->
+        <div v-if="conflictCount(job) > 0" class="job-message-line">
           <!-- A KRT/manuscript disagreement gets its own badge rather than a
                clause at the end of a grey summary line. Gold, not red: it is
                something to review, not a failure (ASAP feedback, 2026-09 —
@@ -1107,7 +1124,6 @@ async function downloadRawResponse(jobType, responseName) {
                the badge is a button that takes the user there. -->
           <component
             :is="jumpToSuggestions ? 'button' : 'span'"
-            v-if="conflictCount(job) > 0"
             :type="jumpToSuggestions ? 'button' : undefined"
             class="job-summary-badge job-conflict-badge"
             :class="{ 'job-conflict-badge-link': jumpToSuggestions }"
@@ -1441,6 +1457,17 @@ async function downloadRawResponse(jobType, responseName) {
   align-items: center;
   gap: 0.25rem;
   padding-left: 1rem;
+}
+
+/* The message line. Indented to the same gutter as the status row above it, so
+   the tile reads as one block rather than two. */
+.job-message-line {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  padding-left: 1rem;
+  margin-top: 0.2rem;
 }
 
 .job-result-summary {

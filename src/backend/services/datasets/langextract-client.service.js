@@ -18,6 +18,7 @@ const { applyGeminiDefaults } = require('../../config/gemini');
 const { ExternalServiceError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
 
+const tokenUsage = require('../../utils/token-usage');
 const SCRIPT_PATH = path.join(__dirname, '../../python/datasets/extract-signals.py');
 const PROMPTS_DIR = path.join(__dirname, '../../data/prompts');
 const PROMPT_FILE = path.join(PROMPTS_DIR, 'blind', 'datasets-signals-extraction.txt');
@@ -164,15 +165,31 @@ async function extractSignals(markdownText, { prompt, examples } = {}) {
 
       // Parse JSON output
       try {
-        const extractions = JSON.parse(stdout);
+        const payload = JSON.parse(stdout);
+
+        // `{ extractions, usage, model }`. The script used to print a bare
+        // array; both sides ship together, so this reads the object only.
+        const extractions = payload?.extractions;
 
         if (!Array.isArray(extractions)) {
-          return reject(new ExternalServiceError('langextract', 'Script returned non-array output'));
+          return reject(new ExternalServiceError('langextract', 'Script returned no extractions array'));
+        }
+
+        // What this pass cost, folded into the job's tally so the module page
+        // is not quietly short by a whole extraction pass. When the script
+        // could not count — an SDK it could not hook, a langextract that never
+        // called the model — the gap is NAMED instead of ignored, and the page
+        // says the figure excludes it. Never a reason to fail the step.
+        if (payload?.usage) {
+          tokenUsage.add(payload.usage, payload.model || GEMINI_MODEL);
+        } else {
+          tokenUsage.addNotCounted('langextract');
         }
 
         logger.info('langextract extraction complete', {
           totalExtractions: extractions.length,
           datasetRows: extractions.filter(e => e.extraction_class === 'DATASET_ROW').length,
+          usageCounted: Boolean(payload?.usage),
           durationMs
         });
 

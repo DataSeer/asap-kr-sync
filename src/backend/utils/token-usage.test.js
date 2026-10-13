@@ -18,6 +18,8 @@ const assert = require('node:assert/strict');
 
 const tokenUsage = require('./token-usage');
 
+const MODEL = 'gemini-2.5-flash';
+
 /** A Gemini usage block. */
 const usage = (prompt, output, extra = {}) => ({
   promptTokenCount: prompt,
@@ -37,23 +39,33 @@ test('a run with no model call reports nothing', async () => {
 
 test('one call is counted', async () => {
   const seen = await tokenUsage.run(async () => {
-    tokenUsage.add(usage(1000, 250));
+    tokenUsage.add(usage(1000, 250), MODEL);
     return tokenUsage.current();
   });
 
-  assert.deepEqual(seen, { promptTokens: 1000, outputTokens: 250, totalTokens: 1250, calls: 1 });
+  assert.equal(seen.promptTokens, 1000);
+  assert.equal(seen.outputTokens, 250);
+  assert.equal(seen.totalTokens, 1250);
+  assert.equal(seen.calls, 1);
+  assert.deepEqual(seen.byModel[MODEL], {
+    promptTokens: 1000, outputTokens: 250, thoughtTokens: 0,
+    cachedTokens: 0, totalTokens: 1250, calls: 1
+  });
 });
 
 test('several calls in one run add up', async () => {
   // Most modules call the model more than once — a signal pass, then the
   // extraction. The figure is the RUN's, not the call's.
   const seen = await tokenUsage.run(async () => {
-    tokenUsage.add(usage(1000, 250));
-    tokenUsage.add(usage(400, 100));
+    tokenUsage.add(usage(1000, 250), MODEL);
+    tokenUsage.add(usage(400, 100), MODEL);
     return tokenUsage.current();
   });
 
-  assert.deepEqual(seen, { promptTokens: 1400, outputTokens: 350, totalTokens: 1750, calls: 2 });
+  assert.equal(seen.promptTokens, 1400);
+  assert.equal(seen.outputTokens, 350);
+  assert.equal(seen.totalTokens, 1750);
+  assert.equal(seen.calls, 2);
 });
 
 test('a thinking model\'s hidden tokens are counted as output', async () => {
@@ -64,7 +76,7 @@ test('a thinking model\'s hidden tokens are counted as output', async () => {
     tokenUsage.add({
       promptTokenCount: 1000, candidatesTokenCount: 200,
       thoughtsTokenCount: 800, totalTokenCount: 2000
-    });
+    }, MODEL);
     return tokenUsage.current();
   });
 
@@ -74,7 +86,7 @@ test('a thinking model\'s hidden tokens are counted as output', async () => {
 
 test('a provider that omits the total has one computed', async () => {
   const seen = await tokenUsage.run(async () => {
-    tokenUsage.add({ promptTokenCount: 30, candidatesTokenCount: 12 });
+    tokenUsage.add({ promptTokenCount: 30, candidatesTokenCount: 12 }, MODEL);
     return tokenUsage.current();
   });
 
@@ -86,8 +98,8 @@ test('a call with no usage block still counts as a call', async () => {
   // provider did not report, and hiding that would overstate how complete the
   // figure is.
   const seen = await tokenUsage.run(async () => {
-    tokenUsage.add(usage(10, 5));
-    tokenUsage.add(undefined);
+    tokenUsage.add(usage(10, 5), MODEL);
+    tokenUsage.add(undefined, MODEL);
     return tokenUsage.current();
   });
 
@@ -101,27 +113,31 @@ test('two runs at the same time do not see each other', async () => {
   // submission for another's tokens, under load, invisibly.
   const [a, b] = await Promise.all([
     tokenUsage.run(async () => {
-      tokenUsage.add(usage(100, 10));
+      tokenUsage.add(usage(100, 10), MODEL);
       await new Promise((r) => setTimeout(r, 10));
-      tokenUsage.add(usage(100, 10));
+      tokenUsage.add(usage(100, 10), MODEL);
       return tokenUsage.current();
     }),
     tokenUsage.run(async () => {
       await new Promise((r) => setTimeout(r, 5));
-      tokenUsage.add(usage(7, 3));
+      tokenUsage.add(usage(7, 3), MODEL);
       return tokenUsage.current();
     })
   ]);
 
-  assert.deepEqual(a, { promptTokens: 200, outputTokens: 20, totalTokens: 220, calls: 2 });
-  assert.deepEqual(b, { promptTokens: 7, outputTokens: 3, totalTokens: 10, calls: 1 });
+  assert.equal(a.totalTokens, 220);
+  assert.equal(a.calls, 2);
+  assert.equal(b.totalTokens, 10);
+  assert.equal(b.calls, 1);
 });
 
 test('a call outside any run is dropped, not thrown', async () => {
   // A script or a test calling the model is not a run and has nothing to
   // charge. Throwing here would turn "we could not count it" into "the job
   // failed", which is a far worse trade.
-  assert.doesNotThrow(() => tokenUsage.add(usage(10, 10)));
+  assert.doesNotThrow(() => tokenUsage.add(usage(10, 10), MODEL));
+  assert.doesNotThrow(() => tokenUsage.addUnmeasured({ reason: 'timeout' }));
+  assert.doesNotThrow(() => tokenUsage.addNotCounted('langextract'));
   assert.equal(tokenUsage.current(), null);
 });
 
@@ -129,11 +145,61 @@ test('the tally handed out is a copy', async () => {
   // It ends up on a job result. A caller mutating it must not change what a
   // later read of the same run reports.
   const seen = await tokenUsage.run(async () => {
-    tokenUsage.add(usage(10, 5));
+    tokenUsage.add(usage(10, 5), MODEL);
     const first = tokenUsage.current();
     first.totalTokens = 999999;
+    first.byModel[MODEL].promptTokens = 999999;
+    first.unmeasured.push({ reason: 'invented' });
     return tokenUsage.current();
   });
 
   assert.equal(seen.totalTokens, 15);
+});
+
+test('an unnamed model is bucketed visibly rather than silently merged', async () => {
+  // Every call in this codebase passes a model. If one ever stops, the figure
+  // must not quietly join another model's bucket and be priced as it.
+  const seen = await tokenUsage.run(async () => {
+    tokenUsage.add(usage(10, 5));
+    return tokenUsage.current();
+  });
+
+  assert.deepEqual(Object.keys(seen.byModel), [tokenUsage.UNKNOWN_MODEL]);
+});
+
+test('an unmeasured call is listed, and adds nothing to the totals', async () => {
+  // The whole point of the estimate framing: a call whose cost we could not
+  // read is named, not absorbed and not dropped.
+  const seen = await tokenUsage.run(async () => {
+    tokenUsage.add(usage(10, 5), MODEL);
+    tokenUsage.addUnmeasured({ reason: 'timeout', httpStatus: 408, promptChars: 900, model: MODEL });
+    return tokenUsage.current();
+  });
+
+  assert.equal(seen.totalTokens, 15);
+  assert.equal(seen.measuredCalls, 1);
+  assert.equal(seen.unmeasured.length, 1);
+  assert.equal(seen.unmeasured[0].reason, 'timeout');
+});
+
+test('a run that only failed still reports, instead of looking free', async () => {
+  const seen = await tokenUsage.run(async () => {
+    tokenUsage.addUnmeasured({ reason: 'server_error', httpStatus: 503 });
+    return tokenUsage.current();
+  });
+
+  assert.ok(seen, 'not null — this run spent something unknowable');
+  assert.equal(seen.measuredCalls, 0);
+  assert.equal(seen.totalTokens, 0);
+});
+
+test('a named uncounted source survives to the record, once', async () => {
+  const seen = await tokenUsage.run(async () => {
+    tokenUsage.addNotCounted('langextract');
+    tokenUsage.addNotCounted('langextract');
+    tokenUsage.add(usage(10, 5), MODEL);
+    return tokenUsage.current();
+  });
+
+  assert.deepEqual(seen.notCounted, ['langextract']);
 });

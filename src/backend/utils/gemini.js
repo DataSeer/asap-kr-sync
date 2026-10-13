@@ -76,6 +76,66 @@ function withDefaultGenerationConfig(params) {
  * @param {object} [options.retry] - overrides merged over the retry defaults
  * @returns {Promise<object>} the Gemini response (best-effort on the final try)
  */
+/**
+ * The provider's HTTP status, wherever this SDK put it.
+ *
+ * Google's client sometimes carries it as a field and sometimes only inside the
+ * message as JSON (`{"error":{"code":503,...}}`), which is why isTransientError
+ * looks in both — this mirrors it rather than trusting one shape.
+ *
+ * @param {Error} error
+ * @returns {number|null}
+ */
+function httpStatusOf(error) {
+  const direct = Number(error?.status ?? error?.statusCode ?? error?.response?.status);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const embedded = String(error?.message || '').match(/"code"\s*:\s*(\d{3})\b/);
+  return embedded ? Number(embedded[1]) : null;
+}
+
+/**
+ * Why a call could not be measured — and, by implication, whether it was paid
+ * for. See token-usage.addUnmeasured for what each value means; the short of it
+ * is that only `timeout` is genuinely likely to have been billed.
+ *
+ * @param {Error} error
+ * @returns {string}
+ */
+function classifyFailure(error) {
+  const status = httpStatusOf(error);
+  const msg = String(error?.message || error || '').toLowerCase();
+
+  if (status === 429 || /rate limit|quota exceeded|resource[_ ]exhausted/.test(msg)) return 'rate_limited';
+  if (status === 408 || /deadline|timed?\s*out|timeout/.test(msg)) return 'timeout';
+  if (status && status >= 500) return 'server_error';
+  // No status and a connection-level message: the request never arrived, so
+  // nothing was inferred and nothing was charged.
+  if (!status && /fetch failed|econnreset|etimedout|enotfound|eai_again|socket hang up|network error|econnrefused/.test(msg)) {
+    return 'no_response';
+  }
+  if (status && status >= 400) return 'rejected';
+  return 'unknown';
+}
+
+/**
+ * How much prompt text this call was about to send.
+ *
+ * A fact, not an estimate. Converting it to tokens is a heuristic and belongs
+ * with whoever is pricing, not in the record of what happened.
+ *
+ * @param {object} callParams
+ * @returns {number|null}
+ */
+function promptCharsOf(callParams) {
+  try {
+    const contents = callParams?.contents;
+    if (contents == null) return null;
+    return (typeof contents === 'string' ? contents : JSON.stringify(contents)).length;
+  } catch {
+    return null;
+  }
+}
+
 async function generateContentWithRetry(ai, params, options = {}) {
   const { label = 'Gemini', validate = null, retry: retryOverrides = {} } = options;
   const cfg = { ...DEFAULTS, ...retryOverrides };
@@ -94,12 +154,23 @@ async function generateContentWithRetry(ai, params, options = {}) {
     try {
       response = await ai.models.generateContent(callParams);
       // Every call, including the ones a retry throws away — they were paid for.
-      tokenUsage.add(response?.usageMetadata);
+      // The model comes from callParams, not the config, so a frozen re-run is
+      // charged to the model it actually called.
+      tokenUsage.add(response?.usageMetadata, callParams?.model);
     } catch (error) {
       // Recorded before the decision to give up, so a call that failed once and
       // was not retried still appears. The run's record is about what happened,
       // not about what the retry policy thought of it.
       attemptLog.add({ layer: 'client', engine: label, ok: false, error });
+      // A thrown call returns no usage block, so this one cannot be measured.
+      // Recorded rather than dropped: the totals stay honest by naming what is
+      // missing from them instead of absorbing a guess.
+      tokenUsage.addUnmeasured({
+        reason: classifyFailure(error),
+        httpStatus: httpStatusOf(error),
+        promptChars: promptCharsOf(callParams),
+        model: callParams?.model || null
+      });
       // Non-transient (auth/bad-request) or last attempt → give up immediately.
       if (!isTransientError(error) || attempt === cfg.maxRetries) throw error;
       transientError = error;

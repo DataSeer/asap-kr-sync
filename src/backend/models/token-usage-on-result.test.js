@@ -44,13 +44,99 @@ test('what the run spent lands on the result', async (t) => {
   const job = fakeJob(t);
 
   await tokenUsage.run(async () => {
-    tokenUsage.add({ promptTokenCount: 900, candidatesTokenCount: 100, totalTokenCount: 1000 });
+    tokenUsage.add({ promptTokenCount: 900, candidatesTokenCount: 100, totalTokenCount: 1000 }, 'gemini-2.5-flash');
     await job.markComplete({ status: { detected: true }, counts: { total: 3 } });
   });
 
   assert.deepEqual(job.result.tokens, {
-    promptTokens: 900, outputTokens: 100, totalTokens: 1000, calls: 1
+    byModel: {
+      'gemini-2.5-flash': {
+        promptTokens: 900, outputTokens: 100, thoughtTokens: 0,
+        cachedTokens: 0, totalTokens: 1000, calls: 1
+      }
+    },
+    promptTokens: 900, outputTokens: 100, thoughtTokens: 0, cachedTokens: 0,
+    totalTokens: 1000, calls: 1, measuredCalls: 1, unmeasured: [], notCounted: []
   });
+});
+
+test('two models in one job are kept apart, because price is per model', async (t) => {
+  const job = fakeJob(t);
+
+  await tokenUsage.run(async () => {
+    tokenUsage.add({ promptTokenCount: 100, candidatesTokenCount: 10 }, 'gemini-2.5-flash');
+    tokenUsage.add({ promptTokenCount: 200, candidatesTokenCount: 20 }, 'gemini-2.5-pro');
+    await job.markComplete({ status: {} });
+  });
+
+  const t2 = job.result.tokens;
+  assert.deepEqual(Object.keys(t2.byModel).sort(), ['gemini-2.5-flash', 'gemini-2.5-pro']);
+  assert.equal(t2.byModel['gemini-2.5-flash'].promptTokens, 100);
+  assert.equal(t2.byModel['gemini-2.5-pro'].promptTokens, 200);
+  assert.equal(t2.promptTokens, 300, 'the summary still adds up');
+  assert.equal(t2.calls, 2);
+});
+
+test('cached prompt tokens are kept apart and never added to prompt', async (t) => {
+  // Gemini counts cached tokens INSIDE promptTokenCount and bills them lower.
+  // Adding them again would inflate the figure, silently and expensively.
+  const job = fakeJob(t);
+
+  await tokenUsage.run(async () => {
+    tokenUsage.add({
+      promptTokenCount: 1000, cachedContentTokenCount: 400, candidatesTokenCount: 50
+    }, 'gemini-2.5-flash');
+    await job.markComplete({ status: {} });
+  });
+
+  assert.equal(job.result.tokens.promptTokens, 1000, 'not 1400');
+  assert.equal(job.result.tokens.cachedTokens, 400);
+});
+
+test('thinking tokens count as output and are also visible on their own', async (t) => {
+  const job = fakeJob(t);
+
+  await tokenUsage.run(async () => {
+    tokenUsage.add({
+      promptTokenCount: 10, candidatesTokenCount: 30, thoughtsTokenCount: 70
+    }, 'gemini-2.5-flash');
+    await job.markComplete({ status: {} });
+  });
+
+  assert.equal(job.result.tokens.outputTokens, 100, 'thoughts are billed as output');
+  assert.equal(job.result.tokens.thoughtTokens, 70);
+});
+
+test('a call that could not be measured is named, not dropped', async (t) => {
+  const job = fakeJob(t);
+
+  await tokenUsage.run(async () => {
+    tokenUsage.add({ promptTokenCount: 10, candidatesTokenCount: 5 }, 'gemini-2.5-flash');
+    tokenUsage.addUnmeasured({ reason: 'timeout', httpStatus: 408, promptChars: 4200, model: 'gemini-2.5-flash' });
+    tokenUsage.addNotCounted('langextract');
+    await job.markComplete({ status: {} });
+  });
+
+  const rec = job.result.tokens;
+  assert.equal(rec.measuredCalls, 1);
+  assert.deepEqual(rec.unmeasured, [
+    { reason: 'timeout', httpStatus: 408, promptChars: 4200, model: 'gemini-2.5-flash' }
+  ]);
+  assert.deepEqual(rec.notCounted, ['langextract']);
+  assert.equal(rec.totalTokens, 15, 'the unmeasured call adds nothing to the total');
+});
+
+test('a job whose every call failed still reports, rather than looking free', async (t) => {
+  const job = fakeJob(t);
+
+  await tokenUsage.run(async () => {
+    tokenUsage.addUnmeasured({ reason: 'server_error', httpStatus: 503 });
+    await job.markComplete({ status: {} });
+  });
+
+  assert.ok(job.result.tokens, 'a tally, not null');
+  assert.equal(job.result.tokens.measuredCalls, 0);
+  assert.equal(job.result.tokens.unmeasured.length, 1);
 });
 
 test('it does not displace what the service recorded', async (t) => {

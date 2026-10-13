@@ -154,6 +154,19 @@ module.exports = (sequelize) => {
      */
     discarded: { type: DataTypes.JSONB, allowNull: true },
 
+    /**
+     * What this execution spent, in tokens — see utils/token-usage.
+     *
+     * Here rather than only inside `result` because `result` is prunable and
+     * this must outlive it: "what has this document cost us" is a question
+     * about the past. Includes the tokens of a discarded response, which were
+     * spent whatever happened to the answer.
+     *
+     * Null means nothing recorded it — a row older than the column, or a module
+     * that calls no model. Not zero, which would claim it spent nothing.
+     */
+    usage: { type: DataTypes.JSONB, allowNull: true },
+
     counts: { type: DataTypes.JSONB, allowNull: true },
     // The payload. Nullable on purpose — the record above is small and kept
     // forever; this can be pruned without losing the history.

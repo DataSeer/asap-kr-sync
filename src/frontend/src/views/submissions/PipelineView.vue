@@ -23,6 +23,7 @@ import jobService from '@/services/job.service'
 import { labelFor, purposeFor, stageLabel, hasModulePage } from '@/components/modules/module-meta'
 import SubmissionFileLinks from '@/components/modules/SubmissionFileLinks.vue'
 import LoadError from '@/components/common/LoadError.vue'
+import TokenUsageDialog from '@/components/submission/TokenUsageDialog.vue'
 import { describeLoadError } from '@/utils/load-error'
 import { useSubmissionStore } from '@/stores/submission.store'
 import { setSubmissionTitle } from '@/router'
@@ -59,6 +60,10 @@ const graph = ref({ nodes: [], stageCount: 0 })
 // template falls to its placeholder — so a failed request left "Loading the
 // pipeline…" on screen forever, with nothing loading and no way to retry.
 const loadError = ref(null)
+/** Every pipeline run of this round — for the document-level token estimate. */
+const pipelineRuns = ref([])
+/** The full per-model, per-module breakdown, in text a reader can select. */
+const usageDialogOpen = ref(false)
 
 onMounted(loadGraph)
 
@@ -69,12 +74,55 @@ async function loadGraph() {
     latestFiles.value = submissionStore.latestFiles || {}
   }).catch(() => { /* the links are simply absent */ })
 
+  // Every run of this round, for the document-level token figure. Its own
+  // request, and its own failure: a total nobody could load must not stop the
+  // pipeline from rendering.
+  jobService.getPipelineRuns(submissionId.value)
+    .then((data) => { pipelineRuns.value = data?.runs || [] })
+    .catch(() => { pipelineRuns.value = [] })
+
   try {
     graph.value = await configService.getPipeline()
   } catch (err) {
     loadError.value = describeLoadError(err)
   }
 }
+
+/**
+ * What this document has spent, across every run of this round.
+ *
+ * Here rather than on the document page on purpose: this is the page about how
+ * the document was processed, and the number only means something next to the
+ * runs that produced it.
+ *
+ * Tokens, never money. What a token costs changes without the run changing,
+ * and a figure derived from a rate card is one this app cannot stand behind.
+ */
+const documentUsage = computed(() => {
+  const runs = pipelineRuns.value.filter(r => r.usage)
+  if (!runs.length) return null
+
+  let totalTokens = 0
+  let calls = 0
+  let unmeasured = 0
+  const notCounted = new Set()
+  const models = new Set()
+
+  for (const run of runs) {
+    totalTokens += run.usage.totalTokens || 0
+    calls += run.usage.calls || 0
+    unmeasured += run.usage.unmeasured?.length || 0
+    for (const src of (run.usage.notCounted || [])) notCounted.add(src)
+    for (const m of Object.keys(run.usage.byModel || {})) models.add(m)
+  }
+
+  if (!totalTokens && !unmeasured && !notCounted.size) return null
+
+  // The detail — per model, per module, and every gap — lives in the dialog,
+  // where it can be read at leisure and selected. A tooltip could hold the
+  // words but not let anyone copy them, which was the whole complaint.
+  return { totalTokens, runCount: runs.length, calls, models: [...models] }
+})
 
 /** Steps grouped into the stages the server computed. */
 const stages = computed(() => {
@@ -437,7 +485,22 @@ const activeStage = computed(() => {
       <span v-if="state.waiting" class="pv-state-item st-wait">{{ state.waiting }} waiting</span>
       <span v-if="state.partial" class="pv-state-item st-partial">{{ state.partial }} partly complete</span>
       <span v-if="state.failed" class="pv-state-item st-fail">{{ state.failed }} failed</span>
+      <!-- What the document has cost to process, in tokens. Last in the row:
+           it is context, not status, and nothing on this page depends on it. -->
+      <button
+        v-if="documentUsage"
+        type="button"
+        v-tooltip="'Click for the full breakdown'"
+        class="pv-state-item pv-state-usage"
+        @click="usageDialogOpen = true"
+      >{{ documentUsage.totalTokens.toLocaleString() }} tokens (est.)</button>
     </div>
+
+    <TokenUsageDialog
+      :runs="pipelineRuns"
+      :open="usageDialogOpen"
+      @close="usageDialogOpen = false"
+    />
 
     <LoadError
       v-if="loadError"
@@ -586,6 +649,13 @@ const activeStage = computed(() => {
 /* After .pv-state-item, not before: same specificity, so the later rule is the
    one that wins. */
 .pv-state-run { font-weight: 600; color: #3730a3; background: #e0e7ff; }
+/* Context, not status: quieter than the counts beside it, and set apart so it
+   is not mistaken for another thing that needs attention. */
+.pv-state-usage {
+  color: #6b7280; background: transparent; border: 1px solid #e5e7eb;
+  cursor: pointer; font: inherit; font-size: 0.72rem;
+}
+.pv-state-usage:hover { background: #f9fafb; color: #374151; border-color: #d1d5db; }
 
 /* Top to bottom: the manuscript flows down the page, and an ordered list is
    what this actually is — which a screen reader then reads correctly. */

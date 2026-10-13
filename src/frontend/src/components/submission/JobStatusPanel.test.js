@@ -144,3 +144,46 @@ describe('when work really is outstanding', () => {
     expect(wrapper.text()).not.toContain('Pipeline complete')
   })
 })
+
+describe('the module message line', () => {
+  /** Grounding, finished, disagreeing with the manuscript on `n` rows. */
+  const withConflicts = (n) => ({
+    ...complete(),
+    krt_grounding: {
+      type: 'krt_grounding', jobType: 'krt_grounding', status: 'complete',
+      result: { counts: { conflicts: n } }
+    }
+  })
+
+  it('puts the message on its own line, not in the status row', async () => {
+    // It used to sit at the end of the status row, competing for width with the
+    // badge, the run number and the summary — and being the longest thing there,
+    // it was always what got squeezed.
+    const wrapper = mountPanel(withConflicts(6))
+    await router.isReady()
+
+    const line = wrapper.find('.job-message-line')
+    expect(line.exists()).toBe(true)
+    expect(line.text()).toContain('6 rows differ from the manuscript')
+
+    // And it is genuinely a sibling of the status row, not nested inside it.
+    expect(wrapper.find('.job-result-line .job-conflict-badge').exists()).toBe(false)
+    expect(wrapper.find('.job-message-line .job-conflict-badge').exists()).toBe(true)
+  })
+
+  it('reads as singular for one row', async () => {
+    const wrapper = mountPanel(withConflicts(1))
+    await router.isReady()
+
+    expect(wrapper.find('.job-message-line').text()).toContain('1 row differs from the manuscript')
+  })
+
+  it('draws no line at all when there is no message', async () => {
+    // The line is a slot other modules can fill later. Until they do, an empty
+    // one on every tile would be ten lines of nothing.
+    const wrapper = mountPanel(complete())
+    await router.isReady()
+
+    expect(wrapper.find('.job-message-line').exists()).toBe(false)
+  })
+})

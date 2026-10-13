@@ -29,6 +29,7 @@ vi.mock('vue-router', async (importOriginal) => ({
 }))
 vi.mock('@/services/job.service', () => ({
   default: {
+    getPipelineRuns: () => Promise.resolve({ runs: [] }),
     getJobs: (...a) => getJobs(...a),
     retryJob: (...a) => retryJob(...a),
     continueWithout: (...a) => continueWithout(...a),

@@ -419,14 +419,45 @@ function promptProvenance(p) {
  */
 const tokens = computed(() => {
   const t = result.value.tokens
-  if (!t?.totalTokens) return []
-  const detail = `${t.promptTokens.toLocaleString()} sent, ${t.outputTokens.toLocaleString()} returned`
-    + `, over ${t.calls} call${t.calls === 1 ? '' : 's'}`
+  if (!t) return []
+  if (!t.totalTokens && !t.unmeasured?.length && !t.notCounted?.length) return []
+
+  const detail = `${(t.promptTokens || 0).toLocaleString()} sent, ${(t.outputTokens || 0).toLocaleString()} returned`
+    + `, over ${t.calls || 0} call${t.calls === 1 ? '' : 's'}`
+
+  // What the figure does NOT include, named rather than hidden behind the word
+  // "estimate". A reader who knows a timeout went uncounted knows more than one
+  // reading a confident number.
+  const gaps = []
+  if (t.notCounted?.length) {
+    gaps.push(`It does not include the ${t.notCounted.join(', ')} pass.`)
+  }
+  if (t.unmeasured?.length) {
+    const timedOut = t.unmeasured.filter(u => u.reason === 'timeout').length
+    const other = t.unmeasured.length - timedOut
+    const bits = []
+    if (timedOut) bits.push(`${timedOut} timed out`)
+    if (other) bits.push(`${other} failed before the model answered`)
+    gaps.push(`${t.unmeasured.length} further call${t.unmeasured.length === 1 ? '' : 's'}`
+      + ` could not be measured (${bits.join(', ')}).`)
+  }
+
+  // Several models in one run are worth showing apart: they are not
+  // interchangeable and a reader comparing runs needs to know which ran.
+  const models = Object.keys(t.byModel || {})
+  const perModel = models.length > 1
+    ? ` Split across ${models.length} models: ${models.join(', ')}.`
+    : ''
+
   return [{
-    label: 'Tokens used',
-    value: t.totalTokens.toLocaleString(),
-    explain: `What this run cost the language model, in tokens: ${detail}. `
+    label: 'Token usage (estimate)',
+    value: (t.totalTokens || 0).toLocaleString(),
+    explain: `What this run spent at the language model, in tokens: ${detail}. `
       + 'Retries are included — a call that was made and thrown away was still paid for.'
+      + perModel
+      + (gaps.length ? ' ' + gaps.join(' ') : '')
+      + ' These are the figures the provider reported back to us; check the provider'
+      + ' console for billed totals.'
   }]
 })
 

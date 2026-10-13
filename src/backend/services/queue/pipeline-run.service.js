@@ -545,6 +545,10 @@ async function runsForSubmission(submissionId, round) {
     completedAt: run.completedAt,
     pipelineVersion: run.pipelineVersion,
     appVersion: run.appVersion,
+    // What this run spent, in tokens — summed from its steps when each one
+    // finished. Tokens only: what they cost is not this app's business, and no
+    // price or currency crosses this boundary.
+    usage: run.usage || null,
     // Named, or falling back to the email — but never left blank. "A run
     // nobody caused" and "a run whose user has no display name" are different
     // things, and only the first should read as null.
@@ -557,7 +561,8 @@ async function runsForSubmission(submissionId, round) {
       status: member.execution?.status || 'not_started',
       outcomeState: member.execution?.outcomeState || null,
       counts: member.execution?.counts || null,
-      durationMs: member.execution?.durationMs || null
+      durationMs: member.execution?.durationMs || null,
+      usage: member.execution?.usage || null
     }))
   }));
 }

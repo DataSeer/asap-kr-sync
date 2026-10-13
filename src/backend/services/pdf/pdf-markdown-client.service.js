@@ -23,18 +23,39 @@ const logger = require('../../utils/logger');
 /**
  * Convert a PDF buffer to Markdown text.
  *
+ * Returns what the conversion cost to produce as well as the text. Modal bills
+ * per compute-second, so the duration and — crucially — the number of ATTEMPTS
+ * are the figures that price it: this client retries a transient failure up to
+ * three times, and each attempt is a separate billed conversion. Only the
+ * client knows how many there were, which is why it reports rather than the
+ * caller measuring from outside.
+ *
+ * No price anywhere here. What a compute-second costs is not this repository's
+ * business; it records how many there were.
+ *
  * @param {Buffer} pdfBuffer - The PDF file buffer
  * @param {string} fileName - Original file name (for logging and multipart field)
- * @returns {Promise<string>} Markdown text
+ * @returns {Promise<{markdown: string, conversion: object}>}
  */
 async function convertToMarkdown(pdfBuffer, fileName) {
   const provider = markdownConfig.provider;
+  const startedAt = Date.now();
 
-  if (provider === 'modal') {
-    return convertViaModal(pdfBuffer, fileName);
-  }
+  const run = provider === 'modal'
+    ? convertViaModal(pdfBuffer, fileName)
+    : convertViaMarkItDown(pdfBuffer, fileName);
 
-  return convertViaMarkItDown(pdfBuffer, fileName);
+  const { markdown, attempts } = await run;
+  return {
+    markdown,
+    conversion: {
+      provider,
+      converter: provider === 'modal' ? (markdownConfig.modal.converter || null) : null,
+      attempts,
+      durationMs: Date.now() - startedAt,
+      bytes: pdfBuffer?.length ?? null
+    }
+  };
 }
 
 /**
@@ -81,7 +102,7 @@ async function convertViaMarkItDown(pdfBuffer, fileName) {
       markdownLength: markdown.length
     });
 
-    return markdown;
+    return { markdown, attempts: 1 };
   } finally {
     // Clean up the per-call temp dir + file. unlink first, then rmdir.
     try { fs.unlinkSync(tmpFile); } catch (err) { logger.debug('tmpFile unlink failed', { err: err.message }); }
@@ -125,12 +146,19 @@ async function convertViaModal(pdfBuffer, fileName) {
     // 503/time out; retry transient failures with backoff before giving up so a
     // single blip doesn't fail the whole document. Deterministic errors (4xx,
     // unexpected body) fall through immediately.
-    const response = await retry(() => axios.post(url, form, {
-      headers,
-      timeout: markdownConfig.timeout,
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    }), {
+    // Counted here because each retry is a separate billed conversion on
+    // Modal, and from outside the retry helper they are indistinguishable from
+    // one slow call.
+    let attempts = 0;
+    const response = await retry(() => {
+      attempts += 1;
+      return axios.post(url, form, {
+        headers,
+        timeout: markdownConfig.timeout,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+      });
+    }, {
       label: 'Markdown Convert',
       maxRetries: 3, delay: 2000, multiplier: 2, maxDelay: 20000, jitter: 500,
       shouldRetry: isTransientError,
@@ -150,7 +178,7 @@ async function convertViaModal(pdfBuffer, fileName) {
       markdownLength: data.length || data.markdown.length
     });
 
-    return data.markdown;
+    return { markdown: data.markdown, attempts };
   } catch (error) {
     if (error.response) {
       logger.error('Modal API error', {

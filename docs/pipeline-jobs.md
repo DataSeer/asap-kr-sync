@@ -1130,6 +1130,66 @@ completed run rather than asserted. The one key that varies is `tokens`, present
 was actually called, so `identifier_detection` (a local scan), `markdown_convert` (Modal/Docling)
 and `orcid_extraction` (GROBID → OpenAlex) carry none.
 
+### What `tokens` records
+
+`result.tokens` is the run's own tally (`utils/token-usage`), and it is an **estimate of what was
+consumed** — not a bill, and never a price. The app records tokens; it holds no rate card and
+computes no currency anywhere.
+
+```
+{
+  byModel: { 'gemini-2.5-flash': { promptTokens, outputTokens, thoughtTokens, cachedTokens, totalTokens, calls } },
+  promptTokens, outputTokens, thoughtTokens, cachedTokens, totalTokens, calls,   // summed over byModel
+  measuredCalls,             // calls whose usage the provider actually returned
+  unmeasured: [ { reason, httpStatus, promptChars, model } ],
+  notCounted: ['langextract']
+}
+```
+
+Per model, because a job may call more than one and they are not interchangeable. Two subtleties
+that are easy to get wrong in the other direction:
+
+- `thoughtTokens` is **inside** `outputTokens` — thinking is billed as output — and is kept
+  separately only so a run that mostly thought can be seen as such.
+- `cachedTokens` is **inside** `promptTokens`, not additional to it. Anything pricing this
+  subtracts; adding would inflate the figure silently and in the expensive direction.
+
+**Why it is called an estimate.** Two things the provider cannot tell us, both named in the record
+rather than absorbed into the totals:
+
+- `unmeasured` — a call that threw returns no usage block. The `reason` says how unknown it is:
+  `no_response` and `rate_limited` were almost certainly not billed, `server_error` generally was
+  not, and `timeout` is the genuinely unknown case where the provider may have completed work we
+  never received. `promptChars` is recorded as a fact; turning chars into tokens is a heuristic and
+  is deliberately left to whoever is doing the estimating.
+- `notCounted` — a model call made somewhere we cannot instrument. Today that is the Python
+  langextract pass in `datasets_detection`: the library surfaces no usage of its own, so the script
+  wraps the Google SDK's `Models.generate_content` and reports the total back. When that hook fails
+  it reports nothing and the pass is *named* here instead, so the module page can say the figure
+  excludes it. It never fails the step — accounting must not be able to fail a document.
+
+### Where usage is stored
+
+`result` is prunable, so a figure that lived only there would have an expiry date. Usage therefore
+has its own small column at two levels:
+
+| Column | Holds | Written |
+|---|---|---|
+| `step_executions.usage` | one execution of one module, including any `discarded` response's tokens | when the step closes |
+| `pipeline_runs.usage` | the same summed over that run's steps | recomputed whenever a step closes |
+
+The run figure is always **recomputed from its steps, never incremented**. Modules finish
+concurrently (`concurrency: 2` on most workers), and an increment that lost a race would leave a
+total that is wrong, plausible and permanent. A recompute that loses a race writes the same number.
+
+`npm run usage:refresh -- --submission <id>` (or `--all`, or `--dry-run`) re-sums the runs through
+the same function the live path uses. It is a repair tool for history that changed underneath the
+figure, not part of normal operation.
+
+`markdown_convert` carries no tokens but records `meta.conversion` — `{ provider, converter,
+attempts, durationMs, bytes, pageCount }`. `attempts` matters because the client retries a
+transient failure up to three times and each attempt is a separate conversion.
+
 That uniformity is load-bearing. Everything that reads a result — the Technical detail panel, the
 pipeline cards, the jobs API — walks every job type through the same accessors, so a module missing
 one of the shared keys is not untidy, it is the one module whose panel renders empty while the rest
